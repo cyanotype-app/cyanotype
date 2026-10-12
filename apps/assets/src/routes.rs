@@ -307,7 +307,10 @@ struct AssetSummary {
 #[derive(Deserialize)]
 struct ListQuery {
     limit: Option<i64>,
-    /// Return assets strictly older than this timestamp (RFC 3339).
+    /// Opaque keyset cursor from a previous `next_cursor`. Preferred over `before`.
+    cursor: Option<String>,
+    /// Deprecated, use `cursor`: assets strictly older than this timestamp (RFC 3339). Loses assets that share
+    /// a sort time across a page boundary.
     #[serde(default, with = "time::serde::rfc3339::option")]
     before: Option<OffsetDateTime>,
 }
@@ -315,35 +318,82 @@ struct ListQuery {
 #[derive(Serialize)]
 struct ListResponse {
     items: Vec<AssetSummary>,
-    /// Pass as `before` to fetch the next page; null when this was the last page.
+    /// Pass as `cursor` to fetch the next page; null when this was the last page.
+    next_cursor: Option<String>,
+    /// Deprecated, use `next_cursor`. Pass as `before`; null when this was the last page.
     #[serde(with = "time::serde::rfc3339::option")]
     next_before: Option<OffsetDateTime>,
 }
 
+/// Cursor = hex of `<rfc3339 sort_time>|<uuid>`: the last row's position in `(sort_time DESC, id DESC)` order.
+fn encode_cursor(t: OffsetDateTime, id: Uuid) -> String {
+    let ts = t
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    keys::hex(format!("{ts}|{id}").as_bytes())
+}
+
+fn decode_cursor(c: &str) -> Option<(OffsetDateTime, Uuid)> {
+    if !c.len().is_multiple_of(2) || !c.is_ascii() || c.len() > 200 {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = c
+        .as_bytes()
+        .chunks(2)
+        .map(|p| u8::from_str_radix(std::str::from_utf8(p).ok()?, 16).ok())
+        .collect();
+    let text = String::from_utf8(bytes?).ok()?;
+    let (ts, id) = text.split_once('|')?;
+    Some((
+        OffsetDateTime::parse(ts, &time::format_description::well_known::Rfc3339).ok()?,
+        Uuid::parse_str(id).ok()?,
+    ))
+}
+
+const LIST_SELECT: &str = "SELECT id, original_name, content_type, size_bytes, width, height,
+        coalesce(taken_at, file_modified_at, created_at) AS sort_time
+ FROM assets WHERE owner_id = $1 AND deleted_at IS NULL";
+
 async fn list(State(s): State<AppState>, user: AuthUser, Query(q): Query<ListQuery>) -> ApiResult<Json<ListResponse>> {
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
-    let rows = sqlx::query_as::<_, AssetSummary>(
-        "SELECT id, original_name, content_type, size_bytes, width, height,
-                coalesce(taken_at, file_modified_at, created_at) AS sort_time
-         FROM assets
-         WHERE owner_id = $1 AND deleted_at IS NULL
-           AND ($2::timestamptz IS NULL OR coalesce(taken_at, file_modified_at, created_at) < $2)
-         ORDER BY coalesce(taken_at, file_modified_at, created_at) DESC, id
-         LIMIT $3",
-    )
-    .bind(user.id)
-    .bind(q.before)
-    .bind(limit)
-    .fetch_all(&s.db)
-    .await?;
-    let next_before = if rows.len() as i64 == limit {
-        rows.last().map(|r| r.sort_time)
-    } else {
-        None
+    // Keyset position: rows strictly after (ts, id) in (sort_time DESC, id DESC) order. The legacy `before` has no
+    // id, so it compares against the nil uuid, which makes the predicate a strict `sort_time < before`.
+    let after = match (&q.cursor, q.before) {
+        (Some(c), _) => Some(decode_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
+        (None, Some(t)) => Some((t, Uuid::nil())),
+        (None, None) => None,
     };
+    // Row comparison against the (owner_id, sort expression DESC, id DESC) index; two statements so the planner
+    // never has to guess around an optional predicate.
+    let rows = match after {
+        Some((ts, id)) => {
+            sqlx::query_as::<_, AssetSummary>(&format!(
+                "{LIST_SELECT} AND (coalesce(taken_at, file_modified_at, created_at), id) < ($2, $3)
+                 ORDER BY coalesce(taken_at, file_modified_at, created_at) DESC, id DESC LIMIT $4"
+            ))
+            .bind(user.id)
+            .bind(ts)
+            .bind(id)
+            .bind(limit)
+            .fetch_all(&s.db)
+            .await?
+        }
+        None => {
+            sqlx::query_as::<_, AssetSummary>(&format!(
+                "{LIST_SELECT}
+                 ORDER BY coalesce(taken_at, file_modified_at, created_at) DESC, id DESC LIMIT $2"
+            ))
+            .bind(user.id)
+            .bind(limit)
+            .fetch_all(&s.db)
+            .await?
+        }
+    };
+    let last = if rows.len() as i64 == limit { rows.last() } else { None };
     Ok(Json(ListResponse {
+        next_cursor: last.map(|r| encode_cursor(r.sort_time, r.id)),
+        next_before: last.map(|r| r.sort_time),
         items: rows,
-        next_before,
     }))
 }
 
@@ -446,6 +496,115 @@ mod tests {
             ps,
         );
         assert_eq!(got.iter().map(|p| p.number).collect::<Vec<_>>(), vec![1, 3]);
+    }
+
+    #[test]
+    fn cursors_round_trip_and_reject_garbage() {
+        let t = OffsetDateTime::parse(
+            "2020-06-01T12:34:56.123456Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+        let id = Uuid::new_v4();
+        assert_eq!(decode_cursor(&encode_cursor(t, id)), Some((t, id)));
+        for bad in ["", "zz", "abc", "6e6f7069706573", "ff", &"00".repeat(150)] {
+            assert!(decode_cursor(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn cursor_pagination_has_no_gaps_or_dupes_when_sort_times_tie() {
+        let Some(t) = TestDb::new().await else { return };
+        let (uid,): (Uuid,) =
+            sqlx::query_as("INSERT INTO users (email, password_hash) VALUES ('c@example.com','x') RETURNING id")
+                .fetch_one(&t.pool)
+                .await
+                .unwrap();
+        let key = "cyk_cursor";
+        sqlx::query("INSERT INTO api_keys (user_id, name, key_hash) VALUES ($1,'t',$2)")
+            .bind(uid)
+            .bind(cyanotype_service::auth::sha256(key.as_bytes()))
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        // 23 burst shots with the identical taken_at, 9 files with the identical mtime, 3 distinct ones.
+        for i in 0..35 {
+            let (taken, mtime) = match i {
+                0..=22 => (Some("2021-05-05T10:00:00Z"), None),
+                23..=31 => (None, Some("2018-01-01T00:00:00Z")),
+                _ => (
+                    Some(["2022-01-01T00:00:00Z", "2019-01-01T00:00:00Z", "2023-01-01T00:00:00Z"][i - 32]),
+                    None,
+                ),
+            };
+            let name = format!("f{i}.jpg");
+            sqlx::query(
+                "INSERT INTO assets (owner_id, sha256, original_key, original_name, content_type, size_bytes, taken_at, file_modified_at)
+                 VALUES ($1, sha256($2::bytea), $3, $3, 'image/jpeg', 1, $4::timestamptz, $5::timestamptz)",
+            )
+            .bind(uid)
+            .bind(name.as_bytes())
+            .bind(&name)
+            .bind(taken)
+            .bind(mtime)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        }
+        let app = routes().with_state(crate::AppState {
+            db: t.pool.clone(),
+            storage: dummy_storage(),
+        });
+
+        let mut seen = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            let path = match &cursor {
+                Some(c) => format!("/assets?limit=7&cursor={c}"),
+                None => "/assets?limit=7".to_string(),
+            };
+            let page = get_json(&app, &path, key).await;
+            pages += 1;
+            for i in page["items"].as_array().unwrap() {
+                seen.push(i["id"].as_str().unwrap().to_string());
+            }
+            match page["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+            assert!(pages < 20, "runaway pagination");
+        }
+        assert!(pages >= 3, "{pages} pages");
+        assert_eq!(seen.len(), 35, "every asset exactly once");
+        let unique: std::collections::HashSet<_> = seen.iter().collect();
+        assert_eq!(unique.len(), 35, "no duplicates");
+
+        // Same set as one big page, in the same order.
+        let all = get_json(&app, "/assets?limit=500", key).await;
+        let all: Vec<_> = all["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(all, seen);
+
+        // Invalid cursors are a 400, not a silent first page.
+        for bad in ["nonsense", "6e6f7069706573", ""] {
+            let req = Request::builder()
+                .uri(format!("/assets?cursor={bad}"))
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "cursor={bad:?}");
+        }
+
+        // The deprecated `before` is still accepted and still reports next_before.
+        let old = get_json(&app, "/assets?limit=3", key).await;
+        assert!(old["next_before"].is_string());
+        t.teardown().await;
     }
 
     struct TestDb {

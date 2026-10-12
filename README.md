@@ -72,8 +72,11 @@ POST /assets/check     {sha256, size_bytes, filename, content_type}
 PUT  <each part url>   (raw bytes, straight to S3; keep the ETag headers)
 POST /assets/complete  {upload_id, parts: [{number, etag}]}
   -> {asset_id}        # row inserted, metadata + thumbnail jobs enqueued
-GET  /assets?limit=&before=<rfc3339>
-  -> {items: [...], next_before: <rfc3339>|null}       # pass next_before as `before` for the next page
+GET  /assets?limit=&cursor=<opaque>
+  -> {items: [...], next_cursor: <opaque>|null, next_before: <rfc3339>|null}
+     # keyset pages in (sort_time DESC, id DESC) order: pass next_cursor as `cursor`; no gaps or repeats when
+     # assets share a sort time. `before` / `next_before` are DEPRECATED (strict timestamp, can skip ties)
+     # and kept only for older web builds. An invalid cursor is a 400.
 GET  /assets/{id}
   -> {..., original_url, thumb_url, preview_url}       # presigned GETs; thumb/preview are null
                                                        # until the worker has produced them
