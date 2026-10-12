@@ -1,11 +1,11 @@
 # Deploying to a single VPS
 
 One Linode (shared CPU, 4 GB, us-ord, Debian 12) runs the whole stack with `docker compose`: Postgres,
-the three services, the Caddy gateway (automatic HTTPS) and a nightly backup job. Object storage is Linode
+the three services, the static web UI container, the Caddy gateway (automatic HTTPS) and a nightly backup job. Object storage is Linode
 Object Storage (us-ord-10), and images come from GHCR (private by default). Nothing is built on the server.
 
 ```
-internet -> :80/:443 Caddy (TLS) -> auth :3001 / assets :3002        worker (no port)
+internet -> :80/:443 Caddy (TLS) -> auth :3001 / assets :3002 / web :8080 (everything else)       worker (no port)
                                         \-> Postgres (not published)   backup -> bucket backups/postgres/
 clients  <-> presigned URLs <-> Linode Object Storage (bytes never touch the API)
 ```
