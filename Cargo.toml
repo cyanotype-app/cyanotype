@@ -14,7 +14,7 @@ version = "0.0.1"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/cyanotype-app/cyanotype"
-rust-version = "1.85"
+rust-version = "1.89"
 
 [workspace.dependencies]
 cyanotype-core = { path = "crates/cyanotype-core" }

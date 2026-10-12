@@ -66,6 +66,12 @@ jobs:
       S3_SECRET_KEY: x
     steps:
       - uses: actions/checkout@v4
+      # The worker builds libheif (vendored, pinned by the libheif-sys crate) from source with cmake,
+      # and links the HEVC and AV1 decoder libraries from the system.
+      - name: System libraries for the worker (libheif codecs)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake pkg-config libde265-dev libdav1d-dev
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rustfmt, clippy" }
       - uses: Swatinem/rust-cache@v2

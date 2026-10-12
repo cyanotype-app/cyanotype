@@ -78,9 +78,14 @@ GET  /assets/{id}
 ```
 
 The worker (`cyanotype-worker`) reads EXIF/dimensions, verifies the stored sha256, and writes
-320px / 1440px WebP derivatives plus a ThumbHash for JPEG, PNG and WebP originals. Other types
-are skipped (job marked done) until HEIC/RAW support lands. Tunables: `WORKER_HEAVY_CONCURRENCY`
-(default 2) and `WORKER_MAX_ORIGINAL_BYTES` (default 200 MiB).
+320px / 1440px WebP derivatives plus a ThumbHash for JPEG, PNG, WebP, HEIC/HEIF/AVIF and camera RAW
+originals (CR2/CR3, NEF/NRW, ARW, RAF, ORF, RW2, PEF, DNG, SRW and more). Files are routed by their
+content, not the stored content type, so an `application/octet-stream` upload of a RAW still works. Other
+types are skipped (job marked done). RAW previews come from the embedded JPEG, and anything too big
+for the memory budget is refused with a clear permanent error. Details, the pinned libheif version and the
+measured memory costs are in [`docs/build.md`](docs/build.md). Tunables: `WORKER_HEAVY_CONCURRENCY`
+(default 2), `WORKER_MAX_ORIGINAL_BYTES` (default 200 MiB), `WORKER_MEMORY_BUDGET_MB` (default 640) and
+`WORKER_RAW_DEVELOP` (default 1).
 
 All URLs above are served through the gateway on `:3000`, unchanged by the service split.
 
