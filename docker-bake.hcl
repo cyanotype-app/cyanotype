@@ -1,5 +1,5 @@
 # Build all service images from the single shared builder stage in ./Dockerfile:
-#   docker buildx bake              # group "default": auth, assets, worker, cli
+#   docker buildx bake              # group "default": auth, assets, worker, cli, backup, web
 #   TAG=v1 docker buildx bake
 #   docker buildx bake --print      # show the resolved plan
 #
@@ -50,7 +50,7 @@ function "cache_to" {
 }
 
 group "default" {
-  targets = ["auth", "assets", "worker", "cli", "backup"]
+  targets = ["auth", "assets", "worker", "cli", "backup", "web"]
 }
 
 target "_common" {
@@ -95,4 +95,16 @@ target "backup" {
   context    = "infra/backup"
   dockerfile = "Dockerfile"
   tags       = tags("backup")
+}
+
+# Static web UI: Vite build (node + pnpm) served by Caddy; its own Dockerfile, no Rust.
+target "web" {
+  inherits   = ["_common"]
+  context    = "apps/web"
+  dockerfile = "Dockerfile"
+  target     = "web"
+  tags       = tags("web")
+  # The shared Rust cache scope is not useful here (and would be clobbered by mode=max).
+  cache-from = CACHE == "gha" ? ["type=gha,scope=cyanotype-web"] : CACHE == "local" ? ["type=local,src=.buildcache-web"] : []
+  cache-to   = CACHE == "gha" ? ["type=gha,scope=cyanotype-web,mode=max"] : CACHE == "local" ? ["type=local,dest=.buildcache-web,mode=max"] : []
 }

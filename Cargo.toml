@@ -24,6 +24,7 @@ anyhow = "1"
 argon2 = "0.5"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "1"
+base64 = "0.22"
 axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 clap = { version = "4", features = ["derive", "env"] }

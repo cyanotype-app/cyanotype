@@ -10,7 +10,7 @@
 # HTTPS on 80/443 only (Let's Encrypt, or a Cloudflare Origin CA cert: CADDY_TLS_MODE); restart policies, healthchecks and memory limits. DD_ENV defaults to
 # dev (the dev-tier instance); set DD_ENV=prod in .env.prod for a production instance.
 # Memory budget (limits, not reservations): postgres 768m + worker 1024m + assets 256m + auth 256m +
-# gateway 128m + backup 128m = 2.5 GB, +384m with the Datadog Agent, leaving headroom on a 4 GB box.
+# gateway 128m + backup 128m + web 64m = ~2.6 GB, +384m with the Datadog Agent, leaving headroom on a 4 GB box.
 # Reset/override tags (!reset, !override) need Docker Compose >= 2.24.
 
 x-prod-env: &prod-env
@@ -103,6 +103,16 @@ services:
     depends_on: !override
       migrate: { condition: service_completed_successfully }
 
+  web:
+    image: ghcr.io/cyanotype-app/cyanotype-web:${CYANOTYPE_VERSION:?set CYANOTYPE_VERSION in .env.prod}
+    build: !reset null
+    pull_policy: missing
+    restart: unless-stopped
+    mem_limit: 64m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      <<: *probe
+
   gateway:
     # Same image as local; the production Caddyfile terminates TLS for CYANOTYPE_HOSTNAME.
     restart: unless-stopped
@@ -123,6 +133,7 @@ services:
     depends_on: !override
       auth: { condition: service_healthy }
       assets: { condition: service_healthy }
+      web: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/healthz"]
       <<: *probe
