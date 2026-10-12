@@ -207,11 +207,16 @@ struct ListQuery {
     before: Option<OffsetDateTime>,
 }
 
-async fn list(
-    State(s): State<AppState>,
-    user: AuthUser,
-    Query(q): Query<ListQuery>,
-) -> ApiResult<Json<Vec<AssetSummary>>> {
+#[derive(Serialize)]
+struct ListResponse {
+    items: Vec<AssetSummary>,
+    /// Pass as `before` to fetch the next page; null when this was the last page.
+    #[serde(with = "time::serde::rfc3339::option")]
+    next_before: Option<OffsetDateTime>,
+}
+
+async fn list(State(s): State<AppState>, user: AuthUser, Query(q): Query<ListQuery>) -> ApiResult<Json<ListResponse>> {
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
     let rows = sqlx::query_as::<_, AssetSummary>(
         "SELECT id, original_name, content_type, size_bytes, width, height,
                 coalesce(taken_at, created_at) AS sort_time
@@ -223,10 +228,18 @@ async fn list(
     )
     .bind(user.id)
     .bind(q.before)
-    .bind(q.limit.unwrap_or(100).clamp(1, 500))
+    .bind(limit)
     .fetch_all(&s.db)
     .await?;
-    Ok(Json(rows))
+    let next_before = if rows.len() as i64 == limit {
+        rows.last().map(|r| r.sort_time)
+    } else {
+        None
+    };
+    Ok(Json(ListResponse {
+        items: rows,
+        next_before,
+    }))
 }
 
 async fn get_one(
@@ -243,13 +256,22 @@ async fn get_one(
     .fetch_optional(&s.db)
     .await?
     .ok_or(ApiError::NotFound)?;
-    let (key,): (String,) = sqlx::query_as("SELECT original_key FROM assets WHERE id = $1")
-        .bind(id)
-        .fetch_one(&s.db)
-        .await?;
-    let original_url = s.storage.presign_get(&key).await?;
+    let (key, owner_id, derived_ready): (String, Uuid, bool) =
+        sqlx::query_as("SELECT original_key, owner_id, thumbhash IS NOT NULL FROM assets WHERE id = $1")
+            .bind(id)
+            .fetch_one(&s.db)
+            .await?;
     let mut v = serde_json::to_value(a).map_err(anyhow::Error::from)?;
-    v["original_url"] = original_url.into();
+    v["original_url"] = s.storage.presign_get(&key).await?.into();
+    // The worker sets `thumbhash` only after both derived objects are uploaded, so it doubles
+    // as the "derived images exist" flag. Until then the URLs are null rather than 404s.
+    if derived_ready {
+        v["thumb_url"] = s.storage.presign_get(&keys::thumb(owner_id, id)).await?.into();
+        v["preview_url"] = s.storage.presign_get(&keys::preview(owner_id, id)).await?.into();
+    } else {
+        v["thumb_url"] = serde_json::Value::Null;
+        v["preview_url"] = serde_json::Value::Null;
+    }
     Ok(Json(v))
 }
 

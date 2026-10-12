@@ -37,7 +37,7 @@ derived/{user_id}/{asset_id}/preview.webp
 |---|---|---|
 | 0 | Cargo workspace, Docker Compose (Postgres + MinIO), CI, migrations, auth | done (scaffold) |
 | 1 | Presigned upload, dedupe, asset CRUD, basic grid UI | backend done; UI pending |
-| 2 | Worker, job queue, EXIF, thumbnails, ThumbHash, HEIC | queue done; handlers pending |
+| 2 | Worker, job queue, EXIF, thumbnails, ThumbHash, HEIC | queue done; metadata (EXIF, sha256 verify) + thumbnail/preview/ThumbHash handlers done for JPEG/PNG/WebP; HEIC and RAW pending |
 | 3 | Virtualized timeline, lightbox, albums, sharing links | |
 | 4 | CLIP semantic search and filters | |
 | 5 | Map view and offline reverse geocoding | |

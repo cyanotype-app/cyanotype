@@ -120,6 +120,49 @@ impl Storage {
         }
     }
 
+    /// Download an object fully into memory, refusing anything larger than `max_bytes`
+    /// (checked against the response's Content-Length before reading the body, and again
+    /// against the bytes actually received).
+    pub async fn get_bytes_limited(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>> {
+        let out = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .context("get_object")?;
+        if let Some(len) = out.content_length
+            && len as u64 > max_bytes
+        {
+            anyhow::bail!("object {key} is {len} bytes, over the {max_bytes} byte limit");
+        }
+        let bytes = out.body.collect().await.context("read object body")?.into_bytes();
+        if bytes.len() as u64 > max_bytes {
+            anyhow::bail!("object {key} exceeded the {max_bytes} byte limit");
+        }
+        Ok(bytes.to_vec())
+    }
+
+    /// Download an object fully into memory (no size cap; prefer `get_bytes_limited`).
+    pub async fn get_bytes(&self, key: &str) -> Result<Vec<u8>> {
+        self.get_bytes_limited(key, u64::MAX).await
+    }
+
+    /// Upload (or overwrite) an object from memory.
+    pub async fn put_bytes(&self, key: &str, bytes: Vec<u8>, content_type: &str) -> Result<()> {
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .content_type(content_type)
+            .body(bytes.into())
+            .send()
+            .await
+            .context("put_object")?;
+        Ok(())
+    }
+
     pub async fn presign_get(&self, key: &str) -> Result<String> {
         let req = self
             .presign_client
