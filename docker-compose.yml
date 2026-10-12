@@ -1,3 +1,23 @@
+# Whole stack: `docker compose up -d --build` then use http://localhost:3000.
+# Datadog Agent is opt-in: `docker compose --profile datadog up -d` (needs DD_API_KEY in your env).
+
+x-app-env: &app-env
+  DATABASE_URL: postgres://cyanotype:cyanotype@postgres:5432/cyanotype
+  LOG_FORMAT: json
+  RUST_LOG: ${RUST_LOG:-info,sqlx=warn}
+  DD_ENV: ${DD_ENV:-local}
+  DD_VERSION: ${DD_VERSION:-}
+
+x-s3-env: &s3-env
+  S3_ENDPOINT: http://minio:9000
+  # Embedded in presigned URLs, so it must be reachable from the client (your host).
+  S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
+  S3_REGION: us-east-1
+  S3_BUCKET: cyanotype
+  S3_ACCESS_KEY: minioadmin
+  S3_SECRET_KEY: minioadmin
+  S3_FORCE_PATH_STYLE: "true"
+
 services:
   postgres:
     image: pgvector/pgvector:pg17
@@ -7,6 +27,8 @@ services:
       POSTGRES_DB: cyanotype
     ports: ["5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"postgresql","service":"cyanotype-postgres"}]'
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cyanotype"]
       interval: 5s
@@ -31,6 +53,81 @@ services:
       mc mb --ignore-existing local/cyanotype;
       mc version enable local/cyanotype;
       "
+
+  # One-shot: the only place migrations run. Services wait for it to finish.
+  migrate:
+    build: { context: ., target: cli }
+    image: cyanotype-cli
+    command: ["migrate"]
+    environment:
+      <<: *app-env
+      DD_SERVICE: cyanotype-migrate
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  auth:
+    build: { context: ., target: auth }
+    image: cyanotype-auth
+    environment:
+      <<: *app-env
+      DD_SERVICE: cyanotype-auth
+      AUTH_BIND_ADDR: 0.0.0.0:3001
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"rust","service":"cyanotype-auth"}]'
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  assets:
+    build: { context: ., target: assets }
+    image: cyanotype-assets
+    environment:
+      <<: [*app-env, *s3-env]
+      DD_SERVICE: cyanotype-assets
+      ASSETS_BIND_ADDR: 0.0.0.0:3002
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"rust","service":"cyanotype-assets"}]'
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      minio-init: { condition: service_completed_successfully }
+
+  worker:
+    build: { context: ., target: worker }
+    image: cyanotype-worker
+    environment:
+      <<: [*app-env, *s3-env]
+      DD_SERVICE: cyanotype-worker
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"rust","service":"cyanotype-worker"}]'
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      minio-init: { condition: service_completed_successfully }
+
+  # Gateway: the single origin clients talk to (/auth/* -> auth, /assets/* -> assets).
+  gateway:
+    image: caddy:2-alpine
+    ports: ["3000:3000"]
+    volumes: ["./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro"]
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"caddy","service":"cyanotype-gateway"}]'
+    depends_on: [auth, assets]
+
+  # Opt-in log collection. The apps log JSON to stdout; the Agent tails container logs.
+  # Datadog ingestion has not been exercised in this repo's CI (no API key); see docs/observability.md.
+  datadog-agent:
+    image: gcr.io/datadoghq/agent:7
+    profiles: [datadog]
+    environment:
+      DD_API_KEY: ${DD_API_KEY:-}
+      DD_SITE: ${DD_SITE:-datadoghq.com}
+      DD_LOGS_ENABLED: "true"
+      DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL: "true"
+      DD_HOSTNAME: ${DD_HOSTNAME:-cyanotype-compose}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /proc/:/host/proc/:ro
+      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
 
 volumes:
   pgdata:

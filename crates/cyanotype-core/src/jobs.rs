@@ -15,7 +15,7 @@ pub const DEFAULT_PIPELINE: &[&str] = &[KIND_METADATA, KIND_THUMBNAIL];
 
 /// A running job older than this is assumed to belong to a dead worker.
 const STALE_AFTER_SECS: i64 = 600;
-const MAX_ATTEMPTS: i32 = 5;
+pub const MAX_ATTEMPTS: i32 = 5;
 
 #[derive(Debug, sqlx::FromRow)]
 pub struct Job {
@@ -36,8 +36,27 @@ pub async fn enqueue(db: impl PgExecutor<'_>, kind: &str, asset_id: Uuid, versio
     Ok(())
 }
 
+/// Mark jobs whose worker died on their final attempt as failed. Without this they would
+/// sit in 'running' forever: `claim` refuses them (attempts exhausted) and nobody calls `fail`.
+async fn reap_exhausted(pool: &PgPool, kind: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE jobs SET state = 'failed', finished_at = now(), locked_at = NULL,
+             last_error = coalesce(last_error, 'worker died on final attempt')
+         WHERE kind = $1 AND state = 'running' AND attempts >= $3
+           AND locked_at < now() - make_interval(secs => $2)",
+    )
+    .bind(kind)
+    .bind(STALE_AFTER_SECS as f64)
+    .bind(MAX_ATTEMPTS)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Claim one job of `kind`, also reclaiming jobs whose worker died mid-run.
+/// A job is claimed at most `MAX_ATTEMPTS` times.
 pub async fn claim(pool: &PgPool, kind: &str) -> Result<Option<Job>> {
+    reap_exhausted(pool, kind).await?;
     Ok(sqlx::query_as::<_, Job>(
         "UPDATE jobs SET state = 'running', locked_at = now(), attempts = attempts + 1
          WHERE id = (
@@ -77,6 +96,19 @@ pub async fn fail(pool: &PgPool, job: &Job, error: &str) -> Result<()> {
     .bind(exhausted)
     .bind(error)
     .bind(f64::from(2_i32.pow(job.attempts.clamp(1, 10) as u32)) * 5.0)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Mark failed immediately, without retries. For errors that retrying cannot fix
+/// (corrupt file, checksum mismatch, over the size limit).
+pub async fn fail_permanent(pool: &PgPool, id: i64, error: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE jobs SET state = 'failed', finished_at = now(), locked_at = NULL, last_error = $2 WHERE id = $1",
+    )
+    .bind(id)
+    .bind(error)
     .execute(pool)
     .await?;
     Ok(())
