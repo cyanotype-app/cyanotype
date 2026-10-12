@@ -67,9 +67,13 @@ pub fn with_http_layers<S: Clone + Send + Sync + 'static>(router: Router<S>) -> 
 pub async fn serve(app: Router, addr: &str) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(addr, "listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Connect info lets handlers see the peer address (used by the auth rate limiter).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     tracing::info!("shut down");
     Ok(())
 }

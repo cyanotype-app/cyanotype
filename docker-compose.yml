@@ -1,6 +1,8 @@
 # Whole stack: `docker compose up -d --build` then use http://localhost:3000.
 # Datadog Agent is opt-in: `docker compose --profile datadog up -d` (needs DD_API_KEY in your env).
 
+name: cyanotype
+
 x-app-env: &app-env
   DATABASE_URL: postgres://cyanotype:cyanotype@postgres:5432/cyanotype
   LOG_FORMAT: json
@@ -73,6 +75,10 @@ services:
       <<: *app-env
       DD_SERVICE: cyanotype-auth
       AUTH_BIND_ADDR: 0.0.0.0:3001
+      # Local dev runs over plain http and re-registers a throwaway user on every `just e2e`,
+      # so relax the service defaults (Secure cookie, first_user). Production overrides both.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      REGISTRATION_MODE: ${REGISTRATION_MODE:-open}
     labels:
       com.datadoghq.ad.logs: '[{"source":"rust","service":"cyanotype-auth"}]'
     depends_on:
@@ -107,10 +113,25 @@ services:
   gateway:
     image: caddy:2-alpine
     ports: ["3000:3000"]
-    volumes: ["./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro"]
+    volumes: ["./infra/caddy:/etc/caddy:ro"]
     labels:
       com.datadoghq.ad.logs: '[{"source":"caddy","service":"cyanotype-gateway"}]'
     depends_on: [auth, assets]
+
+  # Nightly pg_dump -> S3 (backups/postgres/). Opt-in locally (`--profile backup`, or
+  # `just backup-now`); always on in production (docker-compose.prod.yml). See docs/deploy.md.
+  backup:
+    build: { context: infra/backup }
+    image: cyanotype-backup
+    profiles: [backup]
+    environment:
+      <<: *s3-env
+      DATABASE_URL: postgres://cyanotype:cyanotype@postgres:5432/cyanotype
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+      BACKUP_AT: ${BACKUP_AT:-03:17}
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
 
   # Opt-in log collection. The apps log JSON to stdout; the Agent tails container logs.
   # Datadog ingestion has not been exercised in this repo's CI (no API key); see docs/observability.md.
@@ -122,6 +143,10 @@ services:
       DD_SITE: ${DD_SITE:-datadoghq.com}
       DD_LOGS_ENABLED: "true"
       DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL: "true"
+      # Never ship other projects' logs from a shared host: exclude everything, then include only this
+      # project's containers (compose names them cyanotype-<service>-<n>; the project name is pinned above).
+      DD_CONTAINER_EXCLUDE_LOGS: "name:.*"
+      DD_CONTAINER_INCLUDE_LOGS: "name:^cyanotype-.*"
       DD_HOSTNAME: ${DD_HOSTNAME:-cyanotype-compose}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro

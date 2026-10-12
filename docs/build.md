@@ -29,6 +29,14 @@ in parallel, which made a cold build take about 25 minutes.
 - `.dockerignore` keeps `target/`, `.git`, `.env*`, docs and other non-build files out of the context,
   so unrelated edits do not invalidate layers.
 
+## Publishing
+
+`.github/workflows/publish.yml` runs on push to main and `v*` tags (never on pull requests). One
+`docker buildx bake --push` (gha cache) pushes `ghcr.io/<owner>/cyanotype-{auth,assets,worker,cli,backup}`
+with tags `sha-<short>`, `latest` (main) and `X.Y.Z`/`X.Y`/`X` (tags), authenticated with `GITHUB_TOKEN`
+(`packages: write`). `REGISTRY`, `TAGS` and `REVISION` are bake variables. `.github/workflows/deploy.yml`
+then deploys a version to the VPS; see `docs/deploy.md`.
+
 ## Tasks
 
 `just` is the entry point (see the `justfile`); CI calls the same recipes (`just check`, `just migrate`,

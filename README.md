@@ -22,7 +22,8 @@ apps/cli       cyanotype-cli             `migrate`
 apps/web       (reserved for the SvelteKit frontend)
 crates/cyanotype-core      config, db, storage, job queue, telemetry (logging)
 crates/cyanotype-service   shared HTTP plumbing: AuthUser extractor, ApiError, request id + request logging
-infra/caddy    gateway Caddyfile
+infra/caddy    gateway: Caddyfile (local :3000), Caddyfile.prod (real hostname, automatic HTTPS), shared gateway.caddy
+infra/backup   nightly Postgres backup image (pg_dump + rclone -> bucket)
 ```
 
 ## Status
@@ -51,7 +52,7 @@ just dev                 # compose Postgres + MinIO, migrate, then auth :3001, a
 
 Before pushing: `just check` (fmt-check + clippy `-D warnings` + tests; set `DATABASE_URL` to a Postgres,
 e.g. the compose one, to include the DB integration tests). Other recipes: `fmt`, `lint`, `test`, `migrate`,
-`images` (build all four images), `datadog-up`, `clean-docker`.
+`images` (build all five images), `backup-now`, `deploy`, `datadog-up`, `clean-docker`.
 
 When running from source, call the services directly (`:3001` for `/auth/*`, `:3002` for `/assets/*`)
 unless you run them in compose. Images are per-service Dockerfile targets (`auth|assets|worker|cli`) built
@@ -84,7 +85,15 @@ are skipped (job marked done) until HEIC/RAW support lands. Tunables: `WORKER_HE
 All URLs above are served through the gateway on `:3000`, unchanged by the service split.
 
 Auth: `POST /auth/register` / `POST /auth/login` set a session cookie; CLIs send
-`Authorization: Bearer <api key>` instead.
+`Authorization: Bearer <api key>` instead. Security knobs (all in [`docs/deploy.md`](docs/deploy.md)):
+`REGISTRATION_MODE=open|first_user|closed` (default `first_user`: only the first account can register),
+`COOKIE_SECURE` (default true; local compose sets false), and a per-IP rate limit on login/register (429).
+
+## Deploying
+
+One Linode VPS with `docker compose`: `docker-compose.prod.yml` (GHCR images, automatic HTTPS, memory limits,
+nightly backups to the bucket), a publish workflow that pushes images to GHCR, and a deploy workflow plus
+`just deploy`. The full runbook, backups/restore and the go-live checklist are in [`docs/deploy.md`](docs/deploy.md).
 
 ## Licence
 

@@ -1,0 +1,5 @@
+# CADDY_TLS_MODE=cloudflare-origin, inside the global 'servers' block.
+# Believe CF-Connecting-IP (then X-Forwarded-For) only when the TCP peer is a Cloudflare edge.
+import /etc/caddy/cloudflare-ips.caddy
+client_ip_headers CF-Connecting-IP X-Forwarded-For
+trusted_proxies_strict

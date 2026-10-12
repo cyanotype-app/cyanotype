@@ -1,0 +1,52 @@
+# Shared gateway routes, imported by Caddyfile (local, :3000) and Caddyfile.prod (real hostname).
+# Clients keep talking to one origin and the same URLs as before the service split.
+# Hand the upstream exactly one X-Forwarded-For value: the client IP Caddy resolved. That is the TCP peer,
+# or (behind Cloudflare, only when the peer is a Cloudflare edge) CF-Connecting-IP. Without this, Caddy
+# would append the edge IP to Cloudflare's own X-Forwarded-For and the auth rate limiter would key on edge IPs.
+(upstream_client_ip) {
+	header_up X-Forwarded-For {client_ip}
+}
+
+(gateway) {
+	# Every request gets an id (client-supplied ones are kept); the services echo and log it.
+	@noreqid header !X-Request-Id
+	request_header @noreqid X-Request-Id {http.request.uuid}
+
+	# Access log as JSON on stdout. Query strings and all headers are dropped so tokens,
+	# cookies and Authorization never reach the logs.
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp \?.* ""
+				request>headers delete
+				resp_headers delete
+			}
+		}
+	}
+
+	handle /healthz {
+		respond `{"ok":true}` 200
+	}
+
+	@auth path /auth /auth/*
+	handle @auth {
+		header >Cache-Control "no-store"
+		reverse_proxy auth:3001 {
+			import upstream_client_ip
+		}
+	}
+
+	@assets path /assets /assets/*
+	handle @assets {
+		header >Cache-Control "no-store"
+		reverse_proxy assets:3002 {
+			import upstream_client_ip
+		}
+	}
+
+	handle {
+		respond `{"error":"not found"}` 404
+	}
+}

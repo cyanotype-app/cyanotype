@@ -19,7 +19,7 @@ axum services).
 | `LOG_FORMAT` | `json` unless stdout is a TTY | `json` or `pretty` (human-readable, for local dev) |
 | `RUST_LOG` | `info,sqlx=warn` | `tracing` `EnvFilter` directives |
 | `DD_SERVICE` | the binary name (`cyanotype-auth`, `cyanotype-assets`, `cyanotype-worker`, `cyanotype-cli`) | `service` attribute |
-| `DD_ENV` | unset (attribute omitted) | `env` attribute; compose sets `local` |
+| `DD_ENV` | unset (attribute omitted) | `env` attribute; local compose sets `local`, the VPS override `dev` (set `prod` for a production instance) |
 | `DD_VERSION` | workspace crate version | `version` attribute |
 
 `DD_API_KEY` / `DD_SITE` are read only by the Agent container (compose), never by Rust code.
@@ -113,3 +113,19 @@ is linked to Datadog. Keep each `dd-service` identical to the `DD_SERVICE` / ser
 service actually emits (compose and `telemetry::init`; for the gateway, the Autodiscovery `service`
 label), so logs attach to the catalog entry. Do not manage the same entities through both GitHub and
 the Datadog API; whichever writes last wins.
+
+## On the VPS
+
+`docker-compose.prod.yml` keeps the Agent behind the `datadog` profile, with `DD_SITE` defaulting to
+`us5.datadoghq.com` and `DD_ENV` to `dev`. See `docs/deploy.md`.
+
+## Scoping log collection on a shared host
+
+`DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL=true` would ship every container's logs on the host. The Agent service
+therefore also sets `DD_CONTAINER_EXCLUDE_LOGS="name:.*"` and `DD_CONTAINER_INCLUDE_LOGS="name:^cyanotype-.*"`,
+so only this project's containers (`cyanotype-<service>-<n>`: postgres, auth, assets, worker, gateway, plus
+migrate/backup/the Agent itself) are collected and other projects' containers are never read. The compose
+project name is pinned to `cyanotype` (`name:` at the top of `docker-compose.yml`) so the pattern stays
+valid whatever the checkout directory is called; if you pass `-p <other>`, change the include pattern.
+This scoping was exercised in a live run against Datadog us5 on a host with other containers (using
+different container names); it is not exercised in CI.

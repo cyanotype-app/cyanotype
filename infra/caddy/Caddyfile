@@ -1,43 +1,12 @@
-# Gateway: clients keep talking to one origin (:3000) and the same URLs as before the split.
+# Local/dev gateway: plain HTTP on :3000, no certificates. Production uses Caddyfile.prod.
+# The route definitions live in gateway.caddy (shared by both).
 {
 	auto_https off
 	admin off
 }
 
+import /etc/caddy/gateway.caddy
+
 :3000 {
-	# Every request gets an id (client-supplied ones are kept); the services echo and log it.
-	@noreqid header !X-Request-Id
-	request_header @noreqid X-Request-Id {http.request.uuid}
-
-	# Access log as JSON on stdout. Query strings and all headers are dropped so tokens,
-	# cookies and Authorization never reach the logs.
-	log {
-		output stdout
-		format filter {
-			wrap json
-			fields {
-				request>uri regexp \?.* ""
-				request>headers delete
-				resp_headers delete
-			}
-		}
-	}
-
-	handle /healthz {
-		respond `{"ok":true}` 200
-	}
-
-	@auth path /auth /auth/*
-	handle @auth {
-		reverse_proxy auth:3001
-	}
-
-	@assets path /assets /assets/*
-	handle @assets {
-		reverse_proxy assets:3002
-	}
-
-	handle {
-		respond `{"error":"not found"}` 404
-	}
+	import gateway
 }

@@ -1,0 +1,4 @@
+# CADDY_TLS_MODE=cloudflare-origin, inside the site block: serve the Cloudflare Origin CA certificate
+# mounted read-only from the host's ./certs. Cloudflare trusts it, browsers do not, so the origin must not
+# be reachable directly (Cloud Firewall: 80/443 from Cloudflare ranges only; see docs/deploy.md).
+tls /etc/cyanotype-certs/origin.pem /etc/cyanotype-certs/origin-key.pem
