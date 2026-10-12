@@ -79,6 +79,27 @@ Outbound: accept. Postgres (5432) and the service ports are neither published by
 the firewall. Docker bypasses host firewalls like ufw by writing its own iptables rules, so rely on the Cloud
 Firewall.
 
+### Bootstrap script
+
+`scripts/bootstrap-server.sh` does steps 3 to 5 below in one go (and the Docker install and the `.env.prod`
+skeleton). Run it once, as root, on the fresh server. It is idempotent, needs no git or GitHub access, and never
+overwrites an existing `.env.prod`. Generate the deploy keypair on your own machine, never on the server:
+
+```sh
+ssh-keygen -t ed25519 -f ~/.ssh/cyanotype-deploy -C cyanotype-deploy -N ''
+scp scripts/bootstrap-server.sh root@<ip>:
+ssh root@<ip> 'DEPLOY_PUBKEY="$(cat)" bash bootstrap-server.sh' < ~/.ssh/cyanotype-deploy.pub
+```
+
+(Or paste it: `ssh root@<ip>`, `cat > bootstrap-server.sh`, paste, Ctrl-D, then
+`DEPLOY_PUBKEY='ssh-ed25519 AAAA... cyanotype-deploy' bash bootstrap-server.sh`.) Optional variables: `DEPLOY_USER`
+(`deploy`), `HOSTNAME_FQDN` (`photos.dev.cyanotype.app`), `HARDEN_SSH` (`1`), `PUBLIC_IP`. SSH hardening (keys only,
+`PermitRootLogin prohibit-password`) is applied only if both root and the deploy user already have an
+authorized key, so add your own key to `/root/.ssh/authorized_keys` first (Linode does this when you pick an SSH
+key at creation). It ends by printing `DEPLOY_HOST`, `DEPLOY_USER`, the exact `DEPLOY_KNOWN_HOSTS` line (read from
+the server's own host key) with its fingerprint, and the remaining steps. It does not configure a host firewall;
+use the Linode Cloud Firewall.
+
 ## 3. Harden the host
 
 As root, once:
