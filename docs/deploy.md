@@ -378,13 +378,13 @@ uses the GitHub Environment `dev`, so you can add required reviewers there to ap
    against only that file, never `no`.
 4. **GitHub secrets.** Repository -> Settings -> Environments -> New environment `dev` (add required reviewers
    if you want approvals), then add the environment secrets `DEPLOY_HOST` (the **origin IP**, e.g. `<origin-ip>`, or a DNS-only hostname; not the Cloudflare-proxied hostname, because SSH cannot pass through the orange-cloud proxy), `DEPLOY_USER`
-   (`deploy`), `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS`. Add the environment variable
-   `CYANOTYPE_HOSTNAME` (the public hostname; required when `DEPLOY_HOST` is an IP). The health check goes through the public hostname and calls
+   (`deploy`), `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS`. Add `CYANOTYPE_HOSTNAME` (the public hostname; required when `DEPLOY_HOST` is an IP) as an environment
+   variable or as a secret; either works. The health check goes through the public hostname and calls
    `https://<hostname>/healthz` and fails the job if it is unhealthy.
 5. **Optional: restrict the key with a forced command.** In `~deploy/.ssh/authorized_keys` prefix the key:
    `restrict,command="/home/deploy/deploy-gate.sh" ssh-ed25519 AAAA... cyanotype-deploy`, where the script reads
    `$SSH_ORIGINAL_COMMAND` and only allows `docker login ghcr.io ...`, `docker logout ghcr.io`, and the
-   `bash -s -- <version>` deploy script. This limits what a leaked key can do (`restrict` disables
+   two `bash -c '...' _ <args>` commands (bundle unpack and rollout). This limits what a leaked key can do (`restrict` disables
    forwarding and a pty), but note the deploy script itself runs Docker, so the key stays powerful.
 
 **What a deploy does.** The job checks out the repository (full history and tags), maps the version to a commit,
