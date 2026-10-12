@@ -41,7 +41,7 @@ derived/{user_id}/{asset_id}/preview.webp
 |---|---|---|
 | 0 | Cargo workspace, Docker Compose (Postgres + MinIO), CI, migrations, auth | done (scaffold) |
 | 1 | Presigned upload, dedupe, asset CRUD, basic grid UI | backend done; UI pending |
-| 2 | Worker, job queue, EXIF, thumbnails, ThumbHash, HEIC | queue done; metadata (EXIF, sha256 verify) + thumbnail/preview/ThumbHash handlers done for JPEG/PNG/WebP; HEIC and RAW pending |
+| 2 | Worker, job queue, EXIF, thumbnails, ThumbHash, HEIC | done: queue; metadata (EXIF, sha256 verify) + thumbnail/preview/ThumbHash for JPEG/PNG/WebP, HEIC/HEIF/AVIF (libheif 1.23.1, statically linked) and camera RAW (embedded-preview first, capped rawler develop fallback); magic-byte routing; shared memory budget. Follow-ups: DCT-scaled JPEG and streamed HEIC decoding, colour-profile conversion for wide-gamut HEIC, HDR gain maps |
 | 3 | Virtualized timeline, lightbox, albums, sharing links | |
 | 4 | CLIP semantic search and filters | |
 | 5 | Map view and offline reverse geocoding | |
@@ -60,7 +60,7 @@ Non-goals for MVP: native mobile apps, face recognition, video transcoding, live
 
 - Multi-user schema (`owner_id` everywhere) even while the UI is single-user.
 - Auth: argon2, HttpOnly session cookies, API keys for CLIs, OIDC later. Per-tenant S3 prefixes, short presign TTLs, GPS stripped on shared links.
-- Memory discipline: stream everything, DCT-scaled JPEG decode, semaphores around heavy jobs.
+- Memory discipline: stream everything, DCT-scaled JPEG decode, semaphores around heavy jobs. Today: a shared byte budget (`WORKER_MEMORY_BUDGET_MB`) refuses jobs that cannot fit the container limit, and HEIC and JPEG are decoded at full size then resized. **Follow-up:** DCT-scaled JPEG decode and tiled/streamed HEIC decode would cut the per-megapixel cost 4-8x and lift the ~40 MP HEIC / ~95 MP JPEG ceilings (`docs/build.md`, "Memory budget").
 - `reindex` command that rebuilds the DB from the bucket.
 - `tracing` + Prometheus metrics + job dashboards.
 - Idempotent, versioned jobs so models can be swapped and re-run.

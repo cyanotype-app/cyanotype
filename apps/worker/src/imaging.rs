@@ -3,7 +3,10 @@
 use std::io::Cursor;
 
 use anyhow::{Context, Result, bail};
-use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer, images::Image as FirImage};
+use fast_image_resize::{
+    FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer,
+    images::{Image as FirImage, ImageRef as FirImageRef},
+};
 use image::{DynamicImage, ImageReader};
 
 pub const THUMB_EDGE: u32 = 320;
@@ -11,7 +14,7 @@ pub const PREVIEW_EDGE: u32 = 1440;
 const THUMB_QUALITY: f32 = 75.0;
 const PREVIEW_QUALITY: f32 = 80.0;
 /// Refuse to decode anything with more pixels than this (decompression-bomb guard).
-const MAX_PIXELS: u64 = 400_000_000;
+pub const MAX_PIXELS: u64 = 400_000_000;
 
 pub struct Derived {
     pub thumb_webp: Vec<u8>,
@@ -40,11 +43,36 @@ pub fn fit_within(w: u32, h: u32, max_edge: u32) -> (u32, u32) {
 }
 
 /// Image header dimensions without a full decode (not orientation-adjusted).
+#[cfg(test)]
 pub fn raw_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
     ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()?
         .into_dimensions()
         .context("read image dimensions")
+}
+
+/// Header size and sample layout without a full decode, for memory estimates.
+pub fn raw_header(bytes: &[u8]) -> Result<(u32, u32, image::ColorType)> {
+    use image::ImageDecoder;
+    let dec = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()?
+        .into_decoder()
+        .context("read image header")?;
+    let (w, h) = dec.dimensions();
+    Ok((w, h, dec.color_type()))
+}
+
+/// Estimated peak bytes per pixel to decode and resize an image of this layout. Measured on 20-50 MP
+/// images (docs/build.md): RGB8 about 3.5, RGBA8 about 11 (premultiplied copy), 16-bit more.
+pub fn raster_bytes_per_pixel(c: image::ColorType) -> u64 {
+    use image::ColorType::*;
+    match c {
+        L8 | Rgb8 => 5,
+        La8 | Rgba8 => 12,
+        L16 | Rgb16 => 10,
+        La16 | Rgba16 => 16,
+        _ => 16,
+    }
 }
 
 pub fn apply_orientation(img: DynamicImage, orientation: u8) -> DynamicImage {
@@ -72,16 +100,24 @@ pub fn decode(bytes: &[u8]) -> Result<DynamicImage> {
         .context("decode image")
 }
 
-/// Resize with Lanczos3; alpha-aware (premultiplied) when the image has alpha.
-fn resize(img: &DynamicImage, w: u32, h: u32) -> Result<DynamicImage> {
+/// Resize with Lanczos3; alpha-aware (premultiplied) when the image has alpha. 8-bit RGB(A) input is
+/// borrowed rather than copied, which matters at 50+ MP.
+pub fn resize(img: &DynamicImage, w: u32, h: u32) -> Result<DynamicImage> {
     if (img.width(), img.height()) == (w, h) {
         return Ok(img.clone());
     }
     let opts = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3));
     let mut resizer = Resizer::new();
     if img.color().has_alpha() {
-        let rgba = img.to_rgba8();
-        let src = FirImage::from_vec_u8(rgba.width(), rgba.height(), rgba.into_raw(), PixelType::U8x4)?;
+        let owned;
+        let rgba = match img.as_rgba8() {
+            Some(b) => b,
+            None => {
+                owned = img.to_rgba8();
+                &owned
+            }
+        };
+        let src = FirImageRef::new(rgba.width(), rgba.height(), rgba.as_raw(), PixelType::U8x4)?;
         let mut premul = FirImage::new(src.width(), src.height(), PixelType::U8x4);
         let muldiv = fast_image_resize::MulDiv::default();
         muldiv.multiply_alpha(&src, &mut premul)?;
@@ -91,8 +127,15 @@ fn resize(img: &DynamicImage, w: u32, h: u32) -> Result<DynamicImage> {
         let buf = image::RgbaImage::from_raw(w, h, dst.into_vec()).context("rgba buffer")?;
         Ok(DynamicImage::ImageRgba8(buf))
     } else {
-        let rgb = img.to_rgb8();
-        let src = FirImage::from_vec_u8(rgb.width(), rgb.height(), rgb.into_raw(), PixelType::U8x3)?;
+        let owned;
+        let rgb = match img.as_rgb8() {
+            Some(b) => b,
+            None => {
+                owned = img.to_rgb8();
+                &owned
+            }
+        };
+        let src = FirImageRef::new(rgb.width(), rgb.height(), rgb.as_raw(), PixelType::U8x3)?;
         let mut dst = FirImage::new(w, h, PixelType::U8x3);
         resizer.resize(&src, &mut dst, &opts)?;
         let buf = image::RgbImage::from_raw(w, h, dst.into_vec()).context("rgb buffer")?;
@@ -124,15 +167,22 @@ pub fn thumbhash(img: &DynamicImage) -> Result<Vec<u8>> {
 
 /// Decode `bytes`, orient by EXIF `orientation`, and produce all derived artifacts.
 pub fn derive(bytes: &[u8], orientation: u8) -> Result<Derived> {
-    let img = apply_orientation(decode(bytes)?, orientation);
-    let (width, height) = (img.width(), img.height());
+    derive_image(decode(bytes)?, orientation)
+}
 
-    let (pw, ph) = fit_within(width, height, PREVIEW_EDGE);
+/// Resize first, then orient the (small) results: rotating a full-size image would need a second
+/// full-size buffer. `orientation` is applied exactly once, here.
+pub fn derive_image(img: DynamicImage, orientation: u8) -> Result<Derived> {
+    let (sw, sh) = (img.width(), img.height());
+    let (width, height) = oriented_dims(sw, sh, orientation);
+
+    let (pw, ph) = fit_within(sw, sh, PREVIEW_EDGE);
     let preview = resize(&img, pw, ph)?;
     drop(img);
     // Thumb comes from the preview: far fewer pixels to filter than the original.
-    let (tw, th) = fit_within(width, height, THUMB_EDGE);
-    let thumb = resize(&preview, tw, th)?;
+    let (tw, th) = fit_within(sw, sh, THUMB_EDGE);
+    let thumb = apply_orientation(resize(&preview, tw, th)?, orientation);
+    let preview = apply_orientation(preview, orientation);
 
     Ok(Derived {
         thumb_webp: encode_webp(&thumb, THUMB_QUALITY)?,

@@ -19,6 +19,12 @@ thumbhash = "0.1.0"
 sha2.workspace = true
 serde_json.workspace = true
 webp = "0.3.1"
+# HEIC/HEIF/AVIF. libheif is vendored (pinned by this crate version: libheif-sys 5.3.1 = libheif 1.23.1)
+# and linked statically, so every build uses the same libheif. See docs/build.md.
+libheif-rs = { version = "=3.0.0", default-features = false, features = ["embedded-libheif", "v1_21"] }
+# RAW: metadata fallback and the last-resort develop path (pure Rust, from dnglab).
+rawler = { version = "=0.8.0", default-features = false }
+memchr = "2"
 
 time.workspace = true
 thiserror.workspace = true
