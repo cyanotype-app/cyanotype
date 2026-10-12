@@ -3,18 +3,26 @@
 # reach this container and the A/AAAA record must already point at the server. State lives in the
 # caddy_data volume; do not delete it (re-issuing hits Let's Encrypt rate limits).
 #
+# TLS and client-IP handling depend on CADDY_TLS_MODE (default auto), via tls/<mode>/{servers,global,site}.caddy:
+#   auto               Let's Encrypt; clients connect directly.
+#   cloudflare-origin  behind the Cloudflare proxy: Origin CA cert from /etc/cyanotype-certs, no ACME,
+#                      real client IP from CF-Connecting-IP (trusted only from Cloudflare's ranges).
+#
 # Used with: caddy run --config /etc/caddy/Caddyfile.prod --adapter caddyfile
 {
 	admin off
 	# Only 80/443 over TCP are published, so no HTTP/3 (which needs UDP 443).
 	servers {
 		protocols h1 h2
+		import /etc/caddy/tls/{$CADDY_TLS_MODE:auto}/servers.caddy
 	}
+	import /etc/caddy/tls/{$CADDY_TLS_MODE:auto}/global.caddy
 }
 
 import /etc/caddy/gateway.caddy
 
 {$CYANOTYPE_HOSTNAME} {
+	import /etc/caddy/tls/{$CADDY_TLS_MODE:auto}/site.caddy
 	import gateway
 
 	header {

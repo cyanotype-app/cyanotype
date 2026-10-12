@@ -7,7 +7,7 @@
 #
 # Differences from local: images come from GHCR and are never built on the server; no MinIO (S3 is
 # Linode Object Storage via env); Postgres is not published; the gateway serves CYANOTYPE_HOSTNAME with
-# automatic HTTPS on 80/443 only; restart policies, healthchecks and memory limits. DD_ENV defaults to
+# HTTPS on 80/443 only (Let's Encrypt, or a Cloudflare Origin CA cert: CADDY_TLS_MODE); restart policies, healthchecks and memory limits. DD_ENV defaults to
 # dev (the dev-tier instance); set DD_ENV=prod in .env.prod for a production instance.
 # Memory budget (limits, not reservations): postgres 768m + worker 1024m + assets 256m + auth 256m +
 # gateway 128m + backup 128m = 2.5 GB, +384m with the Datadog Agent, leaving headroom on a 4 GB box.
@@ -110,7 +110,11 @@ services:
       - "443:443"
     environment:
       CYANOTYPE_HOSTNAME: ${CYANOTYPE_HOSTNAME:?set CYANOTYPE_HOSTNAME in .env.prod}
+      # auto (Let's Encrypt) or cloudflare-origin (Cloudflare proxy + Origin CA cert in ./certs).
+      CADDY_TLS_MODE: ${CADDY_TLS_MODE:-auto}
     volumes:
+      # Origin CA certificate for cloudflare-origin mode (origin.pem, origin-key.pem); unused in auto mode.
+      - ./certs:/etc/cyanotype-certs:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on: !override

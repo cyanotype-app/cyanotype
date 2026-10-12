@@ -11,7 +11,8 @@ clients  <-> presigned URLs <-> Linode Object Storage (bytes never touch the API
 ```
 
 Files: `docker-compose.yml` (base, local) + `docker-compose.prod.yml` (override), `.env.prod` (from
-`.env.prod.example`, on the server only), `infra/caddy/Caddyfile.prod`, `infra/backup/`.
+`.env.prod.example`, on the server only), `infra/caddy/Caddyfile.prod` (+ `infra/caddy/tls/<mode>/`,
+`infra/caddy/cloudflare-ips.caddy`), `infra/backup/`. Behind the Cloudflare proxy, see "Cloudflare" below.
 
 You create the server, Cloud Firewall and DNS yourself; this runbook says what to create.
 
@@ -39,9 +40,16 @@ Caddy replaces any client-supplied `X-Forwarded-For` with the real peer address,
 published, so clients cannot choose their own address. A direct connection from anywhere else ignores the
 header entirely. Limits are per process: with several auth replicas each keeps its own bucket.
 
-Caveat: Docker publishes IPv6 ports through a userland proxy, which hides the real client address (every
-IPv6 visitor then looks like the bridge gateway and shares one bucket). Unless you have enabled
-`"ip6tables": true` in `/etc/docker/daemon.json`, create only an A record, not an AAAA.
+Behind Cloudflare, Caddy resolves the real client from `CF-Connecting-IP` (only when the TCP peer is a
+Cloudflare edge range) and sends the auth service exactly that address as the single `X-Forwarded-For`
+value, so the limiter keys on the real user (see "Cloudflare"). Without Cloudflare (`CADDY_TLS_MODE=auto`),
+Caddy uses the TCP peer.
+
+Caveat (direct mode only, no Cloudflare): Docker publishes IPv6 ports through a userland proxy, which hides
+the real client address (every IPv6 visitor then looks like the bridge gateway and shares one bucket).
+Unless you have enabled `"ip6tables": true` in `/etc/docker/daemon.json`, create only an A record, not an
+AAAA. Behind Cloudflare this does not matter: clients reach Cloudflare over IPv4 or IPv6, Cloudflare
+connects to the origin over IPv4, and the client address arrives in `CF-Connecting-IP`.
 
 ## 1. Create the Linode
 
@@ -63,6 +71,8 @@ Cloud Manager -> Firewalls -> Create, attach it to the Linode. Inbound policy Dr
 |---|---|---|
 | TCP | 80 | all IPv4 / IPv6 (Let's Encrypt HTTP challenge and the redirect to https) |
 | TCP | 443 | all IPv4 / IPv6 |
+
+With the Cloudflare proxy, restrict 80/443 to Cloudflare's ranges instead (see "Cloudflare", step 4).
 | TCP | 22 | your own IP (`/32`) only |
 
 Outbound: accept. Postgres (5432) and the service ports are neither published by compose nor allowed by
@@ -146,8 +156,107 @@ skip authentication; the default is private.
 Create an `A` record for the instance hostname pointing at the Linode's IPv4 address (TTL 300 while
 testing). Keep the apex `cyanotype.app` for the project website and give each instance a subdomain; this
 dev-tier instance is `photos.dev.cyanotype.app`, set as `CYANOTYPE_HOSTNAME` in `.env.prod`. Skip the AAAA
-record unless IPv6 is handled as described under the client-IP caveat. Caddy requests the certificate on the
-first start once the name resolves to the server and ports 80/443 are open.
+record unless IPv6 is handled as described under the client-IP caveat. In the default `auto` mode, Caddy
+requests the certificate on the first start once the name resolves to the server and ports 80/443 are open.
+If the record is proxied by Cloudflare, follow "Cloudflare" instead.
+
+## Cloudflare (proxied DNS)
+
+`photos.dev.cyanotype.app` is proxied by Cloudflare (orange cloud). Caddy then runs with
+`CADDY_TLS_MODE=cloudflare-origin`: it serves a Cloudflare Origin CA certificate, does no ACME (Let's Encrypt
+cannot validate through the proxy), and takes the real client IP from `CF-Connecting-IP`. The other mode,
+`auto` (default), is for DNS-only records and gets a Let's Encrypt certificate. Cloudflare terminates the
+browser's TLS, then opens a second TLS connection to the origin and checks the Origin CA certificate there.
+
+```
+client -> Cloudflare edge --(TLS, Origin CA cert, SNI photos.dev.cyanotype.app)--> Caddy :443 -> auth/assets
+```
+
+### 1. DNS
+
+Dashboard -> DNS -> Records: one `A` record, name `photos.dev` (zone `cyanotype.app`), IPv4 `<your Linode public IPv4>`,
+Proxy status **Proxied** (orange cloud). No AAAA record is needed: Cloudflare answers IPv6 clients itself
+and reaches the origin over IPv4.
+
+### 2. Origin CA certificate
+
+Dashboard -> SSL/TLS -> Origin Server -> Create Certificate. Choose "Generate private key and CSR with
+Cloudflare" with key type RSA (2048) or ECDSA, hostnames `photos.dev.cyanotype.app` (add more only if you
+need them; a wildcard `*.dev.cyanotype.app` also works), validity 15 years. Copy the certificate (PEM) and
+the private key (shown once). On the server:
+
+```sh
+cd ~/cyanotype
+mkdir -p certs && chmod 700 certs
+$EDITOR certs/origin.pem        # paste the certificate
+$EDITOR certs/origin-key.pem    # paste the private key
+chmod 600 certs/origin.pem certs/origin-key.pem
+```
+
+`certs/` is gitignored and mounted read-only into the gateway at `/etc/cyanotype-certs/`. The key must
+never be committed or pasted anywhere else. Caddy runs as root in its container, so mode 600 owned by
+`deploy` is enough for it to read the files.
+
+### 3. SSL/TLS mode: Full (strict)
+
+Dashboard -> SSL/TLS -> Overview -> Full (strict). Do not use Flexible (plain http to the origin) or Full
+(non-strict). Optionally enable "Always Use HTTPS" and a minimum TLS version of 1.2 (SSL/TLS -> Edge Certificates).
+
+### 4. Restrict the origin to Cloudflare (Linode Cloud Firewall)
+
+Origin CA certificates are trusted only by Cloudflare, and anyone who reaches the origin directly could
+forge `CF-Connecting-IP`-less traffic or bypass Cloudflare's protections. In the Linode UI (Firewalls ->
+your firewall -> Inbound rules) replace the "all IPv4 / IPv6" rules for 80 and 443 with:
+
+| Protocol | Ports | Sources |
+|---|---|---|
+| TCP | 80, 443 | Cloudflare IPv4 ranges from https://www.cloudflare.com/ips-v4 and IPv6 ranges from https://www.cloudflare.com/ips-v6 |
+| TCP | 22 | your own IP (`/32`) only (unchanged) |
+
+Policy stays Drop. Linode firewall rules take a limited number of addresses per rule, so split the ranges
+over several rules (for example one for 80,443 with the v4 list, one for v6). Even with a correct firewall,
+Caddy only believes `CF-Connecting-IP` from those same ranges, so a direct request cannot spoof it.
+Cloudflare publishes changes rarely; re-check the lists now and then (below).
+
+### 5. Server: switch the gateway to the mode
+
+In `.env.prod` set `CADDY_TLS_MODE=cloudflare-origin` (and keep `CYANOTYPE_HOSTNAME=photos.dev.cyanotype.app`), then:
+
+```sh
+dc up -d gateway        # recreates only the gateway
+dc logs gateway | tail  # no "obtaining certificate" lines: ACME is off
+curl -fsS https://photos.dev.cyanotype.app/healthz      # through Cloudflare
+```
+
+### Real client IP
+
+`infra/caddy/tls/cloudflare-origin/servers.caddy` sets, in Caddy's global `servers` options,
+`trusted_proxies static <Cloudflare ranges>` (from `infra/caddy/cloudflare-ips.caddy`),
+`client_ip_headers CF-Connecting-IP X-Forwarded-For` and `trusted_proxies_strict`. Caddy therefore uses
+`CF-Connecting-IP` only when the TCP peer is a Cloudflare edge; from any other peer, headers are ignored and
+the peer address is the client. The access log's `request.client_ip` is that resolved address
+(`request.remote_ip` is the edge or peer). The gateway then sets the upstream `X-Forwarded-For` to the
+single value `{client_ip}`, discarding Cloudflare's own XFF chain (which would otherwise end in an edge
+address). The auth service trusts `X-Forwarded-For` only from the gateway (`TRUSTED_PROXIES`, default private
+ranges, which covers the compose network), so the rate limiter keys on the real user. Chain:
+client -> Cloudflare (adds `CF-Connecting-IP`) -> Caddy (trusted peer, resolves `client_ip`) -> auth
+(trusted peer, reads the single XFF entry). Verified locally with a stand-in upstream; after going live,
+check that `request.client_ip` in `dc logs gateway` is your own public IP, not a `104.x`/`172.x` address.
+
+**Refreshing the ranges.** Run `scripts/update-cloudflare-ips.sh` (fetches ips-v4 and ips-v6 and rewrites
+`infra/caddy/cloudflare-ips.caddy`), review the diff, commit, deploy; or on the server run the script and
+`dc restart gateway`. Update the Linode firewall rules to match.
+
+### Large uploads and caching
+
+- **Uploads and downloads bypass Cloudflare.** Photo bytes move through presigned URLs straight to and from
+  Linode Object Storage, so Cloudflare's request-body limit (100 MB on Free/Pro) does not apply. Only small
+  JSON API calls (`/auth/*`, `/assets/*`) go through Cloudflare, plus `/healthz`.
+- **API responses are not cached.** The gateway sets `Cache-Control: no-store` on every `/auth/*` and
+  `/assets/*` response, replacing whatever the service sent (the services send none). Cloudflare does not
+  cache JSON by default anyway; this keeps it that way even if someone adds a "cache everything" rule. Do not
+  add Cache Rules for this hostname.
+- The Deploy workflow's health check (`https://<hostname>/healthz`) works through Cloudflare unchanged.
 
 ## 8. First deploy
 
@@ -293,7 +402,8 @@ Downloads through presigned GET URLs in `<img>` tags are not affected by CORS.
 
 ## Pre-go-live checklist
 
-- [ ] Cloud Firewall: 80/443 from anywhere, 22 from your IP only; no other inbound.
+- [ ] Cloud Firewall: 80/443 from anywhere (direct mode) or from Cloudflare ranges only (proxied), 22 from your IP only; no other inbound.
+- [ ] Cloudflare mode: SSL/TLS Full (strict), Origin CA cert in `certs/` (chmod 600), `CADDY_TLS_MODE=cloudflare-origin`; gateway log `client_ip` is your real IP.
 - [ ] `PermitRootLogin no`, `PasswordAuthentication no`; unattended-upgrades active; Docker log rotation set.
 - [ ] `.env.prod` is `chmod 600`, not in git, has a generated `POSTGRES_PASSWORD` and a bucket-scoped access key.
 - [ ] `REGISTRATION_MODE=first_user` (or `closed` after creating your account); verify a second registration returns 403.
