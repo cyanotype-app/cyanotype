@@ -1,0 +1,29 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env: { POSTGRES_USER: cyanotype, POSTGRES_PASSWORD: cyanotype, POSTGRES_DB: cyanotype }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U cyanotype" --health-interval 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://cyanotype:cyanotype@localhost:5432/cyanotype
+      S3_BUCKET: cyanotype
+      S3_ACCESS_KEY: x
+      S3_SECRET_KEY: x
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - name: Migrations apply cleanly
+        run: cargo run -p cyanotype-cli -- migrate
