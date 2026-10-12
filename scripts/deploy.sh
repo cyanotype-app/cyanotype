@@ -22,8 +22,10 @@ version="${1:-latest}"
 dir="${DEPLOY_DIR:-cyanotype}"
 profiles="${DEPLOY_PROFILES:-}"
 [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad version: $version" >&2; exit 2; }
-[[ "$dir" =~ ^[A-Za-z0-9._/~-]+$ ]] || { echo "bad DEPLOY_DIR" >&2; exit 2; }
 here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/lib-remote.sh
+. "$here/lib-remote.sh"
+dir="$(deploy_dir_normalize "$dir")" || exit 2
 
 ref="${DEPLOY_REF:-}"
 if [ -z "$ref" ]; then
@@ -40,18 +42,18 @@ if [ "$ref" != "worktree" ]; then
   ref_args=(-r "$ref")
 fi
 
-bundle="$(mktemp)"; trap 'rm -f "$bundle"' EXIT
-"$here/make-deploy-bundle.sh" "${ref_args[@]}" -v "$version" -o "$bundle"
-
-ssh_opts=(-o BatchMode=yes)
-# ssh joins the remote command's arguments with spaces and the remote login shell re-splits the result, so an
-# empty or spacey argument would silently vanish or split. remote_ssh quotes every word locally (printf %q)
-# so the remote shell sees exactly the argv given here. stdin is passed through.
-# shellcheck disable=SC2029  # client-side expansion of $cmd is the point
-remote_ssh() { local cmd; cmd="$(printf '%q ' "$@")"; ssh "${ssh_opts[@]}" "$DEPLOY_SSH" "$cmd"; }
+bundle="$(mktemp)"; rolloutlog="$(mktemp)"; cm_dir="$(mktemp -d)"
+# One SSH connection for the whole deploy (login, bundle, rollout), so a mid-deploy auth failure can't leave a
+# half-shipped state.
+ssh_opts=(-o BatchMode=yes -o ControlMaster=auto -o "ControlPath=$cm_dir/cm-%C" -o ControlPersist=60)
 loggedin=0
-logout() { if [ "$loggedin" = 1 ]; then remote_ssh docker logout ghcr.io >/dev/null 2>&1 || true; fi; }
-trap 'logout; rm -f "$bundle"' EXIT
+cleanup() {
+  if [ "$loggedin" = 1 ]; then remote_ssh docker logout ghcr.io >/dev/null 2>&1 || true; fi
+  ssh "${ssh_opts[@]}" -O exit "$DEPLOY_SSH" >/dev/null 2>&1 || true
+  rm -rf "$bundle" "$rolloutlog" "$cm_dir"
+}
+trap cleanup EXIT
+"$here/make-deploy-bundle.sh" "${ref_args[@]}" -v "$version" -o "$bundle"
 
 if [ -n "${GHCR_TOKEN:-}" ]; then
   # The token travels on stdin only; the remote command line carries just the (non-secret) user name.
@@ -62,7 +64,7 @@ fi
 echo "shipping $version ($ref) to $DEPLOY_SSH:$dir"
 # 1) Bundle -> a staging dir on the server (stdin; nothing sensitive).
 # shellcheck disable=SC2016  # the single-quoted script is expanded by the remote shell
-remote_ssh bash -c 'set -e; d="$1"; d="${d/#\~/$HOME}"; mkdir -p "$d"; cd "$d"; rm -rf .incoming; mkdir .incoming; tar -xzf - --no-same-owner -C .incoming' _ "$dir" < "$bundle"
+remote_ssh bash -c 'set -e; mkdir -p "$1"; cd "$1"; rm -rf .incoming; mkdir .incoming; tar -xzf - --no-same-owner -C .incoming' _ "$dir" < "$bundle"
 
 # 2) Install managed files and roll out. The script travels as a quoted `bash -c` argument, NOT on stdin: a
 # script fed to `bash -s` shares stdin with every command in it, and one that reads stdin (docker compose run)
@@ -72,7 +74,6 @@ remote_ssh bash -c 'set -e; d="$1"; d="${d/#\~/$HOME}"; mkdir -p "$d"; cd "$d"; 
 read -r -d '' rollout <<'REMOTE' || true
 set -euo pipefail
 version="${1:?version}"; dir="${2:?dir}"; extra_profiles="${3:-}"
-dir="${dir/#\~/$HOME}"
 cd "$dir"
 trap 'rm -rf .incoming' EXIT
 test -f .env.prod || { echo ".env.prod missing on the server (create it in $dir, chmod 600)" >&2; exit 1; }
@@ -119,7 +120,6 @@ if [ "$infra_changed" = 1 ]; then dc restart gateway </dev/null; fi
 dc ps </dev/null
 echo "DEPLOY-OK $version"
 REMOTE
-rolloutlog="$(mktemp)"; trap 'logout; rm -f "$bundle" "$rolloutlog"' EXIT
 # shellcheck disable=SC2016  # $rollout is the remote script; the remote shell expands it
 remote_ssh bash -c "$rollout" _ "$version" "$dir" "$profiles" </dev/null | tee "$rolloutlog"
 grep -qxF "DEPLOY-OK $version" "$rolloutlog" || { echo "deploy failed: the server did not report DEPLOY-OK $version (rollout truncated or skipped)" >&2; exit 1; }
