@@ -106,7 +106,7 @@ dpkg-reconfigure -plow unattended-upgrades    # answer Yes
 As `deploy` (with sudo), from Docker's official apt repository:
 
 ```sh
-sudo apt-get install -y ca-certificates curl git
+sudo apt-get install -y ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" | sudo tee /etc/apt/sources.list.d/docker.list
@@ -120,19 +120,26 @@ Members of the `docker` group are effectively root on the host; that is why the 
 Docker's default json-file logging has no size cap; add `{"log-driver":"json-file","log-opts":{"max-size":"20m","max-file":"5"}}`
 to `/etc/docker/daemon.json` and `sudo systemctl restart docker` before the first deploy.
 
-## 5. Get the code and configuration onto the server
+## 5. Prepare the deploy directory (no git on the server)
 
-The repository is only needed for the compose and Caddy files:
+The repository is private and the server never runs git or holds any GitHub credential. It only needs the
+runtime files (compose files and `infra/caddy`), which every deploy ships to it as a small "deploy bundle"
+(`scripts/make-deploy-bundle.sh`; no source, no `.env*`, no `certs/`). GitHub deploy keys are not needed (and
+are disabled for the organization). So the manual part is just the directory and the secrets:
 
 ```sh
-git clone https://github.com/cyanotype-app/cyanotype.git ~/cyanotype
+mkdir -p ~/cyanotype/certs && chmod 700 ~/cyanotype/certs
 cd ~/cyanotype
-cp .env.prod.example .env.prod
+$EDITOR .env.prod        # start from .env.prod.example in the repo; fill every value; chmod 600 .env.prod
 chmod 600 .env.prod
-$EDITOR .env.prod        # fill every value; never commit or paste this file anywhere
 ```
 
-(If you copy it from your machine instead: `scp -p .env.prod deploy@HOST:cyanotype/ && ssh deploy@HOST chmod 600 cyanotype/.env.prod`.)
+Put `.env.prod` (mode 600) and, for Cloudflare, `certs/` (see "Cloudflare") there. The first deploy
+(Actions -> Deploy -> Run workflow, or `just deploy`) ships `docker-compose.yml`, `docker-compose.prod.yml`
+and `infra/caddy/**` into the directory. Deploys replace only those managed files; `.env.prod`, `certs/` and
+all data are never touched (only the `CYANOTYPE_VERSION` line of `.env.prod` is updated).
+
+(If you copy the env file from your machine: `scp -p .env.prod deploy@HOST:cyanotype/ && ssh deploy@HOST chmod 600 cyanotype/.env.prod`.)
 Generate the database password with `openssl rand -base64 24 | tr -d '/+='`. The bucket must exist, with
 an access key limited to it (Linode: Object Storage -> Access Keys -> Limited Access, read/write on that bucket).
 
@@ -143,7 +150,9 @@ The published images stay private, so the server must authenticate to pull them.
 - **Automated deploys (recommended)**: the GitHub Actions deploy workflow logs the server in with its own
   short-lived `GITHUB_TOKEN` for the duration of a deploy and logs out afterwards. No long-lived token is
   stored on the server. See "Setting up automated deploys".
-- **Manual pulls** (`just deploy` or running compose by hand): create a fine-grained or classic personal
+- **Manual deploys** (`just deploy` or running compose by hand): either export `GHCR_TOKEN` (and `GHCR_USER`) on
+  your machine so `just deploy` pipes it over stdin for that deploy only (login, then logout), or log in once on the
+  server. For the latter create a fine-grained or classic personal
   access token with only `read:packages`, then on the server `echo "$PAT" | docker login ghcr.io -u <github-user> --password-stdin`
   (typed into the session, not saved in a file). The credential is stored in `~/.docker/config.json` (mode 600);
   revoke the PAT when you retire the server.
@@ -244,8 +253,8 @@ client -> Cloudflare (adds `CF-Connecting-IP`) -> Caddy (trusted peer, resolves 
 check that `request.client_ip` in `dc logs gateway` is your own public IP, not a `104.x`/`172.x` address.
 
 **Refreshing the ranges.** Run `scripts/update-cloudflare-ips.sh` (fetches ips-v4 and ips-v6 and rewrites
-`infra/caddy/cloudflare-ips.caddy`), review the diff, commit, deploy; or on the server run the script and
-`dc restart gateway`. Update the Linode firewall rules to match.
+`infra/caddy/cloudflare-ips.caddy`), review the diff, commit, merge and deploy (the server has no git, so a change made only on the server is
+overwritten by the next deploy). Update the Linode firewall rules to match.
 
 ### Large uploads and caching
 
@@ -259,6 +268,10 @@ check that `request.client_ip` in `dc logs gateway` is your own public IP, not a
 - The Deploy workflow's health check (`https://<hostname>/healthz`) works through Cloudflare unchanged.
 
 ## 8. First deploy
+
+Run Actions -> Deploy -> Run workflow (see "Setting up automated deploys"), or `DEPLOY_HOST=deploy@<origin-ip> just deploy`.
+That ships the compose and Caddy files, then pulls, migrates and starts the stack. To drive it by hand on the server
+afterwards (the files are there once a deploy has run):
 
 ```sh
 cd ~/cyanotype
@@ -287,10 +300,16 @@ Image versions are tags published by CI: `sha-<short>` on every push to main, `l
 `X.Y.Z` for `vX.Y.Z` tags. `CYANOTYPE_VERSION` in `.env.prod` selects one.
 
 - **Automatic/CI**: see "Setting up automated deploys".
-- **Manual from your machine**: `DEPLOY_HOST=deploy@photos.dev.cyanotype.app just deploy [version]`. It SSHes in, updates
-  the checkout on `main`, sets `CYANOTYPE_VERSION` if you pass one, then pulls, migrates and brings the
-  stack up. The remote script is sent on stdin and secrets stay in `.env.prod` on the server.
-- **Manual on the server**: `git pull --ff-only && dc pull && dc run --rm migrate && dc up -d --wait`.
+- **Manual from your machine**: `DEPLOY_HOST=deploy@<origin-ip> just deploy [version]` (default `latest`). It builds
+  the deploy bundle for that version locally (`sha-<short>` -> that commit, `X.Y.Z` -> tag `vX.Y.Z`, `latest` ->
+  `origin/main`; `DEPLOY_REF=worktree` ships your working tree instead), streams it over SSH, replaces only the managed
+  files in `~/cyanotype`, sets `CYANOTYPE_VERSION`, then pulls, migrates and brings the stack up (and restarts the
+  gateway if the Caddy config changed). Registry access for the pull: the workflow is the preferred path (token
+  never stored). For `just deploy`, either `export GHCR_TOKEN=<read:packages PAT> GHCR_USER=<you>` (piped over stdin,
+  logged out afterwards) or run `docker login ghcr.io` once on the server (step 6). `just bundle [version]` writes the
+  tarball without deploying.
+- **Manual on the server** (config already in place, no new compose files): `cd ~/cyanotype && dc pull && dc run --rm migrate && dc up -d --wait`
+  with `dc` as defined in step 8. There is no git on the server, so compose/Caddy changes arrive only via a deploy.
 
 Migrations run before the new containers start while the old ones still serve, so keep migrations backward
 compatible with the previous release (add before you remove).
@@ -298,8 +317,9 @@ compatible with the previous release (add before you remove).
 ### Rollback
 
 Pin an older version: `just deploy sha-1a2b3c4` (or edit `CYANOTYPE_VERSION` in `.env.prod`, then
-`dc pull && dc up -d`). From GitHub: Actions -> Deploy -> Run workflow -> `version` = the older tag; the
-workflow also checks out the matching commit (or `vX.Y.Z` tag) for the compose files. Migrations are not
+`dc pull && dc up -d`; that keeps the current compose files). From GitHub: Actions -> Deploy -> Run workflow -> `version` = the older tag; the
+workflow (and `just deploy`) also ships the compose and Caddy files from the matching commit (or `vX.Y.Z` tag), so an
+older version runs with its own configuration. Migrations are not
 rolled back: if a release added a migration that the old code cannot live with, restore a database backup
 (below) as well.
 
@@ -311,24 +331,26 @@ uses the GitHub Environment `dev`, so you can add required reviewers there to ap
 
 1. **Deploy user with docker access.** The `deploy` user from step 3, in the `docker` group (step 4). Use a
    dedicated account for CI if you prefer separating it from your own login.
-2. **Deploy keypair** (on your machine, no passphrase because CI uses it unattended; dedicated to this one purpose):
+2. **Deploy keypair** (a plain SSH keypair, not a GitHub deploy key; GitHub deploy keys are not used and the server
+   needs no GitHub access. No passphrase because CI uses it unattended; dedicated to this one purpose). The private key goes
+   in the `dev` environment secret `DEPLOY_SSH_KEY`, the public key in the server's `authorized_keys`:
 
    ```sh
    ssh-keygen -t ed25519 -N '' -C 'cyanotype-deploy' -f ./cyanotype_deploy
-   ssh-copy-id -i ./cyanotype_deploy.pub deploy@photos.dev.cyanotype.app   # or append it to ~deploy/.ssh/authorized_keys
+   ssh-copy-id -i ./cyanotype_deploy.pub deploy@<origin-ip>   # or append it to ~deploy/.ssh/authorized_keys
    ```
 
    Paste the private key into the `DEPLOY_SSH_KEY` secret, then delete the local copy
    (`shred -u cyanotype_deploy`).
-3. **Pinned host key.** `ssh-keyscan -t ed25519 photos.dev.cyanotype.app` prints the server's host key line. Before
+3. **Pinned host key.** `ssh-keyscan -t ed25519 <origin-ip>` prints the server's host key line. Before
    trusting it, compare its fingerprint (`ssh-keyscan -t ed25519 HOST | ssh-keygen -lf -`) with the one shown
    by the Linode console (Launch LISH Console, then `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the
    server). Store the verified line as `DEPLOY_KNOWN_HOSTS`. The workflow uses `StrictHostKeyChecking yes`
    against only that file, never `no`.
 4. **GitHub secrets.** Repository -> Settings -> Environments -> New environment `dev` (add required reviewers
-   if you want approvals), then add the environment secrets `DEPLOY_HOST` (hostname or IP), `DEPLOY_USER`
-   (`deploy`), `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS`. Optionally add the environment variable
-   `CYANOTYPE_HOSTNAME` (the public hostname) if `DEPLOY_HOST` is an IP; the health check calls
+   if you want approvals), then add the environment secrets `DEPLOY_HOST` (the **origin IP**, e.g. `<origin-ip>`, or a DNS-only hostname; not the Cloudflare-proxied hostname, because SSH cannot pass through the orange-cloud proxy), `DEPLOY_USER`
+   (`deploy`), `DEPLOY_SSH_KEY` and `DEPLOY_KNOWN_HOSTS`. Add the environment variable
+   `CYANOTYPE_HOSTNAME` (the public hostname; required when `DEPLOY_HOST` is an IP). The health check goes through the public hostname and calls
    `https://<hostname>/healthz` and fails the job if it is unhealthy.
 5. **Optional: restrict the key with a forced command.** In `~deploy/.ssh/authorized_keys` prefix the key:
    `restrict,command="/home/deploy/deploy-gate.sh" ssh-ed25519 AAAA... cyanotype-deploy`, where the script reads
@@ -336,11 +358,15 @@ uses the GitHub Environment `dev`, so you can add required reviewers there to ap
    `bash -s -- <version>` deploy script. This limits what a leaked key can do (`restrict` disables
    forwarding and a pty), but note the deploy script itself runs Docker, so the key stays powerful.
 
+**What a deploy does.** The job checks out the repository (full history and tags), maps the version to a commit,
+builds the deploy bundle with `git archive`, and streams it over the pinned SSH connection into `~/cyanotype`.
+Only the managed files are replaced (`.env.prod` and `certs/` are never touched).
+
 **Registry authentication without a stored token.** The job pipes its short-lived `GITHUB_TOKEN`
 (`packages: read`, expires when the job ends) into `docker login ghcr.io --password-stdin` over SSH, pulls,
 migrates, brings the stack up, and always runs `docker logout ghcr.io`. The token is only ever on stdin and
 in an environment variable of the runner (GitHub masks it), never on a command line or in a process list.
-So no PAT lives on the server; a read-only PAT is needed only for manual pulls (step 6). For the token to be
+So no PAT lives on the server; a read-only PAT is needed only for manual deploys that do not pass `GHCR_TOKEN` (step 6). For the token to be
 allowed to read the packages, grant this repository access under each package's settings (Manage Actions access).
 
 ## Backups

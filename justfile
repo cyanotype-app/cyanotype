@@ -77,37 +77,23 @@ backup-now:
     ${COMPOSE:-docker compose} run --rm backup now
 
 # ---- Production (single VPS; see docs/deploy.md) ----------------------------------------------
-# DEPLOY_HOST=deploy@photos.example.com (user@host, key auth). Optional: DEPLOY_DIR (default ~/cyanotype,
-# the git checkout on the server), DEPLOY_PROFILES (e.g. "datadog"). Secrets stay in ~/cyanotype/.env.prod
-# on the server; nothing sensitive is passed on the command line or printed.
+# DEPLOY_HOST=deploy@203.0.113.10 (user@host, key auth; use the origin IP or a DNS-only name, not a Cloudflare-proxied
+# one). Optional: DEPLOY_DIR (default ~/cyanotype), DEPLOY_PROFILES (e.g. "datadog"), DEPLOY_REF (git ref the bundle
+# is built from; "worktree" ships your local tracked files). The server never runs git: scripts/deploy.sh ships a
+# bundle (compose files, infra/caddy, VERSION) over SSH. Secrets stay in ~/cyanotype/.env.prod on the server.
+# The images are private: either docker login ghcr.io once on the server (read:packages PAT), or export
+# GHCR_TOKEN (+ GHCR_USER) and the token is piped over stdin for this deploy only. See docs/deploy.md.
 
-deploy_dir := env_var_or_default("DEPLOY_DIR", "~/cyanotype")
+deploy_dir := env_var_or_default("DEPLOY_DIR", "cyanotype")
 prod_compose := "docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml"
 
-# Deploy on DEPLOY_HOST (pull, migrate, up); `just deploy v0.2.0` also pins CYANOTYPE_VERSION, which is how you roll back.
-deploy version="":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    : "${DEPLOY_HOST:?set DEPLOY_HOST (e.g. deploy@photos.example.com)}"
-    version="{{version}}"
-    if [ -n "$version" ] && ! [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]]; then echo "bad version: $version" >&2; exit 2; fi
-    profiles=""
-    for p in ${DEPLOY_PROFILES:-}; do profiles="$profiles --profile $p"; done
-    echo "deploying ${version:-the version in .env.prod} to $DEPLOY_HOST"
-    # The remote script is fed on stdin, so it is not in the process list and not echoed here.
-    ssh -o BatchMode=yes "$DEPLOY_HOST" bash -s -- "$version" "$profiles" <<'REMOTE'
-    set -euo pipefail
-    version="$1"; profiles="$2"
-    cd {{deploy_dir}}
-    test -f .env.prod || { echo ".env.prod missing on the server" >&2; exit 1; }
-    git fetch --quiet --tags origin && git checkout --quiet main && git pull --ff-only --quiet
-    if [ -n "$version" ]; then sed -i "s/^CYANOTYPE_VERSION=.*/CYANOTYPE_VERSION=$version/" .env.prod; fi
-    dc() { {{prod_compose}} $profiles "$@"; }
-    dc pull --quiet
-    dc run --rm migrate
-    dc up -d --remove-orphans --wait --wait-timeout 180
-    dc ps
-    REMOTE
+# Build the deploy bundle for a version, ship it to DEPLOY_HOST, then pull, migrate, up. version: sha-<short>, X.Y.Z or latest (default); older versions roll back, compose files included.
+deploy version="latest":
+    DEPLOY_SSH="${DEPLOY_HOST:?set DEPLOY_HOST (e.g. deploy@203.0.113.10)}" scripts/deploy.sh "{{version}}"
+
+# Write deploy-bundle.tar.gz (what the server receives) for a version, from the working tree or REF=<git ref>.
+bundle version="latest":
+    scripts/make-deploy-bundle.sh -v "{{version}}" ${REF:+-r "$REF"}
 
 # One Postgres backup now on DEPLOY_HOST (uploads to the bucket under backups/postgres/).
 prod-backup-now:
