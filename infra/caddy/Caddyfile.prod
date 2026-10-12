@@ -1,4 +1,4 @@
-# Production gateway: automatic HTTPS for the hostname in CYANOTYPE_HOSTNAME (e.g. photos.dev.cyanotype.app).
+# Production gateway: automatic HTTPS for the hostname in CYANOTYPE_HOSTNAME (e.g. photos-dev.cyanotype.app).
 # Certificates come from Let's Encrypt over the HTTP-01/TLS-ALPN challenges, so ports 80 and 443 must
 # reach this container and the A/AAAA record must already point at the server. State lives in the
 # caddy_data volume; do not delete it (re-issuing hits Let's Encrypt rate limits).
