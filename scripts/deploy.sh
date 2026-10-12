@@ -64,8 +64,12 @@ echo "shipping $version ($ref) to $DEPLOY_SSH:$dir"
 # shellcheck disable=SC2016  # the single-quoted script is expanded by the remote shell
 remote_ssh bash -c 'set -e; d="$1"; d="${d/#\~/$HOME}"; mkdir -p "$d"; cd "$d"; rm -rf .incoming; mkdir .incoming; tar -xzf - --no-same-owner -C .incoming' _ "$dir" < "$bundle"
 
-# 2) Install managed files and roll out. The script comes in on stdin, so it is not in the process list.
-remote_ssh bash -s -- "$version" "$dir" "$profiles" <<'REMOTE'
+# 2) Install managed files and roll out. The script travels as a quoted `bash -c` argument, NOT on stdin: a
+# script fed to `bash -s` shares stdin with every command in it, and one that reads stdin (docker compose run)
+# swallows the rest of the script, so bash hits EOF and exits 0 having skipped the rollout. The script holds
+# nothing sensitive. ssh's own stdin is /dev/null, and the script ends by printing DEPLOY-OK <version>, which
+# is checked below, so a truncated or skipped run can never look like success.
+read -r -d '' rollout <<'REMOTE' || true
 set -euo pipefail
 version="${1:?version}"; dir="${2:?dir}"; extra_profiles="${3:-}"
 dir="${dir/#\~/$HOME}"
@@ -107,10 +111,15 @@ profiles=""
 if grep -q '^DD_API_KEY=.\+' .env.prod; then profiles="--profile datadog"; fi
 for p in $extra_profiles; do profiles="$profiles --profile $p"; done
 dc() { docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml $profiles "$@"; }
-dc pull --quiet
-dc run --rm migrate
-dc up -d --remove-orphans --wait --wait-timeout 180
+dc pull --quiet </dev/null
+dc run --rm -T migrate </dev/null
+dc up -d --remove-orphans --wait --wait-timeout 180 </dev/null
 # Caddy runs with `admin off` (no reload), so restart the gateway when its config changed.
-if [ "$infra_changed" = 1 ]; then dc restart gateway; fi
-dc ps
+if [ "$infra_changed" = 1 ]; then dc restart gateway </dev/null; fi
+dc ps </dev/null
+echo "DEPLOY-OK $version"
 REMOTE
+rolloutlog="$(mktemp)"; trap 'logout; rm -f "$bundle" "$rolloutlog"' EXIT
+# shellcheck disable=SC2016  # $rollout is the remote script; the remote shell expands it
+remote_ssh bash -c "$rollout" _ "$version" "$dir" "$profiles" </dev/null | tee "$rolloutlog"
+grep -qxF "DEPLOY-OK $version" "$rolloutlog" || { echo "deploy failed: the server did not report DEPLOY-OK $version (rollout truncated or skipped)" >&2; exit 1; }
