@@ -39,9 +39,11 @@ jobs:
               - 'Cargo.lock'
               - 'apps/**'
               - 'crates/**'
+              - 'infra/backup/**'
               - '.github/workflows/ci.yml'
             compose:
-              - 'docker-compose.yml'
+              - 'docker-compose*.yml'
+              - '.env.prod.example'
               - 'infra/**'
               - '.github/workflows/ci.yml'
 
@@ -96,7 +98,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker compose --profile datadog config -q
-      - name: Caddyfile is valid
+      - name: Production compose is valid with the placeholder env (also with the datadog profile)
         run: |
-          docker run --rm -v "$PWD/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine \
-            caddy validate --config /etc/caddy/Caddyfile
+          prod="docker compose --env-file .env.prod.example -f docker-compose.yml -f docker-compose.prod.yml"
+          $prod config -q
+          $prod --profile datadog config -q
+      - name: Caddyfiles are valid
+        run: |
+          for f in Caddyfile Caddyfile.prod; do
+            docker run --rm -e CYANOTYPE_HOSTNAME=photos.dev.cyanotype.app -v "$PWD/infra/caddy:/etc/caddy:ro" caddy:2-alpine \
+              caddy validate --config "/etc/caddy/$f" --adapter caddyfile
+          done
+      - name: Backup script (shellcheck)
+        run: shellcheck infra/backup/backup.sh

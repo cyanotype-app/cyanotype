@@ -45,9 +45,16 @@ derived/{user_id}/{asset_id}/preview.webp
 | 3 | Virtualized timeline, lightbox, albums, sharing links | |
 | 4 | CLIP semantic search and filters | |
 | 5 | Map view and offline reverse geocoding | |
-| 6 | Rust CLI bulk importer and deploy scripts | |
+| 6 | Rust CLI bulk importer and deploy scripts | deploy half done: single-VPS compose, GHCR publish, deploy workflow, backups (`docs/deploy.md`); importer pending |
 
 Non-goals for MVP: native mobile apps, face recognition, video transcoding, live photos, partner sharing.
+
+## Deployment decisions
+
+- One Linode VPS (shared CPU, 4 GB, us-ord) with docker compose, not Kubernetes. Object storage is Linode (us-ord-10); Datadog site us5.
+- Images are built once in CI (bake), published to GHCR (private) and only pulled on the server. Deploys run from a GitHub Environment (`dev`) over SSH or manually with `just deploy`.
+- Public-facing hardening: `REGISTRATION_MODE` (default `first_user`), `Secure` session cookie, per-IP rate limit on login/register.
+- Postgres backed up nightly to the bucket; the bucket has versioning on. Known gap: Linode returns 501 for `PutBucketCors`, so browser direct uploads are blocked until solved.
 
 ## Requirements carried through every milestone
 

@@ -1,0 +1,3 @@
+# CADDY_TLS_MODE=cloudflare-origin, global options: no ACME for any site (Let's Encrypt cannot validate
+# through the Cloudflare proxy). The HTTP -> HTTPS redirect stays on.
+auto_https disable_certs

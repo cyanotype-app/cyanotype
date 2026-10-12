@@ -3,3 +3,7 @@
 *.swp
 node_modules/
 .buildcache/
+.env.*
+!.env.example
+!.env.prod.example
+certs/

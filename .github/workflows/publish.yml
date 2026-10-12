@@ -1,0 +1,76 @@
+name: Publish images
+# Builds the five images with one `docker buildx bake` (the workspace compiles once) and pushes them to
+# GHCR. Runs only for pushes to main and for v* tags; pull requests never reach this workflow (CI's
+# `images` job builds without pushing). Uses the built-in GITHUB_TOKEN, no stored secrets.
+#
+# Tags per image (ghcr.io/<owner>/cyanotype-<svc>):
+#   every run   sha-<short>
+#   main        latest
+#   vX.Y.Z      X.Y.Z, plus X.Y (and X when X > 0) for non-prerelease versions
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+# Never cancel a publish half-way; queue the next one behind it.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build and push to GHCR
+    runs-on: ubuntu-latest
+    # Belt and braces: the triggers above already exclude pull requests.
+    if: github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+    env:
+      CACHE: gha
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute registry prefix and tags
+        id: meta
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          tags="sha-${GITHUB_SHA::7}"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            v="${GITHUB_REF_NAME#v}"
+            if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::tag $GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH[-prerelease]"; exit 1
+            fi
+            tags="$tags,$v"
+            if [[ "$v" != *-* ]]; then
+              major="${v%%.*}"; minor="${v#*.}"; minor="${minor%%.*}"
+              tags="$tags,$major.$minor"
+              if [ "$major" != 0 ]; then tags="$tags,$major"; fi
+            fi
+          elif [ "$GITHUB_REF_NAME" = main ]; then
+            tags="$tags,latest"
+          fi
+          echo "registry=ghcr.io/$owner/" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          echo "Publishing tags: $tags"
+
+      - uses: docker/setup-buildx-action@v3
+      # Exposes ACTIONS_CACHE_URL / ACTIONS_RUNTIME_TOKEN to `docker buildx bake` for type=gha.
+      - uses: crazy-max/ghaction-github-runtime@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bake and push
+        env:
+          REGISTRY: ${{ steps.meta.outputs.registry }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          REVISION: ${{ github.sha }}
+        run: docker buildx bake -f docker-bake.hcl --push

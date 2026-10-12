@@ -58,7 +58,7 @@ up:
 down:
     docker compose down
 
-# Build all four service images with buildx bake (the workspace compiles once). TAG=... to retag.
+# Build all five images (auth, assets, worker, cli, backup) with buildx bake (the workspace compiles once). TAG=... to retag.
 images:
     TAG={{tag}} docker buildx bake -f docker-bake.hcl
 
@@ -71,8 +71,39 @@ datadog-up:
     @test -n "${DD_API_KEY:-}" || { echo "DD_API_KEY is not set in the environment" >&2; exit 1; }
     docker compose --profile datadog up -d --build
 
+# Local compose by default; for the prod stack set COMPOSE="docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml".
+# Postgres backup now: pg_dump -Fc into the bucket under backups/postgres/, then prune to BACKUP_KEEP.
+backup-now:
+    ${COMPOSE:-docker compose} run --rm backup now
+
+# ---- Production (single VPS; see docs/deploy.md) ----------------------------------------------
+# DEPLOY_HOST=deploy@203.0.113.10 (user@host, key auth; use the origin IP or a DNS-only name, not a Cloudflare-proxied
+# one). Optional: DEPLOY_DIR (default ~/cyanotype), DEPLOY_PROFILES (e.g. "datadog"), DEPLOY_REF (git ref the bundle
+# is built from; "worktree" ships your local tracked files). The server never runs git: scripts/deploy.sh ships a
+# bundle (compose files, infra/caddy, VERSION) over SSH. Secrets stay in ~/cyanotype/.env.prod on the server.
+# The images are private: either docker login ghcr.io once on the server (read:packages PAT), or export
+# GHCR_TOKEN (+ GHCR_USER) and the token is piped over stdin for this deploy only. See docs/deploy.md.
+
+deploy_dir := env_var_or_default("DEPLOY_DIR", "cyanotype")
+prod_compose := "docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml"
+
+# Build the deploy bundle for a version, ship it to DEPLOY_HOST, then pull, migrate, up. version: sha-<short>, X.Y.Z or latest (default); older versions roll back, compose files included.
+deploy version="latest":
+    DEPLOY_SSH="${DEPLOY_HOST:?set DEPLOY_HOST (e.g. deploy@203.0.113.10)}" scripts/deploy.sh "{{version}}"
+
+# Write deploy-bundle.tar.gz (what the server receives) for a version, from the working tree or REF=<git ref>.
+bundle version="latest":
+    scripts/make-deploy-bundle.sh -v "{{version}}" ${REF:+-r "$REF"}
+
+# One Postgres backup now on DEPLOY_HOST (uploads to the bucket under backups/postgres/).
+prod-backup-now:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${DEPLOY_HOST:?set DEPLOY_HOST}"
+    ssh -o BatchMode=yes "$DEPLOY_HOST" "cd {{deploy_dir}} && {{prod_compose}} exec backup /usr/local/bin/backup.sh now"
+
 # Remove cyanotype-* images and dangling images, then prune BuildKit cache (the cache is host-wide).
 clean-docker:
-    -docker rmi cyanotype-auth:{{tag}} cyanotype-assets:{{tag}} cyanotype-worker:{{tag}} cyanotype-cli:{{tag}}
+    -docker rmi cyanotype-auth:{{tag}} cyanotype-assets:{{tag}} cyanotype-worker:{{tag}} cyanotype-cli:{{tag}} cyanotype-backup:{{tag}}
     docker image prune -f
     docker builder prune -f
