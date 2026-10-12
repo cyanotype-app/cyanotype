@@ -3,9 +3,14 @@ name: Deploy
 # holds the secrets and lets you require reviewers before this job runs. Roll back by running this workflow
 # manually with an older version (see docs/deploy.md).
 #
-# Secrets (environment `dev`): DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY (dedicated ed25519 private key),
+# Secrets (environment `dev`): DEPLOY_HOST (the origin IP or a DNS-only name; SSH cannot pass through the Cloudflare proxy), DEPLOY_USER,
+# DEPLOY_SSH_KEY (plain ed25519 private key; its public half is in the server's authorized_keys),
 # DEPLOY_KNOWN_HOSTS (pinned host key line(s) for DEPLOY_HOST). Optional environment variable
 # CYANOTYPE_HOSTNAME for the health check (default: DEPLOY_HOST).
+#
+# The server never runs git (the repository is private and deploy keys are not used). The job builds a
+# "deploy bundle" (compose files, infra/caddy, VERSION) for the version and streams it over the same SSH
+# connection into ~/cyanotype, replacing only the managed files (never .env.prod or certs/).
 #
 # The images are private. The job's short-lived GITHUB_TOKEN (packages: read) is piped over SSH into
 # `docker login --password-stdin` on the server for the duration of the deploy, then `docker logout`.
@@ -47,6 +52,17 @@ jobs:
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
       HEALTH_HOST: ${{ vars.CYANOTYPE_HOSTNAME || secrets.DEPLOY_HOST }}
     steps:
+      # Full history and tags: scripts/deploy.sh maps the version to a commit (sha-<short> -> that commit,
+      # X.Y.Z -> tag vX.Y.Z, latest -> origin/main) and builds the deploy bundle from it with `git archive`.
+      # The scripts run from the ref this workflow was dispatched on, so rolling back to an old tag still
+      # works even though the old tag predates them. The server never runs git and has no GitHub credential.
+      - name: Check out (history and tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
       - name: Resolve version
         id: v
         env:
@@ -82,43 +98,17 @@ jobs:
           CFG
           sed -i 's/^ *//' ~/.ssh/config
 
-      - name: Registry login on the server (token over stdin)
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_USER: ${{ github.actor }}
-        run: |
-          # printf is a shell builtin and the remote command carries no secret: the token is only
-          # ever on stdin. The user name is not secret.
-          printf '%s' "$GHCR_TOKEN" | ssh target "docker login ghcr.io -u '$GHCR_USER' --password-stdin"
-
-      - name: Pull, migrate, up
+      - name: Deploy (ship bundle, pull, migrate, up)
         env:
           VERSION: ${{ steps.v.outputs.version }}
-        run: |
-          set -euo pipefail
-          ssh target bash -s -- "$VERSION" <<'REMOTE'
-          set -euo pipefail
-          version="$1"
-          cd ~/cyanotype
-          test -f .env.prod || { echo ".env.prod missing on the server" >&2; exit 1; }
-          # Compose/Caddy files should match the images: sha-* -> that commit, X.Y.Z -> tag vX.Y.Z, else main.
-          git fetch --quiet --tags origin
-          case "$version" in
-            sha-*)  git checkout --quiet --detach "${version#sha-}" ;;
-            [0-9]*) git checkout --quiet --detach "v$version" ;;
-            *)      git checkout --quiet main && git pull --ff-only --quiet ;;
-          esac
-          sed -i "s/^CYANOTYPE_VERSION=.*/CYANOTYPE_VERSION=$version/" .env.prod
-          profiles=""
-          if grep -q '^DD_API_KEY=.\+' .env.prod; then profiles="--profile datadog"; fi
-          dc() { docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml $profiles "$@"; }
-          dc pull --quiet
-          dc run --rm migrate
-          dc up -d --remove-orphans --wait --wait-timeout 180
-          dc ps
-          REMOTE
+          DEPLOY_SSH: target
+          # Piped over stdin into `docker login --password-stdin` by scripts/deploy.sh, and followed by
+          # `docker logout` when the script exits. Never on a command line.
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: scripts/deploy.sh "$VERSION"
 
-      - name: Registry logout on the server
+      - name: Registry logout on the server (safety net)
         if: always()
         run: ssh target "docker logout ghcr.io" || true
 
