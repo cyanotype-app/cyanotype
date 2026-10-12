@@ -50,6 +50,18 @@ dev:
     cargo run -q -p cyanotype-worker & \
     wait
 
+# Web UI dev server (Vite, http://localhost:5173) proxying /auth, /assets and /healthz to the gateway (GATEWAY_URL, default :3000; `just up` first).
+web-dev:
+    cd apps/web && pnpm install --frozen-lockfile && pnpm dev
+
+# Typecheck, lint and test the web UI (installs from the lockfile first).
+web-check:
+    cd apps/web && pnpm install --frozen-lockfile && pnpm check
+
+# Production build of the web UI into apps/web/dist.
+web-build:
+    cd apps/web && pnpm install --frozen-lockfile && pnpm build
+
 # Full stack in containers; API on http://localhost:3000.
 up:
     docker compose up -d --build
@@ -58,7 +70,7 @@ up:
 down:
     docker compose down
 
-# Build all five images (auth, assets, worker, cli, backup) with buildx bake (the workspace compiles once). TAG=... to retag.
+# Build all six images (auth, assets, worker, cli, backup, web) with buildx bake (the workspace compiles once). TAG=... to retag.
 images:
     TAG={{tag}} docker buildx bake -f docker-bake.hcl
 
@@ -106,6 +118,6 @@ prod-backup-now:
 
 # Remove cyanotype-* images and dangling images, then prune BuildKit cache (the cache is host-wide).
 clean-docker:
-    -docker rmi cyanotype-auth:{{tag}} cyanotype-assets:{{tag}} cyanotype-worker:{{tag}} cyanotype-cli:{{tag}} cyanotype-backup:{{tag}}
+    -docker rmi cyanotype-auth:{{tag}} cyanotype-assets:{{tag}} cyanotype-worker:{{tag}} cyanotype-cli:{{tag}} cyanotype-backup:{{tag}} cyanotype-web:{{tag}}
     docker image prune -f
     docker builder prune -f

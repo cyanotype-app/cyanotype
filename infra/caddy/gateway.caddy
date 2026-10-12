@@ -46,7 +46,9 @@
 		}
 	}
 
+	# Everything else is the web UI (client-side routes, /static/*, manifest, icons).
+	# Keep SPA routes off /auth and /assets, which belong to the APIs above.
 	handle {
-		respond `{"error":"not found"}` 404
+		reverse_proxy web:8080
 	}
 }
