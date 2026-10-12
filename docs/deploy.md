@@ -93,7 +93,7 @@ ssh root@<ip> 'DEPLOY_PUBKEY="$(cat)" bash bootstrap-server.sh' < ~/.ssh/cyanoty
 
 (Or paste it: `ssh root@<ip>`, `cat > bootstrap-server.sh`, paste, Ctrl-D, then
 `DEPLOY_PUBKEY='ssh-ed25519 AAAA... cyanotype-deploy' bash bootstrap-server.sh`.) Optional variables: `DEPLOY_USER`
-(`deploy`), `HOSTNAME_FQDN` (`photos.dev.cyanotype.app`), `HARDEN_SSH` (`1`), `PUBLIC_IP`. SSH hardening (keys only,
+(`deploy`), `HOSTNAME_FQDN` (`photos-dev.cyanotype.app`), `HARDEN_SSH` (`1`), `PUBLIC_IP`. SSH hardening (keys only,
 `PermitRootLogin prohibit-password`) is applied only if both root and the deploy user already have an
 authorized key, so add your own key to `/root/.ssh/authorized_keys` first (Linode does this when you pick an SSH
 key at creation). It ends by printing `DEPLOY_HOST`, `DEPLOY_USER`, the exact `DEPLOY_KNOWN_HOSTS` line (read from
@@ -184,35 +184,43 @@ skip authentication; the default is private.
 ## 7. DNS
 
 Create an `A` record for the instance hostname pointing at the Linode's IPv4 address (TTL 300 while
-testing). Keep the apex `cyanotype.app` for the project website and give each instance a subdomain; this
-dev-tier instance is `photos.dev.cyanotype.app`, set as `CYANOTYPE_HOSTNAME` in `.env.prod`. Skip the AAAA
+testing). Keep the apex `cyanotype.app` for the project website and give each instance a one-level subdomain
+(e.g. `photos-dev`, not `photos.dev`; see the Cloudflare note below); this
+dev-tier instance is `photos-dev.cyanotype.app`, set as `CYANOTYPE_HOSTNAME` in `.env.prod`. Skip the AAAA
 record unless IPv6 is handled as described under the client-IP caveat. In the default `auto` mode, Caddy
 requests the certificate on the first start once the name resolves to the server and ports 80/443 are open.
 If the record is proxied by Cloudflare, follow "Cloudflare" instead.
 
 ## Cloudflare (proxied DNS)
 
-`photos.dev.cyanotype.app` is proxied by Cloudflare (orange cloud). Caddy then runs with
+`photos-dev.cyanotype.app` is proxied by Cloudflare (orange cloud). Caddy then runs with
 `CADDY_TLS_MODE=cloudflare-origin`: it serves a Cloudflare Origin CA certificate, does no ACME (Let's Encrypt
 cannot validate through the proxy), and takes the real client IP from `CF-Connecting-IP`. The other mode,
 `auto` (default), is for DNS-only records and gets a Let's Encrypt certificate. Cloudflare terminates the
 browser's TLS, then opens a second TLS connection to the origin and checks the Origin CA certificate there.
 
+**Hostname depth.** With the proxy on, the hostname must be ONE level under the zone (e.g.
+`photos-dev.cyanotype.app`), because Cloudflare's free Universal SSL edge certificate covers only
+`cyanotype.app` and `*.cyanotype.app`, not deeper names such as `photos.dev.cyanotype.app` (those fail the TLS
+handshake at the edge). The alternatives are Cloudflare Advanced Certificate Manager (paid) or a grey-cloud
+(DNS-only) record with `CADDY_TLS_MODE=auto`. The Origin CA certificate must also cover the hostname; the
+default `*.cyanotype.app` does.
+
 ```
-client -> Cloudflare edge --(TLS, Origin CA cert, SNI photos.dev.cyanotype.app)--> Caddy :443 -> auth/assets
+client -> Cloudflare edge --(TLS, Origin CA cert, SNI photos-dev.cyanotype.app)--> Caddy :443 -> auth/assets
 ```
 
 ### 1. DNS
 
-Dashboard -> DNS -> Records: one `A` record, name `photos.dev` (zone `cyanotype.app`), IPv4 `66.228.50.66`,
+Dashboard -> DNS -> Records: one `A` record, name `photos-dev` (zone `cyanotype.app`), IPv4 `66.228.50.66`,
 Proxy status **Proxied** (orange cloud). No AAAA record is needed: Cloudflare answers IPv6 clients itself
 and reaches the origin over IPv4.
 
 ### 2. Origin CA certificate
 
 Dashboard -> SSL/TLS -> Origin Server -> Create Certificate. Choose "Generate private key and CSR with
-Cloudflare" with key type RSA (2048) or ECDSA, hostnames `photos.dev.cyanotype.app` (add more only if you
-need them; a wildcard `*.dev.cyanotype.app` also works), validity 15 years. Copy the certificate (PEM) and
+Cloudflare" with key type RSA (2048) or ECDSA, hostnames `photos-dev.cyanotype.app` (add more only if you
+need them; the default wildcard `*.cyanotype.app` also covers it), validity 15 years. Copy the certificate (PEM) and
 the private key (shown once). On the server:
 
 ```sh
@@ -250,12 +258,12 @@ Cloudflare publishes changes rarely; re-check the lists now and then (below).
 
 ### 5. Server: switch the gateway to the mode
 
-In `.env.prod` set `CADDY_TLS_MODE=cloudflare-origin` (and keep `CYANOTYPE_HOSTNAME=photos.dev.cyanotype.app`), then:
+In `.env.prod` set `CADDY_TLS_MODE=cloudflare-origin` (and keep `CYANOTYPE_HOSTNAME=photos-dev.cyanotype.app`), then:
 
 ```sh
 dc up -d gateway        # recreates only the gateway
 dc logs gateway | tail  # no "obtaining certificate" lines: ACME is off
-curl -fsS https://photos.dev.cyanotype.app/healthz      # through Cloudflare
+curl -fsS https://photos-dev.cyanotype.app/healthz      # through Cloudflare
 ```
 
 ### Real client IP
@@ -301,18 +309,18 @@ dc pull                    # images from GHCR
 dc run --rm migrate        # starts Postgres, applies migrations
 dc up -d --wait
 dc ps
-curl -fsS https://photos.dev.cyanotype.app/healthz
+curl -fsS https://photos-dev.cyanotype.app/healthz
 ```
 
 Register the owner account right away (first_user mode lets the first caller claim the instance):
 
 ```sh
 curl -fsS -c /dev/null -H 'content-type: application/json' \
-  -d '{"email":"you@example.com","password":"a long passphrase"}' https://photos.dev.cyanotype.app/auth/register
+  -d '{"email":"you@example.com","password":"a long passphrase"}' https://photos-dev.cyanotype.app/auth/register
 ```
 
 A second registration now returns 403. Then run the smoke test from your machine against the instance:
-`E2E_EMAIL=... E2E_PASSWORD=... BASE_URL=https://photos.dev.cyanotype.app just e2e` (note: browser-style
+`E2E_EMAIL=... E2E_PASSWORD=... BASE_URL=https://photos-dev.cyanotype.app just e2e` (note: browser-style
 direct uploads are subject to the CORS caveat below; the script uploads with curl, which is fine).
 
 ## 9. Updating

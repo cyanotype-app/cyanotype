@@ -10,7 +10,7 @@
 # Environment / flags:
 #   DEPLOY_PUBKEY    (required) public key for the deploy user      --pubkey KEY
 #   DEPLOY_USER      deploy account name (default: deploy)           --user NAME
-#   HOSTNAME_FQDN    public hostname (default: photos.dev.cyanotype.app)   --hostname FQDN
+#   HOSTNAME_FQDN    public hostname (default: photos-dev.cyanotype.app)   --hostname FQDN
 #   HARDEN_SSH       1 (default) = key-only SSH; 0 = leave sshd alone      --no-harden-ssh
 #   PUBLIC_IP        override the detected public IPv4 in the summary
 #   DEPLOY_DIR       directory under the deploy user's home (default: cyanotype)
@@ -25,7 +25,7 @@ Usage: DEPLOY_PUBKEY="ssh-ed25519 AAAA... comment" bash bootstrap-server.sh [opt
 
   DEPLOY_PUBKEY   (required) one-line SSH public key (.pub file contents) for the deploy user
   DEPLOY_USER     deploy account (default: deploy)
-  HOSTNAME_FQDN   public hostname written to .env.prod (default: photos.dev.cyanotype.app)
+  HOSTNAME_FQDN   public hostname written to .env.prod (default: photos-dev.cyanotype.app)
   HARDEN_SSH      1 (default) or 0
   PUBLIC_IP       override the detected public IPv4
   DEPLOY_DIR      directory under the deploy user's home (default: cyanotype)
@@ -54,7 +54,7 @@ done
 
 DEPLOY_PUBKEY="${DEPLOY_PUBKEY:-}"
 DEPLOY_USER="${DEPLOY_USER:-deploy}"
-HOSTNAME_FQDN="${HOSTNAME_FQDN:-photos.dev.cyanotype.app}"
+HOSTNAME_FQDN="${HOSTNAME_FQDN:-photos-dev.cyanotype.app}"
 HARDEN_SSH="${HARDEN_SSH:-1}"
 DEPLOY_DIR="${DEPLOY_DIR:-cyanotype}"
 DRY="${BOOTSTRAP_DRY_RUN:-0}"
@@ -201,8 +201,8 @@ CYANOTYPE_VERSION=sha-0000000
 
 # ---- Gateway (Caddy, automatic HTTPS) ------------------------------------------------------
 # Hostname of this instance (example: the dev-tier instance); its A (and optionally AAAA) record must already point at the VPS.
-# Use a subdomain, e.g. photos.dev.cyanotype.app, and keep the apex for the project site.
-CYANOTYPE_HOSTNAME=photos.dev.cyanotype.app
+# Use a one-level subdomain of the zone, e.g. photos-dev.cyanotype.app (Cloudflare Universal SSL does not cover deeper names), and keep the apex for the project site.
+CYANOTYPE_HOSTNAME=photos-dev.cyanotype.app
 
 # TLS mode: auto = Let's Encrypt (clients connect directly; DNS not proxied).
 # cloudflare-origin = hostname proxied by Cloudflare (orange cloud, SSL/TLS Full (strict)); Caddy serves the
