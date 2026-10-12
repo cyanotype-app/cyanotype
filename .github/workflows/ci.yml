@@ -16,6 +16,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       images: ${{ steps.filter.outputs.images }}
       compose: ${{ steps.filter.outputs.compose }}
+      web: ${{ steps.filter.outputs.web }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -40,6 +41,9 @@ jobs:
               - 'apps/**'
               - 'crates/**'
               - 'infra/backup/**'
+              - '.github/workflows/ci.yml'
+            web:
+              - 'apps/web/**'
               - '.github/workflows/ci.yml'
             compose:
               - 'docker-compose*.yml'
@@ -76,6 +80,24 @@ jobs:
       - name: Migrations apply cleanly (the one-shot migrate step services depend on)
         run: just migrate
 
+  web:
+    name: Web (typecheck, lint, tests, build)
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { package_json_file: apps/web/package.json }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - uses: extractions/setup-just@v2
+      - run: just web-check
+      - run: just web-build
+
   images:
     name: Images (buildx bake, no push)
     needs: changes
@@ -89,7 +111,7 @@ jobs:
       # Exposes ACTIONS_CACHE_URL / ACTIONS_RUNTIME_TOKEN to `docker buildx bake` for type=gha.
       - uses: crazy-max/ghaction-github-runtime@v3
       - uses: extractions/setup-just@v2
-      # One bake = one shared builder stage = the workspace compiles once for all four images.
+      # One bake = one shared builder stage = the workspace compiles once for all the Rust images.
       - run: just images
 
   compose:

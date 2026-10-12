@@ -19,7 +19,7 @@ apps/auth      cyanotype-auth     :3001  register / login / logout / me
 apps/assets    cyanotype-assets   :3002  presigned upload flow, asset reads
 apps/worker    cyanotype-worker          metadata + thumbnail jobs
 apps/cli       cyanotype-cli             `migrate`
-apps/web       (reserved for the SvelteKit frontend)
+apps/web       cyanotype-web      :8080  React + Vite UI (login, library grid, lightbox), served by Caddy
 crates/cyanotype-core      config, db, storage, job queue, telemetry (logging)
 crates/cyanotype-service   shared HTTP plumbing: AuthUser extractor, ApiError, request id + request logging
 infra/caddy    gateway: Caddyfile (local :3000), Caddyfile.prod (real hostname, automatic HTTPS), shared gateway.caddy
@@ -30,7 +30,24 @@ infra/backup   nightly Postgres backup image (pg_dump + rclone -> bucket)
 
 Milestone 0/1 scaffold: workspace, migrations, auth (argon2 + HttpOnly session cookies + API keys),
 and the presigned multipart upload flow. Milestone 2 in progress: the worker handles metadata and
-thumbnails for JPEG/PNG/WebP. See the plan in `docs/` for what comes next.
+thumbnails for JPEG/PNG/WebP. The first web UI slice (sign in, photo grid, lightbox) is in `apps/web`;
+uploads still go through the CLI. See the plan in `docs/` for what comes next.
+
+## Web UI
+
+`apps/web` is a React + TypeScript + Vite single-page app (pnpm, React Router, plain CSS, Prussian-blue accent
+with light and dark themes). It is served from the same origin as the API: the gateway sends `/auth/*`,
+`/assets/*` and `/healthz` to the APIs and everything else to the `web` container, so the session cookie
+needs no CORS. SPA routes (`/login`, `/register`, `/library`) therefore must not start with `/auth` or `/assets`.
+
+```sh
+just up        # the stack (gateway on :3000)
+just web-dev   # Vite dev server on :5173, proxying /auth, /assets, /healthz to :3000
+just web-check # tsc + eslint + vitest
+just web-build # production build into apps/web/dist
+```
+
+See `docs/build.md` for the image and the API client.
 
 ## Development
 
