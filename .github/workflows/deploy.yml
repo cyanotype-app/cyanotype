@@ -6,7 +6,8 @@ name: Deploy
 # Secrets (environment `dev`): DEPLOY_HOST (the origin IP or a DNS-only name; SSH cannot pass through the Cloudflare proxy), DEPLOY_USER,
 # DEPLOY_SSH_KEY (plain ed25519 private key; its public half is in the server's authorized_keys),
 # DEPLOY_KNOWN_HOSTS (pinned host key line(s) for DEPLOY_HOST). Optional environment variable
-# CYANOTYPE_HOSTNAME for the health check (default: DEPLOY_HOST).
+# CYANOTYPE_HOSTNAME for the health check, as a variable or a secret (default: DEPLOY_HOST, which only works
+# if that is a DNS name serving the site certificate, not a bare IP).
 #
 # The server never runs git (the repository is private and deploy keys are not used). The job builds a
 # "deploy bundle" (compose files, infra/caddy, VERSION) for the version and streams it over the same SSH
@@ -50,7 +51,7 @@ jobs:
     env:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-      HEALTH_HOST: ${{ vars.CYANOTYPE_HOSTNAME || secrets.DEPLOY_HOST }}
+      HEALTH_HOST: ${{ vars.CYANOTYPE_HOSTNAME || secrets.CYANOTYPE_HOSTNAME || secrets.DEPLOY_HOST }}
     steps:
       # Full history and tags: scripts/deploy.sh maps the version to a commit (sha-<short> -> that commit,
       # X.Y.Z -> tag vX.Y.Z, latest -> origin/main) and builds the deploy bundle from it with `git archive`.
@@ -114,5 +115,9 @@ jobs:
 
       - name: Health check
         run: |
+          set -euo pipefail
+          if [[ -z "$HEALTH_HOST" || "$HEALTH_HOST" =~ ^[0-9.]+$ || "$HEALTH_HOST" == *:* ]]; then
+            echo "::error::health check needs the public hostname, not an IP: set CYANOTYPE_HOSTNAME (variable or secret)"; exit 1
+          fi
           curl -fsS --retry 12 --retry-delay 5 --retry-all-errors --max-time 10 "https://$HEALTH_HOST/healthz"
           echo
