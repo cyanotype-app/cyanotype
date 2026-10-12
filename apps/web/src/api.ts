@@ -46,7 +46,9 @@ export interface AssetListItem extends AssetSummary {
 /** GET /assets */
 export interface AssetList {
   items: AssetListItem[];
-  /** Pass as `before` for the next page; null on the last page. */
+  /** Opaque keyset cursor: pass as `cursor` for the next page; null on the last page. Absent on older servers. */
+  next_cursor?: string | null;
+  /** Deprecated: timestamp for `before`. Only used when the server sends no `next_cursor`. */
   next_before: string | null;
 }
 
@@ -111,10 +113,11 @@ export const api = {
   listApiKeys: () => request<{ items: ApiKey[] }>("/auth/api-keys"),
   createApiKey: (name: string) => request<CreatedApiKey>("/auth/api-keys", json({ name })),
   revokeApiKey: (id: string) => request<void>(`/auth/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  listAssets: (opts: { before?: string | null; limit?: number } = {}) => {
+  listAssets: (opts: { cursor?: string | null; before?: string | null; limit?: number } = {}) => {
     const q = new URLSearchParams();
     if (opts.limit !== undefined) q.set("limit", String(opts.limit));
-    if (opts.before) q.set("before", opts.before);
+    if (opts.cursor) q.set("cursor", opts.cursor);
+    else if (opts.before) q.set("before", opts.before);
     const qs = q.toString();
     return request<AssetList>(`/assets${qs ? `?${qs}` : ""}`);
   },
