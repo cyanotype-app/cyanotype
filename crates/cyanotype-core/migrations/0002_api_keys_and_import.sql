@@ -7,9 +7,10 @@ CREATE INDEX api_keys_user_idx ON api_keys (user_id);
 ALTER TABLE assets  ADD COLUMN file_modified_at timestamptz;
 ALTER TABLE uploads ADD COLUMN file_modified_at timestamptz;
 
--- The timeline orders by coalesce(taken_at, file_modified_at, created_at); rebuild its index to match.
+-- The timeline orders by (coalesce(taken_at, file_modified_at, created_at) DESC, id DESC) and pages with a keyset
+-- row comparison on the same pair; rebuild its index to match.
 DROP INDEX assets_timeline_idx;
-CREATE INDEX assets_timeline_idx ON assets (owner_id, (coalesce(taken_at, file_modified_at, created_at)) DESC)
+CREATE INDEX assets_timeline_idx ON assets (owner_id, (coalesce(taken_at, file_modified_at, created_at)) DESC, id DESC)
     WHERE deleted_at IS NULL;
 
 -- Find a pending upload to resume (check) and stale ones to abort (janitor).
