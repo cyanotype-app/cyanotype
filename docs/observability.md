@@ -107,7 +107,7 @@ and enable `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT` on the Agent.
 ## Datadog Software Catalog
 
 `service.datadog.yaml` at the repo root defines the catalog entities (schema v2.2, one YAML document
-per long-running service: `cyanotype-auth`, `cyanotype-assets`, `cyanotype-worker`, `cyanotype-gateway`;
+per long-running service: `cyanotype-auth`, `cyanotype-assets`, `cyanotype-worker`, `cyanotype-gateway`, `cyanotype-web`;
 the one-shot migrate job is left out). Datadog's GitHub integration picks the file up once the repo
 is linked to Datadog. Keep each `dd-service` identical to the `DD_SERVICE` / service name the
 service actually emits (compose and `telemetry::init`; for the gateway, the Autodiscovery `service`
@@ -123,7 +123,7 @@ the Datadog API; whichever writes last wins.
 
 `DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL=true` would ship every container's logs on the host. The Agent service
 therefore also sets `DD_CONTAINER_EXCLUDE_LOGS="name:.*"` and `DD_CONTAINER_INCLUDE_LOGS="name:^cyanotype-.*"`,
-so only this project's containers (`cyanotype-<service>-<n>`: postgres, auth, assets, worker, gateway, plus
+so only this project's containers (`cyanotype-<service>-<n>`: postgres, auth, assets, worker, web, gateway, plus
 migrate/backup/the Agent itself) are collected and other projects' containers are never read. The compose
 project name is pinned to `cyanotype` (`name:` at the top of `docker-compose.yml`) so the pattern stays
 valid whatever the checkout directory is called; if you pass `-p <other>`, change the include pattern.
