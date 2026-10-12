@@ -6,7 +6,9 @@ See the project README for the elevator pitch. This file tracks milestones and d
 
 - **S3 is the source of truth.** Originals are immutable and content-addressed; Postgres can be rebuilt by re-scanning the bucket.
 - **Bytes never touch the API.** Presigned URLs for upload and download.
-- **Two stateless binaries** (`api`, `worker`) from one Cargo workspace. Both scale horizontally, both safe to kill.
+- **Small stateless services from one repo:** `auth`, `assets` and `worker` binaries (`apps/`), shared libraries in `crates/`, a Caddy gateway in front. Each service has its own port and only the config it needs; all scale horizontally and are safe to kill.
+- **One migration owner:** `cyanotype-cli migrate` is the only thing that applies migrations (a one-shot compose step); services never migrate on boot.
+- **Structured logs to stdout:** JSON with Datadog reserved attributes, collected by the Datadog Agent (opt-in compose profile). See `docs/observability.md`.
 - **Postgres is the only other dependency:** data, pgvector search, and the job queue. No Redis, no Python ML sidecar.
 
 ## Stack
@@ -14,6 +16,8 @@ See the project README for the elevator pitch. This file tracks milestones and d
 | Layer | Choice |
 |---|---|
 | HTTP | `axum` + `tokio`; OpenAPI via `utoipa` -> typed TS client |
+| Gateway | Caddy (`infra/caddy/Caddyfile`): `/auth/*` -> auth, `/assets/*` -> assets |
+| Logging | `tracing` -> JSON on stdout -> Datadog Agent |
 | DB | Postgres + `sqlx` + pgvector |
 | Object storage | `aws-sdk-s3` (R2, B2, MinIO, AWS) |
 | Image processing | `image`, `fast_image_resize`, `libheif-rs`, `rawler` |

@@ -8,7 +8,7 @@ use aws_sdk_s3::{
     types::{CompletedMultipartUpload, CompletedPart},
 };
 
-use crate::config::{Config, S3Config};
+use crate::config::S3Config;
 
 #[derive(Clone)]
 pub struct Storage {
@@ -39,11 +39,11 @@ pub struct PresignedPart {
 }
 
 impl Storage {
-    pub fn new(cfg: &Config) -> Self {
+    pub fn new(cfg: &S3Config) -> Self {
         Self {
-            client: build_client(&cfg.s3, cfg.s3.endpoint.as_deref()),
-            presign_client: build_client(&cfg.s3, cfg.s3.public_endpoint.as_deref()),
-            bucket: cfg.s3.bucket.clone(),
+            client: build_client(cfg, cfg.endpoint.as_deref()),
+            presign_client: build_client(cfg, cfg.public_endpoint.as_deref()),
+            bucket: cfg.bucket.clone(),
             ttl: Duration::from_secs(cfg.presign_ttl_secs),
         }
     }

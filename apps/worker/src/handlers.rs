@@ -58,8 +58,7 @@ pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
     .context("load asset")?;
 
     if !is_supported(&asset.content_type, &asset.original_name) {
-        tracing::info!(job = job.id, kind = %job.kind, content_type = %asset.content_type,
-            "unsupported content type; skipping");
+        tracing::info!(content_type = %asset.content_type, "unsupported content type; skipping");
         return Ok(Outcome::Skipped("unsupported content type"));
     }
     if asset.size_bytes < 0 || asset.size_bytes as u64 > ctx.max_original_bytes {
@@ -113,8 +112,7 @@ async fn metadata(ctx: &Arc<Ctx>, job: &jobs::Job, asset: &AssetRow, bytes: Vec<
         .context("metadata task panicked")?
         .inspect_err(|e| {
             if e.is::<Permanent>() {
-                tracing::error!(job = job.id, asset = %job.asset_id, key = %asset.original_key, error = %e,
-                    "metadata job failed permanently (integrity or decode error)");
+                tracing::error!(key = %asset.original_key, error = %e, "metadata job failed permanently (integrity or decode error)");
             }
         })?;
 
@@ -147,7 +145,7 @@ async fn thumbnail(ctx: &Arc<Ctx>, job: &jobs::Job, asset: &AssetRow, bytes: Vec
     })
     .await
     .context("thumbnail task panicked")??;
-    tracing::debug!(asset = %job.asset_id, width = d.width, height = d.height, "derived images ready");
+    tracing::debug!(width = d.width, height = d.height, "derived images ready");
 
     ctx.storage
         .put_bytes(&keys::thumb(asset.owner_id, job.asset_id), d.thumb_webp, "image/webp")

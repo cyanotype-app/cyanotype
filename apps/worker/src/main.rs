@@ -5,9 +5,15 @@ mod imaging;
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
-use cyanotype_core::{config::Config, db, jobs, storage::Storage};
+use cyanotype_core::{
+    config::{self, DatabaseConfig, S3Config},
+    db, jobs,
+    storage::Storage,
+    telemetry,
+};
 use handlers::{Ctx, Outcome, Permanent};
 use tokio::sync::Semaphore;
+use tracing::Instrument;
 
 const DEFAULT_HEAVY_CONCURRENCY: usize = 2;
 const DEFAULT_MAX_ORIGINAL_BYTES: u64 = 200 * 1024 * 1024;
@@ -18,15 +24,15 @@ fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-    let cfg = Config::from_env()?;
-    let pool = db::connect(&cfg.database_url).await?;
+    telemetry::init("cyanotype-worker");
+    let db_cfg = DatabaseConfig::from_env()?;
+    let s3_cfg = S3Config::from_env()?;
+    tracing::info!(database = %config::redact_url(&db_cfg.url), s3_bucket = %s3_cfg.bucket, "starting");
+    let pool = db::connect(&db_cfg.url).await?;
     let concurrency = env_parse("WORKER_HEAVY_CONCURRENCY", DEFAULT_HEAVY_CONCURRENCY).max(1);
     let ctx = Arc::new(Ctx {
         db: pool.clone(),
-        storage: Storage::new(&cfg),
+        storage: Storage::new(&s3_cfg),
         max_original_bytes: env_parse("WORKER_MAX_ORIGINAL_BYTES", DEFAULT_MAX_ORIGINAL_BYTES),
     });
     // Bounds in-flight jobs (each holds a whole original plus decoded pixels in memory).
@@ -81,31 +87,41 @@ async fn drain(heavy: Arc<Semaphore>, concurrency: usize) -> Result<()> {
 }
 
 async fn execute(ctx: &Arc<Ctx>, job: jobs::Job) {
+    let span = tracing::info_span!("job", job_id = job.id, kind = %job.kind, asset_id = %job.asset_id, attempts = job.attempts);
+    execute_inner(ctx, job).instrument(span).await;
+}
+
+/// Runs one job and logs exactly one summary line with `outcome` and `duration_ms`.
+/// `outcome` is one of: done, skipped, retry, failed.
+async fn execute_inner(ctx: &Arc<Ctx>, job: jobs::Job) {
     let started = std::time::Instant::now();
     let result = handlers::run(ctx, &job).await;
+    let duration_ms = || started.elapsed().as_millis() as u64;
     let recorded = match result {
         Ok(outcome) => {
             if let Outcome::Skipped(reason) = outcome {
-                tracing::info!(job = job.id, kind = %job.kind, asset = %job.asset_id, reason, "job skipped");
+                tracing::info!(outcome = "skipped", reason, duration_ms = duration_ms(), "job finished");
             } else {
-                tracing::info!(job = job.id, kind = %job.kind, asset = %job.asset_id,
-                    ms = started.elapsed().as_millis() as u64, "job done");
+                tracing::info!(outcome = "done", duration_ms = duration_ms(), "job finished");
             }
             jobs::complete(&ctx.db, job.id).await
         }
         Err(e) if e.is::<Permanent>() => {
             let msg = format!("{e:#}");
-            tracing::error!(job = job.id, kind = %job.kind, asset = %job.asset_id, error = %msg, "job failed permanently");
+            tracing::error!(outcome = "failed", permanent = true, error = %msg, duration_ms = duration_ms(), "job finished");
             jobs::fail_permanent(&ctx.db, job.id, &msg).await
         }
         Err(e) => {
             let msg = format!("{e:#}");
-            tracing::warn!(job = job.id, kind = %job.kind, asset = %job.asset_id, attempt = job.attempts,
-                error = %msg, "job failed; will retry unless attempts are exhausted");
+            if job.attempts >= jobs::MAX_ATTEMPTS {
+                tracing::error!(outcome = "failed", permanent = false, error = %msg, duration_ms = duration_ms(), "job finished; attempts exhausted");
+            } else {
+                tracing::warn!(outcome = "retry", error = %msg, duration_ms = duration_ms(), "job finished; will retry");
+            }
             jobs::fail(&ctx.db, &job, &msg).await
         }
     };
     if let Err(e) = recorded {
-        tracing::error!(job = job.id, error = %format!("{e:#}"), "could not record job outcome");
+        tracing::error!(error = %format!("{e:#}"), "could not record job outcome");
     }
 }

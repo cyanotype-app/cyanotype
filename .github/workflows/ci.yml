@@ -24,7 +24,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo build --workspace
       # DATABASE_URL is set, so the job-queue integration tests run against the Postgres service.
       - run: cargo test --workspace
-      - name: Migrations apply cleanly
+      - name: Migrations apply cleanly (the one-shot migrate step services depend on)
         run: cargo run -p cyanotype-cli -- migrate
+
+  stack:
+    name: Images and compose
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        bin: [cyanotype-auth, cyanotype-assets, cyanotype-worker, cyanotype-cli]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --build-arg BIN=${{ matrix.bin }} -t ${{ matrix.bin }} .
+      - name: Compose file and gateway config are valid
+        if: matrix.bin == 'cyanotype-cli'
+        run: |
+          docker compose --profile datadog config -q
+          docker run --rm -v "$PWD/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine \
+            caddy validate --config /etc/caddy/Caddyfile

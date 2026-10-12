@@ -12,11 +12,8 @@ use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{
-    AppState,
-    auth::AuthUser,
-    error::{ApiError, ApiResult},
-};
+use crate::AppState;
+use cyanotype_service::{ApiError, ApiResult, AuthUser};
 
 const PART_SIZE: i64 = 16 * 1024 * 1024;
 const MAX_PARTS: i64 = 10_000; // S3 limit
