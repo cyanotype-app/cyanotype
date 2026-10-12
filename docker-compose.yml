@@ -109,14 +109,21 @@ services:
       migrate: { condition: service_completed_successfully }
       minio-init: { condition: service_completed_successfully }
 
-  # Gateway: the single origin clients talk to (/auth/* -> auth, /assets/* -> assets).
+  # Static web UI (Vite build served by Caddy). Reached through the gateway, not published.
+  web:
+    build: { context: apps/web, target: web }
+    image: cyanotype-web
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"caddy","service":"cyanotype-web"}]'
+
+  # Gateway: the single origin clients talk to (/auth/* -> auth, /assets/* -> assets, everything else -> web).
   gateway:
     image: caddy:2-alpine
     ports: ["3000:3000"]
     volumes: ["./infra/caddy:/etc/caddy:ro"]
     labels:
       com.datadoghq.ad.logs: '[{"source":"caddy","service":"cyanotype-gateway"}]'
-    depends_on: [auth, assets]
+    depends_on: [auth, assets, web]
 
   # Nightly pg_dump -> S3 (backups/postgres/). Opt-in locally (`--profile backup`, or
   # `just backup-now`); always on in production (docker-compose.prod.yml). See docs/deploy.md.
