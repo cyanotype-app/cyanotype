@@ -2,9 +2,11 @@
 resolver = "2"
 members = [
     "crates/cyanotype-core",
-    "crates/cyanotype-api",
-    "crates/cyanotype-worker",
-    "crates/cyanotype-cli",
+    "crates/cyanotype-service",
+    "apps/auth",
+    "apps/assets",
+    "apps/worker",
+    "apps/cli",
 ]
 
 [workspace.package]
@@ -16,6 +18,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 cyanotype-core = { path = "crates/cyanotype-core" }
+cyanotype-service = { path = "crates/cyanotype-service" }
 
 anyhow = "1"
 argon2 = "0.5"
@@ -32,7 +35,8 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 thiserror = "2"
 time = { version = "0.3", features = ["serde", "serde-well-known"] }
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["trace", "cors"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "request-id"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }

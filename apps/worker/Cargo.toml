@@ -1,0 +1,24 @@
+[package]
+name = "cyanotype-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cyanotype-core.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+fast_image_resize = "6.1.0"
+kamadak-exif = "0.6.1"
+thumbhash = "0.1.0"
+sha2.workspace = true
+serde_json.workspace = true
+webp = "0.3.1"
+
+time.workspace = true
+thiserror.workspace = true

@@ -8,7 +8,7 @@ use aws_sdk_s3::{
     types::{CompletedMultipartUpload, CompletedPart},
 };
 
-use crate::config::{Config, S3Config};
+use crate::config::S3Config;
 
 #[derive(Clone)]
 pub struct Storage {
@@ -39,11 +39,11 @@ pub struct PresignedPart {
 }
 
 impl Storage {
-    pub fn new(cfg: &Config) -> Self {
+    pub fn new(cfg: &S3Config) -> Self {
         Self {
-            client: build_client(&cfg.s3, cfg.s3.endpoint.as_deref()),
-            presign_client: build_client(&cfg.s3, cfg.s3.public_endpoint.as_deref()),
-            bucket: cfg.s3.bucket.clone(),
+            client: build_client(cfg, cfg.endpoint.as_deref()),
+            presign_client: build_client(cfg, cfg.public_endpoint.as_deref()),
+            bucket: cfg.bucket.clone(),
             ttl: Duration::from_secs(cfg.presign_ttl_secs),
         }
     }
@@ -118,6 +118,49 @@ impl Storage {
             Err(e) if e.as_service_error().is_some_and(|s| s.is_not_found()) => Ok(None),
             Err(e) => Err(e).context("head_object"),
         }
+    }
+
+    /// Download an object fully into memory, refusing anything larger than `max_bytes`
+    /// (checked against the response's Content-Length before reading the body, and again
+    /// against the bytes actually received).
+    pub async fn get_bytes_limited(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>> {
+        let out = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .context("get_object")?;
+        if let Some(len) = out.content_length
+            && len as u64 > max_bytes
+        {
+            anyhow::bail!("object {key} is {len} bytes, over the {max_bytes} byte limit");
+        }
+        let bytes = out.body.collect().await.context("read object body")?.into_bytes();
+        if bytes.len() as u64 > max_bytes {
+            anyhow::bail!("object {key} exceeded the {max_bytes} byte limit");
+        }
+        Ok(bytes.to_vec())
+    }
+
+    /// Download an object fully into memory (no size cap; prefer `get_bytes_limited`).
+    pub async fn get_bytes(&self, key: &str) -> Result<Vec<u8>> {
+        self.get_bytes_limited(key, u64::MAX).await
+    }
+
+    /// Upload (or overwrite) an object from memory.
+    pub async fn put_bytes(&self, key: &str, bytes: Vec<u8>, content_type: &str) -> Result<()> {
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .content_type(content_type)
+            .body(bytes.into())
+            .send()
+            .await
+            .context("put_object")?;
+        Ok(())
     }
 
     pub async fn presign_get(&self, key: &str) -> Result<String> {

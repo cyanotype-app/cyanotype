@@ -1,0 +1,20 @@
+# Keep the build context (and therefore cache keys) limited to what the build reads.
+target/
+**/target/
+.git/
+.github/
+.env
+.env.*
+!.env.example
+node_modules/
+**/node_modules/
+docs/
+apps/web/
+infra/
+scripts/
+*.md
+docker-compose*.yml
+docker-bake.hcl
+Dockerfile
+.dockerignore
+justfile

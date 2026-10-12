@@ -1,0 +1,23 @@
+[package]
+name = "cyanotype-auth"
+description = "Cyanotype auth service: registration, login, sessions (/auth/*)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cyanotype-core.workspace = true
+cyanotype-service.workspace = true
+anyhow.workspace = true
+argon2.workspace = true
+axum.workspace = true
+axum-extra.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true

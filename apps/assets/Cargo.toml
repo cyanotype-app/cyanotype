@@ -1,0 +1,20 @@
+[package]
+name = "cyanotype-assets"
+description = "Cyanotype assets service: presigned upload flow and asset reads (/assets/*)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cyanotype-core.workspace = true
+cyanotype-service.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
