@@ -1,0 +1,1 @@
+# CADDY_TLS_MODE=auto (default): Let's Encrypt, clients connect directly; nothing to add (site).
