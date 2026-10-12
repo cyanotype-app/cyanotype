@@ -1,4 +1,5 @@
 //! Assets service: presigned multipart upload flow and asset reads. Routes live under `/assets/*`.
+mod janitor;
 mod routes;
 
 use anyhow::Result;
@@ -32,6 +33,8 @@ async fn main() -> Result<()> {
         db: db::connect(&db_cfg.url).await?,
         storage: Storage::new(&s3_cfg),
     };
+
+    janitor::spawn(state.db.clone(), state.storage.clone());
 
     let app = Router::new()
         .route("/healthz", get(http::healthz))

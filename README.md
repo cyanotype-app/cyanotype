@@ -10,7 +10,7 @@ only other dependency, and the backend is a handful of small stateless Rust serv
   each with its own binary, port and config, behind a Caddy gateway on `:3000`, so clients see one origin.
   **`cyanotype-worker`** runs the processing pipeline off a Postgres job queue (`FOR UPDATE SKIP LOCKED`).
   All are stateless, scale horizontally and are safe to kill. They share the one Postgres (separate tables).
-- Migrations run in exactly one place: `cyanotype-cli migrate` (a one-shot compose step). Services never migrate on boot.
+- Migrations run in exactly one place: `cyanotype migrate` (a one-shot compose step). Services never migrate on boot.
 
 ## Layout
 
@@ -18,7 +18,7 @@ only other dependency, and the backend is a handful of small stateless Rust serv
 apps/auth      cyanotype-auth     :3001  register / login / logout / me
 apps/assets    cyanotype-assets   :3002  presigned upload flow, asset reads
 apps/worker    cyanotype-worker          metadata + thumbnail jobs
-apps/cli       cyanotype-cli             `migrate`
+apps/cli       cyanotype (cyanotype-cli) `migrate`, `login`, `import`, `status`
 apps/web       (reserved for the SvelteKit frontend)
 crates/cyanotype-core      config, db, storage, job queue, telemetry (logging)
 crates/cyanotype-service   shared HTTP plumbing: AuthUser extractor, ApiError, request id + request logging
@@ -66,7 +66,9 @@ compose profile; see [`docs/observability.md`](docs/observability.md).
 ```
 POST /assets/check     {sha256, size_bytes, filename, content_type}
   -> {status: "exists", asset_id}                      # dedupe hit
-  -> {status: "upload", upload_id, part_size, parts: [{number, url}]}
+  -> {status: "upload", upload_id, part_size, parts: [{number, url}], uploaded: [{number, etag}]}
+     # `parts` still to PUT; `uploaded` = parts an interrupted earlier attempt already stored (resume)
+     # optional request field: file_modified_at (RFC 3339), the timeline fallback when EXIF has no capture time
 PUT  <each part url>   (raw bytes, straight to S3; keep the ETag headers)
 POST /assets/complete  {upload_id, parts: [{number, etag}]}
   -> {asset_id}        # row inserted, metadata + thumbnail jobs enqueued
@@ -88,6 +90,23 @@ Auth: `POST /auth/register` / `POST /auth/login` set a session cookie; CLIs send
 `Authorization: Bearer <api key>` instead. Security knobs (all in [`docs/deploy.md`](docs/deploy.md)):
 `REGISTRATION_MODE=open|first_user|closed` (default `first_user`: only the first account can register),
 `COOKIE_SECURE` (default true; local compose sets false), and a per-IP rate limit on login/register (429).
+
+## Importing a library (CLI)
+
+Browser uploads are blocked on some S3 providers (no bucket CORS), so a library is loaded with the CLI:
+
+```sh
+cyanotype login --server https://photos.example.com     # email + password -> stores an API key (mode 600)
+cyanotype import --dry-run ~/Pictures                    # preview
+cyanotype import ~/Pictures                              # resumable; re-run to continue or to top up
+cyanotype status
+```
+
+It walks directories, skips sidecars and junk, hashes (cached), lets the server dedupe, and streams the rest to
+S3 in parallel parts. JPEG, PNG, WebP, HEIC, AVIF, TIFF, DNG, the common RAW formats and mov/mp4/m4v are
+imported as originals; thumbnails for HEIC/RAW arrive with the worker's decoder support. API keys are managed
+at `/auth/api-keys` (session only) and in the web UI. Full guide: [`docs/import.md`](docs/import.md);
+`just import <paths>` runs it from source.
 
 ## Deploying
 
