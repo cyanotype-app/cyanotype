@@ -8,6 +8,21 @@ export interface Me {
   email: string;
 }
 
+/** An entry of GET /auth/api-keys. The secret is never listed. */
+export interface ApiKey {
+  id: string;
+  name: string;
+  /** Non-secret start of the key, to tell keys apart. */
+  prefix: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+/** POST /auth/api-keys: `key` is the plaintext secret, returned only once. */
+export interface CreatedApiKey extends Omit<ApiKey, "last_used_at"> {
+  key: string;
+}
+
 /** Fields shared by every asset representation (`AssetSummary` in the assets service). */
 export interface AssetSummary {
   id: string;
@@ -93,6 +108,9 @@ export const api = {
   /** 403 when registration is closed (REGISTRATION_MODE=closed, or first_user with an owner already present). */
   register: (email: string, password: string) => request<Me>("/auth/register", json({ email, password })),
   logout: () => request<void>("/auth/logout", { method: "POST" }),
+  listApiKeys: () => request<{ items: ApiKey[] }>("/auth/api-keys"),
+  createApiKey: (name: string) => request<CreatedApiKey>("/auth/api-keys", json({ name })),
+  revokeApiKey: (id: string) => request<void>(`/auth/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" }),
   listAssets: (opts: { before?: string | null; limit?: number } = {}) => {
     const q = new URLSearchParams();
     if (opts.limit !== undefined) q.set("limit", String(opts.limit));
