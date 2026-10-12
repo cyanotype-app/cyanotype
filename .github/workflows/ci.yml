@@ -75,6 +75,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: extractions/setup-just@v2
       - run: just check
+      - name: deploy.sh against a fake ssh (regression test)
+        run: scripts/test-deploy.sh
       - name: Migrations apply cleanly (the one-shot migrate step services depend on)
         run: just migrate
 
