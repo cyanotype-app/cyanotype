@@ -37,7 +37,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     cargo build --release --workspace --locked \
  && mkdir /out \
- && for b in auth assets worker cli; do cp "target/release/cyanotype-$b" /out/; done
+ && for b in auth assets worker; do cp "target/release/cyanotype-$b" /out/; done \
+ && cp target/release/cyanotype /out/cyanotype-cli
 
 # ---- runtime base: slim, non-root, CA certs for S3/TLS ---------------------------------
 FROM debian:bookworm-slim AS runtime

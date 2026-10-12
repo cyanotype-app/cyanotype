@@ -1,0 +1,460 @@
+//! HTTP client for the Cyanotype API. The wire types are written by hand to mirror the services
+//! (`apps/assets/src/routes.rs`, `apps/auth/src/routes.rs`).
+use std::{
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
+
+use futures_util::TryStreamExt;
+use reqwest::{Method, RequestBuilder, Response, StatusCode, header};
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio_util::io::ReaderStream;
+
+const API_ATTEMPTS: u32 = 6;
+const PUT_ATTEMPTS: u32 = 5;
+/// Read buffer for streaming a part from disk: the whole per-request memory cost of an upload.
+const STREAM_CHUNK: usize = 256 * 1024;
+
+#[derive(Debug, Serialize)]
+pub struct CheckRequest {
+    pub sha256: String,
+    pub size_bytes: i64,
+    pub filename: String,
+    pub content_type: String,
+    /// RFC 3339 mtime hint; omitted when it looks bogus.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_modified_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PartUrl {
+    pub number: i32,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DonePart {
+    pub number: i32,
+    pub etag: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum CheckResponse {
+    Exists {
+        #[allow(dead_code)]
+        asset_id: String,
+    },
+    Upload {
+        upload_id: String,
+        part_size: i64,
+        parts: Vec<PartUrl>,
+        #[serde(default)]
+        uploaded: Vec<DonePart>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct CompleteRequest<'a> {
+    upload_id: &'a str,
+    parts: &'a [DonePart],
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Me {
+    pub id: String,
+    pub email: String,
+}
+
+/// How a request failed, as far as the caller's control flow cares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiError {
+    /// 404: e.g. `/assets/complete` for an upload that no longer exists.
+    NotFound,
+    /// A presigned URL was refused (expired, or signature problem). Ask `check` for fresh ones.
+    Expired(String),
+    /// Retrying will not help.
+    Fatal(String),
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApiError::NotFound => write!(f, "not found"),
+            ApiError::Expired(m) | ApiError::Fatal(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+impl std::error::Error for ApiError {}
+
+pub type ApiResult<T> = Result<T, ApiError>;
+
+/// Byte-progress callback: positive when bytes go out, negative when a failed attempt is rolled back.
+pub type ByteCb = Arc<dyn Fn(i64) + Send + Sync>;
+
+/// Backoff before retry number `attempt` (1-based): 0.5s, 1s, 2s, ... capped at 30s, with up to 25% jitter.
+pub fn backoff(attempt: u32) -> Duration {
+    let base = 500u64.saturating_mul(1 << (attempt - 1).min(6)).min(30_000);
+    let jitter = rand_u64() % (base / 4 + 1);
+    Duration::from_millis(base + jitter)
+}
+
+fn rand_u64() -> u64 {
+    // Not security sensitive: spreads retries. Subsecond clock noise is plenty.
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos() as u64)
+        .wrapping_mul(6364136223846793005)
+        >> 16
+}
+
+fn retry_after(res: &Response) -> Option<Duration> {
+    res.headers()
+        .get(header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .parse::<u64>()
+        .ok()
+        .map(|s| Duration::from_secs(s.min(120)))
+}
+
+async fn snippet(res: Response) -> String {
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+    let body = body.trim();
+    // The services answer {"error": "..."}; show just the message when it is that.
+    let msg = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+        .unwrap_or_else(|| body.chars().take(200).collect());
+    if msg.is_empty() {
+        status.to_string()
+    } else {
+        format!("{status}: {msg}")
+    }
+}
+
+pub fn is_transient(status: StatusCode) -> bool {
+    status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::REQUEST_TIMEOUT
+}
+
+#[derive(Clone)]
+pub struct Api {
+    http: reqwest::Client,
+    /// No overall timeout: parts can be large and links slow. Per-request timeouts are set by size.
+    put_http: reqwest::Client,
+    base: String,
+    key: Option<String>,
+}
+
+impl Api {
+    pub fn new(server: &str, api_key: Option<&str>) -> anyhow::Result<Self> {
+        let ua = concat!("cyanotype-cli/", env!("CARGO_PKG_VERSION"));
+        Ok(Self {
+            http: reqwest::Client::builder()
+                .user_agent(ua)
+                .connect_timeout(Duration::from_secs(20))
+                .timeout(Duration::from_secs(60))
+                .build()?,
+            put_http: reqwest::Client::builder()
+                .user_agent(ua)
+                .connect_timeout(Duration::from_secs(20))
+                .build()?,
+            base: server.trim_end_matches('/').to_string(),
+            key: api_key.map(str::to_string),
+        })
+    }
+
+    fn req(&self, m: Method, path: &str) -> RequestBuilder {
+        let r = self.http.request(m, format!("{}{path}", self.base));
+        match &self.key {
+            Some(k) => r.bearer_auth(k),
+            None => r,
+        }
+    }
+
+    /// Send with retry on network errors, 5xx and 429. Returns the first non-transient response.
+    async fn send(&self, build: impl Fn() -> RequestBuilder) -> ApiResult<Response> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let last = attempt >= API_ATTEMPTS;
+            match build().send().await {
+                Ok(res) if is_transient(res.status()) && !last => {
+                    let wait = retry_after(&res).unwrap_or_else(|| backoff(attempt));
+                    tokio::time::sleep(wait).await;
+                }
+                Ok(res) if is_transient(res.status()) => {
+                    return Err(ApiError::Fatal(format!("server kept failing: {}", snippet(res).await)));
+                }
+                Ok(res) => return Ok(res),
+                Err(e) if !last && (e.is_connect() || e.is_timeout() || e.is_request() || e.is_body()) => {
+                    tokio::time::sleep(backoff(attempt)).await;
+                }
+                Err(e) => return Err(ApiError::Fatal(format!("network error: {}", describe(e)))),
+            }
+        }
+    }
+
+    async fn json<T: for<'de> Deserialize<'de>>(&self, res: Response) -> ApiResult<T> {
+        let status = res.status();
+        if status == StatusCode::NOT_FOUND {
+            return Err(ApiError::NotFound);
+        }
+        if status == StatusCode::UNAUTHORIZED {
+            return Err(ApiError::Fatal(
+                "unauthorized: the API key is missing, revoked or wrong (run `cyanotype login`)".into(),
+            ));
+        }
+        if !status.is_success() {
+            return Err(ApiError::Fatal(snippet(res).await));
+        }
+        res.json::<T>()
+            .await
+            .map_err(|e| ApiError::Fatal(format!("unexpected response: {e}")))
+    }
+
+    pub async fn me(&self) -> ApiResult<Me> {
+        let res = self.send(|| self.req(Method::GET, "/auth/me")).await?;
+        self.json(res).await
+    }
+
+    pub async fn asset_count(&self) -> ApiResult<i64> {
+        #[derive(Deserialize)]
+        struct Count {
+            count: i64,
+        }
+        let res = self.send(|| self.req(Method::GET, "/assets/count")).await?;
+        Ok(self.json::<Count>(res).await?.count)
+    }
+
+    pub async fn check(&self, body: &CheckRequest) -> ApiResult<CheckResponse> {
+        let res = self.send(|| self.req(Method::POST, "/assets/check").json(body)).await?;
+        self.json(res).await
+    }
+
+    /// `Err(NotFound)` means the upload is gone (already completed, or aborted): run `check` again.
+    pub async fn complete(&self, upload_id: &str, parts: &[DonePart]) -> ApiResult<String> {
+        #[derive(Deserialize)]
+        struct Done {
+            asset_id: String,
+        }
+        let body = CompleteRequest { upload_id, parts };
+        let res = self
+            .send(|| self.req(Method::POST, "/assets/complete").json(&body))
+            .await?;
+        Ok(self.json::<Done>(res).await?.asset_id)
+    }
+
+    /// PUT `len` bytes of `path` starting at `offset` to a presigned URL, streaming from disk. Returns the ETag.
+    /// `progress` gets +n as bytes are handed to the network and -n when a failed attempt is taken back, so
+    /// the running total never over-counts.
+    pub async fn put_part(
+        &self,
+        url: &str,
+        path: &Path,
+        offset: u64,
+        len: u64,
+        progress: &ByteCb,
+    ) -> ApiResult<String> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let sent = Arc::new(AtomicU64::new(0));
+            let failure = match self.put_once(url, path, offset, len, &sent, progress.clone()).await {
+                Ok(etag) => return Ok(etag),
+                Err(f) => f,
+            };
+            progress(-(sent.load(Ordering::Relaxed) as i64));
+            match failure {
+                PutFailure::Final(e) => return Err(e),
+                PutFailure::Transient(m) if attempt >= PUT_ATTEMPTS => {
+                    return Err(ApiError::Fatal(format!("{m} (after {attempt} attempts)")));
+                }
+                PutFailure::Transient(_) => tokio::time::sleep(backoff(attempt)).await,
+            }
+        }
+    }
+
+    async fn put_once(
+        &self,
+        url: &str,
+        path: &Path,
+        offset: u64,
+        len: u64,
+        sent: &Arc<AtomicU64>,
+        progress: ByteCb,
+    ) -> Result<String, PutFailure> {
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .map_err(|e| PutFailure::Final(ApiError::Fatal(format!("open: {e}"))))?;
+        let on_disk = file
+            .metadata()
+            .await
+            .map_err(|e| PutFailure::Final(ApiError::Fatal(format!("stat: {e}"))))?
+            .len();
+        if on_disk < offset + len {
+            return Err(PutFailure::Final(ApiError::Fatal(
+                "file changed while importing (it shrank)".into(),
+            )));
+        }
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(|e| PutFailure::Final(ApiError::Fatal(format!("seek: {e}"))))?;
+        let counter = sent.clone();
+        let stream = ReaderStream::with_capacity(file.take(len), STREAM_CHUNK).inspect_ok(move |b| {
+            counter.fetch_add(b.len() as u64, Ordering::Relaxed);
+            progress(b.len() as i64);
+        });
+        // Time allowance: a minute plus enough for ~50 KiB/s, so a stalled link is cut off and retried.
+        let timeout = Duration::from_secs(60 + len / (50 * 1024));
+        let res = self
+            .put_http
+            .put(url)
+            .header(header::CONTENT_LENGTH, len)
+            .timeout(timeout)
+            .body(reqwest::Body::wrap_stream(stream))
+            .send()
+            .await
+            .map_err(|e| PutFailure::Transient(format!("network error: {}", describe(e))))?;
+        let status = res.status();
+        if status.is_success() {
+            return res
+                .headers()
+                .get(header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+                .ok_or_else(|| PutFailure::Final(ApiError::Fatal("storage returned no ETag".into())));
+        }
+        if is_transient(status) {
+            return Err(PutFailure::Transient(format!("storage answered {status}")));
+        }
+        let msg = snippet(res).await;
+        // 403: presigned URL expired (or was rejected). 404: the multipart upload no longer exists, e.g. it was
+        // completed by another process meanwhile. Either way `check` knows what to do next.
+        if status == StatusCode::FORBIDDEN || status == StatusCode::NOT_FOUND {
+            return Err(PutFailure::Final(ApiError::Expired(msg)));
+        }
+        Err(PutFailure::Final(ApiError::Fatal(format!(
+            "storage refused the part: {msg}"
+        ))))
+    }
+
+    // ---- login helpers (cookie session, used once to mint an API key)
+
+    /// Log in with email + password; returns the session cookie (`name=value`).
+    pub async fn login(&self, email: &str, password: &str) -> ApiResult<String> {
+        let res = self
+            .send(|| {
+                self.req(Method::POST, "/auth/login")
+                    .json(&serde_json::json!({"email": email, "password": password}))
+            })
+            .await?;
+        let status = res.status();
+        if status == StatusCode::UNAUTHORIZED {
+            return Err(ApiError::Fatal("wrong email or password".into()));
+        }
+        if !status.is_success() {
+            return Err(ApiError::Fatal(snippet(res).await));
+        }
+        res.headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .find_map(|c| c.split(';').next().filter(|kv| kv.starts_with("cyanotype_session=")))
+            .map(str::to_string)
+            .ok_or_else(|| ApiError::Fatal("server did not start a session".into()))
+    }
+
+    /// Mint an API key with a session cookie. Returns the plaintext key (shown once by the server).
+    pub async fn create_api_key(&self, cookie: &str, name: &str) -> ApiResult<String> {
+        #[derive(Deserialize)]
+        struct Created {
+            key: String,
+        }
+        let res = self
+            .send(|| {
+                self.req(Method::POST, "/auth/api-keys")
+                    .header(header::COOKIE, cookie)
+                    .json(&serde_json::json!({"name": name}))
+            })
+            .await?;
+        Ok(self.json::<Created>(res).await?.key)
+    }
+
+    pub async fn logout(&self, cookie: &str) {
+        let _ = self
+            .req(Method::POST, "/auth/logout")
+            .header(header::COOKIE, cookie)
+            .send()
+            .await;
+    }
+}
+
+enum PutFailure {
+    Transient(String),
+    Final(ApiError),
+}
+
+/// reqwest errors nest the interesting part (DNS failure, TLS error, ...) in the source chain.
+/// The URL is dropped: presigned URLs carry a signature and must not end up in logs or the failure list.
+fn describe(e: reqwest::Error) -> String {
+    let e = e.without_url();
+    let mut s = e.to_string();
+    let mut src = std::error::Error::source(&e);
+    while let Some(c) = src {
+        s.push_str(": ");
+        s.push_str(&c.to_string());
+        src = c.source();
+    }
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_grows_and_is_capped() {
+        let ms = |a| backoff(a).as_millis() as u64;
+        assert!((500..=625).contains(&ms(1)));
+        assert!((1000..=1250).contains(&ms(2)));
+        assert!((2000..=2500).contains(&ms(3)));
+        assert!((30_000..=37_500).contains(&ms(20)));
+    }
+
+    #[test]
+    fn transient_statuses() {
+        assert!(is_transient(StatusCode::BAD_GATEWAY));
+        assert!(is_transient(StatusCode::from_u16(522).unwrap()));
+        assert!(is_transient(StatusCode::TOO_MANY_REQUESTS));
+        assert!(!is_transient(StatusCode::FORBIDDEN));
+        assert!(!is_transient(StatusCode::NOT_FOUND));
+        assert!(!is_transient(StatusCode::OK));
+    }
+
+    #[test]
+    fn check_response_parses_both_shapes_and_old_servers() {
+        let r: CheckResponse = serde_json::from_str(r#"{"status":"exists","asset_id":"abc"}"#).unwrap();
+        assert!(matches!(r, CheckResponse::Exists { .. }));
+        let r: CheckResponse = serde_json::from_str(
+            r#"{"status":"upload","upload_id":"u","part_size":16,"parts":[{"number":2,"url":"http://x"}],
+                "uploaded":[{"number":1,"etag":"\"e\""}]}"#,
+        )
+        .unwrap();
+        let CheckResponse::Upload { parts, uploaded, .. } = r else {
+            panic!()
+        };
+        assert_eq!((parts[0].number, uploaded[0].number), (2, 1));
+        // `uploaded` is optional so the client keeps working against a server without resume support.
+        let r: CheckResponse =
+            serde_json::from_str(r#"{"status":"upload","upload_id":"u","part_size":16,"parts":[]}"#).unwrap();
+        assert!(matches!(r, CheckResponse::Upload { uploaded, .. } if uploaded.is_empty()));
+    }
+}

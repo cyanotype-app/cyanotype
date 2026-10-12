@@ -45,7 +45,7 @@ derived/{user_id}/{asset_id}/preview.webp
 | 3 | Virtualized timeline, lightbox, albums, sharing links | |
 | 4 | CLIP semantic search and filters | |
 | 5 | Map view and offline reverse geocoding | |
-| 6 | Rust CLI bulk importer and deploy scripts | deploy half done: single-VPS compose, GHCR publish, deploy workflow, backups (`docs/deploy.md`); importer pending |
+| 6 | Rust CLI bulk importer and deploy scripts | deploy half done: single-VPS compose, GHCR publish, deploy workflow, backups (`docs/deploy.md`); importer done: `cyanotype login/import/status`, API keys (`docs/import.md`) |
 
 Non-goals for MVP: native mobile apps, face recognition, video transcoding, live photos, partner sharing.
 
