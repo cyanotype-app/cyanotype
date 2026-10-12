@@ -74,7 +74,7 @@ schema-version: v2.2
 dd-service: cyanotype-gateway
 team: cyanotype
 application: cyanotype
-description: Caddy gateway; the single origin (:3000) routing /auth/* and /assets/* to the services.
+description: Caddy gateway; the single origin (:3000) routing /auth/* and /assets/* to the APIs and everything else to the web UI.
 tier: "2"
 lifecycle: development
 type: web
@@ -93,3 +93,27 @@ links:
   - name: Gateway config
     type: repo
     url: https://github.com/cyanotype-app/cyanotype/tree/main/infra/caddy
+---
+schema-version: v2.2
+dd-service: cyanotype-web
+team: cyanotype
+application: cyanotype
+description: Static web UI (React + Vite SPA served by Caddy); the gateway routes everything that is not /auth/*, /assets/* or /healthz here.
+tier: "2"
+lifecycle: development
+type: web
+languages:
+  - typescript
+tags:
+  - component:web
+  - repo:cyanotype
+links:
+  - name: Repository
+    type: repo
+    url: https://github.com/cyanotype-app/cyanotype
+  - name: Observability docs
+    type: doc
+    url: https://github.com/cyanotype-app/cyanotype/blob/main/docs/observability.md
+  - name: Source
+    type: repo
+    url: https://github.com/cyanotype-app/cyanotype/tree/main/apps/web
