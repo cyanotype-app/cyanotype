@@ -24,7 +24,7 @@ See the project README for the elevator pitch. This file tracks milestones and d
 | Video (post-MVP) | `ffmpeg` subprocess |
 | EXIF | `kamadak-exif` / `nom-exif`, `exiftool` fallback |
 | ML | `ort` + `tokenizers`, CLIP/SigLIP-class model |
-| Frontend | SvelteKit, PWA-installable |
+| Frontend | React + Vite (TypeScript, pnpm, React Router), PWA-installable; static build served by Caddy |
 | Map | MapLibre GL + Protomaps PMTiles in the bucket |
 
 ## S3 layout
@@ -40,7 +40,7 @@ derived/{user_id}/{asset_id}/preview.webp
 | # | Scope | Status |
 |---|---|---|
 | 0 | Cargo workspace, Docker Compose (Postgres + MinIO), CI, migrations, auth | done (scaffold) |
-| 1 | Presigned upload, dedupe, asset CRUD, basic grid UI | backend done; UI pending |
+| 1 | Presigned upload, dedupe, asset CRUD, basic grid UI | backend done; grid UI in progress (login/register, infinite-scroll grid with ThumbHash placeholders, lightbox; browser upload deferred: Linode CORS) |
 | 2 | Worker, job queue, EXIF, thumbnails, ThumbHash, HEIC | queue done; metadata (EXIF, sha256 verify) + thumbnail/preview/ThumbHash handlers done for JPEG/PNG/WebP; HEIC and RAW pending |
 | 3 | Virtualized timeline, lightbox, albums, sharing links | |
 | 4 | CLIP semantic search and filters | |
@@ -68,5 +68,5 @@ Non-goals for MVP: native mobile apps, face recognition, video transcoding, live
 ## Open decisions
 
 1. Library size and RAW usage.
-2. Frontend: SvelteKit (leaning) or React.
+2. ~~Frontend: SvelteKit or React~~ decided: React + Vite (`apps/web`).
 3. Mobile: PWA + CLI uploader for v1, or native auto-upload sooner.
