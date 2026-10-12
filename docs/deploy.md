@@ -49,6 +49,12 @@ Cloud Manager -> Create Linode: Image Debian 12, Region Chicago, IL (us-ord), Sh
 password you will not use (SSH keys only, below), add your SSH public key, and enable backups if you want
 VM-level snapshots on top of the Postgres dumps. Note the IPv4 address.
 
+### Object storage settings (Linode, us-ord-10)
+
+Use `S3_ENDPOINT=https://us-ord-10.linodeobjects.com`, `S3_REGION=us-ord-10` and `S3_FORCE_PATH_STYLE=true`.
+The region is the cluster ID (`us-ord-10`), not `us-east-1`. These values were verified against us-ord-10
+(head-bucket, versioning status and listing all work with them). The backup job uses the same variables.
+
 ## 2. Cloud Firewall
 
 Cloud Manager -> Firewalls -> Create, attach it to the Linode. Inbound policy Drop, rules:
