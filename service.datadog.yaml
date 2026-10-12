@@ -1,0 +1,95 @@
+schema-version: v2.2
+dd-service: cyanotype-auth
+team: cyanotype
+application: cyanotype
+description: Registration, login, sessions and API keys (/auth/*).
+tier: "2"
+lifecycle: development
+type: web
+languages:
+  - rust
+tags:
+  - component:auth
+  - repo:cyanotype
+links:
+  - name: Repository
+    type: repo
+    url: https://github.com/cyanotype-app/cyanotype
+  - name: Observability docs
+    type: doc
+    url: https://github.com/cyanotype-app/cyanotype/blob/main/docs/observability.md
+  - name: Source
+    type: repo
+    url: https://github.com/cyanotype-app/cyanotype/tree/main/apps/auth
+---
+schema-version: v2.2
+dd-service: cyanotype-assets
+team: cyanotype
+application: cyanotype
+description: Presigned multipart upload flow and asset reads (/assets/*).
+tier: "2"
+lifecycle: development
+type: web
+languages:
+  - rust
+tags:
+  - component:assets
+  - repo:cyanotype
+links:
+  - name: Repository
+    type: repo
+    url: https://github.com/cyanotype-app/cyanotype
+  - name: Observability docs
+    type: doc
+    url: https://github.com/cyanotype-app/cyanotype/blob/main/docs/observability.md
+  - name: Source
+    type: repo
+    url: https://github.com/cyanotype-app/cyanotype/tree/main/apps/assets
+---
+schema-version: v2.2
+dd-service: cyanotype-worker
+team: cyanotype
+application: cyanotype
+description: Postgres-queue worker producing metadata and thumbnails for uploaded originals.
+tier: "2"
+lifecycle: development
+type: custom
+languages:
+  - rust
+tags:
+  - component:worker
+  - repo:cyanotype
+links:
+  - name: Repository
+    type: repo
+    url: https://github.com/cyanotype-app/cyanotype
+  - name: Observability docs
+    type: doc
+    url: https://github.com/cyanotype-app/cyanotype/blob/main/docs/observability.md
+  - name: Source
+    type: repo
+    url: https://github.com/cyanotype-app/cyanotype/tree/main/apps/worker
+---
+schema-version: v2.2
+dd-service: cyanotype-gateway
+team: cyanotype
+application: cyanotype
+description: Caddy gateway; the single origin (:3000) routing /auth/* and /assets/* to the services.
+tier: "2"
+lifecycle: development
+type: web
+languages:
+  - go
+tags:
+  - component:gateway
+  - repo:cyanotype
+links:
+  - name: Repository
+    type: repo
+    url: https://github.com/cyanotype-app/cyanotype
+  - name: Observability docs
+    type: doc
+    url: https://github.com/cyanotype-app/cyanotype/blob/main/docs/observability.md
+  - name: Gateway config
+    type: repo
+    url: https://github.com/cyanotype-app/cyanotype/tree/main/infra/caddy

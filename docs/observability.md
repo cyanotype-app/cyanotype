@@ -103,3 +103,13 @@ Optional OTLP trace export to the Agent (behind `OTEL_EXPORTER_OTLP_ENDPOINT`) w
 binary, and trace-id injection into logs for correlation. Plan when wanted: add an optional layer in
 `telemetry::init` enabled only when the env var is set, emit `dd.trace_id`/`dd.span_id` on log lines,
 and enable `DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT` on the Agent.
+
+## Datadog Software Catalog
+
+`service.datadog.yaml` at the repo root defines the catalog entities (schema v2.2, one YAML document
+per long-running service: `cyanotype-auth`, `cyanotype-assets`, `cyanotype-worker`, `cyanotype-gateway`;
+the one-shot migrate job is left out). Datadog's GitHub integration picks the file up once the repo
+is linked to Datadog. Keep each `dd-service` identical to the `DD_SERVICE` / service name the
+service actually emits (compose and `telemetry::init`; for the gateway, the Autodiscovery `service`
+label), so logs attach to the catalog entry. Do not manage the same entities through both GitHub and
+the Datadog API; whichever writes last wins.
