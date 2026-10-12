@@ -41,12 +41,26 @@ size="$(wc -c < "$file" | tr -d ' ')"
 step "gateway health ($BASE_URL)"
 curl -fsS "$BASE_URL/healthz" >/dev/null || fail "gateway not reachable"
 
+# Against an instance in REGISTRATION_MODE=first_user/closed (production), registration answers 403 once an
+# owner exists: set E2E_EMAIL and E2E_PASSWORD to log in as an existing user instead (the upload leaves a
+# real 64x64 test photo in that library). The local compose stack runs REGISTRATION_MODE=open.
 step "register"
 email="e2e-$(date +%s)-$RANDOM@example.invalid"
 password="$(python3 -c 'import secrets; print(secrets.token_urlsafe(18))')"
 body="$(python3 -c 'import json,sys; print(json.dumps({"email":sys.argv[1],"password":sys.argv[2]}))' "$email" "$password")"
-curl -fsS -c "$jar" -H 'content-type: application/json' -d "$body" "$BASE_URL/auth/register" >/dev/null
-curl -fsS -b "$jar" "$BASE_URL/auth/me" >/dev/null || fail "session cookie not accepted by /auth/me"
+code="$(curl -sS -o /dev/null -w '%{http_code}' -c "$jar" -H 'content-type: application/json' -d "$body" "$BASE_URL/auth/register")"
+if [ "$code" = 403 ] && [ -n "${E2E_EMAIL:-}" ] && [ -n "${E2E_PASSWORD:-}" ]; then
+  step "registration closed (403): logging in as E2E_EMAIL instead"
+  body="$(python3 -c 'import json,os; print(json.dumps({"email":os.environ["E2E_EMAIL"],"password":os.environ["E2E_PASSWORD"]}))')"
+  curl -fsS -c "$jar" -H 'content-type: application/json' -d "$body" "$BASE_URL/auth/login" >/dev/null || fail "login failed"
+elif [ "$code" = 403 ]; then
+  fail "registration is closed on this instance (set E2E_EMAIL and E2E_PASSWORD to use an existing account)"
+elif [ "$code" = 429 ]; then
+  fail "rate limited (429) by the auth service; wait a minute and retry"
+elif [ "$code" != 201 ]; then
+  fail "register returned HTTP $code"
+fi
+curl -fsS -b "$jar" "$BASE_URL/auth/me" >/dev/null || fail "session cookie not accepted by /auth/me (is COOKIE_SECURE=true over plain http?)"
 
 step "check (expect upload)"
 req="$(python3 -c 'import json,sys; print(json.dumps({"sha256":sys.argv[1],"size_bytes":int(sys.argv[2]),"filename":"e2e.png","content_type":"image/png"}))' "$sha" "$size")"

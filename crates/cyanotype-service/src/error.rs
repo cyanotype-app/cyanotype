@@ -9,6 +9,8 @@ use serde_json::json;
 pub enum ApiError {
     #[error("unauthorized")]
     Unauthorized,
+    #[error("{0}")]
+    Forbidden(String),
     #[error("not found")]
     NotFound,
     #[error("{0}")]
@@ -29,6 +31,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match &self {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Conflict(_) => StatusCode::CONFLICT,

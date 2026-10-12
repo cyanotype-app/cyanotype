@@ -1,0 +1,148 @@
+# Production override for ONE Linode VPS (4 GB). Use together with the base file:
+#
+#   docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml pull
+#   docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml run --rm migrate
+#   docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   (add --profile datadog to include the Datadog Agent)
+#
+# Differences from local: images come from GHCR and are never built on the server; no MinIO (S3 is
+# Linode Object Storage via env); Postgres is not published; the gateway serves CYANOTYPE_HOSTNAME with
+# automatic HTTPS on 80/443 only; restart policies, healthchecks and memory limits. DD_ENV defaults to
+# dev (the dev-tier instance); set DD_ENV=prod in .env.prod for a production instance.
+# Memory budget (limits, not reservations): postgres 768m + worker 1024m + assets 256m + auth 256m +
+# gateway 128m + backup 128m = 2.5 GB, +384m with the Datadog Agent, leaving headroom on a 4 GB box.
+# Reset/override tags (!reset, !override) need Docker Compose >= 2.24.
+
+x-prod-env: &prod-env
+  DATABASE_URL: postgres://cyanotype:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}@postgres:5432/cyanotype
+  DD_ENV: ${DD_ENV:-dev}
+  DD_VERSION: ${CYANOTYPE_VERSION:?set CYANOTYPE_VERSION in .env.prod}
+
+x-prod-s3: &prod-s3
+  S3_ENDPOINT: ${S3_ENDPOINT:?set S3_ENDPOINT in .env.prod}
+  S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-${S3_ENDPOINT}}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_BUCKET: ${S3_BUCKET:?set S3_BUCKET in .env.prod}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env.prod}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env.prod}
+  S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-false}
+
+# Rust services expose /healthz; the slim images have no curl, so probe with bash's /dev/tcp.
+x-http-probe: &probe
+  interval: 15s
+  timeout: 5s
+  retries: 5
+  start_period: 20s
+
+services:
+  postgres:
+    ports: !reset []
+    restart: unless-stopped
+    mem_limit: 768m
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+    # Sized for a 768m container shared with a small app tier.
+    command: ["postgres", "-c", "shared_buffers=192MB", "-c", "effective_cache_size=512MB", "-c", "max_connections=50", "-c", "work_mem=8MB"]
+
+  # No MinIO in production: S3 is Linode Object Storage.
+  minio:
+    profiles: [local-only]
+    ports: !reset []
+  minio-init:
+    profiles: [local-only]
+
+  migrate:
+    image: ghcr.io/cyanotype-app/cyanotype-cli:${CYANOTYPE_VERSION:?set CYANOTYPE_VERSION in .env.prod}
+    build: !reset null
+    pull_policy: missing
+    mem_limit: 256m
+    environment: *prod-env
+
+  auth:
+    image: ghcr.io/cyanotype-app/cyanotype-auth:${CYANOTYPE_VERSION:?set CYANOTYPE_VERSION in .env.prod}
+    build: !reset null
+    pull_policy: missing
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      <<: *prod-env
+      COOKIE_SECURE: "true"
+      REGISTRATION_MODE: ${REGISTRATION_MODE:-first_user}
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3001 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && head -n1 <&3 | grep -q ' 200'"]
+      <<: *probe
+
+  assets:
+    image: ghcr.io/cyanotype-app/cyanotype-assets:${CYANOTYPE_VERSION:?set CYANOTYPE_VERSION in .env.prod}
+    build: !reset null
+    pull_policy: missing
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      <<: [*prod-env, *prod-s3]
+    depends_on: !override
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3002 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && head -n1 <&3 | grep -q ' 200'"]
+      <<: *probe
+
+  # No listener, so no healthcheck: the process exits on fatal errors and `restart` brings it back.
+  worker:
+    image: ghcr.io/cyanotype-app/cyanotype-worker:${CYANOTYPE_VERSION:?set CYANOTYPE_VERSION in .env.prod}
+    build: !reset null
+    pull_policy: missing
+    restart: unless-stopped
+    # Decoding large originals dominates memory; WORKER_HEAVY_CONCURRENCY bounds parallel decodes.
+    mem_limit: 1024m
+    environment:
+      <<: [*prod-env, *prod-s3]
+      WORKER_HEAVY_CONCURRENCY: ${WORKER_HEAVY_CONCURRENCY:-2}
+    depends_on: !override
+      migrate: { condition: service_completed_successfully }
+
+  gateway:
+    # Same image as local; the production Caddyfile terminates TLS for CYANOTYPE_HOSTNAME.
+    restart: unless-stopped
+    mem_limit: 128m
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.prod", "--adapter", "caddyfile"]
+    ports: !override
+      - "80:80"
+      - "443:443"
+    environment:
+      CYANOTYPE_HOSTNAME: ${CYANOTYPE_HOSTNAME:?set CYANOTYPE_HOSTNAME in .env.prod}
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: !override
+      auth: { condition: service_healthy }
+      assets: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/healthz"]
+      <<: *probe
+
+  backup:
+    image: ghcr.io/cyanotype-app/cyanotype-backup:${CYANOTYPE_VERSION:?set CYANOTYPE_VERSION in .env.prod}
+    build: !reset null
+    pull_policy: missing
+    profiles: !reset []
+    restart: unless-stopped
+    mem_limit: 128m
+    environment:
+      <<: *prod-s3
+      DATABASE_URL: postgres://cyanotype:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}@postgres:5432/cyanotype
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+      BACKUP_AT: ${BACKUP_AT:-03:17}
+    depends_on: !override
+      postgres: { condition: service_healthy }
+
+  datadog-agent:
+    restart: unless-stopped
+    mem_limit: 384m
+    environment:
+      DD_SITE: ${DD_SITE:-us5.datadoghq.com}
+      DD_ENV: ${DD_ENV:-dev}
+      DD_HOSTNAME: ${DD_HOSTNAME:-cyanotype-dev}
+
+volumes:
+  caddy_data:
+  caddy_config:

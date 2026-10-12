@@ -1,0 +1,31 @@
+# Production gateway: automatic HTTPS for the hostname in CYANOTYPE_HOSTNAME (e.g. photos.dev.cyanotype.app).
+# Certificates come from Let's Encrypt over the HTTP-01/TLS-ALPN challenges, so ports 80 and 443 must
+# reach this container and the A/AAAA record must already point at the server. State lives in the
+# caddy_data volume; do not delete it (re-issuing hits Let's Encrypt rate limits).
+#
+# Used with: caddy run --config /etc/caddy/Caddyfile.prod --adapter caddyfile
+{
+	admin off
+	# Only 80/443 over TCP are published, so no HTTP/3 (which needs UDP 443).
+	servers {
+		protocols h1 h2
+	}
+}
+
+import /etc/caddy/gateway.caddy
+
+{$CYANOTYPE_HOSTNAME} {
+	import gateway
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}
+
+# Container-internal health endpoint for the compose healthcheck (not published, loopback only).
+http://127.0.0.1:8081 {
+	respond /healthz 200
+}
