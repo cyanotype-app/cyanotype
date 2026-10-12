@@ -1,0 +1,4 @@
+/target
+.env
+*.swp
+node_modules/
