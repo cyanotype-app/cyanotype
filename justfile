@@ -100,7 +100,7 @@ prod-backup-now:
     #!/usr/bin/env bash
     set -euo pipefail
     : "${DEPLOY_HOST:?set DEPLOY_HOST}"
-    ssh -o BatchMode=yes "$DEPLOY_HOST" "cd {{deploy_dir}} && {{prod_compose}} exec backup /usr/local/bin/backup.sh now"
+    ssh -o BatchMode=yes "$DEPLOY_HOST" "cd $(printf '%q' "{{deploy_dir}}") && {{prod_compose}} exec backup /usr/local/bin/backup.sh now"
 
 # Remove cyanotype-* images and dangling images, then prune BuildKit cache (the cache is host-wide).
 clean-docker:

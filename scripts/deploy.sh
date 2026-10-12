@@ -44,24 +44,31 @@ bundle="$(mktemp)"; trap 'rm -f "$bundle"' EXIT
 "$here/make-deploy-bundle.sh" "${ref_args[@]}" -v "$version" -o "$bundle"
 
 ssh_opts=(-o BatchMode=yes)
+# ssh joins the remote command's arguments with spaces and the remote login shell re-splits the result, so an
+# empty or spacey argument would silently vanish or split. remote_ssh quotes every word locally (printf %q)
+# so the remote shell sees exactly the argv given here. stdin is passed through.
+# shellcheck disable=SC2029  # client-side expansion of $cmd is the point
+remote_ssh() { local cmd; cmd="$(printf '%q ' "$@")"; ssh "${ssh_opts[@]}" "$DEPLOY_SSH" "$cmd"; }
 loggedin=0
-logout() { if [ "$loggedin" = 1 ]; then ssh "${ssh_opts[@]}" "$DEPLOY_SSH" "docker logout ghcr.io" >/dev/null 2>&1 || true; fi; }
+logout() { if [ "$loggedin" = 1 ]; then remote_ssh docker logout ghcr.io >/dev/null 2>&1 || true; fi; }
 trap 'logout; rm -f "$bundle"' EXIT
 
 if [ -n "${GHCR_TOKEN:-}" ]; then
   # The token travels on stdin only; the remote command line carries just the (non-secret) user name.
-  printf '%s' "$GHCR_TOKEN" | ssh "${ssh_opts[@]}" "$DEPLOY_SSH" "docker login ghcr.io -u '${GHCR_USER:-github-actions}' --password-stdin"
+  printf '%s' "$GHCR_TOKEN" | remote_ssh docker login ghcr.io -u "${GHCR_USER:-github-actions}" --password-stdin
   loggedin=1
 fi
 
 echo "shipping $version ($ref) to $DEPLOY_SSH:$dir"
 # 1) Bundle -> a staging dir on the server (stdin; nothing sensitive).
-ssh "${ssh_opts[@]}" "$DEPLOY_SSH" "set -e; mkdir -p $dir; cd $dir; rm -rf .incoming; mkdir .incoming; tar -xzf - --no-same-owner -C .incoming" < "$bundle"
+# shellcheck disable=SC2016  # the single-quoted script is expanded by the remote shell
+remote_ssh bash -c 'set -e; d="$1"; d="${d/#\~/$HOME}"; mkdir -p "$d"; cd "$d"; rm -rf .incoming; mkdir .incoming; tar -xzf - --no-same-owner -C .incoming' _ "$dir" < "$bundle"
 
 # 2) Install managed files and roll out. The script comes in on stdin, so it is not in the process list.
-ssh "${ssh_opts[@]}" "$DEPLOY_SSH" bash -s -- "$version" "$dir" "$profiles" <<'REMOTE'
+remote_ssh bash -s -- "$version" "$dir" "$profiles" <<'REMOTE'
 set -euo pipefail
-version="$1"; dir="$2"; extra_profiles="$3"
+version="${1:?version}"; dir="${2:?dir}"; extra_profiles="${3:-}"
+dir="${dir/#\~/$HOME}"
 cd "$dir"
 trap 'rm -rf .incoming' EXIT
 test -f .env.prod || { echo ".env.prod missing on the server (create it in $dir, chmod 600)" >&2; exit 1; }
