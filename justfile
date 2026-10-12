@@ -96,7 +96,6 @@ backup-now:
 # The images are private: either docker login ghcr.io once on the server (read:packages PAT), or export
 # GHCR_TOKEN (+ GHCR_USER) and the token is piped over stdin for this deploy only. See docs/deploy.md.
 
-deploy_dir := env_var_or_default("DEPLOY_DIR", "cyanotype")
 prod_compose := "docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml"
 
 # Build the deploy bundle for a version, ship it to DEPLOY_HOST, then pull, migrate, up. version: sha-<short>, X.Y.Z or latest (default); older versions roll back, compose files included.
@@ -112,7 +111,10 @@ prod-backup-now:
     #!/usr/bin/env bash
     set -euo pipefail
     : "${DEPLOY_HOST:?set DEPLOY_HOST}"
-    ssh -o BatchMode=yes "$DEPLOY_HOST" "cd {{deploy_dir}} && {{prod_compose}} exec backup /usr/local/bin/backup.sh now"
+    . scripts/lib-remote.sh
+    dir="$(deploy_dir_normalize "${DEPLOY_DIR:-cyanotype}")"
+    DEPLOY_SSH="$DEPLOY_HOST"; ssh_opts=(-o BatchMode=yes)
+    remote_ssh bash -c 'cd "$1" && shift && exec "$@"' _ "$dir" {{prod_compose}} exec backup /usr/local/bin/backup.sh now
 
 # Remove cyanotype-* images and dangling images, then prune BuildKit cache (the cache is host-wide).
 clean-docker:
