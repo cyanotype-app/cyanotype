@@ -56,7 +56,7 @@ services:
 
   # One-shot: the only place migrations run. Services wait for it to finish.
   migrate:
-    build: { context: ., args: { BIN: cyanotype-cli } }
+    build: { context: ., target: cli }
     image: cyanotype-cli
     command: ["migrate"]
     environment:
@@ -67,7 +67,7 @@ services:
     restart: "no"
 
   auth:
-    build: { context: ., args: { BIN: cyanotype-auth } }
+    build: { context: ., target: auth }
     image: cyanotype-auth
     environment:
       <<: *app-env
@@ -79,7 +79,7 @@ services:
       migrate: { condition: service_completed_successfully }
 
   assets:
-    build: { context: ., args: { BIN: cyanotype-assets } }
+    build: { context: ., target: assets }
     image: cyanotype-assets
     environment:
       <<: [*app-env, *s3-env]
@@ -92,7 +92,7 @@ services:
       minio-init: { condition: service_completed_successfully }
 
   worker:
-    build: { context: ., args: { BIN: cyanotype-worker } }
+    build: { context: ., target: worker }
     image: cyanotype-worker
     environment:
       <<: [*app-env, *s3-env]

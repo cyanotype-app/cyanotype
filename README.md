@@ -33,26 +33,29 @@ thumbnails for JPEG/PNG/WebP. See the plan in `docs/` for what comes next.
 
 ## Development
 
-Whole stack in containers (Postgres, MinIO, one-shot migrate, auth, assets, worker, gateway):
+Tasks run through [`just`](https://github.com/casey/just) (`cargo install just --locked`, `brew install just`,
+or a release binary). `just` lists every recipe.
 
 ```sh
-docker compose up -d --build    # API at http://localhost:3000
+just up        # whole stack in containers (Postgres, MinIO, migrate, auth, assets, worker, gateway) at http://localhost:3000
+just e2e       # register -> check -> PUT -> complete -> worker -> GET, through the gateway
+just down
 ```
 
 Or run the binaries from source against the compose infrastructure:
 
 ```sh
-docker compose up -d postgres minio minio-init
-cp .env.example .env
-set -a; . ./.env; set +a
-cargo run -p cyanotype-cli -- migrate
-cargo run -p cyanotype-auth     # :3001
-cargo run -p cyanotype-assets   # :3002
-cargo run -p cyanotype-worker
+cp .env.example .env     # just loads .env automatically
+just dev                 # compose Postgres + MinIO, migrate, then auth :3001, assets :3002, worker
 ```
 
+Before pushing: `just check` (fmt-check + clippy `-D warnings` + tests; set `DATABASE_URL` to a Postgres,
+e.g. the compose one, to include the DB integration tests). Other recipes: `fmt`, `lint`, `test`, `migrate`,
+`images` (build all four images), `datadog-up`, `clean-docker`.
+
 When running from source, call the services directly (`:3001` for `/auth/*`, `:3002` for `/assets/*`)
-unless you run them in compose. Images: one parameterized `Dockerfile` (`--build-arg BIN=cyanotype-assets`).
+unless you run them in compose. Images are per-service Dockerfile targets (`auth|assets|worker|cli`) built
+from one shared builder; see [`docs/build.md`](docs/build.md).
 
 Logs are JSON on stdout (`LOG_FORMAT=pretty` for local reading). Datadog Agent collection is an opt-in
 compose profile; see [`docs/observability.md`](docs/observability.md).
