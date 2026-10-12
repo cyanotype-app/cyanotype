@@ -106,7 +106,7 @@ jobs:
       - name: Caddyfiles are valid
         run: |
           for f in Caddyfile Caddyfile.prod; do
-            docker run --rm -e CYANOTYPE_HOSTNAME=photos.dev.cyanotype.app -v "$PWD/infra/caddy:/etc/caddy:ro" caddy:2-alpine \
+            docker run --rm -e CYANOTYPE_HOSTNAME=photos-dev.cyanotype.app -v "$PWD/infra/caddy:/etc/caddy:ro" caddy:2-alpine \
               caddy validate --config "/etc/caddy/$f" --adapter caddyfile
           done
       - name: Backup script (shellcheck)
