@@ -97,6 +97,9 @@ services:
     environment:
       <<: [*prod-env, *prod-s3]
       WORKER_HEAVY_CONCURRENCY: ${WORKER_HEAVY_CONCURRENCY:-2}
+      # Decode memory budget shared by all jobs; must stay well under mem_limit above. Jobs that need more
+      # are refused with a permanent error instead of being OOM-killed.
+      WORKER_MEMORY_BUDGET_MB: ${WORKER_MEMORY_BUDGET_MB:-640}
     depends_on: !override
       migrate: { condition: service_completed_successfully }
 
