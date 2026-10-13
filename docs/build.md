@@ -19,6 +19,18 @@ sees the same `builder` stage in all of them and runs it once. `docker compose b
 `target:` per service, so it shares the stage too. Previously each image compiled the whole workspace
 in parallel, which made a cold build take about 25 minutes.
 
+## Rust toolchain pin
+
+`rust-toolchain.toml` pins the exact Rust version (rustfmt + clippy, minimal profile) for local builds and CI
+(`actions-rust-lang/setup-rust-toolchain` reads it), so a new Rust release cannot break an unrelated PR with new
+lints. The `Dockerfile` pins the matching `RUST_IMAGE` tag (cargo-chef on bookworm); `.dockerignore` keeps
+`rust-toolchain.toml` out of the image build context, and CI (`scripts/check-rust-pin.sh`) fails if the two versions
+differ. The workspace `rust-version` (MSRV) is separate and unchanged.
+
+To bump: edit `channel` in `rust-toolchain.toml` and the `RUST_IMAGE` tag in the `Dockerfile` together (check the tag
+exists, e.g. `docker manifest inspect lukemathwalker/cargo-chef:<tag>`), run `just check`, and fix any new lints in
+the same PR.
+
 ## Worker system dependencies (HEIC/AVIF and RAW)
 
 HEIC/HEIF/AVIF decoding uses libheif through `libheif-rs` with its `embedded-libheif` feature: the
