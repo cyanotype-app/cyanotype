@@ -110,7 +110,7 @@ enum Ftyp {
 fn ftyp_family(bytes: &[u8]) -> Ftyp {
     let size = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
     let end = size.clamp(16, bytes.len().min(256));
-    let brands = std::iter::once(&bytes[8..12]).chain(bytes[16..end].chunks_exact(4));
+    let brands = std::iter::once(&bytes[8..12]).chain(bytes[16..end].as_chunks::<4>().0.iter().map(|c| c.as_slice()));
     let mut heif = false;
     for b in brands {
         match b {
