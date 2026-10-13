@@ -419,3 +419,50 @@ main {
     transition: none !important;
   }
 }
+
+/* Settings: API keys */
+.settings {
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem;
+}
+.settings h1 {
+  font-size: 1.4rem;
+}
+.key-form {
+  display: flex;
+  gap: 0.5rem;
+  align-items: end;
+  flex-wrap: wrap;
+}
+.key-form > div {
+  flex: 1 1 14rem;
+}
+.new-key {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.new-key code {
+  display: block;
+  margin: 0.5rem 0;
+  padding: 0.5rem;
+  overflow-wrap: anywhere;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+.key-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+}
+.key-list li {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--border);
+}

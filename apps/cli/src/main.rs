@@ -1,7 +1,16 @@
-use anyhow::Result;
+mod api;
+mod cache;
+mod config;
+mod import;
+mod walk;
+
+use std::io::{BufRead, IsTerminal, Write};
+use std::process::ExitCode;
+
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use cyanotype_core::{
-    config::{self, DatabaseConfig},
+    config::{DatabaseConfig, redact_url},
     db, telemetry,
 };
 
@@ -16,18 +25,147 @@ struct Cli {
 enum Command {
     /// Apply database migrations. The only place migrations run; services never do it on boot.
     Migrate,
+    /// Log in to a Cyanotype server and store an API key for the other commands.
+    Login(LoginArgs),
+    /// Import photos and videos from files and directories (resumable; safe to re-run).
+    Import(import::ImportArgs),
+    /// Show the server, who you are logged in as, and how many assets it holds.
+    Status,
+}
+
+#[derive(clap::Args)]
+struct LoginArgs {
+    /// Server URL, e.g. https://photos.example.com
+    #[arg(long, env = config::ENV_SERVER)]
+    server: String,
+    /// Store this existing API key instead of creating one with email + password.
+    #[arg(long)]
+    api_key: Option<String>,
+    /// Account email (prompted when omitted).
+    #[arg(long)]
+    email: Option<String>,
+    /// Read the password from the first line of stdin instead of prompting (for scripts).
+    #[arg(long)]
+    password_stdin: bool,
+    /// Name for the new API key (default: "cli on <hostname>").
+    #[arg(long)]
+    name: Option<String>,
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    telemetry::init("cyanotype-cli");
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<ExitCode> {
     match Cli::parse().command {
         Command::Migrate => {
+            telemetry::init("cyanotype-cli");
             let cfg = DatabaseConfig::from_env()?;
-            tracing::info!(database = %config::redact_url(&cfg.url), "applying migrations");
+            tracing::info!(database = %redact_url(&cfg.url), "applying migrations");
             db::migrate(&db::connect(&cfg.url).await?).await?;
             tracing::info!("migrations applied");
         }
+        Command::Login(a) => login(a).await?,
+        Command::Status => status().await?,
+        Command::Import(a) => {
+            return Ok(if import::run(a).await? {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            });
+        }
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn prompt(label: &str) -> Result<String> {
+    if !std::io::stdin().is_terminal() {
+        bail!("{label} is required (stdin is not a terminal; pass it as a flag)");
+    }
+    eprint!("{label}: ");
+    std::io::stderr().flush()?;
+    let mut s = String::new();
+    std::io::stdin().lock().read_line(&mut s)?;
+    Ok(s.trim().to_string())
+}
+
+fn default_key_name() -> String {
+    let host = std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "unknown host".into());
+    format!("cli on {host}")
+}
+
+async fn login(a: LoginArgs) -> Result<()> {
+    let server = config::normalize_server(&a.server)?;
+    let (key, who) = match a.api_key {
+        Some(key) => {
+            let key = key.trim().to_string();
+            let me = api::Api::new(&server, Some(&key))?
+                .me()
+                .await
+                .map_err(|e| anyhow::anyhow!("that API key was not accepted by {server}: {e}"))?;
+            (key, me.email)
+        }
+        None => {
+            let email = match a.email {
+                Some(e) => e,
+                None => prompt("Email")?,
+            };
+            let password = if a.password_stdin {
+                let mut p = String::new();
+                std::io::stdin().lock().read_line(&mut p)?;
+                p.trim_end_matches(['\r', '\n']).to_string()
+            } else if let Ok(p) = std::env::var("CYANOTYPE_PASSWORD") {
+                p
+            } else {
+                rpassword::prompt_password("Password: ").context("reading password")?
+            };
+            let api = api::Api::new(&server, None)?;
+            let cookie = api.login(&email, &password).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+            let name = a.name.unwrap_or_else(default_key_name);
+            let created = api.create_api_key(&cookie, &name).await;
+            // The session was only a means to mint the key; do not leave it around.
+            api.logout(&cookie).await;
+            (created.map_err(|e| anyhow::anyhow!("creating API key: {e}"))?, email)
+        }
+    };
+    let path = config::config_path()?;
+    config::save_to(
+        &path,
+        &config::Config {
+            server: Some(server.clone()),
+            api_key: Some(key),
+        },
+    )?;
+    println!("Logged in to {server} as {who}.");
+    println!("Credentials saved to {} (mode 600).", path.display());
+    Ok(())
+}
+
+async fn status() -> Result<()> {
+    let c = config::credentials()?;
+    let api = api::Api::new(&c.server, Some(&c.api_key))?;
+    let src = |env: bool| if env { "environment" } else { "config file" };
+    println!("Server:  {} ({})", c.server, src(c.server_from_env));
+    println!(
+        "API key: {}… ({})",
+        c.api_key.chars().take(10).collect::<String>(),
+        src(c.key_from_env)
+    );
+    let me = api.me().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("User:    {} ({})", me.email, me.id);
+    let n = api.asset_count().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("Assets:  {n}");
     Ok(())
 }

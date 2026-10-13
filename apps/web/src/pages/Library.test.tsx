@@ -54,8 +54,8 @@ describe("Library", () => {
   it("renders a thumbnail grid, pages with `before` on scroll, and opens the lightbox with the keyboard", async () => {
     const list = vi
       .spyOn(api, "listAssets")
-      .mockResolvedValueOnce({ items: [item(1), item(2)], next_before: "cursor-1" })
-      .mockResolvedValueOnce({ items: [item(3)], next_before: null });
+      .mockResolvedValueOnce({ items: [item(1), item(2)], next_cursor: "cursor-1", next_before: "2026-01-01T00:00:00Z" })
+      .mockResolvedValueOnce({ items: [item(3)], next_cursor: null, next_before: null });
     const user = userEvent.setup();
     renderLibrary();
 
@@ -65,7 +65,7 @@ describe("Library", () => {
     // The sentinel scrolls into view: the next page is requested with the cursor.
     await act(async () => observers.at(-1)!.cb([{ isIntersecting: true }]));
     await screen.findByAltText("photo-3.jpg");
-    expect(list).toHaveBeenLastCalledWith({ before: "cursor-1", limit: 60 });
+    expect(list).toHaveBeenLastCalledWith({ cursor: "cursor-1", limit: 60 });
 
     // Keyboard: focus a tile, Enter opens, arrows navigate, Esc closes and focus returns to the tile.
     const tile = screen.getByRole("button", { name: "Open photo-2.jpg" });
@@ -78,6 +78,18 @@ describe("Library", () => {
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(tile).toHaveFocus();
+  });
+
+  it("falls back to `before` / `next_before` against an older server without cursors", async () => {
+    const list = vi
+      .spyOn(api, "listAssets")
+      .mockResolvedValueOnce({ items: [item(1)], next_before: "2026-01-01T00:00:00Z" })
+      .mockResolvedValueOnce({ items: [item(2)], next_before: null });
+    renderLibrary();
+    await screen.findByAltText("photo-1.jpg");
+    await act(async () => observers.at(-1)!.cb([{ isIntersecting: true }]));
+    await screen.findByAltText("photo-2.jpg");
+    expect(list).toHaveBeenLastCalledWith({ before: "2026-01-01T00:00:00Z", limit: 60 });
   });
 
   it("shows a placeholder for photos still being processed", async () => {
