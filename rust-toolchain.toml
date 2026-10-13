@@ -1,0 +1,5 @@
+# Single source of truth for the Rust version (CI and local). Bump deliberately: see docs/build.md.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

@@ -27,6 +27,8 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rustfmt.toml'
+              - 'rust-toolchain.toml'
+              - 'Dockerfile'
               - 'apps/**'
               - 'crates/**'
               - 'justfile'
@@ -34,6 +36,7 @@ jobs:
               - '.github/workflows/ci.yml'
             images:
               - 'Dockerfile'
+              - 'rust-toolchain.toml'
               - '.dockerignore'
               - 'docker-bake.hcl'
               - 'Cargo.toml'
@@ -76,10 +79,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake pkg-config libde265-dev libdav1d-dev
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: "rustfmt, clippy" }
+      # Installs the version pinned in rust-toolchain.toml. rust-cache stays the cache (so the action's own is off),
+      # and rustflags is emptied so the action does not add -D warnings on top of `just check`.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with: { cache: false, rustflags: "" }
       - uses: Swatinem/rust-cache@v2
       - uses: extractions/setup-just@v2
+      - name: Dockerfile builds with the pinned Rust version
+        run: scripts/check-rust-pin.sh
       - run: just check
       - name: deploy.sh against a fake ssh (regression test)
         run: scripts/test-deploy.sh

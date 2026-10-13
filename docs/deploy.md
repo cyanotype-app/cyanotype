@@ -358,6 +358,12 @@ The `Deploy` workflow (`.github/workflows/deploy.yml`) runs on manual dispatch (
 `sha-<short>` of the selected ref) and, after a successful `Publish images` run on main, automatically. It
 uses the GitHub Environment `dev`, so you can add required reviewers there to approve each deploy.
 
+**CI gate.** Branch protection is not available (private repo, free plan), so a merged red PR would otherwise
+deploy. For automatic deploys the job first runs `scripts/wait-for-ci.sh` for the head commit of the `Publish images`
+run: it polls the `CI` workflow run for that commit (every 30 s, up to 40 min) and fails the deploy unless it
+concluded `success`. Manual runs (workflow_dispatch, including rollbacks) skip the gate: that is an explicit operator
+override.
+
 1. **Deploy user with docker access.** The `deploy` user from step 3, in the `docker` group (step 4). Use a
    dedicated account for CI if you prefer separating it from your own login.
 2. **Deploy keypair** (a plain SSH keypair, not a GitHub deploy key; GitHub deploy keys are not used and the server

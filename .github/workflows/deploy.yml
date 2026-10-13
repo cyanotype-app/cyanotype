@@ -3,6 +3,9 @@ name: Deploy
 # holds the secrets and lets you require reviewers before this job runs. Roll back by running this workflow
 # manually with an older version (see docs/deploy.md).
 #
+# Auto-deploys (workflow_run) additionally wait for the CI run of the same commit and fail unless it succeeded;
+# manual dispatch skips that gate.
+#
 # Secrets (environment `dev`): DEPLOY_HOST (the origin IP or a DNS-only name; SSH cannot pass through the Cloudflare proxy), DEPLOY_USER,
 # DEPLOY_SSH_KEY (plain ed25519 private key; its public half is in the server's authorized_keys),
 # DEPLOY_KNOWN_HOSTS (pinned host key line(s) for DEPLOY_HOST). Optional environment variable
@@ -48,6 +51,7 @@ jobs:
     permissions:
       contents: read
       packages: read
+      actions: read # the CI gate reads the CI run of the commit
     env:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -63,6 +67,16 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
+
+      # Auto-deploys only: do not ship a commit whose CI failed (branch protection is unavailable on this plan).
+      # Manual runs (workflow_dispatch) skip the gate on purpose: an explicit operator override, e.g. a rollback.
+      - name: Wait for CI on this commit (auto-deploy gate)
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: scripts/wait-for-ci.sh "$RUN_SHA"
 
       - name: Resolve version
         id: v
