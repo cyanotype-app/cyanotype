@@ -1,4 +1,5 @@
 # Keep the build context (and therefore cache keys) limited to what the build reads.
+# (rust-toolchain.toml is excluded on purpose: the image tag pins Rust; otherwise rustup would fetch components.)
 target/
 **/target/
 .git/
@@ -18,3 +19,4 @@ docker-bake.hcl
 Dockerfile
 .dockerignore
 justfile
+rust-toolchain.toml

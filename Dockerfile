@@ -8,7 +8,8 @@
 #
 # Targets: auth | assets | worker | cli.   See docs/build.md.
 
-ARG RUST_IMAGE=lukemathwalker/cargo-chef:0.1.77-rust-1-bookworm
+# Keep the Rust version in step with rust-toolchain.toml (CI checks this; docs/build.md).
+ARG RUST_IMAGE=lukemathwalker/cargo-chef:0.1.78-rust-1.99.0-bookworm
 
 # ---- chef: Rust toolchain + cargo-chef + the C toolchain -------------------------------
 # The worker's libwebp (webp / libwebp-sys crates) is compiled from bundled C sources and
