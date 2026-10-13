@@ -1,10 +1,20 @@
+mod budget;
 mod exif;
+mod formats;
 mod handlers;
+mod heif;
 mod imaging;
+mod media;
+#[cfg(test)]
+mod memcal;
+mod raw;
+#[cfg(test)]
+mod raw_samples;
 
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
+use budget::MemoryBudget;
 use cyanotype_core::{
     config::{self, DatabaseConfig, S3Config},
     db, jobs,
@@ -17,6 +27,9 @@ use tracing::Instrument;
 
 const DEFAULT_HEAVY_CONCURRENCY: usize = 2;
 const DEFAULT_MAX_ORIGINAL_BYTES: u64 = 200 * 1024 * 1024;
+/// Total decode memory (MB) all in-flight jobs may need together. The production container limit is
+/// 1024m; the rest is headroom for the runtime, libheif/libwebp internals and allocator slack.
+const DEFAULT_MEMORY_BUDGET_MB: u64 = 640;
 
 fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
@@ -34,6 +47,8 @@ async fn main() -> Result<()> {
         db: pool.clone(),
         storage: Storage::new(&s3_cfg),
         max_original_bytes: env_parse("WORKER_MAX_ORIGINAL_BYTES", DEFAULT_MAX_ORIGINAL_BYTES),
+        budget: MemoryBudget::new(env_parse("WORKER_MEMORY_BUDGET_MB", DEFAULT_MEMORY_BUDGET_MB) << 20),
+        raw_develop: env_parse("WORKER_RAW_DEVELOP", 1u8) != 0,
     });
     // Bounds in-flight jobs (each holds a whole original plus decoded pixels in memory).
     let heavy = Arc::new(Semaphore::new(concurrency));
@@ -41,6 +56,8 @@ async fn main() -> Result<()> {
     tracing::info!(
         concurrency,
         max_original_bytes = ctx.max_original_bytes,
+        memory_budget_mb = ctx.budget.total_bytes() >> 20,
+        raw_develop = ctx.raw_develop,
         "worker started"
     );
     let shutdown = tokio::signal::ctrl_c();
