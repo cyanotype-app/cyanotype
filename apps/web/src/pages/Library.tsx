@@ -9,7 +9,8 @@ const PAGE = 60;
 export function Library() {
   const { setAnonymous } = useAuth();
   const [items, setItems] = useState<AssetListItem[]>([]);
-  const [nextBefore, setNextBefore] = useState<string | null>(null);
+  // Position of the next page: a keyset `cursor`, or (older servers) a `before` timestamp.
+  const [next, setNext] = useState<{ cursor?: string; before?: string }>({});
   const [done, setDone] = useState(false); // the last page has been loaded
   const [started, setStarted] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -24,13 +25,14 @@ export function Library() {
     setLoading(true);
     setError(null);
     try {
-      const page = await api.listAssets({ before: nextBefore, limit: PAGE });
+      const page = await api.listAssets({ ...next, limit: PAGE });
       setItems((cur) => {
         const seen = new Set(cur.map((i) => i.id));
         return [...cur, ...page.items.filter((i) => !seen.has(i.id))];
       });
-      setNextBefore(page.next_before);
-      setDone(page.next_before === null);
+      if (page.next_cursor) setNext({ cursor: page.next_cursor });
+      else if (page.next_before) setNext({ before: page.next_before });
+      setDone(!page.next_cursor && !page.next_before);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) setAnonymous();
       else setError(e instanceof Error ? e.message : "Could not load your photos.");
@@ -39,7 +41,7 @@ export function Library() {
       setLoading(false);
       setStarted(true);
     }
-  }, [nextBefore, setAnonymous]);
+  }, [next, setAnonymous]);
 
   // First page.
   useEffect(() => {

@@ -7,7 +7,10 @@ use axum::{
     routing::{delete, get, post},
 };
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
-use cyanotype_core::{jobs, keys, storage::Storage};
+use cyanotype_core::{
+    jobs, keys,
+    storage::{Storage, UploadedPart},
+};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use time::OffsetDateTime;
@@ -24,6 +27,7 @@ pub fn routes() -> Router<AppState> {
         .route("/assets/check", post(check))
         .route("/assets/complete", post(complete))
         .route("/assets", get(list))
+        .route("/assets/count", get(count))
         .route("/assets/{id}", get(get_one))
         .route("/assets/{id}", delete(remove))
 }
@@ -34,6 +38,10 @@ struct CheckRequest {
     size_bytes: i64,
     filename: String,
     content_type: Option<String>,
+    /// The source file's mtime (RFC 3339). Stored on the asset; the timeline falls back to it when
+    /// EXIF `taken_at` is missing.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    file_modified_at: Option<OffsetDateTime>,
 }
 
 #[derive(Serialize)]
@@ -43,16 +51,107 @@ struct PartUrl {
 }
 
 #[derive(Serialize)]
+struct DonePart {
+    number: i32,
+    etag: String,
+}
+
+#[derive(Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum CheckResponse {
     Exists {
         asset_id: Uuid,
     },
+    /// `parts` are the parts still to PUT (with fresh URLs); `uploaded` are parts a previous, interrupted
+    /// attempt already stored (resume). Send both lists in `/assets/complete`.
     Upload {
         upload_id: String,
         part_size: i64,
         parts: Vec<PartUrl>,
+        uploaded: Vec<DonePart>,
     },
+}
+
+/// Size S3 must have stored for part `number` of an upload of `size` bytes cut into `part_size` pieces.
+fn expected_part_size(number: i32, size: i64, part_size: i64) -> i64 {
+    (size - (i64::from(number) - 1) * part_size).clamp(0, part_size)
+}
+
+/// Parts that match the expected size exactly (a differently sized part is re-uploaded, overwriting it).
+fn usable_parts(found: Vec<UploadedPart>, size: i64, part_size: i64) -> Vec<UploadedPart> {
+    let n_parts = (size + part_size - 1) / part_size;
+    let mut by_number = std::collections::BTreeMap::new();
+    for p in found {
+        if i64::from(p.number) >= 1
+            && i64::from(p.number) <= n_parts
+            && p.size == expected_part_size(p.number, size, part_size)
+        {
+            by_number.insert(p.number, p);
+        }
+    }
+    by_number.into_values().collect()
+}
+
+#[derive(FromRow)]
+struct PendingUpload {
+    upload_id: String,
+    key: String,
+    part_size: i64,
+}
+
+/// An earlier `check` for the same content left a multipart upload behind (client died, network drop).
+/// Resume it instead of creating (and leaking) another one. Returns None when there is nothing usable.
+async fn resume_upload(s: &AppState, owner: Uuid, sha: &[u8], req: &CheckRequest) -> ApiResult<Option<CheckResponse>> {
+    let Some(p) = sqlx::query_as::<_, PendingUpload>(
+        "SELECT upload_id, key, part_size FROM uploads
+         WHERE owner_id = $1 AND sha256 = $2 AND size_bytes = $3 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(owner)
+    .bind(sha)
+    .bind(req.size_bytes)
+    .fetch_optional(&s.db)
+    .await?
+    else {
+        return Ok(None);
+    };
+    let Some(found) = s.storage.list_parts(&p.key, &p.upload_id).await? else {
+        // S3 forgot the upload (aborted or expired): drop the stale row and start over.
+        sqlx::query("DELETE FROM uploads WHERE upload_id = $1")
+            .bind(&p.upload_id)
+            .execute(&s.db)
+            .await?;
+        return Ok(None);
+    };
+    let done = usable_parts(found, req.size_bytes, p.part_size);
+    let n_parts = ((req.size_bytes + p.part_size - 1) / p.part_size) as i32;
+    let missing: Vec<i32> = (1..=n_parts).filter(|n| !done.iter().any(|d| d.number == *n)).collect();
+    let parts = s.storage.presign_parts(&p.key, &p.upload_id, missing).await?;
+    // Keep an upload that is being actively resumed away from the stale-upload janitor.
+    sqlx::query(
+        "UPDATE uploads SET created_at = now(), file_modified_at = coalesce($2, file_modified_at) WHERE upload_id = $1",
+    )
+    .bind(&p.upload_id)
+    .bind(req.file_modified_at)
+    .execute(&s.db)
+    .await?;
+    Ok(Some(CheckResponse::Upload {
+        upload_id: p.upload_id,
+        part_size: p.part_size,
+        parts: parts
+            .into_iter()
+            .map(|p| PartUrl {
+                number: p.number,
+                url: p.url,
+            })
+            .collect(),
+        uploaded: done
+            .into_iter()
+            .map(|p| DonePart {
+                number: p.number,
+                etag: p.etag,
+            })
+            .collect(),
+    }))
 }
 
 async fn check(
@@ -76,15 +175,22 @@ async fn check(
         return Ok(Json(CheckResponse::Exists { asset_id }));
     }
 
-    let content_type = req.content_type.unwrap_or_else(|| "application/octet-stream".into());
+    if let Some(resp) = resume_upload(&s, user.id, &sha[..], &req).await? {
+        return Ok(Json(resp));
+    }
+
+    let content_type = req
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".into());
     let key = keys::original(user.id, &sha, &keys::sanitize_ext(&req.filename));
     let upload_id = s.storage.create_multipart(&key, &content_type).await?;
     let n_parts = ((req.size_bytes + PART_SIZE - 1) / PART_SIZE) as i32;
-    let parts = s.storage.presign_parts(&key, &upload_id, n_parts).await?;
+    let parts = s.storage.presign_parts(&key, &upload_id, 1..=n_parts).await?;
 
     sqlx::query(
-        "INSERT INTO uploads (upload_id, owner_id, sha256, key, size_bytes, part_size, original_name, content_type)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+        "INSERT INTO uploads (upload_id, owner_id, sha256, key, size_bytes, part_size, original_name, content_type, file_modified_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
     )
     .bind(&upload_id)
     .bind(user.id)
@@ -94,6 +200,7 @@ async fn check(
     .bind(PART_SIZE)
     .bind(&req.filename)
     .bind(&content_type)
+    .bind(req.file_modified_at)
     .execute(&s.db)
     .await?;
 
@@ -107,6 +214,7 @@ async fn check(
                 url: p.url,
             })
             .collect(),
+        uploaded: Vec::new(),
     }))
 }
 
@@ -129,6 +237,7 @@ struct UploadRow {
     size_bytes: i64,
     original_name: String,
     content_type: String,
+    file_modified_at: Option<OffsetDateTime>,
 }
 
 async fn complete(
@@ -137,7 +246,7 @@ async fn complete(
     Json(req): Json<CompleteRequest>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     let up: UploadRow = sqlx::query_as(
-        "SELECT sha256, key, size_bytes, original_name, content_type FROM uploads WHERE upload_id = $1 AND owner_id = $2",
+        "SELECT sha256, key, size_bytes, original_name, content_type, file_modified_at FROM uploads WHERE upload_id = $1 AND owner_id = $2",
     )
     .bind(&req.upload_id)
     .bind(user.id)
@@ -160,9 +269,10 @@ async fn complete(
     let mut tx = s.db.begin().await?;
     // A concurrent upload of the same content may have won; either way return the single asset.
     let (asset_id,): (Uuid,) = sqlx::query_as(
-        "INSERT INTO assets (owner_id, sha256, original_key, original_name, content_type, size_bytes)
-         VALUES ($1,$2,$3,$4,$5,$6)
-         ON CONFLICT (owner_id, sha256) DO UPDATE SET deleted_at = NULL
+        "INSERT INTO assets (owner_id, sha256, original_key, original_name, content_type, size_bytes, file_modified_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (owner_id, sha256) DO UPDATE
+            SET deleted_at = NULL, file_modified_at = coalesce(assets.file_modified_at, EXCLUDED.file_modified_at)
          RETURNING id",
     )
     .bind(user.id)
@@ -171,6 +281,7 @@ async fn complete(
     .bind(&up.original_name)
     .bind(&up.content_type)
     .bind(up.size_bytes)
+    .bind(up.file_modified_at)
     .fetch_one(&mut *tx)
     .await?;
     for kind in jobs::DEFAULT_PIPELINE {
@@ -235,7 +346,10 @@ async fn thumb_fields(
 #[derive(Deserialize)]
 struct ListQuery {
     limit: Option<i64>,
-    /// Return assets strictly older than this timestamp (RFC 3339).
+    /// Opaque keyset cursor from a previous `next_cursor`. Preferred over `before`.
+    cursor: Option<String>,
+    /// Deprecated, use `cursor`: assets strictly older than this timestamp (RFC 3339). Loses assets that share
+    /// a sort time across a page boundary.
     #[serde(default, with = "time::serde::rfc3339::option")]
     before: Option<OffsetDateTime>,
 }
@@ -243,32 +357,80 @@ struct ListQuery {
 #[derive(Serialize)]
 struct ListResponse {
     items: Vec<ListItem>,
-    /// Pass as `before` to fetch the next page; null when this was the last page.
+    /// Pass as `cursor` to fetch the next page; null when this was the last page.
+    next_cursor: Option<String>,
+    /// Deprecated, use `next_cursor`. Pass as `before`; null when this was the last page.
     #[serde(with = "time::serde::rfc3339::option")]
     next_before: Option<OffsetDateTime>,
 }
 
+/// Cursor = hex of `<rfc3339 sort_time>|<uuid>`: the last row's position in `(sort_time DESC, id DESC)` order.
+fn encode_cursor(t: OffsetDateTime, id: Uuid) -> String {
+    let ts = t
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    keys::hex(format!("{ts}|{id}").as_bytes())
+}
+
+fn decode_cursor(c: &str) -> Option<(OffsetDateTime, Uuid)> {
+    if !c.len().is_multiple_of(2) || !c.is_ascii() || c.len() > 200 {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = c
+        .as_bytes()
+        .chunks(2)
+        .map(|p| u8::from_str_radix(std::str::from_utf8(p).ok()?, 16).ok())
+        .collect();
+    let text = String::from_utf8(bytes?).ok()?;
+    let (ts, id) = text.split_once('|')?;
+    Some((
+        OffsetDateTime::parse(ts, &time::format_description::well_known::Rfc3339).ok()?,
+        Uuid::parse_str(id).ok()?,
+    ))
+}
+
+const LIST_SELECT: &str = "SELECT id, original_name, content_type, size_bytes, width, height,
+        coalesce(taken_at, file_modified_at, created_at) AS sort_time, thumbhash
+ FROM assets WHERE owner_id = $1 AND deleted_at IS NULL";
+
 async fn list(State(s): State<AppState>, user: AuthUser, Query(q): Query<ListQuery>) -> ApiResult<Json<ListResponse>> {
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
-    let rows = sqlx::query_as::<_, ListRow>(
-        "SELECT id, original_name, content_type, size_bytes, width, height,
-                coalesce(taken_at, created_at) AS sort_time, thumbhash
-         FROM assets
-         WHERE owner_id = $1 AND deleted_at IS NULL
-           AND ($2::timestamptz IS NULL OR coalesce(taken_at, created_at) < $2)
-         ORDER BY coalesce(taken_at, created_at) DESC, id
-         LIMIT $3",
-    )
-    .bind(user.id)
-    .bind(q.before)
-    .bind(limit)
-    .fetch_all(&s.db)
-    .await?;
-    let next_before = if rows.len() as i64 == limit {
-        rows.last().map(|r| r.summary.sort_time)
-    } else {
-        None
+    // Keyset position: rows strictly after (ts, id) in (sort_time DESC, id DESC) order. The legacy `before` has no
+    // id, so it compares against the nil uuid, which makes the predicate a strict `sort_time < before`.
+    let after = match (&q.cursor, q.before) {
+        (Some(c), _) => Some(decode_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
+        (None, Some(t)) => Some((t, Uuid::nil())),
+        (None, None) => None,
     };
+    // Row comparison against the (owner_id, sort expression DESC, id DESC) index; two statements so the planner
+    // never has to guess around an optional predicate.
+    let rows = match after {
+        Some((ts, id)) => {
+            sqlx::query_as::<_, ListRow>(&format!(
+                "{LIST_SELECT} AND (coalesce(taken_at, file_modified_at, created_at), id) < ($2, $3)
+                 ORDER BY coalesce(taken_at, file_modified_at, created_at) DESC, id DESC LIMIT $4"
+            ))
+            .bind(user.id)
+            .bind(ts)
+            .bind(id)
+            .bind(limit)
+            .fetch_all(&s.db)
+            .await?
+        }
+        None => {
+            sqlx::query_as::<_, ListRow>(&format!(
+                "{LIST_SELECT}
+                 ORDER BY coalesce(taken_at, file_modified_at, created_at) DESC, id DESC LIMIT $2"
+            ))
+            .bind(user.id)
+            .bind(limit)
+            .fetch_all(&s.db)
+            .await?
+        }
+    };
+    let last = if rows.len() as i64 == limit { rows.last() } else { None };
+    let next_cursor = last.map(|r| encode_cursor(r.summary.sort_time, r.summary.id));
+    let next_before = last.map(|r| r.summary.sort_time);
     let mut items = Vec::with_capacity(rows.len());
     for r in rows {
         let (thumbhash, thumb_url) = thumb_fields(&s.storage, user.id, r.summary.id, r.thumbhash.as_deref()).await?;
@@ -278,7 +440,20 @@ async fn list(State(s): State<AppState>, user: AuthUser, Query(q): Query<ListQue
             thumb_url,
         });
     }
-    Ok(Json(ListResponse { items, next_before }))
+    Ok(Json(ListResponse {
+        items,
+        next_cursor,
+        next_before,
+    }))
+}
+
+/// Number of live assets, for `cyanotype status`.
+async fn count(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<serde_json::Value>> {
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM assets WHERE owner_id = $1 AND deleted_at IS NULL")
+        .bind(user.id)
+        .fetch_one(&s.db)
+        .await?;
+    Ok(Json(serde_json::json!({"count": n})))
 }
 
 async fn get_one(
@@ -287,7 +462,7 @@ async fn get_one(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let a: AssetSummary = sqlx::query_as(
-        "SELECT id, original_name, content_type, size_bytes, width, height, coalesce(taken_at, created_at) AS sort_time
+        "SELECT id, original_name, content_type, size_bytes, width, height, coalesce(taken_at, file_modified_at, created_at) AS sort_time
          FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL",
     )
     .bind(id)
@@ -332,9 +507,275 @@ async fn remove(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>)
 
 #[cfg(test)]
 mod tests {
-    use cyanotype_core::config::S3Config;
+    //! DB-backed tests need `DATABASE_URL` (role must be able to CREATE DATABASE) and are skipped without it.
+    use axum::{
+        body::Body,
+        http::{Request, header},
+    };
+    use cyanotype_core::{config::S3Config, db, storage::Storage};
+    use sqlx::{Connection, Executor, PgConnection, PgPool};
+    use tower::ServiceExt;
 
     use super::*;
+
+    fn part(number: i32, size: i64) -> UploadedPart {
+        UploadedPart {
+            number,
+            etag: format!("\"e{number}\""),
+            size,
+        }
+    }
+
+    #[test]
+    fn part_sizes_are_validated_for_resume() {
+        let ps = 16;
+        assert_eq!(expected_part_size(1, 40, ps), 16);
+        assert_eq!(expected_part_size(2, 40, ps), 16);
+        assert_eq!(expected_part_size(3, 40, ps), 8);
+        assert_eq!(expected_part_size(4, 40, ps), 0);
+        // Wrong-sized, out-of-range and duplicate parts are dropped / de-duplicated; the rest is kept.
+        let got = usable_parts(
+            vec![
+                part(1, 16),
+                part(2, 15),
+                part(3, 8),
+                part(3, 8),
+                part(4, 8),
+                part(0, 16),
+            ],
+            40,
+            ps,
+        );
+        assert_eq!(got.iter().map(|p| p.number).collect::<Vec<_>>(), vec![1, 3]);
+    }
+
+    #[test]
+    fn cursors_round_trip_and_reject_garbage() {
+        let t = OffsetDateTime::parse(
+            "2020-06-01T12:34:56.123456Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+        let id = Uuid::new_v4();
+        assert_eq!(decode_cursor(&encode_cursor(t, id)), Some((t, id)));
+        for bad in ["", "zz", "abc", "6e6f7069706573", "ff", &"00".repeat(150)] {
+            assert!(decode_cursor(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn cursor_pagination_has_no_gaps_or_dupes_when_sort_times_tie() {
+        let Some(t) = TestDb::new().await else { return };
+        let (uid,): (Uuid,) =
+            sqlx::query_as("INSERT INTO users (email, password_hash) VALUES ('c@example.com','x') RETURNING id")
+                .fetch_one(&t.pool)
+                .await
+                .unwrap();
+        let key = "cyk_cursor";
+        sqlx::query("INSERT INTO api_keys (user_id, name, key_hash) VALUES ($1,'t',$2)")
+            .bind(uid)
+            .bind(cyanotype_service::auth::sha256(key.as_bytes()))
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        // 23 burst shots with the identical taken_at, 9 files with the identical mtime, 3 distinct ones.
+        for i in 0..35 {
+            let (taken, mtime) = match i {
+                0..=22 => (Some("2021-05-05T10:00:00Z"), None),
+                23..=31 => (None, Some("2018-01-01T00:00:00Z")),
+                _ => (
+                    Some(["2022-01-01T00:00:00Z", "2019-01-01T00:00:00Z", "2023-01-01T00:00:00Z"][i - 32]),
+                    None,
+                ),
+            };
+            let name = format!("f{i}.jpg");
+            sqlx::query(
+                "INSERT INTO assets (owner_id, sha256, original_key, original_name, content_type, size_bytes, taken_at, file_modified_at)
+                 VALUES ($1, sha256($2::bytea), $3, $3, 'image/jpeg', 1, $4::timestamptz, $5::timestamptz)",
+            )
+            .bind(uid)
+            .bind(name.as_bytes())
+            .bind(&name)
+            .bind(taken)
+            .bind(mtime)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        }
+        let app = routes().with_state(crate::AppState {
+            db: t.pool.clone(),
+            storage: dummy_storage(),
+        });
+
+        let mut seen = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            let path = match &cursor {
+                Some(c) => format!("/assets?limit=7&cursor={c}"),
+                None => "/assets?limit=7".to_string(),
+            };
+            let page = get_json(&app, &path, key).await;
+            pages += 1;
+            for i in page["items"].as_array().unwrap() {
+                seen.push(i["id"].as_str().unwrap().to_string());
+            }
+            match page["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+            assert!(pages < 20, "runaway pagination");
+        }
+        assert!(pages >= 3, "{pages} pages");
+        assert_eq!(seen.len(), 35, "every asset exactly once");
+        let unique: std::collections::HashSet<_> = seen.iter().collect();
+        assert_eq!(unique.len(), 35, "no duplicates");
+
+        // Same set as one big page, in the same order.
+        let all = get_json(&app, "/assets?limit=500", key).await;
+        let all: Vec<_> = all["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(all, seen);
+
+        // Invalid cursors are a 400, not a silent first page.
+        for bad in ["nonsense", "6e6f7069706573", ""] {
+            let req = Request::builder()
+                .uri(format!("/assets?cursor={bad}"))
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "cursor={bad:?}");
+        }
+
+        // The deprecated `before` is still accepted and still reports next_before.
+        let old = get_json(&app, "/assets?limit=3", key).await;
+        assert!(old["next_before"].is_string());
+        t.teardown().await;
+    }
+
+    struct TestDb {
+        pool: PgPool,
+        admin_url: String,
+        name: String,
+    }
+
+    impl TestDb {
+        async fn new() -> Option<Self> {
+            let admin_url = std::env::var("DATABASE_URL").ok().filter(|v| !v.is_empty())?;
+            let name = format!("cyanotype_test_{}", Uuid::new_v4().simple());
+            let mut admin = PgConnection::connect(&admin_url).await.unwrap();
+            admin.execute(format!("CREATE DATABASE {name}").as_str()).await.unwrap();
+            let (base, _) = admin_url.rsplit_once('/').unwrap();
+            let pool = db::connect(&format!("{base}/{name}")).await.unwrap();
+            db::migrate(&pool).await.unwrap();
+            Some(Self { pool, admin_url, name })
+        }
+
+        async fn teardown(self) {
+            self.pool.close().await;
+            let mut admin = PgConnection::connect(&self.admin_url).await.unwrap();
+            admin
+                .execute(format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", self.name).as_str())
+                .await
+                .unwrap();
+        }
+    }
+
+    fn dummy_storage() -> Storage {
+        Storage::new(&S3Config {
+            endpoint: Some("http://127.0.0.1:1".into()),
+            public_endpoint: Some("http://127.0.0.1:1".into()),
+            region: "us-east-1".into(),
+            bucket: "b".into(),
+            access_key: "k".into(),
+            secret_key: "s".into(),
+            force_path_style: true,
+            presign_ttl_secs: 60,
+        })
+    }
+
+    async fn get_json(app: &Router, path: &str, key: &str) -> serde_json::Value {
+        let req = Request::builder()
+            .uri(path)
+            .header(header::AUTHORIZATION, format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "{path}");
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn timeline_falls_back_to_file_modified_at_when_taken_at_is_missing() {
+        let Some(t) = TestDb::new().await else { return };
+        let (uid,): (Uuid,) =
+            sqlx::query_as("INSERT INTO users (email, password_hash) VALUES ('t@example.com','x') RETURNING id")
+                .fetch_one(&t.pool)
+                .await
+                .unwrap();
+        let key = "cyk_test";
+        sqlx::query("INSERT INTO api_keys (user_id, name, key_hash) VALUES ($1,'t',$2)")
+            .bind(uid)
+            .bind(cyanotype_service::auth::sha256(key.as_bytes()))
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        // exif: has taken_at (2020); mtime: only a file mtime (2015); none: neither (sorts by created_at = now).
+        for (name, taken, mtime) in [
+            ("exif.jpg", Some("2020-06-01T00:00:00Z"), Some("2024-01-01T00:00:00Z")),
+            ("mtime.jpg", None, Some("2015-03-04T05:06:07Z")),
+            ("none.jpg", None, None),
+        ] {
+            sqlx::query(
+                "INSERT INTO assets (owner_id, sha256, original_key, original_name, content_type, size_bytes, taken_at, file_modified_at)
+                 VALUES ($1, sha256($2::bytea), $3, $3, 'image/jpeg', 1, $4::timestamptz, $5::timestamptz)",
+            )
+            .bind(uid)
+            .bind(name.as_bytes())
+            .bind(name)
+            .bind(taken)
+            .bind(mtime)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        }
+        let app = routes().with_state(crate::AppState {
+            db: t.pool.clone(),
+            storage: dummy_storage(),
+        });
+
+        let list = get_json(&app, "/assets", key).await;
+        let items = list["items"].as_array().unwrap();
+        let order: Vec<_> = items.iter().map(|i| i["original_name"].as_str().unwrap()).collect();
+        assert_eq!(order, ["none.jpg", "exif.jpg", "mtime.jpg"]);
+        // EXIF taken_at wins over mtime; mtime wins over upload time.
+        assert!(items[1]["sort_time"].as_str().unwrap().starts_with("2020-06-01"));
+        assert!(
+            items[2]["sort_time"]
+                .as_str()
+                .unwrap()
+                .starts_with("2015-03-04T05:06:07")
+        );
+
+        // Keyset pagination uses the same expression.
+        let page = get_json(&app, "/assets?before=2016-01-01T00:00:00Z", key).await;
+        assert_eq!(page["items"].as_array().unwrap().len(), 1);
+        assert_eq!(page["items"][0]["original_name"], "mtime.jpg");
+
+        assert_eq!(get_json(&app, "/assets/count", key).await["count"], 3);
+
+        // The single-asset view agrees.
+        let id = items[2]["id"].as_str().unwrap();
+        let one = get_json(&app, &format!("/assets/{id}"), key).await;
+        assert!(one["sort_time"].as_str().unwrap().starts_with("2015-03-04T05:06:07"));
+        t.teardown().await;
+    }
 
     fn storage() -> Storage {
         Storage::new(&S3Config {

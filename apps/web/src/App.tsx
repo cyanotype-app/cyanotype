@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./auth";
 import { Logo } from "./components/Logo";
+import { ApiKeys } from "./pages/ApiKeys";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { Register } from "./pages/Register";
@@ -15,6 +16,7 @@ export function App() {
       <Route path="/logout" element={<Logout />} />
       <Route element={<RequireAuth />}>
         <Route path="/library" element={<Library />} />
+        <Route path="/settings/api-keys" element={<ApiKeys />} />
       </Route>
       <Route path="*" element={<Navigate to="/library" replace />} />
     </Routes>
@@ -34,6 +36,9 @@ function RequireAuth() {
           <span>Cyanotype</span>
         </Link>
         <div className="topbar-right">
+          <Link to="/settings/api-keys" className="btn btn-quiet">
+            API keys
+          </Link>
           <span className="muted email">{state.user.email}</span>
           <button type="button" className="btn btn-quiet" onClick={() => void signOut()}>
             Sign out
