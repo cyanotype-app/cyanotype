@@ -6,7 +6,7 @@ use serde_json::{Map, Value as Json};
 use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
 
 /// Fields we store on the asset row, plus the raw dump for the `exif` jsonb column.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct ExifInfo {
     pub taken_at: Option<OffsetDateTime>,
     pub latitude: Option<f64>,
@@ -16,20 +16,58 @@ pub struct ExifInfo {
     pub lens_model: Option<String>,
     /// EXIF orientation 1..=8 (1 = upright).
     pub orientation: u8,
+    /// EXIF PixelXDimension/PixelYDimension: the image size the camera recorded (for RAW, usually the
+    /// sensor size even when the file is not TIFF-based). Not stored in the database.
+    pub pixel_dims: Option<(u32, u32)>,
     pub json: Option<Json>,
 }
 
 /// Don't dump opaque blobs (MakerNote, thumbnails, ...) into jsonb.
 const MAX_FIELD_BYTES: usize = 512;
 
-pub fn parse(bytes: &[u8]) -> ExifInfo {
-    let Ok(exif) = Reader::new().read_from_container(&mut Cursor::new(bytes)) else {
-        return ExifInfo {
-            orientation: 1,
-            ..Default::default()
-        };
-    };
+fn empty() -> ExifInfo {
+    ExifInfo {
+        orientation: 1,
+        ..Default::default()
+    }
+}
 
+/// EXIF from an image container (JPEG, TIFF-based RAW, HEIF/AVIF, PNG, WebP).
+pub fn parse(bytes: &[u8]) -> ExifInfo {
+    match Reader::new().read_from_container(&mut Cursor::new(bytes)) {
+        Ok(exif) => from_exif(&exif),
+        Err(_) => empty(),
+    }
+}
+
+/// EXIF from a bare TIFF stream (`II*\0` / `MM\0*`), e.g. the payload of a HEIF "Exif" item or a CR3
+/// CMT box.
+pub fn parse_tiff(tiff: &[u8]) -> ExifInfo {
+    match Reader::new().read_raw(tiff.to_vec()) {
+        Ok(exif) => from_exif(&exif),
+        Err(_) => empty(),
+    }
+}
+
+impl ExifInfo {
+    /// Fill every field this one lacks from `other` (the JSON dump is kept if already present).
+    pub fn fill_from(&mut self, other: ExifInfo) {
+        self.taken_at = self.taken_at.or(other.taken_at);
+        if self.latitude.is_none() || self.longitude.is_none() {
+            self.latitude = other.latitude;
+            self.longitude = other.longitude;
+        }
+        self.pixel_dims = self.pixel_dims.or(other.pixel_dims);
+        self.camera_make = self.camera_make.take().or(other.camera_make);
+        self.camera_model = self.camera_model.take().or(other.camera_model);
+        self.lens_model = self.lens_model.take().or(other.lens_model);
+        if self.json.is_none() {
+            self.json = other.json;
+        }
+    }
+}
+
+fn from_exif(exif: &exif::Exif) -> ExifInfo {
     let ascii = |tag: Tag| -> Option<String> {
         let f = exif.get_field(tag, In::PRIMARY)?;
         clean(&ascii_value(&f.value)?)
@@ -71,6 +109,12 @@ pub fn parse(bytes: &[u8]) -> ExifInfo {
         .filter(|o| (1..=8).contains(o))
         .unwrap_or(1) as u8;
 
+    let dim = |tag: Tag| exif.get_field(tag, In::PRIMARY).and_then(|f| f.value.get_uint(0));
+    let pixel_dims = match (dim(Tag::PixelXDimension), dim(Tag::PixelYDimension)) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => Some((w, h)),
+        _ => None,
+    };
+
     let mut map = Map::new();
     for f in exif.fields().filter(|f| f.ifd_num == In::PRIMARY) {
         let v = match &f.value {
@@ -92,6 +136,7 @@ pub fn parse(bytes: &[u8]) -> ExifInfo {
         camera_model: ascii(Tag::Model),
         lens_model: ascii(Tag::LensModel),
         orientation,
+        pixel_dims,
         json: (!map.is_empty()).then_some(Json::Object(map)),
     }
 }
