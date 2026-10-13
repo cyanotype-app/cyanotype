@@ -64,5 +64,8 @@ describe("api client", () => {
     );
     await api.listAssets();
     expect((f.mock.calls[1] as unknown as [string])[0]).toBe("/assets");
+    // `cursor` wins over the deprecated `before`.
+    await api.listAssets({ limit: 10, cursor: "6162|x", before: "2026-01-01T00:00:00Z" });
+    expect((f.mock.calls[2] as unknown as [string])[0]).toBe("/assets?limit=10&cursor=6162%7Cx");
   });
 });
