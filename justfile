@@ -39,6 +39,10 @@ check: fmt-check lint test
 migrate:
     cargo run -p cyanotype-cli -- migrate
 
+# Run the importer from source (release build: hashing is CPU-bound). `just import ~/Pictures --dry-run`. See docs/import.md.
+import *args:
+    cargo run -q --release -p cyanotype-cli -- import {{args}}
+
 # Dev loop: compose Postgres + MinIO, migrate, run auth/assets/worker from source (Ctrl-C stops; :3001/:3002).
 dev:
     docker compose up -d --wait postgres minio
@@ -77,6 +81,10 @@ images:
 # End-to-end smoke test through the gateway (needs `just up` or equivalent). BASE_URL=... to override.
 e2e:
     BASE_URL={{base_url}} scripts/e2e.sh
+
+# End-to-end test of `cyanotype import` through the gateway (needs `just up`, REGISTRATION_MODE=open). BASE_URL=... to override.
+e2e-import:
+    BASE_URL={{base_url}} scripts/e2e-import.sh
 
 # Full stack plus the opt-in Datadog Agent (needs DD_API_KEY in your environment; the value is never printed).
 datadog-up:

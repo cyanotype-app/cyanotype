@@ -1,15 +1,37 @@
 [package]
 name = "cyanotype-cli"
+description = "The `cyanotype` command line: migrations, login, bulk photo import"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "cyanotype"
+path = "src/main.rs"
+
 [dependencies]
 cyanotype-core.workspace = true
 anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-sqlx.workspace = true
 uuid.workspace = true
-clap.workspace = true
+
+futures-util = "0.3"
+globset = "0.4"
+indicatif = "0.17"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+rpassword = "7"
+tokio-util = { version = "0.7", features = ["io"] }
+toml = "0.8"
+walkdir = "2"
+
+[dev-dependencies]
+axum.workspace = true
+tempfile = "3"

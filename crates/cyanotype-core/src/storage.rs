@@ -38,6 +38,13 @@ pub struct PresignedPart {
     pub url: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct UploadedPart {
+    pub number: i32,
+    pub etag: String,
+    pub size: i64,
+}
+
 impl Storage {
     pub fn new(cfg: &S3Config) -> Self {
         Self {
@@ -61,9 +68,15 @@ impl Storage {
         out.upload_id.context("S3 returned no upload id")
     }
 
-    pub async fn presign_parts(&self, key: &str, upload_id: &str, parts: i32) -> Result<Vec<PresignedPart>> {
-        let mut out = Vec::with_capacity(parts as usize);
-        for number in 1..=parts {
+    /// Presign `PUT` URLs for the given part numbers (1-based).
+    pub async fn presign_parts(
+        &self,
+        key: &str,
+        upload_id: &str,
+        numbers: impl IntoIterator<Item = i32>,
+    ) -> Result<Vec<PresignedPart>> {
+        let mut out = Vec::new();
+        for number in numbers {
             let req = self
                 .presign_client
                 .upload_part()
@@ -99,16 +112,67 @@ impl Storage {
         Ok(())
     }
 
+    /// Parts already stored for a multipart upload as `(number, etag, size)`, or `None` if S3 no longer knows
+    /// the upload (aborted, completed or expired).
+    pub async fn list_parts(&self, key: &str, upload_id: &str) -> Result<Option<Vec<UploadedPart>>> {
+        let mut out = Vec::new();
+        let mut marker: Option<String> = None;
+        loop {
+            let res = self
+                .client
+                .list_parts()
+                .bucket(&self.bucket)
+                .key(key)
+                .upload_id(upload_id)
+                .set_part_number_marker(marker.clone())
+                .send()
+                .await;
+            let page = match res {
+                Ok(p) => p,
+                Err(e)
+                    if e.as_service_error()
+                        .is_some_and(|s| s.meta().code() == Some("NoSuchUpload")) =>
+                {
+                    return Ok(None);
+                }
+                Err(e) => return Err(e).context("list_parts"),
+            };
+            for p in page.parts() {
+                if let (Some(number), Some(etag), Some(size)) = (p.part_number, p.e_tag(), p.size) {
+                    out.push(UploadedPart {
+                        number,
+                        etag: etag.to_string(),
+                        size,
+                    });
+                }
+            }
+            match (page.is_truncated, page.next_part_number_marker) {
+                (Some(true), Some(m)) => marker = Some(m),
+                _ => return Ok(Some(out)),
+            }
+        }
+    }
+
+    /// Abort a multipart upload. Already-gone uploads are not an error.
     pub async fn abort_multipart(&self, key: &str, upload_id: &str) -> Result<()> {
-        self.client
+        match self
+            .client
             .abort_multipart_upload()
             .bucket(&self.bucket)
             .key(key)
             .upload_id(upload_id)
             .send()
             .await
-            .context("abort_multipart_upload")?;
-        Ok(())
+        {
+            Ok(_) => Ok(()),
+            Err(e)
+                if e.as_service_error()
+                    .is_some_and(|s| s.meta().code() == Some("NoSuchUpload")) =>
+            {
+                Ok(())
+            }
+            Err(e) => Err(e).context("abort_multipart_upload"),
+        }
     }
 
     /// Size of the object, or None if it does not exist.
