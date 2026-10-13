@@ -3,5 +3,5 @@ pub mod auth;
 pub mod error;
 pub mod http;
 
-pub use auth::AuthUser;
+pub use auth::{AuthUser, SessionUser};
 pub use error::{ApiError, ApiResult};

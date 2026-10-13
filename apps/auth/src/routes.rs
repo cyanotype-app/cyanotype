@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{FromRef, State},
+    extract::{FromRef, Path, State},
     http::StatusCode,
     middleware,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use rand::RngCore;
@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use cyanotype_service::{
-    ApiError, ApiResult, AuthUser,
+    ApiError, ApiResult, AuthUser, SessionUser,
     auth::{SESSION_COOKIE as COOKIE, sha256},
 };
 use sqlx::PgPool;
@@ -58,6 +58,8 @@ pub fn routes(state: AppState) -> Router {
         .merge(limited)
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
+        .route("/auth/api-keys", get(list_api_keys).post(create_api_key))
+        .route("/auth/api-keys/{id}", delete(revoke_api_key))
         .with_state(state)
 }
 
@@ -179,6 +181,98 @@ async fn me(State(db): State<PgPool>, user: AuthUser) -> ApiResult<Json<Value>> 
         .fetch_one(&db)
         .await?;
     Ok(Json(json!({"id": user.id, "email": email})))
+}
+
+/// Plaintext API keys look like `cyk_<64 hex>` (32 random bytes). Only the sha256 is stored.
+const API_KEY_PREFIX: &str = "cyk_";
+/// Characters of the key (after `cyk_`) kept in clear so the list can tell keys apart.
+const API_KEY_HINT_LEN: usize = 6;
+const MAX_API_KEYS_PER_USER: i64 = 50;
+
+fn new_api_key() -> String {
+    format!("{API_KEY_PREFIX}{}", random_token())
+}
+
+#[derive(Deserialize)]
+struct NewApiKey {
+    name: String,
+}
+
+/// Session only: a leaked API key must not be able to mint more keys.
+async fn create_api_key(
+    State(db): State<PgPool>,
+    user: SessionUser,
+    Json(req): Json<NewApiKey>,
+) -> ApiResult<(StatusCode, Json<Value>)> {
+    let name = req.name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err(ApiError::BadRequest("name must be 1-100 characters".into()));
+    }
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM api_keys WHERE user_id = $1")
+        .bind(user.id)
+        .fetch_one(&db)
+        .await?;
+    if n >= MAX_API_KEYS_PER_USER {
+        return Err(ApiError::Conflict(format!(
+            "at most {MAX_API_KEYS_PER_USER} API keys; revoke one first"
+        )));
+    }
+    let key = new_api_key();
+    let hint = format!("{API_KEY_PREFIX}{}", &key[API_KEY_PREFIX.len()..][..API_KEY_HINT_LEN]);
+    let (id, created_at): (Uuid, time::OffsetDateTime) = sqlx::query_as(
+        "INSERT INTO api_keys (user_id, name, key_hash, prefix) VALUES ($1, $2, $3, $4) RETURNING id, created_at",
+    )
+    .bind(user.id)
+    .bind(name)
+    .bind(sha256(key.as_bytes()))
+    .bind(&hint)
+    .fetch_one(&db)
+    .await?;
+    let created_at = rfc3339(created_at);
+    // The only time the plaintext key is ever returned.
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({"id": id, "name": name, "prefix": hint, "created_at": created_at, "key": key})),
+    ))
+}
+
+async fn list_api_keys(State(db): State<PgPool>, user: SessionUser) -> ApiResult<Json<Value>> {
+    let rows: Vec<(Uuid, String, String, time::OffsetDateTime, Option<time::OffsetDateTime>)> = sqlx::query_as(
+        "SELECT id, name, prefix, created_at, last_used_at FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(user.id)
+    .fetch_all(&db)
+    .await?;
+    let items: Vec<Value> = rows
+        .into_iter()
+        .map(|(id, name, prefix, created_at, last_used_at)| {
+            json!({
+                "id": id, "name": name, "prefix": prefix,
+                "created_at": rfc3339(created_at),
+                "last_used_at": last_used_at.map(rfc3339),
+            })
+        })
+        .collect();
+    Ok(Json(json!({"items": items})))
+}
+
+fn rfc3339(t: time::OffsetDateTime) -> String {
+    t.format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+}
+
+async fn revoke_api_key(State(db): State<PgPool>, user: SessionUser, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
+    let n = sqlx::query("DELETE FROM api_keys WHERE id = $1 AND user_id = $2")
+        .bind(id)
+        .bind(user.id)
+        .execute(&db)
+        .await?
+        .rows_affected();
+    if n == 0 {
+        Err(ApiError::NotFound)
+    } else {
+        Ok(StatusCode::NO_CONTENT)
+    }
 }
 
 #[cfg(test)]
@@ -350,6 +444,174 @@ mod tests {
             assert_eq!(cookie.contains("Secure"), secure, "{cookie}");
         }
         t.teardown().await;
+    }
+
+    // ---- API keys
+
+    fn cookie_of(res: &axum::response::Response) -> String {
+        let c = res.headers()[header::SET_COOKIE].to_str().unwrap();
+        c.split(';').next().unwrap().to_string()
+    }
+
+    async fn register_cookie(app: &Router, email: &str) -> String {
+        let res = app.clone().oneshot(reg(email)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        cookie_of(&res)
+    }
+
+    fn call(method: &str, path: &str, auth: (&str, &str), body: Option<&str>) -> Request<Body> {
+        let mut b = Request::builder().method(method).uri(path).header(auth.0, auth.1);
+        if body.is_some() {
+            b = b.header("content-type", "application/json");
+        }
+        b.body(Body::from(body.unwrap_or("").to_string())).unwrap()
+    }
+
+    async fn json_of(res: axum::response::Response) -> Value {
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    }
+
+    #[tokio::test]
+    async fn api_keys_create_list_use_and_revoke() {
+        let Some(t) = TestDb::new().await else { return };
+        let app = app(t.pool.clone(), |c| c.registration = RegistrationMode::Open);
+        let cookie = register_cookie(&app, "k@example.com").await;
+        let sess = ("cookie", cookie.as_str());
+
+        // Create: plaintext returned once, in the documented shape.
+        let res = app
+            .clone()
+            .oneshot(call("POST", "/auth/api-keys", sess, Some(r#"{"name":"laptop"}"#)))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let created = json_of(res).await;
+        let key = created["key"].as_str().unwrap().to_string();
+        let id = created["id"].as_str().unwrap().to_string();
+        assert!(key.starts_with("cyk_") && key.len() == 4 + 64, "{key}");
+        assert!(key[4..].bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(created["prefix"].as_str().unwrap(), &key[..10]);
+
+        // Only the sha256 is stored.
+        let (stored, hint): (Vec<u8>, String) = sqlx::query_as("SELECT key_hash, prefix FROM api_keys")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+        assert_eq!(stored, sha256(key.as_bytes()));
+        assert_eq!(hint, &key[..10]);
+
+        // Empty / oversized names are rejected.
+        for body in [r#"{"name":"  "}"#, &format!(r#"{{"name":"{}"}}"#, "x".repeat(101))] {
+            let res = app
+                .clone()
+                .oneshot(call("POST", "/auth/api-keys", sess, Some(body)))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        }
+
+        // List never contains the secret and has no last_used_at yet.
+        let res = app
+            .clone()
+            .oneshot(call("GET", "/auth/api-keys", sess, None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let list = json_of(res).await;
+        let item = &list["items"][0];
+        assert_eq!(item["id"].as_str().unwrap(), id);
+        assert_eq!(item["name"], "laptop");
+        assert!(item["created_at"].is_string() && item["last_used_at"].is_null());
+        assert!(!list.to_string().contains(&key[10..]));
+
+        // The key authenticates (and stamps last_used_at).
+        let bearer = format!("Bearer {key}");
+        let res = app
+            .clone()
+            .oneshot(call("GET", "/auth/me", ("authorization", &bearer), None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let res = app
+            .clone()
+            .oneshot(call("GET", "/auth/api-keys", sess, None))
+            .await
+            .unwrap();
+        assert!(json_of(res).await["items"][0]["last_used_at"].is_string());
+
+        // ...but cannot mint, list or revoke keys, even when a valid session cookie rides along.
+        for (m, path, body) in [
+            ("POST", "/auth/api-keys".to_string(), Some(r#"{"name":"evil"}"#)),
+            ("GET", "/auth/api-keys".to_string(), None),
+            ("DELETE", format!("/auth/api-keys/{id}"), None),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(call(m, &path, ("authorization", &bearer), body))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::FORBIDDEN, "{m} {path}");
+            let mut req = call(m, &path, ("authorization", &bearer), body);
+            req.headers_mut().insert("cookie", cookie.parse().unwrap());
+            assert_eq!(
+                app.clone().oneshot(req).await.unwrap().status(),
+                StatusCode::FORBIDDEN,
+                "{m} {path} +cookie"
+            );
+        }
+        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM api_keys")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+
+        // Unauthenticated: 401.
+        let req = Request::builder().uri("/auth/api-keys").body(Body::empty()).unwrap();
+        assert_eq!(status(&app, req).await, StatusCode::UNAUTHORIZED);
+
+        // Another user can neither see nor revoke it.
+        let other = register_cookie(&app, "o@example.com").await;
+        let res = app
+            .clone()
+            .oneshot(call(
+                "DELETE",
+                &format!("/auth/api-keys/{id}"),
+                ("cookie", &other),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let res = app
+            .clone()
+            .oneshot(call("GET", "/auth/api-keys", ("cookie", &other), None))
+            .await
+            .unwrap();
+        assert_eq!(json_of(res).await["items"].as_array().unwrap().len(), 0);
+
+        // Revoke: the key stops working immediately.
+        let res = app
+            .clone()
+            .oneshot(call("DELETE", &format!("/auth/api-keys/{id}"), sess, None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let res = app
+            .clone()
+            .oneshot(call("GET", "/auth/me", ("authorization", &bearer), None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        t.teardown().await;
+    }
+
+    #[tokio::test]
+    async fn api_keys_are_unique_and_random() {
+        let a = new_api_key();
+        let b = new_api_key();
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 68);
     }
 
     // ---- rate limiting: requests with an invalid body are rejected (422) before the database,
