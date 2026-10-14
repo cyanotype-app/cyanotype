@@ -3,6 +3,12 @@
 #   register -> /assets/check -> PUT part -> /assets/complete -> wait for worker -> GET asset -> GET thumbnail
 # then the same for a second photo through the backend-proxied transport used by the browser UI:
 #   /assets/check {transport:proxy} -> PUT <gateway>/assets/uploads/{id}/parts/1 -> complete -> worker thumbnail
+# then photo management on those two photos:
+#   trash -> gone from the library, visible in /assets/trash with its thumbnail -> restore -> trash -> delete forever
+#   (the janitor removes the S3 objects: presigned GETs of the original and thumbnail turn into 404s) -> empty trash
+# With E2E_S3_ENDPOINT, E2E_S3_BUCKET, E2E_S3_ACCESS_KEY and E2E_S3_SECRET_KEY set (a path-style endpoint such as
+# local MinIO or SeaweedFS; never a real bucket) it also lists object *versions* and delete markers under the
+# photos' keys and asserts none are left after the purge.
 #
 # Usage: BASE_URL=http://localhost:3000 scripts/e2e.sh
 # Needs: bash, curl, python3, sha256sum. A running stack (`just up`) and the worker.
@@ -96,6 +102,7 @@ done
 step "GET original and thumbnail via presigned URLs"
 orig="$(printf '%s' "$asset" | json 'd["original_url"]')"
 curl -fsS "$orig" | sha256sum | grep -q "^$sha" || fail "original bytes differ from what was uploaded"
+orig1="$orig"; thumb1="$thumb" # presigned, valid for minutes: used after the purge below
 ctype="$(curl -fsS -o "$work/thumb.bin" -w '%{content_type}' "$thumb")"
 [ -s "$work/thumb.bin" ] || fail "empty thumbnail"
 echo "thumbnail: $ctype, $(wc -c < "$work/thumb.bin" | tr -d ' ') bytes"
@@ -153,5 +160,108 @@ done
 [ -n "$thumb" ] || fail "proxy: thumb_url still null after ${TIMEOUT_SECS}s"
 orig="$(curl -fsS -b "$jar" "$BASE_URL/assets/$asset2" | json 'd["original_url"]')"
 curl -fsS "$orig" | sha256sum | grep -q "^$sha2" || fail "proxy: original bytes differ from what was uploaded"
+
+orig2="$orig"; thumb2="$thumb"
+
+# ---- Photo management: trash, restore, delete forever ----------------------------------------------------------
+post() { curl -fsS -b "$jar" -H 'content-type: application/json' -d "$2" "$BASE_URL$1"; }
+status_of() { curl -sS -o /dev/null -w '%{http_code}' "$1"; }
+ids_of() { python3 -c 'import json,sys; print(json.dumps({"ids": sys.argv[1:]}))' "$@"; }
+# wait_gone <url>: the janitor deletes in the background right after the purge request; wait for the 404.
+wait_gone() {
+  local deadline=$((SECONDS + TIMEOUT_SECS)) code
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    code="$(status_of "$1")"
+    [ "$code" = 404 ] && return 0
+    sleep 1
+  done
+  return 1
+}
+# s3_versions <key prefix>: how many object versions + delete markers exist under it (needs the E2E_S3_* variables).
+s3_versions() {
+  python3 - "$1" <<'PY'
+import datetime, hashlib, hmac, os, sys, urllib.parse, urllib.request
+endpoint = os.environ["E2E_S3_ENDPOINT"].rstrip("/")
+bucket, region = os.environ["E2E_S3_BUCKET"], os.environ.get("E2E_S3_REGION", "us-east-1")
+access, secret = os.environ["E2E_S3_ACCESS_KEY"], os.environ["E2E_S3_SECRET_KEY"]
+host = urllib.parse.urlparse(endpoint).netloc
+now = datetime.datetime.now(datetime.timezone.utc)
+amz, day = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
+q = "&".join(f"{urllib.parse.quote(k, safe='')}={urllib.parse.quote(v, safe='')}" for k, v in sorted([("prefix", sys.argv[1]), ("versions", "")]))
+empty = hashlib.sha256(b"").hexdigest()
+canon = f"GET\n/{bucket}\n{q}\nhost:{host}\nx-amz-content-sha256:{empty}\nx-amz-date:{amz}\n\nhost;x-amz-content-sha256;x-amz-date\n{empty}"
+scope = f"{day}/{region}/s3/aws4_request"
+sts = f"AWS4-HMAC-SHA256\n{amz}\n{scope}\n{hashlib.sha256(canon.encode()).hexdigest()}"
+k = ("AWS4" + secret).encode()
+for part in (day, region, "s3", "aws4_request"):
+    k = hmac.new(k, part.encode(), hashlib.sha256).digest()
+sig = hmac.new(k, sts.encode(), hashlib.sha256).hexdigest()
+auth = f"AWS4-HMAC-SHA256 Credential={access}/{scope}, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature={sig}"
+req = urllib.request.Request(f"{endpoint}/{bucket}?{q}", headers={"x-amz-date": amz, "x-amz-content-sha256": empty, "Authorization": auth})
+body = urllib.request.urlopen(req).read().decode()
+print(body.count("<Version>") + body.count("<DeleteMarker>"))
+PY
+}
+user_id="$(curl -fsS -b "$jar" "$BASE_URL/auth/me" | json 'd["id"]')"
+have_s3=""
+if [ -n "${E2E_S3_ENDPOINT:-}" ] && [ -n "${E2E_S3_BUCKET:-}" ] && [ -n "${E2E_S3_ACCESS_KEY:-}" ] && [ -n "${E2E_S3_SECRET_KEY:-}" ]; then have_s3=1; fi
+if [ -n "$have_s3" ]; then
+  [ "$(s3_versions "originals/$user_id/")" -ge 2 ] || fail "S3 inspection finds no originals under originals/$user_id/ (wrong E2E_S3_* settings?)"
+  [ "$(s3_versions "derived/$user_id/$asset_id/")" -ge 2 ] || fail "S3 inspection finds no derived objects for the first photo"
+fi
+
+step "trash: the photo leaves the library but keeps its thumbnail in the trash"
+[ "$(post /assets/trash "$(ids_of "$asset_id" "$asset_id" 00000000-0000-0000-0000-000000000000)" | json 'd["count"]')" = 1 ] || fail "trash: expected count 1"
+[ "$(post /assets/trash "$(ids_of "$asset_id")" | json 'd["count"]')" = 0 ] || fail "trash is not idempotent"
+curl -fsS -b "$jar" "$BASE_URL/assets?limit=50" | grep -q "$asset_id" && fail "trashed photo is still in the library"
+[ "$(curl -sS -o /dev/null -w '%{http_code}' -b "$jar" "$BASE_URL/assets/$asset_id")" = 404 ] || fail "trashed photo is still readable by id"
+trash_list="$(curl -fsS -b "$jar" "$BASE_URL/assets/trash")"
+[ "$(printf '%s' "$trash_list" | json 'len([i for i in d["items"] if i["id"]=="'"$asset_id"'"])')" = 1 ] || fail "photo missing from /assets/trash"
+tthumb="$(printf '%s' "$trash_list" | json '[i for i in d["items"] if i["id"]=="'"$asset_id"'"][0]["thumb_url"]')"
+[ -n "$tthumb" ] && [ "$(status_of "$tthumb")" = 200 ] || fail "trashed photo lost its thumbnail"
+printf '%s' "$trash_list" | json '[i for i in d["items"] if i["id"]=="'"$asset_id"'"][0]["purge_at"]' | grep -q . || fail "no purge_at"
+
+step "restore"
+[ "$(post /assets/restore "$(ids_of "$asset_id")" | json 'd["count"]')" = 1 ] || fail "restore: expected count 1"
+curl -fsS -b "$jar" "$BASE_URL/assets?limit=50" | grep -q "$asset_id" || fail "restored photo is not back in the library"
+
+step "delete forever: not allowed for a photo that is not in the trash"
+[ "$(post /assets/purge "$(ids_of "$asset_id")" | json 'd["count"]')" = 0 ] || fail "purge of a live photo must count 0"
+[ "$(status_of "$orig1")" = 200 ] || fail "live photo's original disappeared"
+
+step "delete forever: trash -> purge -> S3 objects removed by the janitor"
+post /assets/trash "$(ids_of "$asset_id")" >/dev/null
+[ "$(post /assets/purge "$(ids_of "$asset_id")" | json 'd["count"]')" = 1 ] || fail "purge: expected count 1"
+curl -fsS -b "$jar" "$BASE_URL/assets/trash" | grep -q "$asset_id" && fail "purged photo still listed in the trash"
+[ "$(post /assets/restore "$(ids_of "$asset_id")" | json 'd["count"]')" = 0 ] || fail "a purged photo must not be restorable"
+wait_gone "$orig1" || fail "original still downloadable ${TIMEOUT_SECS}s after the purge (janitor not running?)"
+wait_gone "$thumb1" || fail "thumbnail still downloadable after the purge"
+if [ -n "$have_s3" ]; then
+  # Versioned bucket: a plain delete would leave bytes behind as old versions; none may remain.
+  deadline=$((SECONDS + TIMEOUT_SECS)); left=-1
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    left=$(( $(s3_versions "derived/$user_id/$asset_id/") + $(s3_versions "originals/$user_id/${sha:0:2}/$sha") ))
+    [ "$left" = 0 ] && break
+    sleep 1
+  done
+  [ "$left" = 0 ] || fail "$left object versions / delete markers remain after the purge"
+  echo "S3: no versions or delete markers left for the purged photo"
+else
+  echo "(E2E_S3_* not set: skipped the S3 version listing)"
+fi
+# Uploading the purged photo again is a fresh upload, not a revival.
+req="$(python3 -c 'import json,sys; print(json.dumps({"sha256":sys.argv[1],"size_bytes":int(sys.argv[2]),"filename":"e2e.png"}))' "$sha" "$size")"
+[ "$(post /assets/check "$req" | json 'd["status"]')" = upload ] || fail "re-upload of a purged photo should start a new upload"
+
+step "empty trash"
+post /assets/trash "$(ids_of "$asset2")" >/dev/null
+[ "$(curl -fsS -b "$jar" "$BASE_URL/assets/trash" | json 'd["total"]')" = 1 ] || fail "trash total should be 1"
+[ "$(curl -fsS -b "$jar" -X POST "$BASE_URL/assets/trash/empty" | json 'd["count"]')" = 1 ] || fail "empty: expected count 1"
+[ "$(curl -fsS -b "$jar" -X POST "$BASE_URL/assets/trash/empty" | json 'd["count"]')" = 0 ] || fail "empty is not idempotent"
+wait_gone "$orig2" || fail "second photo's original still downloadable after emptying the trash"
+wait_gone "$thumb2" || fail "second photo's thumbnail still downloadable after emptying the trash"
+if [ -n "$have_s3" ]; then
+  [ "$(s3_versions "derived/$user_id/$asset2/")" = 0 ] || fail "derived versions remain for the emptied photo"
+fi
 
 echo "e2e OK"
