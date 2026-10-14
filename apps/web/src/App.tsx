@@ -2,6 +2,8 @@ import { useEffect } from "react";
 import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./auth";
 import { Logo } from "./components/Logo";
+import { AlbumPage } from "./pages/Album";
+import { Albums } from "./pages/Albums";
 import { ApiKeys } from "./pages/ApiKeys";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
@@ -19,6 +21,8 @@ export function App() {
       <Route path="/logout" element={<Logout />} />
       <Route element={<RequireAuth />}>
         <Route path="/library" element={<Library />} />
+        <Route path="/albums" element={<Albums />} />
+        <Route path="/albums/:id" element={<AlbumPage />} />
         <Route path="/trash" element={<Trash />} />
         <Route path="/settings/api-keys" element={<ApiKeys />} />
       </Route>
@@ -41,6 +45,9 @@ function RequireAuth() {
           <span>Cyanotype</span>
         </Link>
         <div className="topbar-right">
+          <Link to="/albums" className="btn btn-quiet">
+            Albums
+          </Link>
           <Link to="/trash" className="btn btn-quiet">
             Trash
           </Link>

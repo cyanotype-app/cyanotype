@@ -72,8 +72,45 @@ export interface TrashList {
 /** Most ids the server accepts per bulk request; longer lists are sent in several requests. */
 export const MAX_BULK_IDS = 1000;
 
+/** An album a photo is in (GET /assets/{id}). */
+export interface AlbumRef {
+  id: string;
+  title: string;
+}
+
+/** The thumbnail shown for an album: its chosen cover, else its most recent photo. */
+export interface AlbumCover {
+  id: string;
+  thumbhash: string | null;
+  thumb_url: string | null;
+}
+
+/** An entry of GET /assets/albums and the body of GET /assets/albums/{id}. Counts and dates skip trashed photos. */
+export interface Album {
+  id: string;
+  title: string;
+  description: string | null;
+  photo_count: number;
+  /** Null while the album is empty. */
+  cover: AlbumCover | null;
+  /** RFC 3339 times of the earliest and latest photo; null while empty. */
+  first_at: string | null;
+  last_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** PATCH /assets/albums/{id}: omitted fields stay; `null` clears the description or the chosen cover. */
+export interface AlbumPatch {
+  title?: string;
+  description?: string | null;
+  cover_asset_id?: string | null;
+}
+
 /** GET /assets/{id}. The URLs are presigned and short-lived. */
 export interface AssetDetail extends AssetSummary {
+  /** The albums this photo is in. Absent on older servers. */
+  albums?: AlbumRef[];
   thumbhash: string | null;
   original_url: string;
   thumb_url: string | null;
@@ -247,6 +284,35 @@ export const api = {
     const qs = q.toString();
     return request<TrashList>(`/assets/trash${qs ? `?${qs}` : ""}`);
   },
+  listAlbums: () => request<{ items: Album[] }>("/assets/albums"),
+  getAlbum: (id: string) => request<Album>(`/assets/albums/${encodeURIComponent(id)}`),
+  /** Create an album, optionally with photos (lists longer than the server's bulk cap are added in further requests). */
+  createAlbum: async (input: { title: string; description?: string; asset_ids?: readonly string[] }): Promise<Album> => {
+    const ids = input.asset_ids ?? [];
+    const album = await request<Album>(
+      "/assets/albums",
+      json({ title: input.title, description: input.description, asset_ids: ids.slice(0, MAX_BULK_IDS) }),
+    );
+    if (ids.length <= MAX_BULK_IDS) return album;
+    await bulk(`/assets/albums/${encodeURIComponent(album.id)}/assets`, ids.slice(MAX_BULK_IDS));
+    return request<Album>(`/assets/albums/${encodeURIComponent(album.id)}`);
+  },
+  updateAlbum: (id: string, patch: AlbumPatch) =>
+    request<Album>(`/assets/albums/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  /** Deletes the album only; its photos stay in the library. */
+  deleteAlbum: (id: string) => request<void>(`/assets/albums/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  listAlbumAssets: (id: string, opts: { cursor?: string | null; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts.cursor) q.set("cursor", opts.cursor);
+    const qs = q.toString();
+    return request<AssetList>(`/assets/albums/${encodeURIComponent(id)}/assets${qs ? `?${qs}` : ""}`);
+  },
+  /** Add photos to an album. `count` is how many were new to it (already-present photos are skipped). */
+  addToAlbum: (id: string, ids: readonly string[]) => bulk(`/assets/albums/${encodeURIComponent(id)}/assets`, ids),
+  /** Take photos out of an album; they stay in the library. */
+  removeFromAlbum: (id: string, ids: readonly string[]) =>
+    bulk(`/assets/albums/${encodeURIComponent(id)}/assets/remove`, ids),
   getAsset: (id: string) => request<AssetDetail>(`/assets/${encodeURIComponent(id)}`),
   /** Dedupe + part URLs. Defaults to the proxy transport, the only one a browser can use. */
   checkUpload: (req: CheckRequest) => request<CheckResponse>("/assets/check", json({ transport: "proxy", ...req })),

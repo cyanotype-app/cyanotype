@@ -75,3 +75,55 @@ service at startup). Changing it applies to everything already in the trash: `pu
 - `scripts/e2e.sh` uploads, trashes, restores and purges through the gateway and checks that the objects are gone;
   with `E2E_S3_ENDPOINT`, `E2E_S3_BUCKET`, `E2E_S3_ACCESS_KEY` and `E2E_S3_SECRET_KEY` (a throwaway local bucket with
   versioning enabled; never a real one) it also lists versions and markers and expects none.
+
+# Albums
+
+Albums are named, owner-scoped collections of photos. An album references photos; it never owns them.
+
+## What the user sees
+
+- **Albums** (top bar, `/albums`): cards with cover, title, photo count and date range, most recently updated first,
+  and **New album**.
+- An album page (`/albums/:id`) shows the title and description (**Edit**), the photos in the library grid and
+  lightbox, **Select** (**Remove from album**, **Set as cover** with exactly one photo selected), **Add photos** (a
+  picker over the whole library using the same selection bar) and **Delete album** (confirmation: the photos stay in
+  the library).
+- **Add to album** in the library's selection bar and in the lightbox opens a dialog with a searchable album list and
+  **New album** (creates it with the photos). A toast says "Added N to <album>"; photos already in the album are not
+  counted. The lightbox lists the albums the current photo is in.
+
+## API (assets service, owner-scoped)
+
+Mounted under `/assets/albums` because the gateway sends only `/auth/*` and `/assets/*` to the APIs (`/albums` is the
+web app's page).
+
+| Request | Effect |
+|---|---|
+| `GET /assets/albums` | `{items}`: each album with `title`, `description`, `photo_count`, `cover` (`id`, `thumbhash`, `thumb_url`; null when empty), `first_at`/`last_at`, `created_at`, `updated_at`; sorted by `updated_at DESC`. |
+| `POST /assets/albums {title, description?, asset_ids?}` | Create (`201`, returns the album). Title 1-200 chars, description up to 5000 (blank = none), at most 1000 `asset_ids` (only your live photos are added). |
+| `GET /assets/albums/{id}` | One album, same shape. |
+| `PATCH /assets/albums/{id} {title?, description?, cover_asset_id?}` | Omitted fields stay; `null` clears the description or the chosen cover. The cover must be a live photo in the album (`400`). |
+| `DELETE /assets/albums/{id}` | Deletes the album and its memberships only (`204`). |
+| `GET /assets/albums/{id}/assets?limit&cursor` | The album's photos, same item shape, ordering (`coalesce(taken_at, file_modified_at, created_at) DESC, id DESC`) and keyset pagination as `GET /assets`. |
+| `POST /assets/albums/{id}/assets {ids}` | Add; idempotent; unknown, foreign, trashed and already-present ids are skipped. `{count}` = newly added. At most 1000 ids. |
+| `POST /assets/albums/{id}/assets/remove {ids}` | Remove (photos stay in the library). `{count}` = memberships removed. |
+
+`GET /assets/{id}` also returns `albums: [{id, title}]`. Another user's album or an unknown id is always `404`.
+
+The cover is the chosen photo when it is still in the album and not trashed, otherwise the most recent photo. The date
+range is the min/max of the same timeline time as the library. Adding, removing or editing bumps `updated_at`.
+
+## Albums and the trash
+
+Trashing a photo keeps its membership: it disappears from album views, counts, covers and date ranges, and comes back
+when restored (also as the chosen cover). Purging deletes the asset row, and the `ON DELETE CASCADE` on
+`album_assets.asset_id` drops the membership (an explicit cover falls back through `ON DELETE SET NULL`). Removing the
+chosen cover from an album clears the choice. Migration `0004_albums.sql`; the primary key `(album_id, asset_id)`
+serves "photos of an album" (sorted in the query by the timeline expression) and `album_assets_asset_idx` serves
+"albums containing this photo".
+
+## Tests
+
+`cargo test` (DB-backed, needs `DATABASE_URL`): CRUD and validation, owner isolation, add/remove idempotency and
+caps, pagination with tied times, trash/restore/purge interplay, cover fallback, list ordering and the asset's album
+list. Web: API calls, the add-to-album flow (library and lightbox), albums and album pages.
