@@ -38,6 +38,12 @@ pub fn preview(user: Uuid, asset: Uuid) -> String {
     format!("derived/{user}/{asset}/preview.webp")
 }
 
+/// Prefix of everything derived from one asset (thumbnail, preview, and whatever later stages add).
+/// Purging an asset deletes all versions of every key under it.
+pub fn derived_prefix(user: Uuid, asset: Uuid) -> String {
+    format!("derived/{user}/{asset}/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,6 +60,13 @@ mod tests {
         assert_eq!(sanitize_ext("IMG_0001.HEIC"), "heic");
         assert_eq!(sanitize_ext("noext"), "bin");
         assert_eq!(sanitize_ext("a.b/../c"), "bin");
+    }
+
+    #[test]
+    fn derived_keys_live_under_the_derived_prefix() {
+        let (u, a) = (Uuid::new_v4(), Uuid::new_v4());
+        let p = derived_prefix(u, a);
+        assert!(thumb(u, a).starts_with(&p) && preview(u, a).starts_with(&p));
     }
 
     #[test]

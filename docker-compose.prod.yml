@@ -80,6 +80,7 @@ services:
     mem_limit: 256m
     environment:
       <<: [*prod-env, *prod-s3]
+      TRASH_RETENTION_DAYS: ${TRASH_RETENTION_DAYS:-30}
     depends_on: !override
       migrate: { condition: service_completed_successfully }
     healthcheck:

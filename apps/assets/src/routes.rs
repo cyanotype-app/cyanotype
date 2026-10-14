@@ -22,6 +22,8 @@ use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+mod trash;
+
 use crate::AppState;
 use cyanotype_service::{ApiError, ApiResult, AuthUser};
 
@@ -49,6 +51,10 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/assets", get(list))
         .route("/assets/count", get(count))
+        .route("/assets/trash", get(trash::list).post(trash::trash))
+        .route("/assets/trash/empty", post(trash::empty))
+        .route("/assets/restore", post(trash::restore))
+        .route("/assets/purge", post(trash::purge))
         .route("/assets/{id}", get(get_one))
         .route("/assets/{id}", delete(remove))
 }
@@ -227,6 +233,21 @@ async fn resume_upload(s: &AppState, owner: Uuid, sha: &[u8], req: &CheckRequest
     }))
 }
 
+/// The same content is being permanently deleted right now. Reviving that row would point a library entry at objects
+/// that are about to disappear, so refuse until the purge has finished (the client just tries again).
+async fn refuse_if_purging(s: &AppState, owner: Uuid, sha: &[u8]) -> ApiResult<()> {
+    let purging: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM assets WHERE owner_id = $1 AND sha256 = $2 AND purging_at IS NOT NULL")
+            .bind(owner)
+            .bind(sha)
+            .fetch_optional(&s.db)
+            .await?;
+    match purging {
+        Some(_) => Err(purging_conflict()),
+        None => Ok(()),
+    }
+}
+
 async fn check(
     State(s): State<AppState>,
     user: AuthUser,
@@ -247,6 +268,8 @@ async fn check(
     if let Some((asset_id,)) = existing {
         return Ok(Json(CheckResponse::Exists { asset_id }));
     }
+
+    refuse_if_purging(&s, user.id, &sha[..]).await?;
 
     if let Some(resp) = resume_upload(&s, user.id, &sha[..], &req).await? {
         return Ok(Json(resp));
@@ -402,6 +425,48 @@ struct UploadRow {
     file_modified_at: Option<OffsetDateTime>,
 }
 
+/// Record a completed upload: insert the asset (or revive the trashed one with the same content), queue its jobs and
+/// forget the pending upload, atomically.
+async fn register_asset(db: &sqlx::PgPool, owner: Uuid, upload_id: &str, up: &UploadRow) -> ApiResult<Uuid> {
+    let mut tx = db.begin().await?;
+    // A concurrent upload of the same content may have won; either way return the single asset.
+    // A trashed row is revived. One whose purge was queued meanwhile is left alone (the WHERE matches nothing),
+    // so the upload fails with a retryable conflict instead of reviving a half-deleted asset.
+    let revived: Option<(Uuid,)> = sqlx::query_as(
+        "INSERT INTO assets (owner_id, sha256, original_key, original_name, content_type, size_bytes, file_modified_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (owner_id, sha256) DO UPDATE
+            SET deleted_at = NULL, file_modified_at = coalesce(assets.file_modified_at, EXCLUDED.file_modified_at)
+            WHERE assets.purging_at IS NULL
+         RETURNING id",
+    )
+    .bind(owner)
+    .bind(&up.sha256)
+    .bind(&up.key)
+    .bind(&up.original_name)
+    .bind(&up.content_type)
+    .bind(up.size_bytes)
+    .bind(up.file_modified_at)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((asset_id,)) = revived else {
+        return Err(purging_conflict());
+    };
+    for kind in jobs::DEFAULT_PIPELINE {
+        jobs::enqueue(&mut *tx, kind, asset_id, 1).await?;
+    }
+    sqlx::query("DELETE FROM uploads WHERE upload_id = $1")
+        .bind(upload_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(asset_id)
+}
+
+fn purging_conflict() -> ApiError {
+    ApiError::Conflict("this photo is being permanently deleted; try uploading it again in a minute".into())
+}
+
 async fn complete(
     State(s): State<AppState>,
     user: AuthUser,
@@ -416,6 +481,9 @@ async fn complete(
     .await?
     .ok_or(ApiError::NotFound)?;
 
+    // Do not complete into content whose purge is running: it would delete the object we are about to store.
+    refuse_if_purging(&s, user.id, &up.sha256).await?;
+
     let mut parts: Vec<(i32, String)> = req.parts.into_iter().map(|p| (p.number, p.etag)).collect();
     parts.sort_by_key(|p| p.0);
     s.storage.complete_multipart(&up.key, &req.upload_id, &parts).await?;
@@ -428,32 +496,7 @@ async fn complete(
         ));
     }
 
-    let mut tx = s.db.begin().await?;
-    // A concurrent upload of the same content may have won; either way return the single asset.
-    let (asset_id,): (Uuid,) = sqlx::query_as(
-        "INSERT INTO assets (owner_id, sha256, original_key, original_name, content_type, size_bytes, file_modified_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
-         ON CONFLICT (owner_id, sha256) DO UPDATE
-            SET deleted_at = NULL, file_modified_at = coalesce(assets.file_modified_at, EXCLUDED.file_modified_at)
-         RETURNING id",
-    )
-    .bind(user.id)
-    .bind(&up.sha256)
-    .bind(&up.key)
-    .bind(&up.original_name)
-    .bind(&up.content_type)
-    .bind(up.size_bytes)
-    .bind(up.file_modified_at)
-    .fetch_one(&mut *tx)
-    .await?;
-    for kind in jobs::DEFAULT_PIPELINE {
-        jobs::enqueue(&mut *tx, kind, asset_id, 1).await?;
-    }
-    sqlx::query("DELETE FROM uploads WHERE upload_id = $1")
-        .bind(&req.upload_id)
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
+    let asset_id = register_asset(&s.db, user.id, &req.upload_id, &up).await?;
 
     Ok((StatusCode::CREATED, Json(serde_json::json!({"asset_id": asset_id}))))
 }
@@ -652,7 +695,8 @@ async fn get_one(
     Ok(Json(v))
 }
 
-/// Soft delete; the original stays in the bucket (versioned) until a purge job exists.
+/// Move one photo to the trash (`POST /assets/trash` does the same for many). Permanent deletion happens later,
+/// see `trash` and `purge`.
 async fn remove(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
     let n = sqlx::query("UPDATE assets SET deleted_at = now() WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL")
         .bind(id)
@@ -767,6 +811,8 @@ mod tests {
         let app = routes().with_state(crate::AppState {
             db: t.pool.clone(),
             storage: dummy_storage(),
+            trash_retention_days: 30,
+            purge_wake: Default::default(),
         });
 
         let mut seen = Vec::new();
@@ -921,6 +967,8 @@ mod tests {
         let app = routes().with_state(crate::AppState {
             db: t.pool.clone(),
             storage: dummy_storage(),
+            trash_retention_days: 30,
+            purge_wake: Default::default(),
         });
         let url = |n: i32| proxy_part_url(upload_id, n);
 
@@ -970,6 +1018,114 @@ mod tests {
             put(&app, &url(2), Some(keys[0]), vec![0; 4 * 1024 * 1024]).await,
             StatusCode::BAD_GATEWAY
         );
+        t.teardown().await;
+    }
+
+    fn upload_for(owner: Uuid, name: &str) -> UploadRow {
+        UploadRow {
+            sha256: cyanotype_service::auth::sha256(name.as_bytes()),
+            key: format!("originals/{owner}/{name}"),
+            size_bytes: 1,
+            original_name: name.into(),
+            content_type: "image/jpeg".into(),
+            file_modified_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn reuploading_a_trashed_photo_revives_it() {
+        use crate::testutil::{TestDb, asset, user};
+        let Some(t) = TestDb::new().await else { return };
+        let (uid, _) = user(&t.pool, "r@example.com").await;
+        let id = asset(&t.pool, uid, "again.jpg").await;
+        sqlx::query("UPDATE assets SET deleted_at = now() WHERE id = $1")
+            .bind(id)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO uploads (upload_id, owner_id, sha256, key, size_bytes, part_size, original_name, content_type)
+             VALUES ('u1', $1, sha256('again.jpg'::bytea), 'k', 1, 1, 'again.jpg', 'image/jpeg')",
+        )
+        .bind(uid)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+
+        let revived = register_asset(&t.pool, uid, "u1", &upload_for(uid, "again.jpg"))
+            .await
+            .unwrap();
+        assert_eq!(revived, id, "same row, not a duplicate");
+        let (deleted, purging): (Option<OffsetDateTime>, Option<OffsetDateTime>) =
+            sqlx::query_as("SELECT deleted_at, purging_at FROM assets WHERE id = $1")
+                .bind(id)
+                .fetch_one(&t.pool)
+                .await
+                .unwrap();
+        assert!(deleted.is_none() && purging.is_none());
+        let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM uploads")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+        assert_eq!(pending, 0);
+        t.teardown().await;
+    }
+
+    #[tokio::test]
+    async fn a_photo_mid_purge_is_never_revived_but_can_be_uploaded_once_gone() {
+        use crate::testutil::{FakeObjects, TestDb, app, asset, send, user};
+        let Some(t) = TestDb::new().await else { return };
+        let (uid, key) = user(&t.pool, "p@example.com").await;
+        let id = asset(&t.pool, uid, "doomed.jpg").await;
+        let app = app(&t.pool);
+        let check = serde_json::json!({
+            "sha256": keys::hex(&cyanotype_service::auth::sha256(b"doomed.jpg")),
+            "size_bytes": 1, "filename": "doomed.jpg"
+        });
+
+        // In the trash (purge not started): check goes on to start an upload (storage is a dummy here, so it
+        // fails with a 500, but never with the purge conflict).
+        sqlx::query("UPDATE assets SET deleted_at = now() WHERE id = $1")
+            .bind(id)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        let (st, _) = send(&app, "POST", "/assets/check", &key, Some(check.clone())).await;
+        assert_ne!(st, StatusCode::CONFLICT);
+
+        // Purge queued: check refuses with a retryable 409 before touching storage...
+        sqlx::query("UPDATE assets SET purging_at = now() WHERE id = $1")
+            .bind(id)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        let (st, body) = send(&app, "POST", "/assets/check", &key, Some(check.clone())).await;
+        assert_eq!(st, StatusCode::CONFLICT);
+        assert!(
+            body["error"].as_str().unwrap().contains("try uploading it again"),
+            "{body}"
+        );
+        // ...and a upload that was already in flight cannot complete into the dying row.
+        let err = register_asset(&t.pool, uid, "u1", &upload_for(uid, "doomed.jpg"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ApiError::Conflict(_)));
+        let (deleted, purging): (Option<OffsetDateTime>, Option<OffsetDateTime>) =
+            sqlx::query_as("SELECT deleted_at, purging_at FROM assets WHERE id = $1")
+                .bind(id)
+                .fetch_one(&t.pool)
+                .await
+                .unwrap();
+        assert!(deleted.is_some() && purging.is_some(), "row left exactly as it was");
+
+        // Once the sweep has finished, the same content is a brand new asset.
+        crate::purge::sweep(&t.pool, &FakeObjects::default()).await.unwrap();
+        let fresh = register_asset(&t.pool, uid, "u1", &upload_for(uid, "doomed.jpg"))
+            .await
+            .unwrap();
+        assert_ne!(fresh, id);
+        let (st, resp) = send(&app, "POST", "/assets/check", &key, Some(check)).await;
+        assert_eq!((st, resp["status"].as_str()), (StatusCode::OK, Some("exists")));
         t.teardown().await;
     }
 
@@ -1063,6 +1219,8 @@ mod tests {
         let app = routes().with_state(crate::AppState {
             db: t.pool.clone(),
             storage: dummy_storage(),
+            trash_retention_days: 30,
+            purge_wake: Default::default(),
         });
 
         let list = get_json(&app, "/assets", key).await;
