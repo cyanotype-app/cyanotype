@@ -60,6 +60,32 @@ export interface AssetDetail extends AssetSummary {
   preview_url: string | null;
 }
 
+/** POST /assets/check body. `transport: "proxy"` asks for same-origin part URLs (browsers cannot PUT to S3 cross-origin). */
+export interface CheckRequest {
+  sha256: string;
+  size_bytes: number;
+  filename: string;
+  content_type?: string;
+  /** RFC 3339 (File.lastModified). */
+  file_modified_at?: string;
+  transport?: "direct" | "proxy";
+}
+
+export interface PartUrl {
+  number: number;
+  url: string;
+}
+
+export interface DonePart {
+  number: number;
+  etag: string;
+}
+
+/** POST /assets/check. `parts` are still to PUT; `uploaded` were stored by an earlier attempt (resume). */
+export type CheckResponse =
+  | { status: "exists"; asset_id: string }
+  | { status: "upload"; upload_id: string; part_size: number; parts: PartUrl[]; uploaded: DonePart[] };
+
 /** A non-2xx response (or a network failure, status 0). `message` is the server's `{"error": ...}` text when present. */
 export class ApiError extends Error {
   readonly status: number;
@@ -104,6 +130,61 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 const json = (body: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(body) });
 
+/** Pull the server's `{"error": ...}` text out of a failed response body, if there is one. */
+function errorMessage(text: string, status: number): string {
+  try {
+    const body: unknown = JSON.parse(text);
+    if (typeof body === "object" && body !== null && "error" in body && typeof body.error === "string") return body.error;
+  } catch {
+    /* not JSON */
+  }
+  return `Request failed (${status})`;
+}
+
+/**
+ * PUT one part to a (same-origin) proxy URL with upload progress. XHR, because fetch has no upload progress.
+ * Resolves with the part's ETag; rejects with ApiError (status 0 = network failure or abort).
+ */
+function putPart(
+  url: string,
+  body: Blob,
+  opts: { onProgress?: (loaded: number) => void; signal?: AbortSignal } = {},
+): Promise<{ etag: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.withCredentials = true;
+    xhr.responseType = "text";
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.setRequestHeader("Accept", "application/json");
+    xhr.upload.onprogress = (e) => opts.onProgress?.(e.loaded);
+    xhr.onerror = () => reject(new ApiError(0, "Cannot reach the server. Check your connection and try again."));
+    xhr.onabort = () => reject(new ApiError(0, "Upload canceled."));
+    xhr.ontimeout = () => reject(new ApiError(0, "The upload timed out."));
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const b: unknown = JSON.parse(xhr.responseText);
+          if (typeof b === "object" && b !== null && "etag" in b && typeof b.etag === "string") {
+            resolve({ etag: b.etag });
+            return;
+          }
+        } catch {
+          /* fall through */
+        }
+        reject(new ApiError(xhr.status, "Unexpected response from the server."));
+      } else {
+        reject(new ApiError(xhr.status, errorMessage(xhr.responseText, xhr.status)));
+      }
+    };
+    if (opts.signal) {
+      if (opts.signal.aborted) return reject(new ApiError(0, "Upload canceled."));
+      opts.signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    }
+    xhr.send(body);
+  });
+}
+
 export const api = {
   me: () => request<Me>("/auth/me"),
   login: (email: string, password: string) => request<{ id: string }>("/auth/login", json({ email, password })),
@@ -122,6 +203,12 @@ export const api = {
     return request<AssetList>(`/assets${qs ? `?${qs}` : ""}`);
   },
   getAsset: (id: string) => request<AssetDetail>(`/assets/${encodeURIComponent(id)}`),
+  /** Dedupe + part URLs. Defaults to the proxy transport, the only one a browser can use. */
+  checkUpload: (req: CheckRequest) => request<CheckResponse>("/assets/check", json({ transport: "proxy", ...req })),
+  /** `url` is a `parts[].url` from `checkUpload` (relative, same origin). */
+  putPart,
+  completeUpload: (uploadId: string, parts: DonePart[]) =>
+    request<{ asset_id: string }>("/assets/complete", json({ upload_id: uploadId, parts })),
 };
 
 export type Api = typeof api;

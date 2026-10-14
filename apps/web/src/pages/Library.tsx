@@ -3,8 +3,15 @@ import { api, ApiError, type AssetListItem } from "../api";
 import { useAuth } from "../auth";
 import { Grid } from "../components/Grid";
 import { Lightbox } from "../components/Lightbox";
+import { ACCEPT, filesFromDrop, filterFiles } from "../upload/files";
+import { useUploads } from "../upload/UploadProvider";
 
 const PAGE = 60;
+const THUMB_POLL_MS = 3000;
+const THUMB_POLL_MAX = 40; // ticks per photo (about two minutes), then leave it to a reload
+
+const newestFirst = (a: AssetListItem, b: AssetListItem) =>
+  Date.parse(b.sort_time) - Date.parse(a.sort_time) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
 
 export function Library() {
   const { setAnonymous } = useAuth();
@@ -18,6 +25,10 @@ export function Library() {
   const [open, setOpen] = useState<number | null>(null);
   const inFlight = useRef(false);
   const sentinel = useRef<HTMLDivElement>(null);
+  const { queue } = useUploads();
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const loadMore = useCallback(async () => {
     if (inFlight.current) return;
@@ -73,6 +84,84 @@ export function Library() {
     }
   }, []);
 
+  // Photos finished by the uploader show up without a reload: re-read the newest page and merge it in.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const off = queue.onAssetAdded(() => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        try {
+          const page = await api.listAssets({ limit: PAGE });
+          setItems((cur) => {
+            const have = new Map(cur.map((i) => [i.id, i]));
+            const fresh = page.items.filter((i) => !have.has(i.id));
+            return fresh.length ? [...cur, ...fresh].sort(newestFirst) : cur;
+          });
+        } catch {
+          /* the next completion (or a reload) will catch up */
+        }
+      }, 400);
+    });
+    return () => {
+      off();
+      clearTimeout(timer);
+    };
+  }, [queue]);
+
+  // Thumbnails appear once the worker is done: poll lightly for tiles that still have none.
+  const pending = items.filter((i) => !i.thumb_url).map((i) => i.id);
+  const pendingKey = pending.join(",");
+  useEffect(() => {
+    if (!pendingKey) return;
+    const ticks = new Map<string, number>();
+    const t = setInterval(() => {
+      for (const id of pendingKey.split(",").slice(0, 12)) {
+        const n = (ticks.get(id) ?? 0) + 1;
+        ticks.set(id, n);
+        if (n <= THUMB_POLL_MAX) void refreshItem(id);
+      }
+    }, THUMB_POLL_MS);
+    return () => clearInterval(t);
+  }, [pendingKey, refreshItem]);
+
+  const addFiles = useCallback(
+    (files: File[]) => {
+      const { accepted, skipped } = filterFiles(files);
+      if (accepted.length) queue.add(accepted);
+      setNotice(
+        skipped
+          ? `${skipped} file${skipped === 1 ? " was" : "s were"} skipped (not a supported photo type).`
+          : null,
+      );
+    },
+    [queue],
+  );
+
+  const isFileDrag = (e: React.DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
+  const dropProps = {
+    onDragEnter: (e: React.DragEvent) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      dragDepth.current++;
+      setDragging(true);
+    },
+    onDragOver: (e: React.DragEvent) => {
+      if (isFileDrag(e)) e.preventDefault();
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (!isFileDrag(e)) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setDragging(false);
+    },
+    onDrop: (e: React.DragEvent) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      dragDepth.current = 0;
+      setDragging(false);
+      void filesFromDrop(e.dataTransfer).then(addFiles);
+    },
+  };
+
   const closeLightbox = useCallback(() => setOpen(null), []);
 
   // Opening or paging to one of the last loaded photos pulls in the next page so ‹ › keeps going.
@@ -100,20 +189,26 @@ export function Library() {
 
   if (items.length === 0) {
     return (
-      <div className="empty">
-        <h1>Your library is empty</h1>
-        <p>
-          Photos are uploaded with the command-line tool for now. Browser uploads are coming once direct-to-storage
-          CORS is sorted out.
-        </p>
-        <p className="muted">After an upload finishes processing, reload this page and your photos will appear here.</p>
+      <div className="library" {...dropProps}>
+        <div className="empty">
+          <h1>Your library is empty</h1>
+          <p>Drop photos or a folder anywhere on this page, or pick them from your computer.</p>
+          <UploadButtons onFiles={addFiles} />
+          {notice && <p className="muted small" role="status">{notice}</p>}
+          <p className="muted small">The command-line importer is the better fit for a large existing archive.</p>
+        </div>
+        {dragging && <DropOverlay />}
       </div>
     );
   }
 
   return (
-    <>
+    <div className="library" {...dropProps}>
       <h1 className="sr-only">Library</h1>
+      <div className="library-bar">
+        <UploadButtons onFiles={addFiles} />
+        {notice && <span className="muted small" role="status">{notice}</span>}
+      </div>
       <Grid items={items} onOpen={select} onThumbError={(id) => void refreshItem(id)} />
       <div ref={sentinel} className="sentinel" aria-hidden="true" />
       <p className="muted center small" role="status">
@@ -136,6 +231,45 @@ export function Library() {
           loadDetail={api.getAsset}
         />
       )}
-    </>
+      {dragging && <DropOverlay />}
+    </div>
+  );
+}
+
+function DropOverlay() {
+  return (
+    <div className="drop-overlay" aria-hidden="true">
+      <p>Drop photos or folders to upload</p>
+    </div>
+  );
+}
+
+/** "Upload photos" and "Upload folder" buttons over hidden file inputs. */
+function UploadButtons({ onFiles }: { onFiles: (files: File[]) => void }) {
+  const files = useRef<HTMLInputElement>(null);
+  const folder = useRef<HTMLInputElement>(null);
+  const onChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    onFiles(Array.from(e.target.files ?? []));
+    e.target.value = ""; // allow choosing the same files again
+  };
+  return (
+    <div className="upload-buttons">
+      <button type="button" className="btn btn-primary" onClick={() => files.current?.click()}>
+        Upload photos
+      </button>
+      <button type="button" className="btn btn-quiet" onClick={() => folder.current?.click()}>
+        Upload folder
+      </button>
+      <input ref={files} type="file" multiple accept={ACCEPT} hidden onChange={onChange} aria-label="Choose photos" />
+      <input
+        ref={folder}
+        type="file"
+        multiple
+        hidden
+        onChange={onChange}
+        aria-label="Choose a folder"
+        {...{ webkitdirectory: "" }}
+      />
+    </div>
   );
 }
