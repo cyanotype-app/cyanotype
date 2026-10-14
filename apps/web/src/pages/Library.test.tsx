@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { AuthProvider } from "../auth";
+import { UploadProvider } from "../upload/UploadProvider";
 import { detail, item } from "../test/fixtures";
 import { Library } from "./Library";
 
@@ -39,16 +40,47 @@ const renderLibrary = () =>
   render(
     <MemoryRouter>
       <AuthProvider>
-        <Library />
+        <UploadProvider deps={{ api, hash: async () => "0".repeat(64) }}>
+          <Library />
+        </UploadProvider>
       </AuthProvider>
     </MemoryRouter>,
   );
 
 describe("Library", () => {
-  it("explains CLI uploads when empty", async () => {
+  it("offers browser uploads when empty", async () => {
     vi.spyOn(api, "listAssets").mockResolvedValue({ items: [], next_before: null });
     renderLibrary();
-    expect(await screen.findByText(/uploaded with the command-line tool/i)).toBeInTheDocument();
+    expect(await screen.findByText(/drop photos or a folder/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upload photos" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upload folder" })).toBeInTheDocument();
+  });
+
+  it("queues picked photos, skips other files, and merges finished uploads into the grid", async () => {
+    const list = vi
+      .spyOn(api, "listAssets")
+      .mockResolvedValueOnce({ items: [item(1)], next_before: null })
+      .mockResolvedValue({ items: [item(1), item(2)], next_before: null });
+    vi.spyOn(api, "checkUpload").mockResolvedValue({
+      status: "upload",
+      upload_id: "u",
+      part_size: 16,
+      parts: [{ number: 1, url: "/assets/uploads/u/parts/1" }],
+      uploaded: [],
+    });
+    const put = vi.spyOn(api, "putPart").mockResolvedValue({ etag: '"e"' });
+    const complete = vi.spyOn(api, "completeUpload").mockResolvedValue({ asset_id: "id-2" });
+    const user = userEvent.setup({ applyAccept: false });
+    renderLibrary();
+    await screen.findByAltText("photo-1.jpg");
+
+    const input = screen.getByLabelText("Choose photos");
+    await user.upload(input, [new File(["x"], "a.CR3"), new File(["x"], "notes.txt", { type: "text/plain" })]);
+    expect(await screen.findByText(/1 file was skipped/)).toBeInTheDocument();
+    await waitFor(() => expect(complete).toHaveBeenCalledWith("u", [{ number: 1, etag: '"e"' }]));
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(await screen.findByAltText("photo-2.jpg")).toBeInTheDocument();
+    expect(list.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("renders a thumbnail grid, pages with `before` on scroll, and opens the lightbox with the keyboard", async () => {

@@ -17,6 +17,7 @@
     "check": "tsc --noEmit && eslint . && vitest run"
   },
   "dependencies": {
+    "hash-wasm": "4.12.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-router-dom": "^7.18.4",

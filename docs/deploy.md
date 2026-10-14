@@ -455,10 +455,13 @@ dc --profile datadog up -d
 
 ## Known limitation: browser direct uploads and Linode CORS
 
-Browsers PUT file parts straight to the bucket, which requires CORS on the bucket. Linode Object Storage in
-us-ord-10 answers `PutBucketCors` with 501 (not implemented), so there is no way to configure CORS there today
-and browser uploads (the future web UI) are blocked until that is solved (a different region or provider for
-the bucket, or proxying uploads through a service). The CLI and native clients do not need CORS and work.
+Browsers cannot PUT file parts straight to the bucket without CORS on the bucket. Linode Object Storage in
+us-ord-10 answers `PutBucketCors` with 501 (not implemented), so there is no way to configure CORS there today.
+The web UI therefore sends parts through the assets service (`PUT /assets/uploads/{id}/parts/{n}`, at most 3
+parts of 16 MiB buffered at once; see "Browser upload" in `docs/import.md`). This is temporary, until the bucket
+moves to a CORS-capable region or provider. The gateway forwards these PUTs without a body-size limit (Cloudflare's
+free plan allows 100 MB request bodies, 16 MiB parts fit). The CLI and native clients do not need CORS and keep
+using presigned URLs.
 Downloads through presigned GET URLs in `<img>` tags are not affected by CORS.
 
 ## Pre-go-live checklist

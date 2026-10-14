@@ -5,7 +5,7 @@ See the project README for the elevator pitch. This file tracks milestones and d
 ## Guiding principles
 
 - **S3 is the source of truth.** Originals are immutable and content-addressed; Postgres can be rebuilt by re-scanning the bucket.
-- **Bytes never touch the API.** Presigned URLs for upload and download.
+- **Bytes never touch the API.** Presigned URLs for upload and download. (Temporary exception: browser uploads are relayed part by part through the assets service until the bucket allows CORS; see `docs/import.md`.)
 - **Small stateless services from one repo:** `auth`, `assets` and `worker` binaries (`apps/`), shared libraries in `crates/`, a Caddy gateway in front. Each service has its own port and only the config it needs; all scale horizontally and are safe to kill.
 - **One migration owner:** `cyanotype-cli migrate` is the only thing that applies migrations (a one-shot compose step); services never migrate on boot.
 - **Structured logs to stdout:** JSON with Datadog reserved attributes, collected by the Datadog Agent (opt-in compose profile). See `docs/observability.md`.
@@ -40,7 +40,7 @@ derived/{user_id}/{asset_id}/preview.webp
 | # | Scope | Status |
 |---|---|---|
 | 0 | Cargo workspace, Docker Compose (Postgres + MinIO), CI, migrations, auth | done (scaffold) |
-| 1 | Presigned upload, dedupe, asset CRUD, basic grid UI | backend done; grid UI in progress (login/register, infinite-scroll grid with ThumbHash placeholders, lightbox; browser upload deferred: Linode CORS) |
+| 1 | Presigned upload, dedupe, asset CRUD, basic grid UI | backend done; grid UI done (login/register, infinite-scroll grid with ThumbHash placeholders, lightbox); browser upload done via a temporary backend proxy (`PUT /assets/uploads/{id}/parts/{n}`, bounded to 3 buffered parts) because Linode has no CORS; follow-up: switch back to direct presigned PUTs once storage supports CORS |
 | 2 | Worker, job queue, EXIF, thumbnails, ThumbHash, HEIC | done: queue; metadata (EXIF, sha256 verify) + thumbnail/preview/ThumbHash for JPEG/PNG/WebP, HEIC/HEIF/AVIF (libheif 1.23.1, statically linked) and camera RAW (embedded-preview first, capped rawler develop fallback); magic-byte routing; shared memory budget. Follow-ups: DCT-scaled JPEG and streamed HEIC decoding, colour-profile conversion for wide-gamut HEIC, HDR gain maps |
 | 3 | Virtualized timeline, lightbox, albums, sharing links | |
 | 4 | CLIP semantic search and filters | |
@@ -54,7 +54,7 @@ Non-goals for MVP: native mobile apps, face recognition, video transcoding, live
 - One Linode VPS (shared CPU, 4 GB, us-ord) with docker compose, not Kubernetes. Object storage is Linode (us-ord-10); Datadog site us5.
 - Images are built once in CI (bake), published to GHCR (private) and only pulled on the server. Deploys run from a GitHub Environment (`dev`) over SSH or manually with `just deploy`.
 - Public-facing hardening: `REGISTRATION_MODE` (default `first_user`), `Secure` session cookie, per-IP rate limit on login/register.
-- Postgres backed up nightly to the bucket; the bucket has versioning on. Known gap: Linode returns 501 for `PutBucketCors`, so browser direct uploads are blocked until solved.
+- Postgres backed up nightly to the bucket; the bucket has versioning on. Known gap: Linode returns 501 for `PutBucketCors`, so browsers upload through the assets service proxy (temporary) instead of directly.
 
 ## Requirements carried through every milestone
 

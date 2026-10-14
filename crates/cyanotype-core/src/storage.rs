@@ -95,6 +95,24 @@ impl Storage {
         Ok(out)
     }
 
+    /// Upload one part from memory (used by the backend-proxied upload path). Returns the part's ETag.
+    /// `Bytes` is replayable, so the SDK can sign it and retry transient failures.
+    pub async fn upload_part(&self, key: &str, upload_id: &str, number: i32, body: bytes::Bytes) -> Result<String> {
+        let out = self
+            .client
+            .upload_part()
+            .bucket(&self.bucket)
+            .key(key)
+            .upload_id(upload_id)
+            .part_number(number)
+            .content_length(body.len() as i64)
+            .body(body.into())
+            .send()
+            .await
+            .context("upload_part")?;
+        out.e_tag.context("S3 returned no ETag for the part")
+    }
+
     pub async fn complete_multipart(&self, key: &str, upload_id: &str, parts: &[(i32, String)]) -> Result<()> {
         let parts = parts
             .iter()
