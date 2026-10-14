@@ -1,16 +1,22 @@
-//! Upload flow: `check` (dedupe + presign) -> client PUTs parts straight to S3 -> `complete`.
-//! Bytes never pass through the API.
+//! Upload flow: `check` (dedupe + part URLs) -> client PUTs parts -> `complete`.
+//!
+//! Two transports, chosen by the client in `check`:
+//! - `direct` (default, the CLI): presigned S3 URLs; bytes never pass through the API.
+//! - `proxy` (browsers, temporary): relative URLs of `PUT /assets/uploads/{upload_id}/parts/{n}`, which relays the
+//!   part to S3 through this service. Needed while the bucket cannot be given a CORS policy.
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
-    http::StatusCode,
-    routing::{delete, get, post},
+    extract::{DefaultBodyLimit, Path, Query, Request, State},
+    http::{StatusCode, header},
+    routing::{delete, get, post, put},
 };
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
+use bytes::{Bytes, BytesMut};
 use cyanotype_core::{
     jobs, keys,
     storage::{Storage, UploadedPart},
 };
+use http_body_util::BodyExt;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use time::OffsetDateTime;
@@ -22,10 +28,25 @@ use cyanotype_service::{ApiError, ApiResult, AuthUser};
 const PART_SIZE: i64 = 16 * 1024 * 1024;
 const MAX_PARTS: i64 = 10_000; // S3 limit
 
+/// Parts relayed at once per process. Each in-flight proxied part is buffered in memory (one `PART_SIZE`
+/// allocation, handed to the SDK without further copies), so worst-case memory for the proxy path is
+/// `PROXY_CONCURRENCY * PART_SIZE` = 48 MiB, well inside the assets container's `mem_limit: 256m`.
+const PROXY_CONCURRENCY: usize = 3;
+static PROXY_PARTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(PROXY_CONCURRENCY);
+/// Overall budget for receiving one part body from the client (after a permit is held), so a stalled client
+/// cannot pin a permit. 16 MiB in 120 s is ~140 KiB/s.
+const PART_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// Slack on top of `PART_SIZE` for the route's body limit (the exact size is checked separately).
+const BODY_LIMIT_MARGIN: usize = 64 * 1024;
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/assets/check", post(check))
         .route("/assets/complete", post(complete))
+        .route(
+            "/assets/uploads/{upload_id}/parts/{number}",
+            put(put_part).layer(DefaultBodyLimit::max(PART_SIZE as usize + BODY_LIMIT_MARGIN)),
+        )
         .route("/assets", get(list))
         .route("/assets/count", get(count))
         .route("/assets/{id}", get(get_one))
@@ -42,6 +63,64 @@ struct CheckRequest {
     /// EXIF `taken_at` is missing.
     #[serde(default, with = "time::serde::rfc3339::option")]
     file_modified_at: Option<OffsetDateTime>,
+    /// How the client will send parts. Absent means `direct` (presigned S3 URLs, the CLI).
+    #[serde(default)]
+    transport: Transport,
+}
+
+#[derive(Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+enum Transport {
+    #[default]
+    Direct,
+    /// Part URLs point at this service (`PUT /assets/uploads/{upload_id}/parts/{n}`), same origin as the API.
+    Proxy,
+}
+
+/// Percent-encode everything but RFC 3986 unreserved characters (S3 upload ids may hold odd characters).
+fn percent_encode_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn proxy_part_url(upload_id: &str, number: i32) -> String {
+    format!("/assets/uploads/{}/parts/{number}", percent_encode_segment(upload_id))
+}
+
+/// URLs for the parts still to send, per the requested transport.
+async fn part_urls(
+    s: &AppState,
+    transport: Transport,
+    key: &str,
+    upload_id: &str,
+    numbers: impl IntoIterator<Item = i32>,
+) -> ApiResult<Vec<PartUrl>> {
+    Ok(match transport {
+        Transport::Direct => s
+            .storage
+            .presign_parts(key, upload_id, numbers)
+            .await?
+            .into_iter()
+            .map(|p| PartUrl {
+                number: p.number,
+                url: p.url,
+            })
+            .collect(),
+        Transport::Proxy => numbers
+            .into_iter()
+            .map(|number| PartUrl {
+                number,
+                url: proxy_part_url(upload_id, number),
+            })
+            .collect(),
+    })
 }
 
 #[derive(Serialize)]
@@ -125,7 +204,7 @@ async fn resume_upload(s: &AppState, owner: Uuid, sha: &[u8], req: &CheckRequest
     let done = usable_parts(found, req.size_bytes, p.part_size);
     let n_parts = ((req.size_bytes + p.part_size - 1) / p.part_size) as i32;
     let missing: Vec<i32> = (1..=n_parts).filter(|n| !done.iter().any(|d| d.number == *n)).collect();
-    let parts = s.storage.presign_parts(&p.key, &p.upload_id, missing).await?;
+    let parts = part_urls(s, req.transport, &p.key, &p.upload_id, missing).await?;
     // Keep an upload that is being actively resumed away from the stale-upload janitor.
     sqlx::query(
         "UPDATE uploads SET created_at = now(), file_modified_at = coalesce($2, file_modified_at) WHERE upload_id = $1",
@@ -137,13 +216,7 @@ async fn resume_upload(s: &AppState, owner: Uuid, sha: &[u8], req: &CheckRequest
     Ok(Some(CheckResponse::Upload {
         upload_id: p.upload_id,
         part_size: p.part_size,
-        parts: parts
-            .into_iter()
-            .map(|p| PartUrl {
-                number: p.number,
-                url: p.url,
-            })
-            .collect(),
+        parts,
         uploaded: done
             .into_iter()
             .map(|p| DonePart {
@@ -186,7 +259,7 @@ async fn check(
     let key = keys::original(user.id, &sha, &keys::sanitize_ext(&req.filename));
     let upload_id = s.storage.create_multipart(&key, &content_type).await?;
     let n_parts = ((req.size_bytes + PART_SIZE - 1) / PART_SIZE) as i32;
-    let parts = s.storage.presign_parts(&key, &upload_id, 1..=n_parts).await?;
+    let parts = part_urls(&s, req.transport, &key, &upload_id, 1..=n_parts).await?;
 
     sqlx::query(
         "INSERT INTO uploads (upload_id, owner_id, sha256, key, size_bytes, part_size, original_name, content_type, file_modified_at)
@@ -207,15 +280,104 @@ async fn check(
     Ok(Json(CheckResponse::Upload {
         upload_id,
         part_size: PART_SIZE,
-        parts: parts
-            .into_iter()
-            .map(|p| PartUrl {
-                number: p.number,
-                url: p.url,
-            })
-            .collect(),
+        parts,
         uploaded: Vec::new(),
     }))
+}
+
+#[derive(FromRow)]
+struct PartTarget {
+    key: String,
+    size_bytes: i64,
+    part_size: i64,
+}
+
+/// What `put_part` checks before it touches the body: the part number and declared `Content-Length` must match
+/// what the upload layout says. Returns the expected part size.
+fn validate_part(number: i32, size_bytes: i64, part_size: i64, content_length: Option<u64>) -> ApiResult<i64> {
+    let n_parts = (size_bytes + part_size - 1) / part_size;
+    if number < 1 || i64::from(number) > n_parts {
+        return Err(ApiError::BadRequest(format!("part number must be in 1..={n_parts}")));
+    }
+    let expected = expected_part_size(number, size_bytes, part_size);
+    let Some(len) = content_length else {
+        return Err(ApiError::BadRequest("Content-Length is required".into()));
+    };
+    if len > (part_size as u64).max(expected as u64) {
+        return Err(ApiError::PayloadTooLarge(format!("part is at most {part_size} bytes")));
+    }
+    if len != expected as u64 {
+        return Err(ApiError::BadRequest(format!(
+            "part {number} must be exactly {expected} bytes"
+        )));
+    }
+    Ok(expected)
+}
+
+/// Read exactly `expected` bytes of `req`'s body into one buffer (never more than `expected` is allocated).
+async fn read_part_body(req: Request, expected: usize) -> ApiResult<Bytes> {
+    let mut body = req.into_body();
+    let mut buf = BytesMut::with_capacity(expected);
+    let read = async {
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|_| ApiError::BadRequest("upload interrupted".into()))?;
+            if let Some(data) = frame.data_ref() {
+                if buf.len() + data.len() > expected {
+                    return Err(ApiError::BadRequest("body is longer than Content-Length".into()));
+                }
+                buf.extend_from_slice(data);
+            }
+        }
+        Ok(())
+    };
+    tokio::time::timeout(PART_READ_TIMEOUT, read)
+        .await
+        .map_err(|_| ApiError::RequestTimeout("timed out receiving the part".into()))??;
+    if buf.len() != expected {
+        return Err(ApiError::BadRequest("body is shorter than Content-Length".into()));
+    }
+    Ok(buf.freeze())
+}
+
+/// Browser upload transport: relay one part to S3 and return its ETag (what `complete` needs).
+async fn put_part(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Path((upload_id, number)): Path<(String, i32)>,
+    req: Request,
+) -> ApiResult<Json<serde_json::Value>> {
+    // Unknown id and someone else's id are both 404, so ids can't be probed.
+    let up: PartTarget =
+        sqlx::query_as("SELECT key, size_bytes, part_size FROM uploads WHERE upload_id = $1 AND owner_id = $2")
+            .bind(&upload_id)
+            .bind(user.id)
+            .fetch_optional(&s.db)
+            .await?
+            .ok_or(ApiError::NotFound)?;
+    let content_length = req
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    let expected = validate_part(number, up.size_bytes, up.part_size, content_length)? as usize;
+
+    let _permit = PROXY_PARTS.acquire().await.map_err(|e| ApiError::Internal(e.into()))?;
+    let body = read_part_body(req, expected).await?;
+    let etag = s
+        .storage
+        .upload_part(&up.key, &upload_id, number, body)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = ?e, part = number, "proxied part upload to storage failed");
+            ApiError::BadGateway("storage rejected the part".into())
+        })?;
+    // Keep an upload that is actively receiving parts away from the stale-upload janitor.
+    sqlx::query("UPDATE uploads SET created_at = now() WHERE upload_id = $1")
+        .bind(&upload_id)
+        .execute(&s.db)
+        .await?;
+    tracing::info!(part = number, bytes_proxied = expected, "part proxied");
+    Ok(Json(serde_json::json!({"etag": etag})))
 }
 
 #[derive(Deserialize)]
@@ -655,6 +817,159 @@ mod tests {
         // The deprecated `before` is still accepted and still reports next_before.
         let old = get_json(&app, "/assets?limit=3", key).await;
         assert!(old["next_before"].is_string());
+        t.teardown().await;
+    }
+
+    #[test]
+    fn part_validation_covers_number_length_and_size() {
+        let ps = 16;
+        // 40 bytes in 16-byte parts: 16, 16, 8.
+        assert_eq!(validate_part(1, 40, ps, Some(16)).unwrap(), 16);
+        assert_eq!(validate_part(3, 40, ps, Some(8)).unwrap(), 8);
+        for (n, len) in [(0, 16), (4, 8), (-1, 16)] {
+            assert!(matches!(
+                validate_part(n, 40, ps, Some(len)),
+                Err(ApiError::BadRequest(_))
+            ));
+        }
+        assert!(matches!(validate_part(1, 40, ps, None), Err(ApiError::BadRequest(_))));
+        assert!(matches!(
+            validate_part(1, 40, ps, Some(15)),
+            Err(ApiError::BadRequest(_))
+        ));
+        assert!(matches!(
+            validate_part(3, 40, ps, Some(16)),
+            Err(ApiError::BadRequest(_))
+        ));
+        assert!(matches!(
+            validate_part(1, 40, ps, Some(17)),
+            Err(ApiError::PayloadTooLarge(_))
+        ));
+    }
+
+    #[test]
+    fn proxy_urls_percent_encode_the_upload_id() {
+        assert_eq!(
+            proxy_part_url("abc-DEF_1.2~", 3),
+            "/assets/uploads/abc-DEF_1.2~/parts/3"
+        );
+        assert_eq!(
+            proxy_part_url("a/b c?d#e%f+g==", 1),
+            "/assets/uploads/a%2Fb%20c%3Fd%23e%25f%2Bg%3D%3D/parts/1"
+        );
+    }
+
+    #[test]
+    fn transport_defaults_to_direct() {
+        let base = r#""sha256":"00","size_bytes":1,"filename":"a.jpg""#;
+        let d: CheckRequest = serde_json::from_str(&format!("{{{base}}}")).unwrap();
+        assert_eq!(d.transport, Transport::Direct);
+        let p: CheckRequest = serde_json::from_str(&format!(r#"{{{base},"transport":"proxy"}}"#)).unwrap();
+        assert_eq!(p.transport, Transport::Proxy);
+        assert!(serde_json::from_str::<CheckRequest>(&format!(r#"{{{base},"transport":"x"}}"#)).is_err());
+    }
+
+    async fn put(app: &Router, path: &str, key: Option<&str>, body: Vec<u8>) -> StatusCode {
+        let mut b = Request::builder()
+            .method("PUT")
+            .uri(path)
+            .header(header::CONTENT_LENGTH, body.len());
+        if let Some(k) = key {
+            b = b.header(header::AUTHORIZATION, format!("Bearer {k}"));
+        }
+        app.clone()
+            .oneshot(b.body(Body::from(body)).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn put_part_rejects_bad_requests_before_touching_storage() {
+        let Some(t) = TestDb::new().await else { return };
+        let mut keys = Vec::new();
+        let mut uids = Vec::new();
+        for (email, key) in [("a@example.com", "cyk_a"), ("b@example.com", "cyk_b")] {
+            let (uid,): (Uuid,) =
+                sqlx::query_as("INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id")
+                    .bind(email)
+                    .fetch_one(&t.pool)
+                    .await
+                    .unwrap();
+            sqlx::query("INSERT INTO api_keys (user_id, name, key_hash) VALUES ($1,'t',$2)")
+                .bind(uid)
+                .bind(cyanotype_service::auth::sha256(key.as_bytes()))
+                .execute(&t.pool)
+                .await
+                .unwrap();
+            keys.push(key);
+            uids.push(uid);
+        }
+        // 20 MiB: parts of 16 MiB and 4 MiB. Odd upload id to exercise percent-decoding.
+        let upload_id = "id/with space+odd";
+        sqlx::query(
+            "INSERT INTO uploads (upload_id, owner_id, sha256, key, size_bytes, part_size, original_name, content_type)
+             VALUES ($1,$2,sha256('x'::bytea),'k',$3,$4,'a.jpg','image/jpeg')",
+        )
+        .bind(upload_id)
+        .bind(uids[0])
+        .bind(20 * 1024 * 1024_i64)
+        .bind(PART_SIZE)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+        let app = routes().with_state(crate::AppState {
+            db: t.pool.clone(),
+            storage: dummy_storage(),
+        });
+        let url = |n: i32| proxy_part_url(upload_id, n);
+
+        assert_eq!(put(&app, &url(1), None, vec![0; 4]).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            put(&app, &proxy_part_url("nope", 1), Some(keys[0]), vec![0; 4]).await,
+            StatusCode::NOT_FOUND
+        );
+        // Another user's upload looks the same as a missing one.
+        assert_eq!(
+            put(&app, &url(1), Some(keys[1]), vec![0; 4]).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            put(&app, &url(0), Some(keys[0]), vec![0; 4]).await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            put(&app, &url(3), Some(keys[0]), vec![0; 4]).await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            put(&app, &url(1), Some(keys[0]), vec![0; 4]).await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            put(&app, &url(2), Some(keys[0]), vec![0; 5]).await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            put(&app, &url(2), Some(keys[0]), vec![0; PART_SIZE as usize + 1]).await,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        // Without a Content-Length header (e.g. chunked) is refused.
+        let req = Request::builder()
+            .method("PUT")
+            .uri(url(2))
+            .header(header::AUTHORIZATION, "Bearer cyk_a")
+            .body(Body::from(vec![0u8; 4 * 1024 * 1024]))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(req).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+        // A correct part reaches storage, which is unreachable here: 502, not 500.
+        assert_eq!(
+            put(&app, &url(2), Some(keys[0]), vec![0; 4 * 1024 * 1024]).await,
+            StatusCode::BAD_GATEWAY
+        );
         t.teardown().await;
     }
 

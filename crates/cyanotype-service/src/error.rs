@@ -17,6 +17,13 @@ pub enum ApiError {
     BadRequest(String),
     #[error("{0}")]
     Conflict(String),
+    #[error("{0}")]
+    PayloadTooLarge(String),
+    #[error("{0}")]
+    RequestTimeout(String),
+    /// An upstream dependency (object storage) failed; the message is client-safe.
+    #[error("{0}")]
+    BadGateway(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -35,6 +42,9 @@ impl IntoResponse for ApiError {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::RequestTimeout(_) => StatusCode::REQUEST_TIMEOUT,
+            Self::BadGateway(_) => StatusCode::BAD_GATEWAY,
             Self::Internal(e) => {
                 tracing::error!(error = ?e, "internal error");
                 return (
