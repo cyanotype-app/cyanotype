@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, type AssetListItem } from "../api";
 import { useAuth } from "../auth";
+import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Grid } from "../components/Grid";
 import { Lightbox } from "../components/Lightbox";
@@ -44,6 +45,9 @@ export function Library() {
   const itemIds = useMemo(() => items.map((i) => i.id), [items]);
   const sel = useSelection(itemIds);
   const [confirmTrash, setConfirmTrash] = useState(false);
+  // Photos waiting in the "add to album" dialog, and a counter that makes the lightbox re-read the photo's albums.
+  const [addIds, setAddIds] = useState<string[] | null>(null);
+  const [albumsVersion, setAlbumsVersion] = useState(0);
   const { toast, show } = useToast();
 
   const loadMore = useCallback(async () => {
@@ -229,7 +233,7 @@ export function Library() {
 
   // Keyboard: Escape clears the selection (then leaves selection mode); Delete asks, then trashes the selection.
   useEffect(() => {
-    if (open !== null || confirmTrash) return; // the lightbox and the dialog own the keyboard
+    if (open !== null || confirmTrash || addIds !== null) return; // the lightbox and the dialog own the keyboard
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t?.closest("input, textarea, select, [contenteditable]")) return;
@@ -243,7 +247,7 @@ export function Library() {
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, confirmTrash, sel]);
+  }, [open, confirmTrash, addIds, sel]);
 
   // Opening or paging to one of the last loaded photos pulls in the next page so ‹ › keeps going.
   const select = useCallback(
@@ -307,7 +311,14 @@ export function Library() {
           onClear={sel.clear}
           onDone={() => sel.setSelecting(false)}
         >
-          {/* More actions for the selection (add to album, ...) go here. */}
+          <button
+            type="button"
+            className="btn btn-quiet"
+            disabled={sel.ids.length === 0}
+            onClick={() => setAddIds(sel.ids)}
+          >
+            Add to album
+          </button>
           <button type="button" className="btn btn-primary" disabled={sel.ids.length === 0} onClick={trashSelected}>
             Move to trash
           </button>
@@ -342,6 +353,8 @@ export function Library() {
           onClose={closeLightbox}
           loadDetail={api.getAsset}
           onTrash={(it) => void trashItems([it])}
+          onAddToAlbum={(it) => setAddIds([it.id])}
+          refreshKey={albumsVersion}
         />
       )}
       {confirmTrash && (
@@ -356,6 +369,19 @@ export function Library() {
         >
           <p>You can restore {sel.ids.length === 1 ? "it" : "them"} from the trash.</p>
         </ConfirmDialog>
+      )}
+      {addIds !== null && (
+        <AddToAlbumDialog
+          ids={addIds}
+          onClose={() => setAddIds(null)}
+          onDone={(r) => {
+            const requested = addIds.length;
+            setAddIds(null);
+            sel.setSelecting(false);
+            setAlbumsVersion((v) => v + 1);
+            show({ message: addedMessage(r, requested) });
+          }}
+        />
       )}
       {toast}
       {dragging && <DropOverlay />}
