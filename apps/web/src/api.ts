@@ -52,6 +52,26 @@ export interface AssetList {
   next_before: string | null;
 }
 
+/** An entry of GET /assets/trash: a list item plus when it was trashed and when it will be deleted for good. */
+export interface TrashItem extends AssetListItem {
+  /** RFC 3339. */
+  deleted_at: string;
+  /** RFC 3339: deleted_at + the server's retention period. */
+  purge_at: string;
+}
+
+/** GET /assets/trash */
+export interface TrashList {
+  items: TrashItem[];
+  next_cursor: string | null;
+  /** Everything in the trash, not just this page. */
+  total: number;
+  retention_days: number;
+}
+
+/** Most ids the server accepts per bulk request; longer lists are sent in several requests. */
+export const MAX_BULK_IDS = 1000;
+
 /** GET /assets/{id}. The URLs are presigned and short-lived. */
 export interface AssetDetail extends AssetSummary {
   thumbhash: string | null;
@@ -185,6 +205,16 @@ function putPart(
   });
 }
 
+/** POST `ids` to a bulk endpoint in chunks of MAX_BULK_IDS; resolves with the total number of items affected. */
+async function bulk(path: string, ids: readonly string[]): Promise<{ count: number }> {
+  let count = 0;
+  for (let i = 0; i < ids.length; i += MAX_BULK_IDS) {
+    const r = await request<{ count: number }>(path, json({ ids: ids.slice(i, i + MAX_BULK_IDS) }));
+    count += r.count;
+  }
+  return { count };
+}
+
 export const api = {
   me: () => request<Me>("/auth/me"),
   login: (email: string, password: string) => request<{ id: string }>("/auth/login", json({ email, password })),
@@ -201,6 +231,21 @@ export const api = {
     else if (opts.before) q.set("before", opts.before);
     const qs = q.toString();
     return request<AssetList>(`/assets${qs ? `?${qs}` : ""}`);
+  },
+  /** Move photos to the trash (reversible). `count` is how many actually moved. */
+  trashAssets: (ids: readonly string[]) => bulk("/assets/trash", ids),
+  /** Bring photos back from the trash. */
+  restoreAssets: (ids: readonly string[]) => bulk("/assets/restore", ids),
+  /** Delete trashed photos forever. Not reversible. */
+  purgeAssets: (ids: readonly string[]) => bulk("/assets/purge", ids),
+  /** Delete everything in the trash forever. Not reversible. */
+  emptyTrash: () => request<{ count: number }>("/assets/trash/empty", { method: "POST" }),
+  listTrash: (opts: { cursor?: string | null; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts.cursor) q.set("cursor", opts.cursor);
+    const qs = q.toString();
+    return request<TrashList>(`/assets/trash${qs ? `?${qs}` : ""}`);
   },
   getAsset: (id: string) => request<AssetDetail>(`/assets/${encodeURIComponent(id)}`),
   /** Dedupe + part URLs. Defaults to the proxy transport, the only one a browser can use. */

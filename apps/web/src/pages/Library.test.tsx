@@ -1,8 +1,8 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api } from "../api";
+import { api, ApiError } from "../api";
 import { AuthProvider } from "../auth";
 import { UploadProvider } from "../upload/UploadProvider";
 import { detail, item } from "../test/fixtures";
@@ -128,5 +128,174 @@ describe("Library", () => {
     vi.spyOn(api, "listAssets").mockResolvedValue({ items: [item(1, { thumb_url: null })], next_before: null });
     renderLibrary();
     expect(await screen.findByText("Processing…")).toBeInTheDocument();
+  });
+
+  describe("selecting and trashing", () => {
+    const three = () => vi.spyOn(api, "listAssets").mockResolvedValue({ items: [item(1), item(2), item(3), item(4)], next_before: null });
+    const tile = (n: number) => screen.getByRole("button", { name: new RegExp(`^(Open|Select) photo-${n}\\.jpg$`) });
+    const present = (n: number) => screen.queryByAltText(`photo-${n}.jpg`) !== null;
+
+    it("selects with clicks and shift-click ranges, select all and clear, then trashes with an Undo toast", async () => {
+      three();
+      const trash = vi.spyOn(api, "trashAssets").mockResolvedValue({ count: 2 });
+      const restore = vi.spyOn(api, "restoreAssets").mockResolvedValue({ count: 2 });
+      const user = userEvent.setup();
+      renderLibrary();
+      await screen.findByAltText("photo-1.jpg");
+
+      await user.click(screen.getByRole("button", { name: "Select" }));
+      expect(screen.getByText("Select photos")).toBeInTheDocument();
+      await user.click(tile(1));
+      expect(screen.getByText("1 selected")).toBeInTheDocument();
+      expect(tile(1)).toHaveAttribute("aria-pressed", "true");
+      await user.keyboard("{Shift>}");
+      await user.click(tile(3));
+      await user.keyboard("{/Shift}");
+      expect(screen.getByText("3 selected")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Select all" }));
+      expect(screen.getByText("4 selected")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Clear" }));
+      expect(screen.getByText("Select photos")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Move to trash" })).toBeDisabled();
+
+      await user.click(tile(2));
+      await user.click(tile(4));
+      await user.click(screen.getByRole("button", { name: "Move to trash" }));
+
+      // Optimistic: gone at once, no confirmation, selection mode ends.
+      await waitFor(() => expect(present(2)).toBe(false));
+      expect(present(4)).toBe(false);
+      expect(present(1) && present(3)).toBe(true);
+      expect(trash).toHaveBeenCalledWith(["id-2", "id-4"]);
+      expect(await screen.findByText("2 moved to trash")).toBeInTheDocument();
+      expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Undo" }));
+      expect(restore).toHaveBeenCalledWith(["id-2", "id-4"]);
+      // Back in timeline order.
+      await screen.findByAltText("photo-4.jpg");
+      expect(screen.getAllByRole("img").map((i) => i.getAttribute("alt"))).toEqual(["photo-1.jpg", "photo-2.jpg", "photo-3.jpg", "photo-4.jpg"]);
+      expect(await screen.findByText("2 restored")).toBeInTheDocument();
+    });
+
+    it("puts the photos back and says so when the server refuses", async () => {
+      three();
+      vi.spyOn(api, "trashAssets").mockRejectedValue(new ApiError(500, "internal error"));
+      const user = userEvent.setup();
+      renderLibrary();
+      await screen.findByAltText("photo-1.jpg");
+      await user.click(screen.getByRole("button", { name: "Select" }));
+      await user.click(tile(2));
+      await user.click(screen.getByRole("button", { name: "Move to trash" }));
+      expect(await screen.findByText(/Couldn’t move to trash\. internal error/)).toBeInTheDocument();
+      expect(present(2)).toBe(true);
+      expect(screen.getAllByRole("img").map((i) => i.getAttribute("alt"))).toEqual(["photo-1.jpg", "photo-2.jpg", "photo-3.jpg", "photo-4.jpg"]);
+    });
+
+    it("Escape clears the selection, then leaves selection mode", async () => {
+      three();
+      const user = userEvent.setup();
+      renderLibrary();
+      await screen.findByAltText("photo-1.jpg");
+      await user.click(screen.getByRole("button", { name: "Select" }));
+      await user.click(tile(1));
+      await user.keyboard("{Escape}");
+      expect(screen.getByText("Select photos")).toBeInTheDocument();
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+      expect(tile(1)).toHaveAttribute("aria-label", "Open photo-1.jpg");
+    });
+
+    it("the Delete key asks first, then trashes the selection", async () => {
+      three();
+      const trash = vi.spyOn(api, "trashAssets").mockResolvedValue({ count: 1 });
+      const user = userEvent.setup();
+      renderLibrary();
+      await screen.findByAltText("photo-1.jpg");
+      await user.click(screen.getByRole("button", { name: "Select" }));
+      await user.keyboard("{Delete}"); // nothing selected: nothing to ask
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      await user.click(tile(3));
+      await user.keyboard("{Delete}");
+      expect(screen.getByRole("alertdialog", { name: "Move 1 photo to trash?" })).toBeInTheDocument();
+
+      // Escape cancels the question without touching the selection.
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      expect(screen.getByText("1 selected")).toBeInTheDocument();
+      expect(trash).not.toHaveBeenCalled();
+
+      await user.keyboard("{Delete}");
+      await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Move to trash" }));
+      await waitFor(() => expect(trash).toHaveBeenCalledWith(["id-3"]));
+      expect(present(3)).toBe(false);
+    });
+
+    it("long-press on a touch device starts selecting; the press does not open the photo", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        three();
+        renderLibrary();
+        await screen.findByAltText("photo-1.jpg");
+        const t = tile(2);
+        fireEvent.pointerDown(t, { pointerType: "touch", clientX: 5, clientY: 5 });
+        act(() => {
+          vi.advanceTimersByTime(600);
+        });
+        fireEvent.pointerUp(t, { pointerType: "touch" });
+        fireEvent.click(t);
+        expect(screen.getByText("1 selected")).toBeInTheDocument();
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(tile(2)).toHaveAttribute("aria-pressed", "true");
+
+        // Moving the finger first (a scroll) cancels it.
+        fireEvent.pointerDown(tile(3), { pointerType: "touch", clientX: 5, clientY: 5 });
+        fireEvent.pointerMove(tile(3), { pointerType: "touch", clientX: 5, clientY: 60 });
+        act(() => {
+          vi.advanceTimersByTime(600);
+        });
+        expect(screen.getByText("1 selected")).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("trashing from the lightbox moves on to the next photo, and Undo brings it back", async () => {
+      three();
+      const trash = vi.spyOn(api, "trashAssets").mockResolvedValue({ count: 1 });
+      const restore = vi.spyOn(api, "restoreAssets").mockResolvedValue({ count: 1 });
+      const user = userEvent.setup();
+      renderLibrary();
+      await screen.findByAltText("photo-1.jpg");
+      await user.click(tile(2));
+      expect(screen.getByRole("dialog", { name: "photo-2.jpg" })).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Move to trash" }));
+      expect(trash).toHaveBeenCalledWith(["id-2"]);
+      expect(await screen.findByRole("dialog", { name: "photo-3.jpg" })).toBeInTheDocument();
+      expect(await screen.findByText("1 moved to trash")).toBeInTheDocument();
+
+      // The last photo: trashing it shows the previous one; the Delete key works inside the lightbox too.
+      await user.keyboard("{ArrowRight}");
+      expect(screen.getByRole("dialog", { name: "photo-4.jpg" })).toBeInTheDocument();
+      await user.keyboard("{Delete}");
+      expect(await screen.findByRole("dialog", { name: "photo-3.jpg" })).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Undo" }));
+      expect(restore).toHaveBeenLastCalledWith(["id-4"]);
+    });
+
+    it("closes the lightbox when the last photo is trashed", async () => {
+      vi.spyOn(api, "listAssets").mockResolvedValue({ items: [item(1)], next_before: null });
+      vi.spyOn(api, "trashAssets").mockResolvedValue({ count: 1 });
+      const user = userEvent.setup();
+      renderLibrary();
+      await user.click(await screen.findByRole("button", { name: "Open photo-1.jpg" }));
+      await user.click(screen.getByRole("button", { name: "Move to trash" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      expect(await screen.findByText("Your library is empty")).toBeInTheDocument();
+      expect(screen.getByText("1 moved to trash")).toBeInTheDocument();
+    });
   });
 });
