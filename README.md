@@ -38,7 +38,7 @@ uploads still go through the CLI. See the plan in `docs/` for what comes next.
 `apps/web` is a React + TypeScript + Vite single-page app (pnpm, React Router, plain CSS, Prussian-blue accent
 with light and dark themes). It is served from the same origin as the API: the gateway sends `/auth/*`,
 `/assets/*` and `/healthz` to the APIs and everything else to the `web` container, so the session cookie
-needs no CORS. SPA routes (`/login`, `/register`, `/library`) therefore must not start with `/auth` or `/assets`.
+needs no CORS. SPA routes (`/login`, `/register`, `/library`, `/trash`) therefore must not start with `/auth` or `/assets`.
 
 ```sh
 just up        # the stack (gateway on :3000)
@@ -47,7 +47,8 @@ just web-check # tsc + eslint + vitest
 just web-build # production build into apps/web/dist
 ```
 
-See `docs/build.md` for the image and the API client.
+See `docs/build.md` for the image and the API client. Selecting photos, the trash, restore and permanent deletion
+(including old object versions on the versioned bucket) are described in [`docs/library.md`](docs/library.md).
 
 ## Development
 
