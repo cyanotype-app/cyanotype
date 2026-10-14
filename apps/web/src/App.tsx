@@ -6,6 +6,7 @@ import { ApiKeys } from "./pages/ApiKeys";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { Register } from "./pages/Register";
+import { Trash } from "./pages/Trash";
 import { UploadProvider } from "./upload/UploadProvider";
 import { UploadTray } from "./upload/UploadTray";
 
@@ -18,6 +19,7 @@ export function App() {
       <Route path="/logout" element={<Logout />} />
       <Route element={<RequireAuth />}>
         <Route path="/library" element={<Library />} />
+        <Route path="/trash" element={<Trash />} />
         <Route path="/settings/api-keys" element={<ApiKeys />} />
       </Route>
       <Route path="*" element={<Navigate to="/library" replace />} />
@@ -39,6 +41,9 @@ function RequireAuth() {
           <span>Cyanotype</span>
         </Link>
         <div className="topbar-right">
+          <Link to="/trash" className="btn btn-quiet">
+            Trash
+          </Link>
           <Link to="/settings/api-keys" className="btn btn-quiet">
             API keys
           </Link>
