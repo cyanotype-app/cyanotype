@@ -1,8 +1,7 @@
 # Importing a library with the CLI
 
-Browser uploads are not possible against some S3 providers (Linode Object Storage in us-ord-10 has no bucket
-CORS), so `cyanotype import` is the way to load photos. It streams files from disk straight to the presigned
-S3 URLs; bytes never pass through the API. It is built for big libraries (100k+ files, hundreds of GB): it
+`cyanotype import` is the way to load a large library (the web UI also uploads, see "Browser upload" below).
+It streams files from disk straight to the presigned S3 URLs; bytes never pass through the API. It is built for big libraries (100k+ files, hundreds of GB): it
 is resumable, idempotent and uses a small, fixed amount of memory.
 
 ## 1. Install
@@ -104,6 +103,47 @@ Everything is imported as an immutable original with a vendor-specific MIME type
 PNG and WebP; HEIC and RAW decoding is landing in a separate change. Files the worker cannot decode are kept as
 originals and simply have no thumbnail yet. Once that support lands, queue the metadata and thumbnail jobs
 again for the existing assets; nothing needs to be re-uploaded.
+
+## Browser upload (temporary proxy)
+
+The library page has **Upload photos** and **Upload folder** buttons, and accepts files or folders dropped
+anywhere on the page. Browsers cannot PUT to the bucket cross-origin (Linode Object Storage in us-ord-10
+answers 501 to `PutBucketCors`), so the web UI sends each part **through the assets service**:
+
+1. The browser hashes the file (SHA-256, incrementally, in a Web Worker with `hash-wasm`, so a 100 MB RAW
+   does not freeze the page or sit in memory) and calls `POST /assets/check` with `"transport": "proxy"` and
+   `file_modified_at` from `File.lastModified`. `transport` defaults to `"direct"` (presigned S3 URLs), which is
+   what the CLI uses and sees no change.
+2. With `proxy`, the response has the same shape, but each `parts[].url` is a same-origin path,
+   `/assets/uploads/{upload_id}/parts/{n}` (the upload id is percent-encoded). The resume path honours
+   `transport` too, so `uploaded` is unchanged.
+3. The browser `PUT`s each missing 16 MiB part (`File.slice`) to that URL with the session cookie or an API key,
+   `Content-Length` set and the body being the raw bytes. The service checks the upload belongs to the caller
+   (404 otherwise, same as unknown), `1 <= n <= n_parts`, and that `Content-Length` equals the expected size of
+   that part (400 if missing or different; 413 if above the part size), relays the part to S3 `UploadPart` and
+   answers `{"etag": "..."}` (502 if S3 fails). Then `POST /assets/complete` as before.
+
+Files are filtered by extension, not MIME type (browsers report an empty type for RAW): jpg, jpeg, png, webp,
+heic, heif, avif, dng, cr2, cr3, nef, nrw, arw, srf, sr2, raf, orf, rw2, rwl, pef, srw, 3fr, iiq, erf, kdc,
+mrw, x3f, crw. Hidden and OS files (`.DS_Store`, `._*`, `Thumbs.db`, `__MACOSX`) are skipped. The queue runs
+2 files at a time with 3 parts in flight overall, retries a failed part up to 4 times with backoff (network
+errors, 408/429/5xx), shows per-file status and an overall summary in a tray that survives page navigation
+within the app, and asks for confirmation if you close the tab mid-upload. Closing it anyway is safe: opening the
+same files later resumes from the parts S3 already has.
+
+**Memory bound.** A part is buffered in the assets service before `UploadPart` (a replayable body the SDK can
+sign and retry; streaming a non-replayable body to S3 is awkward over plain http). A process-wide semaphore
+allows 3 proxied parts at once, so the proxy path holds at most 3 x 16 MiB = 48 MiB, well inside the assets
+container's `mem_limit: 256m`. Further parts wait for a permit before their body is read, and a part body must
+arrive within 120 s once it has one.
+
+**Limits.** The gateway sets no request body limit for `/assets` and does not buffer request bodies. Cloudflare's
+free plan caps request bodies at 100 MB, so 16 MiB parts are fine behind it. Throughput is bounded by the
+assets service; for big archives use the CLI.
+
+**Temporary.** The proxy exists only because the bucket cannot get a CORS policy. Once storage moves to a
+CORS-capable bucket, the web UI can switch to `"transport": "direct"` and PUT presigned URLs itself; the proxy
+route can then be removed.
 
 ## Server-side details
 

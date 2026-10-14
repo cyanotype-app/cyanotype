@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "./api";
 
 function mockFetch(res: Response | Error) {
@@ -67,5 +67,96 @@ describe("api client", () => {
     // `cursor` wins over the deprecated `before`.
     await api.listAssets({ limit: 10, cursor: "6162|x", before: "2026-01-01T00:00:00Z" });
     expect((f.mock.calls[2] as unknown as [string])[0]).toBe("/assets?limit=10&cursor=6162%7Cx");
+  });
+
+  it("check defaults to the proxy transport and posts JSON", async () => {
+    const f = mockFetch(jsonRes(200, { status: "exists", asset_id: "a1" }));
+    await expect(
+      api.checkUpload({ sha256: "00", size_bytes: 3, filename: "a.jpg", file_modified_at: "2020-01-01T00:00:00.000Z" }),
+    ).resolves.toEqual({ status: "exists", asset_id: "a1" });
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/assets/check");
+    expect(JSON.parse(init.body as string)).toMatchObject({ transport: "proxy", filename: "a.jpg", size_bytes: 3 });
+  });
+
+  it("completes an upload with the part list", async () => {
+    const f = mockFetch(jsonRes(201, { asset_id: "a1" }));
+    await api.completeUpload("up/1", [{ number: 1, etag: '"e"' }]);
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/assets/complete");
+    expect(JSON.parse(init.body as string)).toEqual({ upload_id: "up/1", parts: [{ number: 1, etag: '"e"' }] });
+  });
+});
+
+describe("putPart", () => {
+  class FakeXhr {
+    static last: FakeXhr;
+    upload: { onprogress?: (e: { loaded: number }) => void } = {};
+    headers: Record<string, string> = {};
+    method = "";
+    url = "";
+    withCredentials = false;
+    responseType = "";
+    status = 0;
+    responseText = "";
+    body: unknown;
+    onload?: () => void;
+    onerror?: () => void;
+    onabort?: () => void;
+    ontimeout?: () => void;
+    constructor() {
+      FakeXhr.last = this;
+    }
+    open(m: string, u: string) {
+      this.method = m;
+      this.url = u;
+    }
+    setRequestHeader(k: string, v: string) {
+      this.headers[k] = v;
+    }
+    send(b: unknown) {
+      this.body = b;
+    }
+    abort() {
+      this.onabort?.();
+    }
+    reply(status: number, text: string) {
+      this.status = status;
+      this.responseText = text;
+      this.onload?.();
+    }
+  }
+  beforeEach(() => vi.stubGlobal("XMLHttpRequest", FakeXhr));
+
+  it("PUTs the blob with credentials, reports progress and resolves the etag", async () => {
+    const blob = new Blob(["abc"]);
+    const onProgress = vi.fn();
+    const p = api.putPart("/assets/uploads/u/parts/1", blob, { onProgress });
+    const x = FakeXhr.last;
+    expect([x.method, x.url, x.withCredentials, x.body]).toEqual(["PUT", "/assets/uploads/u/parts/1", true, blob]);
+    expect(x.headers["Content-Type"]).toBe("application/octet-stream");
+    x.upload.onprogress?.({ loaded: 2 });
+    expect(onProgress).toHaveBeenCalledWith(2);
+    x.reply(200, JSON.stringify({ etag: '"abc"' }));
+    await expect(p).resolves.toEqual({ etag: '"abc"' });
+  });
+
+  it("rejects with the server's error text and status", async () => {
+    const p = api.putPart("/x", new Blob(["a"]));
+    FakeXhr.last.reply(400, JSON.stringify({ error: "part 2 must be exactly 4 bytes" }));
+    await expect(p).rejects.toMatchObject({ status: 400, message: "part 2 must be exactly 4 bytes" });
+  });
+
+  it("falls back to a generic message for non-JSON errors, and maps aborts and network errors to status 0", async () => {
+    const p = api.putPart("/x", new Blob(["a"]));
+    FakeXhr.last.reply(502, "<html>bad gateway</html>");
+    await expect(p).rejects.toMatchObject({ status: 502, message: "Request failed (502)" });
+    const p2 = api.putPart("/x", new Blob(["a"]));
+    FakeXhr.last.onerror?.();
+    await expect(p2).rejects.toMatchObject({ status: 0 });
+    const ac = new AbortController();
+    const p3 = api.putPart("/x", new Blob(["a"]), { signal: ac.signal });
+    ac.abort();
+    await expect(p3).rejects.toMatchObject({ status: 0, message: "Upload canceled." });
   });
 });

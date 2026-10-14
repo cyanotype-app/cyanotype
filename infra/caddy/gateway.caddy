@@ -39,10 +39,19 @@
 	}
 
 	@assets path /assets /assets/*
+	# Browser uploads are proxied here too: PUT /assets/uploads/{id}/parts/{n} carries a 16 MiB body. Do NOT add a
+	# `request_body { max_size }` limit below that; Caddy does not buffer request bodies by default (they stream to
+	# the upstream), and its default timeouts are unlimited. Cloudflare's free plan caps request bodies at 100 MB,
+	# so 16 MiB parts pass. The explicit transport timeouts bound a stuck upstream, not slow clients.
 	handle @assets {
 		header >Cache-Control "no-store"
 		reverse_proxy assets:3002 {
 			import upstream_client_ip
+			transport http {
+				dial_timeout 5s
+				write_timeout 5m
+				response_header_timeout 5m
+			}
 		}
 	}
 

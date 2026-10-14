@@ -6,6 +6,8 @@ import { ApiKeys } from "./pages/ApiKeys";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { Register } from "./pages/Register";
+import { UploadProvider } from "./upload/UploadProvider";
+import { UploadTray } from "./upload/UploadTray";
 
 // Client routes must not start with /auth or /assets: the gateway sends those to the API.
 export function App() {
@@ -29,6 +31,7 @@ function RequireAuth() {
   if (state.status === "loading") return <p className="center muted" role="status">Loading…</p>;
   if (state.status === "anonymous") return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
   return (
+    <UploadProvider>
     <div className="shell">
       <header className="topbar">
         <Link to="/library" className="brand">
@@ -48,7 +51,9 @@ function RequireAuth() {
       <main>
         <Outlet />
       </main>
+      <UploadTray />
     </div>
+    </UploadProvider>
   );
 }
 
