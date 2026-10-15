@@ -1,0 +1,916 @@
+//! Albums: owner-scoped collections of photos, served under `/assets/albums` (the gateway sends `/assets/*` to
+//! this service, while `/albums` is the web app's own page).
+//!
+//! - `GET /assets/albums`: every album with photo count, cover, date range; most recently updated first.
+//! - `POST /assets/albums {title, description?, asset_ids?}`; `GET|PATCH|DELETE /assets/albums/{id}`.
+//! - `GET /assets/albums/{id}/assets?limit&cursor`: the album's photos, same item shape, ordering and keyset
+//!   pagination as `GET /assets`.
+//! - `POST /assets/albums/{id}/assets {ids}` adds, `POST /assets/albums/{id}/assets/remove {ids}` removes; both
+//!   are idempotent and answer `{count}` with the number of memberships actually changed.
+//!
+//! Albums reference photos. Trashed photos keep their membership but are invisible in album views and counts
+//! (restoring brings them back); a purge removes the membership through the foreign key cascade. Someone else's
+//! album, or an unknown id, is always a 404, and only the caller's own live photos can be added.
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::StatusCode,
+};
+use serde::{Deserialize, Deserializer, Serialize};
+use sqlx::FromRow;
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+use super::{ListItem, ListQuery, ListResponse, ListRow, decode_cursor, encode_cursor, thumb_fields, trash::MAX_IDS};
+use crate::AppState;
+use cyanotype_service::{ApiError, ApiResult, AuthUser};
+
+const MAX_TITLE: usize = 200;
+const MAX_DESCRIPTION: usize = 5000;
+
+/// Same expression as the library timeline (`x` is the assets alias).
+const SORT: &str = "coalesce(x.taken_at, x.file_modified_at, x.created_at)";
+
+fn clean_title(t: &str) -> ApiResult<String> {
+    let t = t.trim();
+    if t.is_empty() {
+        return Err(ApiError::BadRequest("title must not be empty".into()));
+    }
+    if t.chars().count() > MAX_TITLE {
+        return Err(ApiError::BadRequest(format!("title is at most {MAX_TITLE} characters")));
+    }
+    Ok(t.to_string())
+}
+
+/// Blank means no description.
+fn clean_description(d: Option<&str>) -> ApiResult<Option<String>> {
+    let Some(d) = d.map(str::trim).filter(|d| !d.is_empty()) else {
+        return Ok(None);
+    };
+    if d.chars().count() > MAX_DESCRIPTION {
+        return Err(ApiError::BadRequest(format!(
+            "description is at most {MAX_DESCRIPTION} characters"
+        )));
+    }
+    Ok(Some(d.to_string()))
+}
+
+fn clean_ids(mut ids: Vec<Uuid>) -> ApiResult<Vec<Uuid>> {
+    if ids.len() > MAX_IDS {
+        return Err(ApiError::BadRequest(format!("at most {MAX_IDS} ids per request")));
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(ids)
+}
+
+/// Distinguishes an absent field (leave alone) from an explicit `null` (clear it).
+fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+#[derive(Serialize)]
+struct Cover {
+    id: Uuid,
+    thumbhash: Option<String>,
+    thumb_url: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct Album {
+    id: Uuid,
+    title: String,
+    description: Option<String>,
+    /// Photos in the album, not counting trashed ones.
+    photo_count: i64,
+    /// The chosen cover if it is still in the album and not trashed, else the most recent photo; null when empty.
+    cover: Option<Cover>,
+    /// Earliest / latest photo time (taken_at, file mtime or upload time); null when empty.
+    #[serde(with = "time::serde::rfc3339::option")]
+    first_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    last_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    updated_at: OffsetDateTime,
+}
+
+#[derive(FromRow)]
+struct AlbumRow {
+    id: Uuid,
+    title: String,
+    description: Option<String>,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+    photo_count: i64,
+    first_at: Option<OffsetDateTime>,
+    last_at: Option<OffsetDateTime>,
+    cover_id: Option<Uuid>,
+    cover_thumbhash: Option<Vec<u8>>,
+}
+
+fn summary_sql(tail: &str) -> String {
+    format!(
+        "SELECT a.id, a.title, a.description, a.created_at, a.updated_at,
+                st.photo_count, st.first_at, st.last_at, cv.id AS cover_id, cv.thumbhash AS cover_thumbhash
+         FROM albums a
+         CROSS JOIN LATERAL (
+             SELECT count(*) AS photo_count, min({SORT}) AS first_at, max({SORT}) AS last_at
+             FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
+             WHERE aa.album_id = a.id AND x.deleted_at IS NULL
+         ) st
+         LEFT JOIN LATERAL (
+             SELECT x.id, x.thumbhash FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
+             WHERE aa.album_id = a.id AND x.deleted_at IS NULL
+             ORDER BY (x.id = a.cover_asset_id) DESC, {SORT} DESC, x.id DESC LIMIT 1
+         ) cv ON true
+         WHERE a.owner_id = $1 {tail}"
+    )
+}
+
+async fn to_albums(s: &AppState, owner: Uuid, rows: Vec<AlbumRow>) -> ApiResult<Vec<Album>> {
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let cover = match r.cover_id {
+            Some(id) => {
+                let (thumbhash, thumb_url) = thumb_fields(&s.storage, owner, id, r.cover_thumbhash.as_deref()).await?;
+                Some(Cover {
+                    id,
+                    thumbhash,
+                    thumb_url,
+                })
+            }
+            None => None,
+        };
+        out.push(Album {
+            id: r.id,
+            title: r.title,
+            description: r.description,
+            photo_count: r.photo_count,
+            cover,
+            first_at: r.first_at,
+            last_at: r.last_at,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        });
+    }
+    Ok(out)
+}
+
+async fn load_album(s: &AppState, owner: Uuid, id: Uuid) -> ApiResult<Album> {
+    let row: AlbumRow = sqlx::query_as(&summary_sql("AND a.id = $2"))
+        .bind(owner)
+        .bind(id)
+        .fetch_optional(&s.db)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(to_albums(s, owner, vec![row]).await?.remove(0))
+}
+
+/// 404 unless the album exists and is the caller's. Takes a row lock so a concurrent delete cannot race the insert.
+async fn lock_album(tx: &mut sqlx::PgConnection, owner: Uuid, id: Uuid) -> ApiResult<()> {
+    sqlx::query_scalar::<_, Uuid>("SELECT id FROM albums WHERE id = $1 AND owner_id = $2 FOR UPDATE")
+        .bind(id)
+        .bind(owner)
+        .fetch_optional(tx)
+        .await?
+        .map(|_| ())
+        .ok_or(ApiError::NotFound)
+}
+
+pub(super) async fn list(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<serde_json::Value>> {
+    let rows: Vec<AlbumRow> = sqlx::query_as(&summary_sql("ORDER BY a.updated_at DESC, a.id DESC"))
+        .bind(user.id)
+        .fetch_all(&s.db)
+        .await?;
+    Ok(Json(serde_json::json!({"items": to_albums(&s, user.id, rows).await?})))
+}
+
+pub(super) async fn get(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> ApiResult<Json<Album>> {
+    Ok(Json(load_album(&s, user.id, id).await?))
+}
+
+#[derive(Deserialize)]
+pub(super) struct CreateBody {
+    title: String,
+    description: Option<String>,
+    #[serde(default)]
+    asset_ids: Vec<Uuid>,
+}
+
+/// Insert the caller's live photos among `ids` into the album; returns how many were new.
+async fn insert_members(tx: &mut sqlx::PgConnection, owner: Uuid, album: Uuid, ids: &[Uuid]) -> ApiResult<u64> {
+    Ok(sqlx::query(
+        "INSERT INTO album_assets (album_id, asset_id)
+         SELECT $1, id FROM assets WHERE owner_id = $2 AND id = ANY($3) AND deleted_at IS NULL
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(album)
+    .bind(owner)
+    .bind(ids)
+    .execute(tx)
+    .await?
+    .rows_affected())
+}
+
+pub(super) async fn create(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<CreateBody>,
+) -> ApiResult<(StatusCode, Json<Album>)> {
+    let title = clean_title(&req.title)?;
+    let description = clean_description(req.description.as_deref())?;
+    let ids = clean_ids(req.asset_ids)?;
+    let mut tx = s.db.begin().await?;
+    let (id,): (Uuid,) =
+        sqlx::query_as("INSERT INTO albums (owner_id, title, description) VALUES ($1,$2,$3) RETURNING id")
+            .bind(user.id)
+            .bind(&title)
+            .bind(&description)
+            .fetch_one(&mut *tx)
+            .await?;
+    if !ids.is_empty() {
+        insert_members(&mut tx, user.id, id, &ids).await?;
+    }
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(load_album(&s, user.id, id).await?)))
+}
+
+#[derive(Deserialize)]
+pub(super) struct UpdateBody {
+    title: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    description: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    cover_asset_id: Option<Option<Uuid>>,
+}
+
+pub(super) async fn update(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateBody>,
+) -> ApiResult<Json<Album>> {
+    let title = req.title.as_deref().map(clean_title).transpose()?;
+    let description = req
+        .description
+        .as_ref()
+        .map(|d| clean_description(d.as_deref()))
+        .transpose()?;
+    let mut tx = s.db.begin().await?;
+    lock_album(&mut tx, user.id, id).await?;
+    if let Some(Some(cover)) = req.cover_asset_id {
+        let ok: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT aa.asset_id FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
+             WHERE aa.album_id = $1 AND aa.asset_id = $2 AND x.owner_id = $3 AND x.deleted_at IS NULL",
+        )
+        .bind(id)
+        .bind(cover)
+        .bind(user.id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if ok.is_none() {
+            return Err(ApiError::BadRequest("the cover must be a photo in this album".into()));
+        }
+    }
+    if title.is_some() || description.is_some() || req.cover_asset_id.is_some() {
+        sqlx::query(
+            "UPDATE albums SET
+                title = coalesce($2, title),
+                description = CASE WHEN $3 THEN $4 ELSE description END,
+                cover_asset_id = CASE WHEN $5 THEN $6 ELSE cover_asset_id END,
+                updated_at = now()
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(&title)
+        .bind(description.is_some())
+        .bind(description.flatten())
+        .bind(req.cover_asset_id.is_some())
+        .bind(req.cover_asset_id.flatten())
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(load_album(&s, user.id, id).await?))
+}
+
+/// Deletes the album and its memberships only; the photos are untouched.
+pub(super) async fn remove(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
+    let n = sqlx::query("DELETE FROM albums WHERE id = $1 AND owner_id = $2")
+        .bind(id)
+        .bind(user.id)
+        .execute(&s.db)
+        .await?
+        .rows_affected();
+    if n == 0 {
+        Err(ApiError::NotFound)
+    } else {
+        Ok(StatusCode::NO_CONTENT)
+    }
+}
+
+pub(super) async fn assets(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Query(q): Query<ListQuery>,
+) -> ApiResult<Json<ListResponse>> {
+    let owned: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM albums WHERE id = $1 AND owner_id = $2")
+        .bind(id)
+        .bind(user.id)
+        .fetch_optional(&s.db)
+        .await?;
+    owned.ok_or(ApiError::NotFound)?;
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    let after = match (&q.cursor, q.before) {
+        (Some(c), _) => Some(decode_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
+        (None, Some(t)) => Some((t, Uuid::nil())),
+        (None, None) => None,
+    };
+    let select = format!(
+        "SELECT x.id, x.original_name, x.content_type, x.size_bytes, x.width, x.height, {SORT} AS sort_time, x.thumbhash
+         FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
+         WHERE aa.album_id = $1 AND x.owner_id = $2 AND x.deleted_at IS NULL"
+    );
+    let rows = match after {
+        Some((ts, aid)) => {
+            sqlx::query_as::<_, ListRow>(&format!(
+                "{select} AND ({SORT}, x.id) < ($3, $4) ORDER BY {SORT} DESC, x.id DESC LIMIT $5"
+            ))
+            .bind(id)
+            .bind(user.id)
+            .bind(ts)
+            .bind(aid)
+            .bind(limit)
+            .fetch_all(&s.db)
+            .await?
+        }
+        None => {
+            sqlx::query_as::<_, ListRow>(&format!("{select} ORDER BY {SORT} DESC, x.id DESC LIMIT $3"))
+                .bind(id)
+                .bind(user.id)
+                .bind(limit)
+                .fetch_all(&s.db)
+                .await?
+        }
+    };
+    let last = if rows.len() as i64 == limit { rows.last() } else { None };
+    let next_cursor = last.map(|r| encode_cursor(r.summary.sort_time, r.summary.id));
+    let next_before = last.map(|r| r.summary.sort_time);
+    let mut items = Vec::with_capacity(rows.len());
+    for r in rows {
+        let (thumbhash, thumb_url) = thumb_fields(&s.storage, user.id, r.summary.id, r.thumbhash.as_deref()).await?;
+        items.push(ListItem {
+            summary: r.summary,
+            thumbhash,
+            thumb_url,
+        });
+    }
+    Ok(Json(ListResponse {
+        items,
+        next_cursor,
+        next_before,
+    }))
+}
+
+#[derive(Deserialize)]
+pub(super) struct IdsBody {
+    ids: Vec<Uuid>,
+}
+
+#[derive(Serialize)]
+pub(super) struct Count {
+    count: u64,
+}
+
+/// Add photos. Unknown, foreign, trashed and already-present ids are skipped; `count` is how many were added.
+pub(super) async fn add(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(req): Json<IdsBody>,
+) -> ApiResult<Json<Count>> {
+    let ids = clean_ids(req.ids)?;
+    let mut tx = s.db.begin().await?;
+    lock_album(&mut tx, user.id, id).await?;
+    let count = insert_members(&mut tx, user.id, id, &ids).await?;
+    if count > 0 {
+        sqlx::query("UPDATE albums SET updated_at = now() WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(Count { count }))
+}
+
+/// Remove photos from the album (they stay in the library). `count` is how many memberships were removed.
+pub(super) async fn remove_assets(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(req): Json<IdsBody>,
+) -> ApiResult<Json<Count>> {
+    let ids = clean_ids(req.ids)?;
+    let mut tx = s.db.begin().await?;
+    lock_album(&mut tx, user.id, id).await?;
+    let count = sqlx::query("DELETE FROM album_assets WHERE album_id = $1 AND asset_id = ANY($2)")
+        .bind(id)
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if count > 0 {
+        // A removed photo can no longer be the cover.
+        sqlx::query(
+            "UPDATE albums SET updated_at = now(),
+                cover_asset_id = CASE WHEN cover_asset_id = ANY($2) THEN NULL ELSE cover_asset_id END
+             WHERE id = $1",
+        )
+        .bind(id)
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(Count { count }))
+}
+
+/// The caller's albums containing `asset`, for the photo detail view.
+pub(super) async fn containing(db: &sqlx::PgPool, owner: Uuid, asset: Uuid) -> ApiResult<serde_json::Value> {
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT al.id, al.title FROM album_assets aa JOIN albums al ON al.id = aa.album_id
+         WHERE aa.asset_id = $1 AND al.owner_id = $2 ORDER BY lower(al.title), al.id",
+    )
+    .bind(asset)
+    .bind(owner)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, title)| serde_json::json!({"id": id, "title": title}))
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use crate::{
+        purge,
+        testutil::{FakeObjects, TestDb, app, asset, ids, send, user},
+    };
+
+    #[tokio::test]
+    async fn crud_and_validation() {
+        let Some(t) = TestDb::new().await else { return };
+        let (uid, key) = user(&t.pool, "a@example.com").await;
+        let a = asset(&t.pool, uid, "a.jpg").await;
+        let b = asset(&t.pool, uid, "b.jpg").await;
+        let app = app(&t.pool);
+
+        for bad in [json!({"title": "  "}), json!({"title": "x".repeat(201)})] {
+            let (st, _) = send(&app, "POST", "/assets/albums", &key, Some(bad)).await;
+            assert_eq!(st, StatusCode::BAD_REQUEST);
+        }
+        let (st, al) = send(
+            &app,
+            "POST",
+            "/assets/albums",
+            &key,
+            Some(json!({"title": " Trip ", "description": "  ", "asset_ids": [a, b, a, Uuid::new_v4()]})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED);
+        assert_eq!(al["title"], "Trip");
+        assert!(al["description"].is_null());
+        assert_eq!(al["photo_count"], 2);
+        let id = al["id"].as_str().unwrap().to_string();
+        let path = format!("/assets/albums/{id}");
+
+        let (_, got) = send(&app, "GET", &path, &key, None).await;
+        assert_eq!(got["photo_count"], 2);
+        assert!(got["first_at"].is_string() && got["last_at"].is_string());
+
+        // Absent fields are left alone, null clears, a blank title is refused.
+        let (st, up) = send(&app, "PATCH", &path, &key, Some(json!({"description": "Sea"}))).await;
+        assert_eq!(
+            (st, up["title"].as_str(), up["description"].as_str()),
+            (StatusCode::OK, Some("Trip"), Some("Sea"))
+        );
+        let (_, up) = send(&app, "PATCH", &path, &key, Some(json!({"title": "Holiday"}))).await;
+        assert_eq!(
+            (up["title"].as_str(), up["description"].as_str()),
+            (Some("Holiday"), Some("Sea"))
+        );
+        let (_, up) = send(&app, "PATCH", &path, &key, Some(json!({"description": null}))).await;
+        assert!(up["description"].is_null());
+        assert_eq!(
+            send(&app, "PATCH", &path, &key, Some(json!({"title": ""}))).await.0,
+            StatusCode::BAD_REQUEST
+        );
+
+        // Delete removes the album and nothing else.
+        let (_, list) = send(&app, "GET", "/assets/albums", &key, None).await;
+        assert_eq!(list["items"].as_array().unwrap().len(), 1);
+        assert_eq!(send(&app, "DELETE", &path, &key, None).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(send(&app, "DELETE", &path, &key, None).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(send(&app, "GET", &path, &key, None).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(send(&app, "GET", "/assets/count", &key, None).await.1["count"], 2);
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM album_assets")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
+        t.teardown().await;
+    }
+
+    #[tokio::test]
+    async fn albums_are_private_to_their_owner() {
+        let Some(t) = TestDb::new().await else { return };
+        let (alice, ka) = user(&t.pool, "alice@example.com").await;
+        let (bob, kb) = user(&t.pool, "bob@example.com").await;
+        let a = asset(&t.pool, alice, "a.jpg").await;
+        let b = asset(&t.pool, bob, "b.jpg").await;
+        let app = app(&t.pool);
+        let (_, al) = send(
+            &app,
+            "POST",
+            "/assets/albums",
+            &ka,
+            Some(json!({"title": "Mine", "asset_ids": [a]})),
+        )
+        .await;
+        let id = al["id"].as_str().unwrap();
+        let path = format!("/assets/albums/{id}");
+
+        // Bob sees nothing of it and cannot change it.
+        assert_eq!(
+            send(&app, "GET", "/assets/albums", &kb, None).await.1["items"],
+            json!([])
+        );
+        for (m, p, body) in [
+            ("GET", path.clone(), None),
+            ("GET", format!("{path}/assets"), None),
+            ("PATCH", path.clone(), Some(json!({"title": "Hacked"}))),
+            ("DELETE", path.clone(), None),
+            ("POST", format!("{path}/assets"), Some(ids(&[b]))),
+            ("POST", format!("{path}/assets/remove"), Some(ids(&[a]))),
+        ] {
+            assert_eq!(send(&app, m, &p, &kb, body).await.0, StatusCode::NOT_FOUND, "{m} {p}");
+        }
+        let (_, still) = send(&app, "GET", &path, &ka, None).await;
+        assert_eq!(
+            (still["title"].as_str(), still["photo_count"].as_i64()),
+            (Some("Mine"), Some(1))
+        );
+
+        // Alice cannot pull Bob's photo into her album, at creation or later; Bob's photo is not hers to cover.
+        let (_, add) = send(&app, "POST", &format!("{path}/assets"), &ka, Some(ids(&[b]))).await;
+        assert_eq!(add["count"], 0);
+        let (_, al2) = send(
+            &app,
+            "POST",
+            "/assets/albums",
+            &ka,
+            Some(json!({"title": "X", "asset_ids": [b]})),
+        )
+        .await;
+        assert_eq!(al2["photo_count"], 0);
+        assert_eq!(
+            send(&app, "PATCH", &path, &ka, Some(json!({"cover_asset_id": b})))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        // Bob's photo does not reveal her albums either.
+        assert_eq!(
+            send(&app, "GET", &format!("/assets/{a}"), &kb, None).await.0,
+            StatusCode::NOT_FOUND
+        );
+        t.teardown().await;
+    }
+
+    #[tokio::test]
+    async fn add_and_remove_are_idempotent_and_capped() {
+        let Some(t) = TestDb::new().await else { return };
+        let (uid, key) = user(&t.pool, "a@example.com").await;
+        let a = asset(&t.pool, uid, "a.jpg").await;
+        let b = asset(&t.pool, uid, "b.jpg").await;
+        let c = asset(&t.pool, uid, "c.jpg").await;
+        let app = app(&t.pool);
+        let (_, al) = send(&app, "POST", "/assets/albums", &key, Some(json!({"title": "T"}))).await;
+        let path = format!("/assets/albums/{}", al["id"].as_str().unwrap());
+        let add = format!("{path}/assets");
+        let rm = format!("{path}/assets/remove");
+
+        let (st, r) = send(&app, "POST", &add, &key, Some(ids(&[a, b, b, Uuid::new_v4()]))).await;
+        assert_eq!((st, r["count"].as_u64()), (StatusCode::OK, Some(2)));
+        assert_eq!(send(&app, "POST", &add, &key, Some(ids(&[a, b]))).await.1["count"], 0);
+        assert_eq!(send(&app, "POST", &add, &key, Some(ids(&[a, c]))).await.1["count"], 1);
+        assert_eq!(send(&app, "GET", &path, &key, None).await.1["photo_count"], 3);
+
+        // A trashed photo cannot be added.
+        let d = asset(&t.pool, uid, "d.jpg").await;
+        send(&app, "POST", "/assets/trash", &key, Some(ids(&[d]))).await;
+        assert_eq!(send(&app, "POST", &add, &key, Some(ids(&[d]))).await.1["count"], 0);
+
+        assert_eq!(
+            send(&app, "POST", &rm, &key, Some(ids(&[a, d, Uuid::new_v4()])))
+                .await
+                .1["count"],
+            1
+        );
+        assert_eq!(send(&app, "POST", &rm, &key, Some(ids(&[a]))).await.1["count"], 0);
+        assert_eq!(send(&app, "GET", &path, &key, None).await.1["photo_count"], 2);
+        // Removed photos stay in the library.
+        assert_eq!(send(&app, "GET", "/assets/count", &key, None).await.1["count"], 3);
+
+        let many: Vec<Uuid> = (0..1001).map(|_| Uuid::new_v4()).collect();
+        for p in [&add, &rm] {
+            assert_eq!(
+                send(&app, "POST", p, &key, Some(ids(&many))).await.0,
+                StatusCode::BAD_REQUEST
+            );
+            let (st, r) = send(&app, "POST", p, &key, Some(ids(&many[..1000]))).await;
+            assert_eq!((st, r["count"].as_u64()), (StatusCode::OK, Some(0)));
+        }
+        let (st, _) = send(
+            &app,
+            "POST",
+            "/assets/albums",
+            &key,
+            Some(json!({"title": "Big", "asset_ids": many})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        t.teardown().await;
+    }
+
+    #[tokio::test]
+    async fn album_photos_paginate_in_timeline_order() {
+        let Some(t) = TestDb::new().await else { return };
+        let (uid, key) = user(&t.pool, "a@example.com").await;
+        let app = app(&t.pool);
+        let mut all = Vec::new();
+        // 12 photos, several sharing a time, to exercise the id tiebreak; 3 more outside the album.
+        for i in 0..15 {
+            let id = asset(&t.pool, uid, &format!("p{i}.jpg")).await;
+            sqlx::query("UPDATE assets SET taken_at = $2::timestamptz WHERE id = $1")
+                .bind(id)
+                .bind(["2020-01-01T00:00:00Z", "2021-01-01T00:00:00Z", "2021-01-01T00:00:00Z"][i % 3])
+                .execute(&t.pool)
+                .await
+                .unwrap();
+            all.push(id);
+        }
+        let (_, al) = send(
+            &app,
+            "POST",
+            "/assets/albums",
+            &key,
+            Some(json!({"title": "T", "asset_ids": &all[..12]})),
+        )
+        .await;
+        let path = format!("/assets/albums/{}/assets", al["id"].as_str().unwrap());
+
+        let mut seen = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            let p = match &cursor {
+                Some(c) => format!("{path}?limit=5&cursor={c}"),
+                None => format!("{path}?limit=5"),
+            };
+            let (st, page) = send(&app, "GET", &p, &key, None).await;
+            assert_eq!(st, StatusCode::OK);
+            pages += 1;
+            for i in page["items"].as_array().unwrap() {
+                assert!(i.get("thumb_url").is_some() && i.get("sort_time").is_some());
+                seen.push(i["id"].as_str().unwrap().to_string());
+            }
+            match page["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_string()),
+                None => break,
+            }
+            assert!(pages < 10);
+        }
+        assert_eq!((pages, seen.len()), (3, 12));
+        assert_eq!(seen.iter().collect::<std::collections::HashSet<_>>().len(), 12);
+        let (_, big) = send(&app, "GET", &path, &key, None).await;
+        let one: Vec<_> = big["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(one, seen, "same order as one big page");
+        // Newest first.
+        let times: Vec<_> = big["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["sort_time"].as_str().unwrap().to_string())
+            .collect();
+        assert!(times.windows(2).all(|w| w[0] >= w[1]));
+        assert_eq!(
+            send(&app, "GET", &format!("{path}?cursor=zz"), &key, None).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        t.teardown().await;
+    }
+
+    #[tokio::test]
+    async fn trashed_photos_vanish_from_albums_and_return_on_restore() {
+        let Some(t) = TestDb::new().await else { return };
+        let (uid, key) = user(&t.pool, "a@example.com").await;
+        let a = asset(&t.pool, uid, "a.jpg").await;
+        let b = asset(&t.pool, uid, "b.jpg").await;
+        let app = app(&t.pool);
+        sqlx::query("UPDATE assets SET taken_at = '2020-01-01T00:00:00Z' WHERE id = $1")
+            .bind(a)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE assets SET taken_at = '2021-01-01T00:00:00Z' WHERE id = $1")
+            .bind(b)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        let (_, al) = send(
+            &app,
+            "POST",
+            "/assets/albums",
+            &key,
+            Some(json!({"title": "T", "asset_ids": [a, b]})),
+        )
+        .await;
+        let path = format!("/assets/albums/{}", al["id"].as_str().unwrap());
+        // Automatic cover is the most recent photo.
+        assert_eq!(al["cover"]["id"], b.to_string());
+
+        send(&app, "POST", "/assets/trash", &key, Some(ids(&[b]))).await;
+        let (_, got) = send(&app, "GET", &path, &key, None).await;
+        assert_eq!(got["photo_count"], 1);
+        assert_eq!(
+            got["cover"]["id"],
+            a.to_string(),
+            "automatic cover skips the trashed photo"
+        );
+        assert!(got["last_at"].as_str().unwrap().starts_with("2020-01-01"));
+        let (_, items) = send(&app, "GET", &format!("{path}/assets"), &key, None).await;
+        assert_eq!(items["items"].as_array().unwrap().len(), 1);
+        let (_, list) = send(&app, "GET", "/assets/albums", &key, None).await;
+        assert_eq!(list["items"][0]["photo_count"], 1);
+
+        send(&app, "POST", "/assets/restore", &key, Some(ids(&[b]))).await;
+        let (_, got) = send(&app, "GET", &path, &key, None).await;
+        assert_eq!(
+            (got["photo_count"].as_i64(), got["cover"]["id"].as_str()),
+            (Some(2), Some(b.to_string().as_str()))
+        );
+
+        // Purge removes the membership for good.
+        send(&app, "POST", "/assets/trash", &key, Some(ids(&[b]))).await;
+        send(&app, "POST", "/assets/purge", &key, Some(ids(&[b]))).await;
+        purge::sweep(&t.pool, &FakeObjects::default()).await.unwrap();
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM album_assets WHERE asset_id = $1")
+            .bind(b)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(send(&app, "GET", &path, &key, None).await.1["photo_count"], 1);
+        t.teardown().await;
+    }
+
+    #[tokio::test]
+    async fn cover_choice_falls_back_when_trashed_or_removed() {
+        let Some(t) = TestDb::new().await else { return };
+        let (uid, key) = user(&t.pool, "a@example.com").await;
+        let a = asset(&t.pool, uid, "a.jpg").await;
+        let b = asset(&t.pool, uid, "b.jpg").await;
+        let outside = asset(&t.pool, uid, "o.jpg").await;
+        let app = app(&t.pool);
+        sqlx::query("UPDATE assets SET taken_at = '2020-01-01T00:00:00Z' WHERE id = $1")
+            .bind(a)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE assets SET taken_at = '2021-01-01T00:00:00Z' WHERE id = $1")
+            .bind(b)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        let (_, al) = send(
+            &app,
+            "POST",
+            "/assets/albums",
+            &key,
+            Some(json!({"title": "T", "asset_ids": [a, b]})),
+        )
+        .await;
+        let path = format!("/assets/albums/{}", al["id"].as_str().unwrap());
+
+        assert_eq!(
+            send(&app, "PATCH", &path, &key, Some(json!({"cover_asset_id": outside})))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST,
+            "not in the album"
+        );
+        let (_, up) = send(&app, "PATCH", &path, &key, Some(json!({"cover_asset_id": a}))).await;
+        assert_eq!(
+            up["cover"]["id"],
+            a.to_string(),
+            "explicit cover beats the newest photo"
+        );
+
+        send(&app, "POST", "/assets/trash", &key, Some(ids(&[a]))).await;
+        assert_eq!(
+            send(&app, "GET", &path, &key, None).await.1["cover"]["id"],
+            b.to_string()
+        );
+        send(&app, "POST", "/assets/restore", &key, Some(ids(&[a]))).await;
+        assert_eq!(
+            send(&app, "GET", &path, &key, None).await.1["cover"]["id"],
+            a.to_string(),
+            "choice survives the trash"
+        );
+
+        // Removing the cover from the album clears the choice; null clears it explicitly.
+        send(&app, "POST", &format!("{path}/assets/remove"), &key, Some(ids(&[a]))).await;
+        let cover: Option<Uuid> = sqlx::query_scalar("SELECT cover_asset_id FROM albums")
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+        assert!(cover.is_none());
+        send(&app, "POST", &format!("{path}/assets"), &key, Some(ids(&[a]))).await;
+        assert_eq!(
+            send(&app, "GET", &path, &key, None).await.1["cover"]["id"],
+            b.to_string()
+        );
+        send(&app, "PATCH", &path, &key, Some(json!({"cover_asset_id": a}))).await;
+        let (_, up) = send(&app, "PATCH", &path, &key, Some(json!({"cover_asset_id": null}))).await;
+        assert_eq!(up["cover"]["id"], b.to_string());
+        t.teardown().await;
+    }
+
+    #[tokio::test]
+    async fn list_is_sorted_by_update_and_asset_detail_names_its_albums() {
+        let Some(t) = TestDb::new().await else { return };
+        let (uid, key) = user(&t.pool, "a@example.com").await;
+        let a = asset(&t.pool, uid, "a.jpg").await;
+        let app = app(&t.pool);
+        let (_, one) = send(&app, "POST", "/assets/albums", &key, Some(json!({"title": "One"}))).await;
+        let (_, two) = send(&app, "POST", "/assets/albums", &key, Some(json!({"title": "Two"}))).await;
+        let titles = |v: &serde_json::Value| -> Vec<String> {
+            v["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i["title"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let (_, list) = send(&app, "GET", "/assets/albums", &key, None).await;
+        assert_eq!(titles(&list), ["Two", "One"]);
+        // Empty albums have no cover and no date range.
+        assert!(list["items"][0]["cover"].is_null() && list["items"][0]["first_at"].is_null());
+
+        // Touching the older album moves it to the top.
+        let add = format!("/assets/albums/{}/assets", one["id"].as_str().unwrap());
+        send(&app, "POST", &add, &key, Some(ids(&[a]))).await;
+        assert_eq!(
+            titles(&send(&app, "GET", "/assets/albums", &key, None).await.1),
+            ["One", "Two"]
+        );
+        send(
+            &app,
+            "POST",
+            &format!("/assets/albums/{}/assets", two["id"].as_str().unwrap()),
+            &key,
+            Some(ids(&[a])),
+        )
+        .await;
+
+        let (st, detail) = send(&app, "GET", &format!("/assets/{a}"), &key, None).await;
+        assert_eq!(st, StatusCode::OK);
+        let names: Vec<_> = detail["albums"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["title"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["One", "Two"]);
+        assert!(detail["albums"][0]["id"].is_string());
+        t.teardown().await;
+    }
+}

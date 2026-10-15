@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AssetDetail, AssetListItem } from "../api";
 import { placeholderUrl } from "../thumbhash";
@@ -10,9 +11,13 @@ interface Props {
   loadDetail: (id: string) => Promise<AssetDetail>;
   /** Move the current photo to the trash. The parent removes it from `items`, which shows the next photo. */
   onTrash?: (item: AssetListItem) => void;
+  /** Open the "add to album" dialog for the current photo. */
+  onAddToAlbum?: (item: AssetListItem) => void;
+  /** Bump after the photo's albums changed so its details (the "In albums" line) are fetched again. */
+  refreshKey?: number;
 }
 
-export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onTrash }: Props) {
+export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onTrash, onAddToAlbum, refreshKey = 0 }: Props) {
   const item = items[index];
   const [details, setDetails] = useState<Record<string, AssetDetail>>({});
   const [failed, setFailed] = useState<Record<string, true>>({});
@@ -35,6 +40,18 @@ export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onT
     }
   }, [index, items, loadDetail]);
 
+  // Albums changed: re-read the current photo's details (fresh URLs and album list), keeping the old ones meanwhile.
+  const lastRefresh = useRef(refreshKey);
+  useEffect(() => {
+    if (lastRefresh.current === refreshKey) return;
+    lastRefresh.current = refreshKey;
+    const id = items[index]?.id;
+    if (!id) return;
+    loadDetail(id)
+      .then((d) => setDetails((m) => ({ ...m, [id]: d })))
+      .catch(() => undefined);
+  }, [refreshKey, items, index, loadDetail]);
+
   const go = useCallback(
     (delta: number) => {
       const next = index + delta;
@@ -46,6 +63,8 @@ export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onT
   // Keyboard: ←/→ navigate, Esc closes, Tab stays inside the dialog.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      // Typing in a dialog opened over the lightbox (add to album) is not a lightbox shortcut.
+      if ((e.target as HTMLElement | null)?.closest("input, textarea, select")) return;
       if (e.key === "Escape") {
         e.preventDefault();
         onClose();
@@ -113,6 +132,11 @@ export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onT
               Original
             </a>
           )}
+          {onAddToAlbum && (
+            <button type="button" className="btn btn-glass" onClick={() => onAddToAlbum(item)}>
+              Add to album
+            </button>
+          )}
           {onTrash && (
             <button type="button" className="btn btn-glass" onClick={() => onTrash(item)}>
               Move to trash
@@ -158,6 +182,19 @@ export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onT
           <time dateTime={item.sort_time}>{Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString()}</time>
         </span>
       </p>
+      {detail?.albums && detail.albums.length > 0 && (
+        <p className="lightbox-albums">
+          <span className="muted">In albums:</span>{" "}
+          {detail.albums.map((a, i) => (
+            <span key={a.id}>
+              {i > 0 && ", "}
+              <Link to={`/albums/${a.id}`} onClick={onClose}>
+                {a.title}
+              </Link>
+            </span>
+          ))}
+        </p>
+      )}
     </div>
   );
 }
