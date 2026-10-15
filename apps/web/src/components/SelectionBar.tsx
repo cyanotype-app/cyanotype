@@ -21,15 +21,21 @@ export function SelectionBar({ count, total, onSelectAll, onClear, onDone, child
         {count === 0 ? "Select photos" : `${count} selected`}
       </span>
       <div className="selection-actions">
-        <button type="button" className="btn btn-quiet" onClick={onSelectAll} disabled={total === 0 || count === total}>
+        <button
+          type="button"
+          className="btn btn-quiet selection-tool"
+          onClick={onSelectAll}
+          disabled={total === 0 || count === total}
+        >
           Select all
         </button>
-        <button type="button" className="btn btn-quiet" onClick={onClear} disabled={count === 0}>
+        <button type="button" className="btn btn-quiet selection-tool" onClick={onClear} disabled={count === 0}>
           Clear
         </button>
-        {children}
+        {/* display: contents on wide screens (one row); its own full-width row on phones */}
+        <div className="selection-primary">{children}</div>
         {onDone && (
-          <button type="button" className="btn btn-quiet" onClick={onDone}>
+          <button type="button" className="btn btn-quiet selection-tool" onClick={onDone}>
             Done
           </button>
         )}
