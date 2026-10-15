@@ -127,3 +127,87 @@ serves "photos of an album" (sorted in the query by the timeline expression) and
 `cargo test` (DB-backed, needs `DATABASE_URL`): CRUD and validation, owner isolation, add/remove idempotency and
 caps, pagination with tied times, trash/restore/purge interplay, cover fallback, list ordering and the asset's album
 list. Web: API calls, the add-to-album flow (library and lightbox), albums and album pages.
+
+# RAW + JPEG pairs
+
+A camera that shoots RAW + JPEG (or an iPhone with ProRAW: DNG + HEIC) produces two files per shot. Cyanotype keeps
+both, but shows them as one photo.
+
+## What the user sees
+
+- The JPEG/HEIC/HEIF/AVIF is the photo: its thumbnail and preview are what the library, albums and trash show. The
+  RAW is hidden from the grids, counts and timeline. Tiles of a pair carry a small **RAW** badge.
+- The photo viewer lists **RAW + JPEG** (or **RAW + HEIC**, ...) with both file names and sizes and an **Unpair**
+  button. Unpairing makes the two independent photos (the RAW appears in the library as its own tile) and is
+  remembered: they are never paired again automatically.
+- Moving a pair to the trash, restoring it, deleting it forever, and adding it to an album all work on the photo as a
+  whole and count it once. Uploading either file again (it is still deduplicated by sha256) revives a trashed pair.
+- Order does not matter: the RAW may be uploaded before or after the JPEG, in the same or another upload.
+
+## Model
+
+Both files stay ordinary assets: own row, own S3 original (the source of truth; nothing is ever merged or deleted by
+pairing), own derived objects, own sha256 dedupe. `assets.primary_id` on the RAW points at its visible primary
+(`NULL` = a normal visible photo; migration `0005_raw_jpeg_pairs.sql`). A partial unique index allows at most one RAW
+per primary; hidden files are excluded with `primary_id IS NULL` in the library list, count, trash list, album views
+and the timeline index. Pairs the user separated are recorded in `asset_pair_rejections (raw_id, primary_id)`.
+
+I chose a nullable self-reference over a `stacks` table because a pair is always exactly two files, the primary is
+the row every existing query, album membership and cursor already uses, and no join is needed on the hot list path.
+(A group of three or more files would call for a stack table.)
+
+## Matching rule
+
+Two files of the same owner pair when one is a RAW (`cr2 cr3 nef arw dng raf orf rw2 pef srw ...`, the list the
+worker also routes to its RAW pipeline) and the other a JPEG/HEIC/HEIF/AVIF, both live (not in the trash, not being
+deleted), neither already paired, not separated by the user, and:
+
+1. **Same original filename stem**, case-insensitive: the name without directory and last extension
+   (`IMG_1234.CR3` and `img_1234.jpg`). No suffix patterns (`IMG_1234 (1).JPG`, `-edit`) are handled.
+2. **Same capture time**: `taken_at` equal within +/- 1 second. If several fit, the closest wins (ties: lowest id).
+3. If either `taken_at` is missing: equal camera make and model (both present, case-insensitive) pairs them, but only
+   when exactly one candidate fits. More than one is ambiguous and nothing is paired. A capture time that is present
+   on both sides but differs by more than a second never falls back to the camera.
+
+Two JPEGs, two RAWs, PNG/WebP/TIFF/video and files of different owners never pair; one RAW never pairs with more than
+one primary and vice versa.
+
+## When pairing runs
+
+- **New uploads:** at the end of the worker's metadata job (that is when `taken_at` and the camera are known), in the
+  same job, so a failure retries the job. Whichever half finishes last finds the other. A trashed counterpart is not
+  paired; restoring a trashed file pairs it then.
+- **Concurrency:** one transaction takes `pg_advisory_xact_lock` on (owner, stem), re-reads and locks the candidate
+  rows, links, and moves album memberships and cover choices of the RAW onto the primary. Unpairing takes the same lock.
+  Two workers finishing the two halves at the same moment serialise; the second sees `Already`.
+- **Existing library (backfill):** the migration inserts one `pair` job per live photo with finished metadata
+  (`ON CONFLICT DO NOTHING`, so re-running adds nothing). The worker drains them in the background after deploy; each
+  job is an indexed lookup (`assets_owner_stem_idx` on `asset_stem(original_name)`) and does nothing for files that are
+  neither RAW nor JPEG/HEIC. Nothing downloads from S3, nothing needs the CLI, and pairing is idempotent so the jobs
+  can be retried freely. For a library of tens of thousands of photos the migration is a few hundred milliseconds
+  (index builds take a brief write lock on `assets`) and the drain takes seconds to a few minutes.
+
+## Trash, purge and albums
+
+- Trash, restore and purge (API, the janitor's retention sweep, "empty trash") change both rows in one transaction, so
+  the pair is never half-trashed. The purge sweep deletes both originals and both derived prefixes with the existing
+  version-aware machinery; if storage fails, both rows stay marked and are retried.
+- Albums reference the primary only: adding a RAW's id is skipped, the cover can only be the primary, counts and date
+  ranges count the pair once. When a pair forms, memberships and a cover choice of the RAW move to the primary.
+  After an unpair the RAW is a normal photo again and is in no album.
+
+## API
+
+| Request | Effect |
+|---|---|
+| `GET /assets`, `GET /assets/trash`, `GET /assets/albums/{id}/assets` | Items gain `paired: [{id, original_name, content_type, size_bytes, kind: "raw"}]` (empty for a single file). Hidden RAW files are not items. |
+| `GET /assets/{id}` | Also returns `paired`. |
+| `POST /assets/{id}/unpair` | Separate the pair `id` belongs to (either file). `204`; `404` if it is not a pair of yours. |
+
+Bulk trash/restore/purge counts are photos: a pair is `1`.
+
+## Tests
+
+`cargo test` (DB-backed): the pure matching rule (stems, case, +/- 1 s, missing time, camera fallback, ambiguity,
+RAW-only, two JPEGs); pairing in either order, trash/restore/purge/expiry of a pair, albums, unpair persistence,
+re-upload and restore, backfill idempotency, concurrent pairing. Web: badge, viewer info, Unpair.

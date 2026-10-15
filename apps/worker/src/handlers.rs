@@ -2,7 +2,11 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use cyanotype_core::{jobs, keys, storage::Storage};
+use cyanotype_core::{
+    jobs, keys,
+    pairing::{self, Paired},
+    storage::Storage,
+};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -83,6 +87,11 @@ pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
         return Ok(Outcome::Skipped("asset is being deleted"));
     }
 
+    // Backfill of RAW + JPEG pairs: a database-only job, nothing to download.
+    if job.kind == jobs::KIND_PAIR {
+        return pair(ctx, job).await;
+    }
+
     if !formats::is_candidate(&asset.content_type, &asset.original_name) {
         tracing::info!(content_type = %asset.content_type, "unsupported content type; skipping");
         return Ok(Outcome::Skipped("unsupported content type"));
@@ -142,6 +151,18 @@ pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
     Ok(Outcome::Done)
 }
 
+async fn pair(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
+    match pairing::pair_asset(&ctx.db, job.asset_id).await.context("pair asset")? {
+        Paired::Linked { raw, primary } => {
+            tracing::info!(%raw, %primary, "paired RAW with its JPEG/HEIC");
+            Ok(Outcome::Done)
+        }
+        Paired::Already => Ok(Outcome::Skipped("already paired")),
+        Paired::NotApplicable => Ok(Outcome::Skipped("not a RAW or JPEG/HEIC, or not live")),
+        Paired::NoMatch => Ok(Outcome::Skipped("no counterpart")),
+    }
+}
+
 struct Metadata {
     width: u32,
     height: u32,
@@ -198,6 +219,11 @@ async fn metadata(ctx: &Arc<Ctx>, job: &jobs::Job, asset: &AssetRow, kind: Kind,
     .execute(&ctx.db)
     .await
     .context("update asset metadata")?;
+    // The capture time and camera are known now: pair with the RAW/JPEG of the same shot if its other half is
+    // already here (or, when it is not, the other half's own metadata job pairs them). A failure retries this job.
+    if let Paired::Linked { raw, primary } = pairing::pair_asset(&ctx.db, job.asset_id).await.context("pair asset")? {
+        tracing::info!(%raw, %primary, "paired RAW with its JPEG/HEIC");
+    }
     Ok(())
 }
 

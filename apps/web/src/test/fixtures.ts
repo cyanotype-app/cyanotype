@@ -38,3 +38,12 @@ export const album = (n: number, over: Partial<Album> = {}): Album => ({
   updated_at: "2026-01-02T00:00:00Z",
   ...over,
 });
+
+/** A photo with a RAW stacked behind it (the API's `paired` list). */
+export const withRaw = (n: number, over: Partial<AssetListItem> = {}): AssetListItem =>
+  item(n, {
+    paired: [
+      { id: `raw-${n}`, original_name: `photo-${n}.CR3`, content_type: "image/x-canon-cr3", size_bytes: 25_000_000, kind: "raw" },
+    ],
+    ...over,
+  });

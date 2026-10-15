@@ -13,11 +13,8 @@ pub enum Kind {
     Raw,
 }
 
-/// File extensions of the RAW formats we route to the RAW pipeline.
-const RAW_EXTS: &[&str] = &[
-    "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "raf", "orf", "rw2", "rwl", "pef", "ptx", "dng", "srw",
-    "3fr", "fff", "iiq", "erf", "kdc", "dcr", "mef", "mos", "mrw", "raw", "rwz", "x3f", "gpr", "cap", "eip",
-];
+/// File extensions of the RAW formats we route to the RAW pipeline (shared with the RAW + JPEG pairing).
+use cyanotype_core::pairing::RAW_EXTS;
 
 const HEIF_EXTS: &[&str] = &["heic", "heif", "hif", "avif"];
 

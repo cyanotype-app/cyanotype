@@ -267,4 +267,12 @@ describe("album calls", () => {
     await api.listAlbumAssets("a1", { cursor: "c0ffee", limit: 60 });
     expect(call(f).url).toBe("/assets/albums/a1/assets?limit=60&cursor=c0ffee");
   });
+
+  it("unpairs with POST /assets/{id}/unpair", async () => {
+    const f = mockFetch(new Response(null, { status: 204 }));
+    await expect(api.unpair("a b")).resolves.toBeUndefined();
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/assets/a%20b/unpair");
+    expect(init.method).toBe("POST");
+  });
 });

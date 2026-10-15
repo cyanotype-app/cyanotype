@@ -13,7 +13,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use bytes::{Bytes, BytesMut};
 use cyanotype_core::{
-    jobs, keys,
+    jobs, keys, pairing,
     storage::{Storage, UploadedPart},
 };
 use http_body_util::BodyExt;
@@ -23,6 +23,8 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 mod albums;
+#[cfg(test)]
+mod pair_tests;
 mod trash;
 
 use crate::AppState;
@@ -65,6 +67,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/assets/albums/{id}/assets", get(albums::assets).post(albums::add))
         .route("/assets/albums/{id}/assets/remove", post(albums::remove_assets))
+        .route("/assets/{id}/unpair", post(unpair))
         .route("/assets/{id}", get(get_one))
         .route("/assets/{id}", delete(remove))
 }
@@ -462,6 +465,15 @@ async fn register_asset(db: &sqlx::PgPool, owner: Uuid, upload_id: &str, up: &Up
     let Some((asset_id,)) = revived else {
         return Err(purging_conflict());
     };
+    // A trashed RAW + JPEG pair comes back as a whole, whichever of the two was uploaded again.
+    sqlx::query(
+        "UPDATE assets SET deleted_at = NULL
+         WHERE deleted_at IS NOT NULL AND purging_at IS NULL
+           AND (primary_id = $1 OR id = (SELECT primary_id FROM assets WHERE id = $1))",
+    )
+    .bind(asset_id)
+    .execute(&mut *tx)
+    .await?;
     for kind in jobs::DEFAULT_PIPELINE {
         jobs::enqueue(&mut *tx, kind, asset_id, 1).await?;
     }
@@ -539,6 +551,53 @@ struct ListItem {
     thumbhash: Option<String>,
     /// Short-lived presigned URL of the thumbnail; null until the derived images exist.
     thumb_url: Option<String>,
+    /// The RAW file stacked behind this photo (empty for a single file).
+    paired: Vec<PairedFile>,
+}
+
+/// The other file of a RAW + JPEG pair, shown with its primary.
+#[derive(Serialize, FromRow, Debug)]
+struct PairedFile {
+    id: Uuid,
+    original_name: String,
+    content_type: String,
+    size_bytes: i64,
+    /// Always `raw` today: the file hidden behind the visible primary.
+    kind: &'static str,
+}
+
+#[derive(FromRow)]
+struct PairedRow {
+    primary_id: Uuid,
+    id: Uuid,
+    original_name: String,
+    content_type: String,
+    size_bytes: i64,
+}
+
+/// The RAW files behind the given visible photos, keyed by primary id (one query per page).
+async fn paired_files(
+    db: &sqlx::PgPool,
+    primaries: &[Uuid],
+) -> ApiResult<std::collections::HashMap<Uuid, Vec<PairedFile>>> {
+    let rows: Vec<PairedRow> = sqlx::query_as(
+        "SELECT primary_id, id, original_name, content_type, size_bytes FROM assets
+         WHERE primary_id = ANY($1) ORDER BY id",
+    )
+    .bind(primaries)
+    .fetch_all(db)
+    .await?;
+    let mut map: std::collections::HashMap<Uuid, Vec<PairedFile>> = std::collections::HashMap::new();
+    for r in rows {
+        map.entry(r.primary_id).or_default().push(PairedFile {
+            id: r.id,
+            original_name: r.original_name,
+            content_type: r.content_type,
+            size_bytes: r.size_bytes,
+            kind: "raw",
+        });
+    }
+    Ok(map)
 }
 
 /// `thumbhash` is only set after both derived objects are uploaded, so it also says whether the
@@ -606,7 +665,7 @@ fn decode_cursor(c: &str) -> Option<(OffsetDateTime, Uuid)> {
 
 const LIST_SELECT: &str = "SELECT id, original_name, content_type, size_bytes, width, height,
         coalesce(taken_at, file_modified_at, created_at) AS sort_time, thumbhash
- FROM assets WHERE owner_id = $1 AND deleted_at IS NULL";
+ FROM assets WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL";
 
 async fn list(State(s): State<AppState>, user: AuthUser, Query(q): Query<ListQuery>) -> ApiResult<Json<ListResponse>> {
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
@@ -646,15 +705,7 @@ async fn list(State(s): State<AppState>, user: AuthUser, Query(q): Query<ListQue
     let last = if rows.len() as i64 == limit { rows.last() } else { None };
     let next_cursor = last.map(|r| encode_cursor(r.summary.sort_time, r.summary.id));
     let next_before = last.map(|r| r.summary.sort_time);
-    let mut items = Vec::with_capacity(rows.len());
-    for r in rows {
-        let (thumbhash, thumb_url) = thumb_fields(&s.storage, user.id, r.summary.id, r.thumbhash.as_deref()).await?;
-        items.push(ListItem {
-            summary: r.summary,
-            thumbhash,
-            thumb_url,
-        });
-    }
+    let items = list_items(&s, user.id, rows).await?;
     Ok(Json(ListResponse {
         items,
         next_cursor,
@@ -662,12 +713,30 @@ async fn list(State(s): State<AppState>, user: AuthUser, Query(q): Query<ListQue
     }))
 }
 
-/// Number of live assets, for `cyanotype status`.
+/// Rows to list entries: thumbnail fields plus the paired RAW files.
+async fn list_items(s: &AppState, owner: Uuid, rows: Vec<ListRow>) -> ApiResult<Vec<ListItem>> {
+    let ids: Vec<Uuid> = rows.iter().map(|r| r.summary.id).collect();
+    let mut paired = paired_files(&s.db, &ids).await?;
+    let mut items = Vec::with_capacity(rows.len());
+    for r in rows {
+        let (thumbhash, thumb_url) = thumb_fields(&s.storage, owner, r.summary.id, r.thumbhash.as_deref()).await?;
+        items.push(ListItem {
+            paired: paired.remove(&r.summary.id).unwrap_or_default(),
+            summary: r.summary,
+            thumbhash,
+            thumb_url,
+        });
+    }
+    Ok(items)
+}
+
+/// Number of live photos (a RAW + JPEG pair counts once), for `cyanotype status`.
 async fn count(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<serde_json::Value>> {
-    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM assets WHERE owner_id = $1 AND deleted_at IS NULL")
-        .bind(user.id)
-        .fetch_one(&s.db)
-        .await?;
+    let (n,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM assets WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL")
+            .bind(user.id)
+            .fetch_one(&s.db)
+            .await?;
     Ok(Json(serde_json::json!({"count": n})))
 }
 
@@ -692,6 +761,8 @@ async fn get_one(
             .await?;
     let mut v = serde_json::to_value(a).map_err(anyhow::Error::from)?;
     v["albums"] = albums::containing(&s.db, user.id, id).await?;
+    v["paired"] = serde_json::to_value(paired_files(&s.db, &[id]).await?.remove(&id).unwrap_or_default())
+        .map_err(anyhow::Error::from)?;
     v["original_url"] = s.storage.presign_get(&key).await?.into();
     // The worker sets `thumbhash` only after both derived objects are uploaded, so it doubles
     // as the "derived images exist" flag. Until then the URLs are null rather than 404s.
@@ -706,19 +777,27 @@ async fn get_one(
     Ok(Json(v))
 }
 
-/// Move one photo to the trash (`POST /assets/trash` does the same for many). Permanent deletion happens later,
-/// see `trash` and `purge`.
+/// Move one photo (and its paired RAW) to the trash (`POST /assets/trash` does the same for many). Permanent
+/// deletion happens later, see `trash` and `purge`.
 async fn remove(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
-    let n = sqlx::query("UPDATE assets SET deleted_at = now() WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL")
-        .bind(id)
-        .bind(user.id)
-        .execute(&s.db)
+    if trash::apply(&s.db, user.id, trash::Op::Trash, Some(&[id]))
         .await?
-        .rows_affected();
-    if n == 0 {
+        .photos
+        == 0
+    {
         Err(ApiError::NotFound)
     } else {
         Ok(StatusCode::NO_CONTENT)
+    }
+}
+
+/// Separate a RAW + JPEG pair into two independent photos; they are not paired again automatically. `id` is either
+/// file. `404` when it is not part of a pair.
+async fn unpair(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
+    if pairing::unpair(&s.db, user.id, id).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
     }
 }
 
@@ -1308,6 +1387,7 @@ mod tests {
             },
             thumbhash: Some("AQ==".into()),
             thumb_url: None,
+            paired: vec![],
         };
         let v = serde_json::to_value(item).unwrap();
         assert_eq!(v["original_name"], "a.png");
