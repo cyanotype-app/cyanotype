@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AssetDetail, AssetListItem } from "../api";
+import { fileSize, pairLabel } from "../pairText";
 import { placeholderUrl } from "../thumbhash";
 
 interface Props {
@@ -13,11 +14,13 @@ interface Props {
   onTrash?: (item: AssetListItem) => void;
   /** Open the "add to album" dialog for the current photo. */
   onAddToAlbum?: (item: AssetListItem) => void;
+  /** Separate the current photo from its RAW (offered in the pair info when the photo has one). */
+  onUnpair?: (item: AssetListItem) => void;
   /** Bump after the photo's albums changed so its details (the "In albums" line) are fetched again. */
   refreshKey?: number;
 }
 
-export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onTrash, onAddToAlbum, refreshKey = 0 }: Props) {
+export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onTrash, onAddToAlbum, onUnpair, refreshKey = 0 }: Props) {
   const item = items[index];
   const [details, setDetails] = useState<Record<string, AssetDetail>>({});
   const [failed, setFailed] = useState<Record<string, true>>({});
@@ -116,6 +119,7 @@ export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onT
   const bg = placeholderUrl(item.thumbhash);
   const showPending = detail && !src;
   const date = new Date(item.sort_time);
+  const paired = detail?.paired ?? item.paired ?? [];
 
   return (
     <div className="lightbox" role="dialog" aria-modal="true" aria-label={item.original_name} ref={dialogRef}>
@@ -182,6 +186,26 @@ export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onT
           <time dateTime={item.sort_time}>{Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString()}</time>
         </span>
       </p>
+      {paired.length > 0 && (
+        <div className="lightbox-pair">
+          <strong>{pairLabel(item, paired)}</strong>
+          <ul>
+            <li>
+              {item.original_name} <span className="muted">{fileSize(item.size_bytes)}</span>
+            </li>
+            {paired.map((p) => (
+              <li key={p.id}>
+                {p.original_name} <span className="muted">{fileSize(p.size_bytes)}</span>
+              </li>
+            ))}
+          </ul>
+          {onUnpair && (
+            <button type="button" className="btn btn-glass" onClick={() => onUnpair(item)}>
+              Unpair
+            </button>
+          )}
+        </div>
+      )}
       {detail?.albums && detail.albums.length > 0 && (
         <p className="lightbox-albums">
           <span className="muted">In albums:</span>{" "}

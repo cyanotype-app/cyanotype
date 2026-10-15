@@ -8,6 +8,9 @@ pub const KIND_METADATA: &str = "metadata";
 pub const KIND_THUMBNAIL: &str = "thumbnail";
 pub const KIND_GEOCODE: &str = "geocode";
 pub const KIND_EMBED: &str = "embed";
+/// Backfill: try to pair an existing asset with its RAW/JPEG counterpart (`pairing`). New uploads pair inline when
+/// their metadata job finishes, so this is never in `DEFAULT_PIPELINE`.
+pub const KIND_PAIR: &str = "pair";
 
 /// Jobs enqueued for every new asset. Later pipeline stages are enqueued by earlier ones
 /// or by the milestones that implement them.
