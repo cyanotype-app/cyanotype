@@ -1,4 +1,4 @@
-import type { AssetDetail, AssetListItem, TrashItem } from "../api";
+import type { Album, AssetDetail, AssetListItem, TrashItem } from "../api";
 
 export const item = (n: number, over: Partial<AssetListItem> = {}): AssetListItem => ({
   id: `id-${n}`,
@@ -23,5 +23,18 @@ export const trashed = (n: number, over: Partial<TrashItem> = {}): TrashItem => 
   ...item(n),
   deleted_at: new Date(Date.now() - 3 * 86_400_000).toISOString(),
   purge_at: new Date(Date.now() + 27 * 86_400_000 + 3_600_000).toISOString(),
+  ...over,
+});
+
+export const album = (n: number, over: Partial<Album> = {}): Album => ({
+  id: `album-${n}`,
+  title: `Album ${n}`,
+  description: null,
+  photo_count: n,
+  cover: { id: `id-${n}`, thumbhash: null, thumb_url: `https://s3.test/thumb-${n}` },
+  first_at: "2025-06-10T12:00:00Z",
+  last_at: "2026-01-20T12:00:00Z",
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-02T00:00:00Z",
   ...over,
 });

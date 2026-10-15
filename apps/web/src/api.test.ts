@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError } from "./api";
+import { api, ApiError, MAX_BULK_IDS } from "./api";
 
 function mockFetch(res: Response | Error) {
   const fn = vi.fn(async () => {
@@ -208,5 +208,63 @@ describe("putPart", () => {
     const p3 = api.putPart("/x", new Blob(["a"]), { signal: ac.signal });
     ac.abort();
     await expect(p3).rejects.toMatchObject({ status: 0, message: "Upload canceled." });
+  });
+});
+
+describe("album calls", () => {
+  const call = (f: ReturnType<typeof mockFetch>, n = 0) => {
+    const [url, init] = f.mock.calls[n] as unknown as [string, RequestInit];
+    return { url, method: init.method ?? "GET", body: init.body ? (JSON.parse(String(init.body)) as unknown) : undefined };
+  };
+
+  it("lists and reads albums under /assets/albums", async () => {
+    const f = mockFetch(jsonRes(200, { items: [] }));
+    await api.listAlbums();
+    await api.getAlbum("a/b");
+    expect(call(f, 0)).toMatchObject({ url: "/assets/albums", method: "GET" });
+    expect(call(f, 1).url).toBe("/assets/albums/a%2Fb");
+  });
+
+  it("creates an album with its first photos, and patches with explicit nulls", async () => {
+    const f = mockFetch(jsonRes(201, { id: "a1" }));
+    await api.createAlbum({ title: "Trip", asset_ids: ["x", "y"] });
+    expect(call(f)).toEqual({
+      url: "/assets/albums",
+      method: "POST",
+      body: { title: "Trip", asset_ids: ["x", "y"] },
+    });
+    await api.updateAlbum("a1", { description: null, cover_asset_id: "x" });
+    expect(call(f, 1)).toEqual({
+      url: "/assets/albums/a1",
+      method: "PATCH",
+      body: { description: null, cover_asset_id: "x" },
+    });
+  });
+
+  it("adds the photos beyond the server's cap to a new album in further requests", async () => {
+    const ids = Array.from({ length: MAX_BULK_IDS + 5 }, (_, i) => `id-${i}`);
+    const f = mockFetch(jsonRes(200, { id: "a1", count: 5 }));
+    await api.createAlbum({ title: "Big", asset_ids: ids });
+    expect(f).toHaveBeenCalledTimes(3); // create, add the rest, re-read
+    expect((call(f, 0).body as { asset_ids: string[] }).asset_ids).toHaveLength(MAX_BULK_IDS);
+    expect(call(f, 1)).toMatchObject({ url: "/assets/albums/a1/assets", method: "POST" });
+    expect((call(f, 1).body as { ids: string[] }).ids).toEqual(ids.slice(MAX_BULK_IDS));
+    expect(call(f, 2)).toMatchObject({ url: "/assets/albums/a1", method: "GET" });
+  });
+
+  it("adds, removes and deletes", async () => {
+    const f = mockFetch(jsonRes(200, { count: 2 }));
+    await expect(api.addToAlbum("a1", ["x", "y"])).resolves.toEqual({ count: 2 });
+    await expect(api.removeFromAlbum("a1", ["x"])).resolves.toEqual({ count: 2 });
+    expect(call(f, 0)).toEqual({ url: "/assets/albums/a1/assets", method: "POST", body: { ids: ["x", "y"] } });
+    expect(call(f, 1)).toEqual({ url: "/assets/albums/a1/assets/remove", method: "POST", body: { ids: ["x"] } });
+    mockFetch(new Response(null, { status: 204 }));
+    await expect(api.deleteAlbum("a1")).resolves.toBeUndefined();
+  });
+
+  it("pages an album's photos with the cursor", async () => {
+    const f = mockFetch(jsonRes(200, { items: [], next_cursor: null }));
+    await api.listAlbumAssets("a1", { cursor: "c0ffee", limit: 60 });
+    expect(call(f).url).toBe("/assets/albums/a1/assets?limit=60&cursor=c0ffee");
   });
 });

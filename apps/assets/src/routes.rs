@@ -22,6 +22,7 @@ use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+mod albums;
 mod trash;
 
 use crate::AppState;
@@ -55,6 +56,15 @@ pub fn routes() -> Router<AppState> {
         .route("/assets/trash/empty", post(trash::empty))
         .route("/assets/restore", post(trash::restore))
         .route("/assets/purge", post(trash::purge))
+        // Static segments win over `/assets/{id}`. Albums live under /assets because the gateway sends only
+        // /auth/* and /assets/* to the APIs; `/albums` is the web app's page.
+        .route("/assets/albums", get(albums::list).post(albums::create))
+        .route(
+            "/assets/albums/{id}",
+            get(albums::get).patch(albums::update).delete(albums::remove),
+        )
+        .route("/assets/albums/{id}/assets", get(albums::assets).post(albums::add))
+        .route("/assets/albums/{id}/assets/remove", post(albums::remove_assets))
         .route("/assets/{id}", get(get_one))
         .route("/assets/{id}", delete(remove))
 }
@@ -681,6 +691,7 @@ async fn get_one(
             .fetch_one(&s.db)
             .await?;
     let mut v = serde_json::to_value(a).map_err(anyhow::Error::from)?;
+    v["albums"] = albums::containing(&s.db, user.id, id).await?;
     v["original_url"] = s.storage.presign_get(&key).await?.into();
     // The worker sets `thumbhash` only after both derived objects are uploaded, so it doubles
     // as the "derived images exist" flag. Until then the URLs are null rather than 404s.
