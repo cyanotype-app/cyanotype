@@ -5,7 +5,7 @@ use aws_sdk_s3::{
     Client,
     config::{Credentials, Region},
     presigning::PresigningConfig,
-    types::{CompletedMultipartUpload, CompletedPart},
+    types::{CompletedMultipartUpload, CompletedPart, Delete, ObjectIdentifier},
 };
 
 use crate::config::S3Config;
@@ -43,6 +43,22 @@ pub struct UploadedPart {
     pub number: i32,
     pub etag: String,
     pub size: i64,
+}
+
+/// One stored version of a key, or a delete marker. `version_id` is None on stores without versioning
+/// support (see [`Storage::list_versions`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectVersion {
+    pub key: String,
+    pub version_id: Option<String>,
+}
+
+/// `DeleteObjects` accepts at most this many keys per request.
+pub const DELETE_BATCH: usize = 1000;
+
+/// Whether a failed `ListObjectVersions` means "this store does not do versions" (as opposed to a real error).
+fn is_unsupported(status: Option<u16>, code: Option<&str>) -> bool {
+    status == Some(501) || matches!(code, Some("NotImplemented" | "XNotImplemented"))
 }
 
 impl Storage {
@@ -255,5 +271,175 @@ impl Storage {
             .await
             .context("presign get_object")?;
         Ok(req.uri().to_string())
+    }
+
+    /// Every version and delete marker of every key that starts with `prefix`, across all pages. On a store
+    /// that cannot list versions (HTTP 501 / `NotImplemented`) this degrades to a plain listing with
+    /// `version_id: None`, which [`Storage::delete_versions`] then deletes without a version id.
+    pub async fn list_versions(&self, prefix: &str) -> Result<Vec<ObjectVersion>> {
+        let mut out = Vec::new();
+        let mut key_marker: Option<String> = None;
+        let mut version_marker: Option<String> = None;
+        loop {
+            let res = self
+                .client
+                .list_object_versions()
+                .bucket(&self.bucket)
+                .prefix(prefix)
+                .set_key_marker(key_marker.clone())
+                .set_version_id_marker(version_marker.clone())
+                .send()
+                .await;
+            let page = match res {
+                Ok(p) => p,
+                Err(e) => {
+                    let status = e.raw_response().map(|r| r.status().as_u16());
+                    let code = e.as_service_error().and_then(|s| s.meta().code());
+                    if out.is_empty() && is_unsupported(status, code) {
+                        tracing::warn!(
+                            prefix,
+                            "ListObjectVersions unsupported; falling back to a plain listing"
+                        );
+                        return self.list_unversioned(prefix).await;
+                    }
+                    return Err(e).context("list_object_versions");
+                }
+            };
+            for v in page.versions() {
+                if let Some(key) = v.key() {
+                    out.push(ObjectVersion {
+                        key: key.to_string(),
+                        version_id: v.version_id().map(str::to_string),
+                    });
+                }
+            }
+            for m in page.delete_markers() {
+                if let Some(key) = m.key() {
+                    out.push(ObjectVersion {
+                        key: key.to_string(),
+                        version_id: m.version_id().map(str::to_string),
+                    });
+                }
+            }
+            if page.is_truncated == Some(true) {
+                key_marker = page.next_key_marker;
+                version_marker = page.next_version_id_marker;
+                if key_marker.is_none() && version_marker.is_none() {
+                    return Ok(out);
+                }
+            } else {
+                return Ok(out);
+            }
+        }
+    }
+
+    async fn list_unversioned(&self, prefix: &str) -> Result<Vec<ObjectVersion>> {
+        let mut out = Vec::new();
+        let mut token: Option<String> = None;
+        loop {
+            let page = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(prefix)
+                .set_continuation_token(token.clone())
+                .send()
+                .await
+                .context("list_objects_v2")?;
+            out.extend(page.contents().iter().filter_map(|o| {
+                o.key().map(|k| ObjectVersion {
+                    key: k.to_string(),
+                    version_id: None,
+                })
+            }));
+            match (page.is_truncated, page.next_continuation_token) {
+                (Some(true), Some(t)) => token = Some(t),
+                _ => return Ok(out),
+            }
+        }
+    }
+
+    /// Permanently delete exactly these versions / markers, at most [`DELETE_BATCH`] per request. A version
+    /// id of None deletes the key without one (the unversioned fallback). Any per-object failure is an error,
+    /// and the caller retries the whole set (deleting something already gone succeeds). Returns how many were
+    /// deleted.
+    pub async fn delete_versions(&self, versions: &[ObjectVersion]) -> Result<usize> {
+        for chunk in versions.chunks(DELETE_BATCH) {
+            let ids = chunk
+                .iter()
+                .map(|v| {
+                    ObjectIdentifier::builder()
+                        .key(&v.key)
+                        .set_version_id(v.version_id.clone())
+                        .build()
+                        .context("object identifier")
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let delete = Delete::builder().set_objects(Some(ids)).quiet(true).build()?;
+            match self
+                .client
+                .delete_objects()
+                .bucket(&self.bucket)
+                .delete(delete)
+                .send()
+                .await
+            {
+                Ok(out) => {
+                    if let Some(e) = out.errors().first() {
+                        anyhow::bail!(
+                            "delete_objects failed for {} object(s), first: {} {}",
+                            out.errors().len(),
+                            e.code().unwrap_or("?"),
+                            e.message().unwrap_or("")
+                        );
+                    }
+                }
+                Err(e) => {
+                    // Some S3-compatible stores reject the bulk call (checksum headers, 501). Fall back to
+                    // one DeleteObject per version so permanent deletion still works there.
+                    tracing::warn!(error = ?e, "delete_objects rejected; deleting one by one");
+                    for v in chunk {
+                        self.client
+                            .delete_object()
+                            .bucket(&self.bucket)
+                            .key(&v.key)
+                            .set_version_id(v.version_id.clone())
+                            .send()
+                            .await
+                            .context("delete_object")?;
+                    }
+                }
+            }
+        }
+        Ok(versions.len())
+    }
+
+    /// Permanently delete every version and delete marker of each exact key in `keys`. Nothing else that merely
+    /// shares a prefix with a key is touched. Returns the number of versions/markers removed.
+    pub async fn delete_all_versions(&self, keys: &[String]) -> Result<usize> {
+        let mut all = Vec::new();
+        for key in keys {
+            all.extend(self.list_versions(key).await?.into_iter().filter(|v| &v.key == key));
+        }
+        self.delete_versions(&all).await
+    }
+
+    /// Permanently delete every version and delete marker of every key under `prefix`.
+    pub async fn delete_prefix_all_versions(&self, prefix: &str) -> Result<usize> {
+        let all = self.list_versions(prefix).await?;
+        self.delete_versions(&all).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_listing_is_detected() {
+        assert!(is_unsupported(Some(501), None));
+        assert!(is_unsupported(None, Some("NotImplemented")));
+        assert!(!is_unsupported(Some(403), Some("AccessDenied")));
+        assert!(!is_unsupported(None, None));
     }
 }

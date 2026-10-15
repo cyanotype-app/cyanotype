@@ -1,4 +1,4 @@
-import type { AssetDetail, AssetListItem } from "../api";
+import type { AssetDetail, AssetListItem, TrashItem } from "../api";
 
 export const item = (n: number, over: Partial<AssetListItem> = {}): AssetListItem => ({
   id: `id-${n}`,
@@ -17,4 +17,11 @@ export const detail = (n: number): AssetDetail => ({
   ...item(n),
   original_url: `https://s3.test/original-${n}`,
   preview_url: `https://s3.test/preview-${n}`,
+});
+
+export const trashed = (n: number, over: Partial<TrashItem> = {}): TrashItem => ({
+  ...item(n),
+  deleted_at: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+  purge_at: new Date(Date.now() + 27 * 86_400_000 + 3_600_000).toISOString(),
+  ...over,
 });

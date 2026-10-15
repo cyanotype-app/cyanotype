@@ -8,9 +8,11 @@ interface Props {
   onIndexChange: (index: number) => void;
   onClose: () => void;
   loadDetail: (id: string) => Promise<AssetDetail>;
+  /** Move the current photo to the trash. The parent removes it from `items`, which shows the next photo. */
+  onTrash?: (item: AssetListItem) => void;
 }
 
-export function Lightbox({ items, index, onIndexChange, onClose, loadDetail }: Props) {
+export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onTrash }: Props) {
   const item = items[index];
   const [details, setDetails] = useState<Record<string, AssetDetail>>({});
   const [failed, setFailed] = useState<Record<string, true>>({});
@@ -53,6 +55,11 @@ export function Lightbox({ items, index, onIndexChange, onClose, loadDetail }: P
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
         go(1);
+      } else if ((e.key === "Delete" || e.key === "Backspace") && onTrash && !e.repeat) {
+        const cur = items[index];
+        if (!cur) return;
+        e.preventDefault();
+        onTrash(cur);
       } else if (e.key === "Tab" && dialogRef.current) {
         const f = dialogRef.current.querySelectorAll<HTMLElement>("button, a[href]");
         const first = f[0];
@@ -69,7 +76,7 @@ export function Lightbox({ items, index, onIndexChange, onClose, loadDetail }: P
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [go, onClose]);
+  }, [go, onClose, onTrash, items, index]);
 
   // Focus management: move focus in, give it back to the tile on close; lock page scroll.
   useEffect(() => {
@@ -100,11 +107,18 @@ export function Lightbox({ items, index, onIndexChange, onClose, loadDetail }: P
         <span className="lightbox-count" aria-live="polite">
           {index + 1} / {items.length}
         </span>
-        {detail && (
-          <a className="btn btn-glass" href={detail.original_url} target="_blank" rel="noreferrer">
-            Original
-          </a>
-        )}
+        <div className="lightbox-actions">
+          {detail && (
+            <a className="btn btn-glass" href={detail.original_url} target="_blank" rel="noreferrer">
+              Original
+            </a>
+          )}
+          {onTrash && (
+            <button type="button" className="btn btn-glass" onClick={() => onTrash(item)}>
+              Move to trash
+            </button>
+          )}
+        </div>
       </div>
       <div className="lightbox-stage" style={bg ? { backgroundImage: `url(${bg})` } : undefined}>
         <button

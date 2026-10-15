@@ -88,6 +88,56 @@ describe("api client", () => {
   });
 });
 
+describe("trash api", () => {
+  it("posts ids to trash / restore / purge and returns the affected count", async () => {
+    const f = mockFetch(jsonRes(200, { count: 2 }));
+    await expect(api.trashAssets(["a", "b"])).resolves.toEqual({ count: 2 });
+    await api.restoreAssets(["a"]);
+    await api.purgeAssets(["b"]);
+    const calls = f.mock.calls as unknown as [string, RequestInit][];
+    expect(calls.map(([u, i]) => [u, i.method, JSON.parse(i.body as string)])).toEqual([
+      ["/assets/trash", "POST", { ids: ["a", "b"] }],
+      ["/assets/restore", "POST", { ids: ["a"] }],
+      ["/assets/purge", "POST", { ids: ["b"] }],
+    ]);
+  });
+
+  it("splits more than 1000 ids into several requests and sums the counts", async () => {
+    const f = mockFetch(jsonRes(200, { count: 1000 }));
+    const ids = Array.from({ length: 2500 }, (_, i) => `id-${i}`);
+    await expect(api.trashAssets(ids)).resolves.toEqual({ count: 3000 }); // the mock answers 1000 each time
+    const sizes = (f.mock.calls as unknown as [string, RequestInit][]).map(([, i]) => JSON.parse(i.body as string).ids.length);
+    expect(sizes).toEqual([1000, 1000, 500]);
+    expect(f).toHaveBeenCalledTimes(3);
+  });
+
+  it("sends nothing for an empty list", async () => {
+    const f = mockFetch(jsonRes(200, { count: 0 }));
+    await expect(api.trashAssets([])).resolves.toEqual({ count: 0 });
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it("empties the trash with a bodyless POST", async () => {
+    const f = mockFetch(jsonRes(200, { count: 7 }));
+    await expect(api.emptyTrash()).resolves.toEqual({ count: 7 });
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect([url, init.method, init.body]).toEqual(["/assets/trash/empty", "POST", undefined]);
+  });
+
+  it("lists the trash with limit and cursor", async () => {
+    const f = mockFetch(jsonRes(200, { items: [], next_cursor: null, total: 0, retention_days: 30 }));
+    await api.listTrash({ limit: 60, cursor: "ab|c" });
+    await api.listTrash();
+    const urls = (f.mock.calls as unknown as [string][]).map(([u]) => u);
+    expect(urls).toEqual(["/assets/trash?limit=60&cursor=ab%7Cc", "/assets/trash"]);
+  });
+
+  it("surfaces server errors from bulk calls", async () => {
+    mockFetch(jsonRes(400, { error: "at most 1000 ids per request" }));
+    await expect(api.restoreAssets(["a"])).rejects.toMatchObject({ status: 400, message: "at most 1000 ids per request" });
+  });
+});
+
 describe("putPart", () => {
   class FakeXhr {
     static last: FakeXhr;

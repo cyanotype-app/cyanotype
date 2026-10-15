@@ -52,6 +52,8 @@ struct AssetRow {
     original_name: String,
     content_type: String,
     size_bytes: i64,
+    /// Queued for permanent deletion: derived objects must not be (re)created.
+    purging: bool,
 }
 
 /// Fixed per-job allowance on top of the original and the decode estimate: S3 client buffers,
@@ -62,13 +64,24 @@ const JOB_OVERHEAD_BYTES: u64 = 48 << 20;
 const RAW_INSPECT_FACTOR: u64 = 3;
 
 pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
-    let asset: AssetRow = sqlx::query_as(
-        "SELECT owner_id, sha256, original_key, original_name, content_type, size_bytes FROM assets WHERE id = $1",
+    // Trashed assets are still processed: the trash view shows their thumbnails and restoring must not leave
+    // them blank. Only assets queued for permanent deletion (or already gone) are skipped.
+    let Some(asset): Option<AssetRow> = sqlx::query_as(
+        "SELECT owner_id, sha256, original_key, original_name, content_type, size_bytes, (purging_at IS NOT NULL) AS purging
+         FROM assets WHERE id = $1",
     )
     .bind(job.asset_id)
-    .fetch_one(&ctx.db)
+    .fetch_optional(&ctx.db)
     .await
-    .context("load asset")?;
+    .context("load asset")?
+    else {
+        tracing::info!("asset no longer exists; skipping");
+        return Ok(Outcome::Skipped("asset deleted"));
+    };
+    if asset.purging {
+        tracing::info!("asset is being permanently deleted; skipping");
+        return Ok(Outcome::Skipped("asset is being deleted"));
+    }
 
     if !formats::is_candidate(&asset.content_type, &asset.original_name) {
         tracing::info!(content_type = %asset.content_type, "unsupported content type; skipping");
@@ -123,7 +136,7 @@ pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
 
     match job.kind.as_str() {
         jobs::KIND_METADATA => metadata(ctx, job, &asset, kind, bytes).await?,
-        jobs::KIND_THUMBNAIL => thumbnail(ctx, job, &asset, kind, bytes, held, base).await?,
+        jobs::KIND_THUMBNAIL => return thumbnail(ctx, job, &asset, kind, bytes, held, base).await,
         other => anyhow::bail!("no handler for job kind {other}"),
     }
     Ok(Outcome::Done)
@@ -196,7 +209,7 @@ async fn thumbnail(
     bytes: Arc<Vec<u8>>,
     held: Reservation,
     base: u64,
-) -> Result<()> {
+) -> Result<Outcome> {
     let total = ctx.budget.total_bytes();
     // Header pass: sizes, EXIF and the decode estimate, with no pixel decoding.
     let limits = ctx.limits(total.saturating_sub(base));
@@ -232,18 +245,32 @@ async fn thumbnail(
             "image/webp",
         )
         .await?;
-    sqlx::query("UPDATE assets SET thumbhash = $2 WHERE id = $1")
+    // Publish only if the asset still exists and is not being purged. A purge that started while this job was
+    // rendering has already removed (or is about to remove) the derived objects; whatever we just wrote would be
+    // orphaned, so take it back out. (`purging_at` is set before the purge deletes anything, so either this
+    // check sees it, or the purge's listing sees our objects.)
+    let published = sqlx::query("UPDATE assets SET thumbhash = $2 WHERE id = $1 AND purging_at IS NULL")
         .bind(job.asset_id)
         .bind(&d.thumbhash)
         .execute(&ctx.db)
         .await
-        .context("update thumbhash")?;
-    Ok(())
+        .context("update thumbhash")?
+        .rows_affected();
+    if published == 0 {
+        ctx.storage
+            .delete_prefix_all_versions(&keys::derived_prefix(asset.owner_id, job.asset_id))
+            .await
+            .context("remove derived objects of a deleted asset")?;
+        return Ok(Outcome::Skipped("asset deleted while rendering"));
+    }
+    Ok(Outcome::Done)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cyanotype_core::{config::S3Config, db};
+    use sqlx::{Connection, Executor, PgConnection};
 
     const ROOMY: media::Limits = media::Limits {
         max_decode_bytes: 1 << 30,
@@ -277,5 +304,77 @@ mod tests {
         let sha = Sha256::digest(&b);
         let m = compute_metadata(Kind::Png, &Arc::new(b), &sha, ROOMY).unwrap();
         assert_eq!((m.width, m.height), (20, 10));
+    }
+
+    #[tokio::test]
+    async fn jobs_skip_assets_that_are_purging_or_gone_but_not_trashed_ones() {
+        let Ok(admin_url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        let name = format!("cyanotype_test_{}", Uuid::new_v4().simple());
+        let mut admin = PgConnection::connect(&admin_url).await.unwrap();
+        admin.execute(format!("CREATE DATABASE {name}").as_str()).await.unwrap();
+        let (base, _) = admin_url.rsplit_once('/').unwrap();
+        let pool = db::connect(&format!("{base}/{name}")).await.unwrap();
+        db::migrate(&pool).await.unwrap();
+
+        let (owner,): (Uuid,) =
+            sqlx::query_as("INSERT INTO users (email, password_hash) VALUES ('w@example.com','x') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let mut ids = Vec::new();
+        for (n, state) in ["trashed", "purging"].into_iter().enumerate() {
+            let (id,): (Uuid,) = sqlx::query_as(
+                "INSERT INTO assets (owner_id, sha256, original_key, original_name, content_type, size_bytes, deleted_at, purging_at)
+                 VALUES ($1, sha256($2::bytea), 'k', 'a.txt', 'text/plain', 1, now(), CASE WHEN $3 THEN now() END) RETURNING id",
+            )
+            .bind(owner)
+            .bind(n.to_string().as_bytes())
+            .bind(state == "purging")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            ids.push(id);
+        }
+        let ctx = Arc::new(Ctx {
+            db: pool.clone(),
+            storage: Storage::new(&S3Config {
+                endpoint: Some("http://127.0.0.1:1".into()),
+                public_endpoint: None,
+                region: "us-east-1".into(),
+                bucket: "b".into(),
+                access_key: "k".into(),
+                secret_key: "s".into(),
+                force_path_style: true,
+                presign_ttl_secs: 60,
+            }),
+            max_original_bytes: 1 << 20,
+            budget: MemoryBudget::new(256 << 20),
+            raw_develop: false,
+        });
+        let job = |asset_id| jobs::Job {
+            id: 1,
+            kind: jobs::KIND_THUMBNAIL.into(),
+            asset_id,
+            version: 1,
+            attempts: 1,
+        };
+        // Purging and nonexistent assets are skipped without touching storage.
+        for id in [ids[1], Uuid::new_v4()] {
+            assert!(matches!(run(&ctx, &job(id)).await, Ok(Outcome::Skipped(_))));
+        }
+        // A trashed asset is processed as usual: here it gets as far as the (unsupported) content type check.
+        assert!(matches!(
+            run(&ctx, &job(ids[0])).await,
+            Ok(Outcome::Skipped("unsupported content type"))
+        ));
+
+        pool.close().await;
+        let mut admin = PgConnection::connect(&admin_url).await.unwrap();
+        admin
+            .execute(format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)").as_str())
+            .await
+            .unwrap();
     }
 }
