@@ -21,7 +21,7 @@ use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::{ListItem, ListQuery, ListResponse, ListRow, decode_cursor, encode_cursor, thumb_fields, trash::MAX_IDS};
+use super::{ListQuery, ListResponse, ListRow, decode_cursor, encode_cursor, list_items, thumb_fields, trash::MAX_IDS};
 use crate::AppState;
 use cyanotype_service::{ApiError, ApiResult, AuthUser};
 
@@ -122,11 +122,11 @@ fn summary_sql(tail: &str) -> String {
          CROSS JOIN LATERAL (
              SELECT count(*) AS photo_count, min({SORT}) AS first_at, max({SORT}) AS last_at
              FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
-             WHERE aa.album_id = a.id AND x.deleted_at IS NULL
+             WHERE aa.album_id = a.id AND x.deleted_at IS NULL AND x.primary_id IS NULL
          ) st
          LEFT JOIN LATERAL (
              SELECT x.id, x.thumbhash FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
-             WHERE aa.album_id = a.id AND x.deleted_at IS NULL
+             WHERE aa.album_id = a.id AND x.deleted_at IS NULL AND x.primary_id IS NULL
              ORDER BY (x.id = a.cover_asset_id) DESC, {SORT} DESC, x.id DESC LIMIT 1
          ) cv ON true
          WHERE a.owner_id = $1 {tail}"
@@ -207,7 +207,7 @@ pub(super) struct CreateBody {
 async fn insert_members(tx: &mut sqlx::PgConnection, owner: Uuid, album: Uuid, ids: &[Uuid]) -> ApiResult<u64> {
     Ok(sqlx::query(
         "INSERT INTO album_assets (album_id, asset_id)
-         SELECT $1, id FROM assets WHERE owner_id = $2 AND id = ANY($3) AND deleted_at IS NULL
+         SELECT $1, id FROM assets WHERE owner_id = $2 AND id = ANY($3) AND deleted_at IS NULL AND primary_id IS NULL
          ON CONFLICT DO NOTHING",
     )
     .bind(album)
@@ -267,7 +267,7 @@ pub(super) async fn update(
     if let Some(Some(cover)) = req.cover_asset_id {
         let ok: Option<(Uuid,)> = sqlx::query_as(
             "SELECT aa.asset_id FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
-             WHERE aa.album_id = $1 AND aa.asset_id = $2 AND x.owner_id = $3 AND x.deleted_at IS NULL",
+             WHERE aa.album_id = $1 AND aa.asset_id = $2 AND x.owner_id = $3 AND x.deleted_at IS NULL AND x.primary_id IS NULL",
         )
         .bind(id)
         .bind(cover)
@@ -336,7 +336,7 @@ pub(super) async fn assets(
     let select = format!(
         "SELECT x.id, x.original_name, x.content_type, x.size_bytes, x.width, x.height, {SORT} AS sort_time, x.thumbhash
          FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
-         WHERE aa.album_id = $1 AND x.owner_id = $2 AND x.deleted_at IS NULL"
+         WHERE aa.album_id = $1 AND x.owner_id = $2 AND x.deleted_at IS NULL AND x.primary_id IS NULL"
     );
     let rows = match after {
         Some((ts, aid)) => {
@@ -363,15 +363,7 @@ pub(super) async fn assets(
     let last = if rows.len() as i64 == limit { rows.last() } else { None };
     let next_cursor = last.map(|r| encode_cursor(r.summary.sort_time, r.summary.id));
     let next_before = last.map(|r| r.summary.sort_time);
-    let mut items = Vec::with_capacity(rows.len());
-    for r in rows {
-        let (thumbhash, thumb_url) = thumb_fields(&s.storage, user.id, r.summary.id, r.thumbhash.as_deref()).await?;
-        items.push(ListItem {
-            summary: r.summary,
-            thumbhash,
-            thumb_url,
-        });
-    }
+    let items = list_items(&s, user.id, rows).await?;
     Ok(Json(ListResponse {
         items,
         next_cursor,
