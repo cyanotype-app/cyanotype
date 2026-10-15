@@ -7,3 +7,5 @@ node_modules/
 !.env.example
 !.env.prod.example
 certs/
+apps/web/test-results/
+apps/web/playwright-report/

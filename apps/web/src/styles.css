@@ -54,8 +54,14 @@
   box-sizing: border-box;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
+  overflow-x: clip; /* a backstop only: the layouts below are built not to overflow */
   background: var(--bg);
   color: var(--text);
   font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
@@ -157,6 +163,7 @@ a {
 }
 .brand {
   display: inline-flex;
+  min-width: 0;
   align-items: center;
   gap: 0.6rem;
   color: var(--text);
@@ -403,6 +410,10 @@ main {
 .nav-next {
   right: 0.75rem;
 }
+.lightbox-caption strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .lightbox-caption {
   display: flex;
   flex-wrap: wrap;
@@ -439,6 +450,10 @@ main {
 }
 .key-form > div {
   flex: 1 1 14rem;
+  min-width: 0;
+}
+.key-form input {
+  max-width: 100%;
 }
 .new-key {
   margin: 1rem 0;
@@ -468,6 +483,13 @@ main {
   padding: 0.6rem 0;
   border-bottom: 1px solid var(--border);
 }
+.key-list li > :first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.key-list li > .btn {
+  flex-shrink: 0;
+}
 
 /* Uploads */
 .library {
@@ -476,6 +498,7 @@ main {
 }
 .library-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 1rem;
   padding: 0.75rem 1rem 0;
@@ -561,7 +584,14 @@ main {
   padding: 0.45rem 0.8rem;
   border-top: 1px solid var(--border);
 }
+.tray-head > :first-child {
+  min-width: 0;
+}
+.tray-status {
+  overflow-wrap: anywhere;
+}
 .tray-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -612,19 +642,8 @@ main {
 .selection-actions .btn {
   min-height: 2.25rem;
 }
-@media (max-width: 520px) {
-  .selection-bar {
-    top: auto;
-    bottom: 0.75rem;
-    margin: 0;
-    position: fixed;
-    left: 0.75rem;
-    right: 0.75rem;
-    z-index: 15; /* under the lightbox (20) */
-  }
-  .grid.selecting {
-    padding-bottom: 7rem; /* keep the last row clear of the fixed bar */
-  }
+.selection-primary {
+  display: contents;
 }
 .tile {
   -webkit-touch-callout: none;
@@ -692,40 +711,47 @@ main {
   inset: 0;
   z-index: 60;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
+  overflow-y: auto;
   padding: 1rem;
   background: rgb(0 10 17 / 0.55);
 }
 .modal {
   width: min(26rem, 100%);
+  max-height: 100%;
+  overflow-y: auto;
   padding: 1.25rem 1.5rem;
 }
 .modal h2 {
   margin: 0 0 0.5rem;
   font-size: 1.15rem;
+  overflow-wrap: anywhere;
+}
+.modal-body {
+  overflow-wrap: anywhere;
 }
 .modal-body p {
   margin: 0 0 1rem;
 }
+.text-input ~ .modal-actions {
+  margin-top: 0.75rem;
+}
 .modal-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 0.5rem;
 }
 .toast-region {
   position: fixed;
   left: 50%;
-  bottom: 1.25rem;
+  bottom: calc(1.25rem + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   z-index: 70;
   width: max-content;
   max-width: calc(100vw - 2rem);
   pointer-events: none;
-}
-@media (max-width: 520px) {
-  .toast-region {
-    bottom: 5rem; /* above the fixed selection bar */
-  }
 }
 .toast {
   display: flex;
@@ -740,6 +766,10 @@ main {
 }
 .toast-error {
   background: #5a1a15;
+}
+.toast > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .toast .btn {
   min-height: 2rem;
@@ -763,10 +793,21 @@ main {
 /* Trash page */
 .page-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
   padding: 0.75rem 0.25rem 0;
+}
+.page-head > :first-child {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+.page-head h1 {
+  overflow-wrap: anywhere;
+}
+.albums .page-head > :first-child {
+  flex-basis: 6rem;
 }
 .page-head p {
   margin: 0.25rem 0 0;
@@ -807,6 +848,7 @@ textarea.text-input {
   list-style: none;
 }
 .album-card {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
@@ -856,6 +898,7 @@ textarea.text-input {
 }
 .album-description {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .album-head-actions {
   display: flex;
@@ -911,13 +954,20 @@ textarea.text-input {
 .album-pick:focus-visible {
   background: var(--bg);
 }
+.album-pick > :last-child {
+  flex-shrink: 0;
+}
 .album-pick-title {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .album-dialog-actions {
   justify-content: space-between;
+}
+.album-form-actions {
+  flex-wrap: wrap;
 }
 .picker {
   position: fixed;
@@ -942,6 +992,7 @@ textarea.text-input {
   top: 0.25rem;
 }
 .lightbox-albums {
+  overflow-wrap: anywhere;
   margin: 0;
   padding: 0 1rem 1rem;
   text-align: center;
@@ -950,11 +1001,286 @@ textarea.text-input {
 .lightbox-albums a {
   color: #bcd3e6;
 }
-@media (max-width: 520px) {
-  .picker .selection-bar {
-    position: fixed;
+
+/* Phones. Buttons are at least 44px tall, side gutters are 16px, and every bar wraps or stacks instead of
+   running off the right edge. Fixed bars clear the home indicator (viewport-fit=cover in index.html). */
+@media (max-width: 600px) {
+  .btn {
+    min-height: 2.75rem;
   }
+
+  /* App shell: brand on one row, the four nav items sharing a second. Not sticky: two rows cost too much height. */
+  .topbar {
+    position: static;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.5rem max(1rem, env(safe-area-inset-right)) 0.5rem max(1rem, env(safe-area-inset-left));
+  }
+  .topbar-right {
+    flex: 1 1 100%;
+    min-width: 0;
+    gap: 0.4rem;
+  }
+  .topbar-right .btn {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 0.4rem;
+    font-size: 0.875rem;
+    white-space: nowrap;
+  }
+  main {
+    padding-inline: 0;
+  }
+  .page-head,
+  .library-bar {
+    padding-inline: 1rem;
+  }
+  .empty {
+    margin-inline: 1rem;
+    padding-inline: 0;
+  }
+  .settings {
+    padding-inline: max(1rem, env(safe-area-inset-left));
+  }
+  /* 16px text, or iOS zooms the page when the field is focused. */
+  .key-form label {
+    display: block;
+    margin-bottom: 0.25rem;
+  }
+  .key-form input {
+    width: 100%;
+    min-height: 2.75rem;
+    padding: 0 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 0.6rem;
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+  }
+
+  /* Library: three columns on small phones, four from 400px, hairline gaps so it fills the width. */
+  .grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2px;
+  }
+  .tile {
+    border-radius: 2px;
+  }
+  .grid.selecting,
   .picker-body {
-    padding-bottom: 5rem;
+    padding-bottom: calc(9rem + env(safe-area-inset-bottom)); /* keep the last row clear of the fixed bar */
+  }
+  .library-bar {
+    gap: 0.5rem;
+  }
+  .library-bar .upload-buttons {
+    display: contents;
+  }
+  .library-bar .btn {
+    flex: 1 1 auto;
+    padding: 0 0.6rem;
+    font-size: 0.875rem;
+  }
+  .library-bar > .small {
+    flex-basis: 100%;
+  }
+
+  /* Selection bar: pinned to the bottom. Row 1 is the count plus Select all / Clear / Done, row 2 the page's actions. */
+  .selection-bar {
+    position: fixed;
+    top: auto;
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
+    left: max(0.75rem, env(safe-area-inset-left));
+    right: max(0.75rem, env(safe-area-inset-right));
+    z-index: 15; /* under the lightbox (20) */
+    margin: 0;
+    padding: 0.4rem 0.5rem;
+    gap: 0.25rem;
+  }
+  .selection-actions {
+    display: contents;
+  }
+  .selection-actions .btn {
+    min-height: 2.75rem;
+  }
+  .selection-count {
+    order: 1;
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-left: 0.25rem;
+    font-size: 0.9rem;
+  }
+  .selection-tool {
+    order: 2;
+    min-width: 0;
+    padding: 0 0.4rem;
+    border-color: transparent;
+    font-size: 0.875rem;
+  }
+  .selection-primary {
+    order: 3;
+    display: flex;
+    flex: 1 1 100%;
+    gap: 0.4rem;
+  }
+  .selection-primary .btn {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 0.5rem;
+    font-size: 0.875rem;
+    line-height: 1.2;
+  }
+  .picker .selection-bar {
+    top: auto;
+  }
+  .picker {
+    padding-inline: 0;
+  }
+  .picker-head {
+    padding: max(0.75rem, env(safe-area-inset-top)) 1rem 0;
+  }
+  .picker-head h2 {
+    min-width: 0;
+  }
+  .picker .form-error {
+    padding-inline: 1rem;
+  }
+
+  /* Albums */
+  .albums {
+    padding-inline: 1rem;
+  }
+  .albums .page-head,
+  .album-page .page-head,
+  .albums .empty,
+  .album-page .empty {
+    margin-inline: 0;
+    padding-inline: 0; /* these pages already have their own 16px gutter */
+  }
+  .album-page > .small > a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.75rem;
+  }
+  .album-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+  .album-head-actions {
+    flex: 1 1 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .album-head-actions .btn {
+    padding: 0 0.5rem;
+  }
+  .album-title-input {
+    font-size: 1.15rem;
+  }
+  .album-form-actions .btn {
+    flex: 1 1 auto;
+  }
+
+  /* Lightbox: Close and the counter on row 1, the actions as equal buttons on row 2. */
+  .lightbox-bar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.4rem;
+    padding: max(0.5rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) 0.5rem
+      max(1rem, env(safe-area-inset-left));
+  }
+  .lightbox-count {
+    position: static;
+    transform: none;
+    text-align: right;
+  }
+  .lightbox-actions {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: 0.4rem;
+  }
+  .lightbox-actions .btn {
+    padding: 0 0.4rem;
+    font-size: 0.875rem;
+    line-height: 1.2;
+    text-align: center;
+  }
+  .nav-prev {
+    left: 0.4rem;
+  }
+  .nav-next {
+    right: 0.4rem;
+  }
+  .lightbox-caption {
+    padding-inline: max(1rem, env(safe-area-inset-left));
+  }
+  .lightbox-albums {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
+  /* Dialogs and the toast */
+  .modal-backdrop {
+    padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+      max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  }
+  .modal {
+    padding: 1rem;
+  }
+  .modal-actions .btn {
+    flex: 1 1 auto;
+    line-height: 1.2;
+  }
+  .toast .btn,
+  .toast-close {
+    min-height: 2.75rem;
+  }
+  .toast-close {
+    min-width: 2.75rem;
+  }
+  .toast-region {
+    max-width: calc(100vw - 2rem);
+  }
+  /* Keep the toast above whatever else is pinned to the bottom. */
+  body:has(.tray) .toast-region {
+    bottom: calc(6.5rem + env(safe-area-inset-bottom));
+  }
+  body:has(.selection-bar) .toast-region {
+    bottom: calc(8.5rem + env(safe-area-inset-bottom));
+  }
+  body:has(.selection-bar):has(.tray) .toast-region {
+    bottom: calc(14rem + env(safe-area-inset-bottom));
+  }
+
+  /* Upload tray: full width above the home indicator, over the selection bar when both are showing. */
+  .tray {
+    right: max(0.75rem, env(safe-area-inset-right));
+    bottom: max(0.75rem, env(safe-area-inset-bottom));
+    width: min(26rem, calc(100vw - 1.5rem));
+    max-height: 45vh;
+  }
+  body:has(.selection-bar) .tray {
+    bottom: calc(8.5rem + env(safe-area-inset-bottom));
+    max-height: 35vh;
+  }
+  .tray-actions .btn,
+  .tray-item .btn {
+    min-height: 2.75rem;
+  }
+}
+@media (min-width: 400px) and (max-width: 600px) {
+  .grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+@media (max-width: 360px) {
+  .topbar-right .btn {
+    padding: 0 0.25rem;
+    font-size: 0.8125rem;
+  }
+  .selection-tool {
+    padding: 0 0.3rem;
+    font-size: 0.8125rem;
   }
 }
