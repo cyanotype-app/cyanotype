@@ -147,6 +147,9 @@ Versions are pinned by `pnpm-lock.yaml` and `packageManager` in `package.json`.
   `http://localhost:3000`, so run `just up` or the services first).
 - `just web-check`: `tsc --noEmit`, eslint and vitest (API client error handling, lightbox and grid keyboard
   behaviour with Testing Library). `just web-build`: production build. CI runs both when `apps/web/**` changes.
+- `pnpm test:mobile` (in `apps/web`): Playwright renders every page and overlay with a mocked API at 320 to 414 px
+  (and 1280 px) and asserts there is no horizontal scroll. Not in CI: it needs a Chromium
+  (`pnpm exec playwright install chromium`, or `CHROMIUM_PATH=/path/to/chrome`). `SHOT_DIR=dir` saves screenshots.
 - Session: the HttpOnly cookie from `/auth/login`, sent with `credentials: 'include'`; `GET /auth/me` decides
   signed in or out. The API has no "is registration open" endpoint, so the register link is always offered and a
   403 shows a "registration is closed" message (and hides the link for the rest of the tab session).
