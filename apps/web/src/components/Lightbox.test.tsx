@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { detail, item } from "../test/fixtures";
+import { detail, item, withRaw } from "../test/fixtures";
 import { Lightbox } from "./Lightbox";
 
 const items = [1, 2, 3].map((n) => item(n));
@@ -77,5 +77,44 @@ describe("Lightbox", () => {
     expect(screen.queryByRole("button", { name: "Move to trash" })).not.toBeInTheDocument();
     await user.keyboard("{Delete}");
     expect(onTrash).toHaveBeenCalledTimes(2);
+  });
+
+  describe("RAW + JPEG pairs", () => {
+    it("shows both files with their sizes and an Unpair action", async () => {
+      const user = userEvent.setup();
+      const onUnpair = vi.fn();
+      const paired = [withRaw(1), item(2)];
+      render(
+        <Lightbox
+          items={paired}
+          index={0}
+          onIndexChange={() => {}}
+          onClose={() => {}}
+          loadDetail={async () => detail(1)}
+          onUnpair={onUnpair}
+        />,
+      );
+      expect(screen.getByText("RAW + JPEG")).toBeInTheDocument();
+      expect(screen.getByText("photo-1.CR3")).toBeInTheDocument();
+      expect(screen.getByText("24 MB")).toBeInTheDocument();
+      expect(screen.getByText("1001 B")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Unpair" }));
+      expect(onUnpair).toHaveBeenCalledWith(paired[0]);
+    });
+
+    it("leaves single photos alone", () => {
+      render(
+        <Lightbox items={[item(1)]} index={0} onIndexChange={() => {}} onClose={() => {}} loadDetail={async () => detail(1)} onUnpair={() => {}} />,
+      );
+      expect(screen.queryByText(/RAW \+/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Unpair" })).not.toBeInTheDocument();
+    });
+
+    it("names the pair after a HEIC primary and hides Unpair when it is not wired up", async () => {
+      const heic = item(1, { content_type: "image/heic", original_name: "photo-1.HEIC", paired: withRaw(1).paired });
+      render(<Lightbox items={[heic]} index={0} onIndexChange={() => {}} onClose={() => {}} loadDetail={async () => detail(1)} />);
+      expect(screen.getByText("RAW + HEIC")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Unpair" })).not.toBeInTheDocument();
+    });
   });
 });

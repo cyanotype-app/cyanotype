@@ -148,6 +148,11 @@ const Tile = memo(function Tile({
       ) : (
         <span className="tile-pending">Processing…</span>
       )}
+      {item.paired && item.paired.length > 0 && (
+        <span className="tile-badge" title="RAW + JPEG: the RAW file is kept with this photo">
+          RAW
+        </span>
+      )}
       {selecting && (
         <span className="tile-check" aria-hidden="true">
           {selected ? "✓" : ""}

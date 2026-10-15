@@ -205,6 +205,30 @@ export function Library() {
     },
     [show, failure],
   );
+  // Separate a RAW + JPEG pair: the photo loses its RAW badge and the RAW appears as a photo of its own.
+  const unpairItem = useCallback(
+    async (it: AssetListItem) => {
+      const rawIds = (it.paired ?? []).map((p) => p.id);
+      try {
+        await api.unpair(it.id);
+      } catch (e) {
+        failure(e, "Couldn’t unpair.");
+        return;
+      }
+      setItems((cur) => cur.map((i) => (i.id === it.id ? { ...i, paired: [] } : i)));
+      const raws = await Promise.all(
+        rawIds.map((id) =>
+          api.getAsset(id).then(
+            (d): AssetListItem => ({ ...d, paired: [] }),
+            () => null,
+          ),
+        ),
+      );
+      setItems((cur) => mergeItems(cur, raws.filter((r) => r !== null)));
+      show({ message: "Unpaired. They show as separate photos now." });
+    },
+    [failure, show],
+  );
   const trashItems = useCallback(
     async (targets: AssetListItem[]) => {
       if (targets.length === 0) return;
@@ -354,6 +378,7 @@ export function Library() {
           loadDetail={api.getAsset}
           onTrash={(it) => void trashItems([it])}
           onAddToAlbum={(it) => setAddIds([it.id])}
+          onUnpair={(it) => void unpairItem(it)}
           refreshKey={albumsVersion}
         />
       )}

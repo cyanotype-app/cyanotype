@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "../api";
 import { AuthProvider } from "../auth";
 import { UploadProvider } from "../upload/UploadProvider";
-import { detail, item } from "../test/fixtures";
+import { detail, item, withRaw } from "../test/fixtures";
 import { Library } from "./Library";
 
 type IOCallback = (entries: { isIntersecting: boolean }[]) => void;
@@ -297,5 +297,38 @@ describe("Library", () => {
       expect(await screen.findByText("Your library is empty")).toBeInTheDocument();
       expect(screen.getByText("1 moved to trash")).toBeInTheDocument();
     });
+  });
+
+  it("unpairs from the lightbox: the badge goes and the RAW shows up as its own photo", async () => {
+    vi.spyOn(api, "listAssets").mockResolvedValue({ items: [withRaw(1), item(3)], next_before: null });
+    const unpair = vi.spyOn(api, "unpair").mockResolvedValue(undefined);
+    vi.mocked(api.getAsset).mockImplementation(async (id) =>
+      id === "raw-1"
+        ? { ...detail(2), id: "raw-1", original_name: "photo-1.CR3", content_type: "image/x-canon-cr3" }
+        : detail(Number(id.split("-")[1])),
+    );
+    const user = userEvent.setup();
+    renderLibrary();
+    const tile = await screen.findByRole("button", { name: "Open photo-1.jpg" });
+    expect(tile).toHaveTextContent("RAW");
+
+    await user.click(tile);
+    await user.click(await screen.findByRole("button", { name: "Unpair" }));
+    expect(unpair).toHaveBeenCalledWith("id-1");
+    expect(await screen.findByText(/Unpaired/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(await screen.findByRole("button", { name: "Open photo-1.CR3" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open photo-1.jpg" })).not.toHaveTextContent("RAW");
+  });
+
+  it("keeps the pair when the server refuses to unpair", async () => {
+    vi.spyOn(api, "listAssets").mockResolvedValue({ items: [withRaw(1)], next_before: null });
+    vi.spyOn(api, "unpair").mockRejectedValue(new ApiError(404, "not found"));
+    const user = userEvent.setup();
+    renderLibrary();
+    await user.click(await screen.findByRole("button", { name: "Open photo-1.jpg" }));
+    await user.click(await screen.findByRole("button", { name: "Unpair" }));
+    expect(await screen.findByText(/Couldn.t unpair/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unpair" })).toBeInTheDocument();
   });
 });

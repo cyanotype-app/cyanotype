@@ -41,16 +41,31 @@ pub struct Swept {
     pub failed: usize,
 }
 
-/// Mark trashed rows older than `retention_days` for purging. Returns how many were marked.
+/// Mark trashed rows older than `retention_days` for purging, together with the paired RAW of each (they were
+/// trashed together, but a pair is never left half-purged). Returns how many rows were marked.
 pub async fn mark_expired(db: &PgPool, retention_days: i32) -> anyhow::Result<u64> {
-    Ok(sqlx::query(
+    let mut tx = db.begin().await?;
+    let first: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
         "UPDATE assets SET purging_at = now()
-         WHERE purging_at IS NULL AND deleted_at IS NOT NULL AND deleted_at < now() - make_interval(days => $1)",
+         WHERE purging_at IS NULL AND deleted_at IS NOT NULL AND deleted_at < now() - make_interval(days => $1)
+         RETURNING id, primary_id",
     )
     .bind(retention_days)
-    .execute(db)
+    .fetch_all(&mut *tx)
+    .await?;
+    let ids: Vec<Uuid> = first.iter().map(|r| r.0).collect();
+    let primaries: Vec<Uuid> = first.iter().filter_map(|r| r.1).collect();
+    let partners = sqlx::query(
+        "UPDATE assets SET purging_at = now(), deleted_at = coalesce(deleted_at, now())
+         WHERE purging_at IS NULL AND (primary_id = ANY($1) OR id = ANY($2))",
+    )
+    .bind(&ids)
+    .bind(&primaries)
+    .execute(&mut *tx)
     .await?
-    .rows_affected())
+    .rows_affected();
+    tx.commit().await?;
+    Ok(first.len() as u64 + partners)
 }
 
 /// How many rows are marked and still waiting for their objects to be removed.

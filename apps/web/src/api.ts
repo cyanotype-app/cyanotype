@@ -35,12 +35,23 @@ export interface AssetSummary {
   sort_time: string;
 }
 
+/** The other file of a RAW + JPEG pair: the RAW stacked behind a visible photo. */
+export interface PairedFile {
+  id: string;
+  original_name: string;
+  content_type: string;
+  size_bytes: number;
+  kind: "raw";
+}
+
 /** An entry of GET /assets. `thumbhash`/`thumb_url` are null until the worker has produced the derived images. */
 export interface AssetListItem extends AssetSummary {
   /** Base64 ThumbHash. */
   thumbhash: string | null;
   /** Presigned, short-lived. */
   thumb_url: string | null;
+  /** The RAW file stacked behind this photo; empty or absent for a single file (older servers omit it). */
+  paired?: PairedFile[];
 }
 
 /** GET /assets */
@@ -111,6 +122,8 @@ export interface AlbumPatch {
 export interface AssetDetail extends AssetSummary {
   /** The albums this photo is in. Absent on older servers. */
   albums?: AlbumRef[];
+  /** The RAW stacked behind this photo. Absent on older servers. */
+  paired?: PairedFile[];
   thumbhash: string | null;
   original_url: string;
   thumb_url: string | null;
@@ -313,6 +326,8 @@ export const api = {
   /** Take photos out of an album; they stay in the library. */
   removeFromAlbum: (id: string, ids: readonly string[]) =>
     bulk(`/assets/albums/${encodeURIComponent(id)}/assets/remove`, ids),
+  /** Separate a RAW + JPEG pair into two photos (either file's id); they are not paired again automatically. */
+  unpair: (id: string) => request<void>(`/assets/${encodeURIComponent(id)}/unpair`, { method: "POST" }),
   getAsset: (id: string) => request<AssetDetail>(`/assets/${encodeURIComponent(id)}`),
   /** Dedupe + part URLs. Defaults to the proxy transport, the only one a browser can use. */
   checkUpload: (req: CheckRequest) => request<CheckResponse>("/assets/check", json({ transport: "proxy", ...req })),

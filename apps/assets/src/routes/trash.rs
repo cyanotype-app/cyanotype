@@ -13,12 +13,13 @@ use axum::{
     Json,
     extract::{Query, State},
 };
+use cyanotype_core::pairing;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::{AssetSummary, ListItem, decode_cursor, encode_cursor, thumb_fields};
+use super::{AssetSummary, ListItem, decode_cursor, encode_cursor, paired_files, thumb_fields};
 use crate::AppState;
 use cyanotype_service::{ApiError, ApiResult, AuthUser};
 
@@ -46,19 +47,86 @@ pub(super) struct Count {
     count: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Op {
+    Trash,
+    Restore,
+    Purge,
+}
+
+pub(super) struct Applied {
+    /// Photos changed. A RAW + JPEG pair is one photo.
+    pub photos: u64,
+    /// Every row changed, hidden RAW files included.
+    pub changed: Vec<Uuid>,
+}
+
+#[derive(FromRow)]
+struct Changed {
+    id: Uuid,
+    primary_id: Option<Uuid>,
+}
+
+/// Apply `op` to the given ids (all eligible rows when `None`, as "empty trash" does), together with the paired RAW
+/// of every photo it changes (or the primary, if a RAW id was given), in one transaction so no reader sees a pair
+/// half-trashed. Ids of other owners, unknown ids and rows in the wrong state are ignored.
+pub(super) async fn apply(db: &sqlx::PgPool, owner: Uuid, op: Op, ids: Option<&[Uuid]>) -> ApiResult<Applied> {
+    // (SET clause, state a row must be in)
+    let (set, state, partner_state) = match op {
+        Op::Trash => ("deleted_at = now()", "deleted_at IS NULL", "deleted_at IS NULL"),
+        Op::Restore => (
+            "deleted_at = NULL",
+            "deleted_at IS NOT NULL AND purging_at IS NULL",
+            "deleted_at IS NOT NULL AND purging_at IS NULL",
+        ),
+        Op::Purge => (
+            "purging_at = now(), deleted_at = coalesce(deleted_at, now())",
+            "deleted_at IS NOT NULL AND purging_at IS NULL",
+            "purging_at IS NULL",
+        ),
+    };
+    let mut tx = db.begin().await?;
+    let first: Vec<Changed> = sqlx::query_as(&format!(
+        "UPDATE assets SET {set}
+         WHERE owner_id = $1 AND ($2::uuid[] IS NULL OR id = ANY($2)) AND {state}
+         RETURNING id, primary_id"
+    ))
+    .bind(owner)
+    .bind(ids)
+    .fetch_all(&mut *tx)
+    .await?;
+    let done: Vec<Uuid> = first.iter().map(|c| c.id).collect();
+    let primaries: Vec<Uuid> = first.iter().filter_map(|c| c.primary_id).collect();
+    let partners: Vec<Changed> = sqlx::query_as(&format!(
+        "UPDATE assets SET {set}
+         WHERE owner_id = $1 AND (primary_id = ANY($2) OR id = ANY($3)) AND {partner_state}
+         RETURNING id, primary_id"
+    ))
+    .bind(owner)
+    .bind(&done)
+    .bind(&primaries)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let mut photos = std::collections::HashSet::new();
+    let mut changed = Vec::new();
+    for c in first.iter().chain(&partners) {
+        photos.insert(c.primary_id.unwrap_or(c.id));
+        changed.push(c.id);
+    }
+    Ok(Applied {
+        photos: photos.len() as u64,
+        changed,
+    })
+}
+
 pub(super) async fn trash(
     State(s): State<AppState>,
     user: AuthUser,
     Json(req): Json<IdsRequest>,
 ) -> ApiResult<Json<Count>> {
     let ids = req.validated()?;
-    let count =
-        sqlx::query("UPDATE assets SET deleted_at = now() WHERE owner_id = $1 AND id = ANY($2) AND deleted_at IS NULL")
-            .bind(user.id)
-            .bind(&ids)
-            .execute(&s.db)
-            .await?
-            .rows_affected();
+    let count = apply(&s.db, user.id, Op::Trash, Some(&ids)).await?.photos;
     Ok(Json(Count { count }))
 }
 
@@ -68,16 +136,14 @@ pub(super) async fn restore(
     Json(req): Json<IdsRequest>,
 ) -> ApiResult<Json<Count>> {
     let ids = req.validated()?;
-    let count = sqlx::query(
-        "UPDATE assets SET deleted_at = NULL
-         WHERE owner_id = $1 AND id = ANY($2) AND deleted_at IS NOT NULL AND purging_at IS NULL",
-    )
-    .bind(user.id)
-    .bind(&ids)
-    .execute(&s.db)
-    .await?
-    .rows_affected();
-    Ok(Json(Count { count }))
+    let applied = apply(&s.db, user.id, Op::Restore, Some(&ids)).await?;
+    // Files that were trashed while their counterpart was uploaded were not paired then; they can be now.
+    for id in &applied.changed {
+        if let Err(e) = pairing::pair_asset(&s.db, *id).await {
+            tracing::warn!(asset_id = %id, error = ?e, "pairing after restore failed");
+        }
+    }
+    Ok(Json(Count { count: applied.photos }))
 }
 
 pub(super) async fn purge(
@@ -86,15 +152,7 @@ pub(super) async fn purge(
     Json(req): Json<IdsRequest>,
 ) -> ApiResult<Json<Count>> {
     let ids = req.validated()?;
-    let count = sqlx::query(
-        "UPDATE assets SET purging_at = now()
-         WHERE owner_id = $1 AND id = ANY($2) AND deleted_at IS NOT NULL AND purging_at IS NULL",
-    )
-    .bind(user.id)
-    .bind(&ids)
-    .execute(&s.db)
-    .await?
-    .rows_affected();
+    let count = apply(&s.db, user.id, Op::Purge, Some(&ids)).await?.photos;
     if count > 0 {
         s.purge_wake.notify_one();
     }
@@ -102,13 +160,7 @@ pub(super) async fn purge(
 }
 
 pub(super) async fn empty(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<Count>> {
-    let count = sqlx::query(
-        "UPDATE assets SET purging_at = now() WHERE owner_id = $1 AND deleted_at IS NOT NULL AND purging_at IS NULL",
-    )
-    .bind(user.id)
-    .execute(&s.db)
-    .await?
-    .rows_affected();
+    let count = apply(&s.db, user.id, Op::Purge, None).await?.photos;
     if count > 0 {
         s.purge_wake.notify_one();
     }
@@ -154,7 +206,7 @@ pub(super) struct TrashResponse {
 const TRASH_SELECT: &str = "SELECT id, original_name, content_type, size_bytes, width, height,
         coalesce(taken_at, file_modified_at, created_at) AS sort_time, thumbhash, deleted_at,
         deleted_at + make_interval(days => $2) AS purge_at
- FROM assets WHERE owner_id = $1 AND deleted_at IS NOT NULL AND purging_at IS NULL";
+ FROM assets WHERE owner_id = $1 AND deleted_at IS NOT NULL AND purging_at IS NULL AND primary_id IS NULL";
 
 pub(super) async fn list(
     State(s): State<AppState>,
@@ -194,11 +246,14 @@ pub(super) async fn list(
     } else {
         None
     };
+    let ids: Vec<Uuid> = rows.iter().map(|r| r.summary.id).collect();
+    let mut paired = paired_files(&s.db, &ids).await?;
     let mut items = Vec::with_capacity(rows.len());
     for r in rows {
         let (thumbhash, thumb_url) = thumb_fields(&s.storage, user.id, r.summary.id, r.thumbhash.as_deref()).await?;
         items.push(TrashItem {
             item: ListItem {
+                paired: paired.remove(&r.summary.id).unwrap_or_default(),
                 summary: r.summary,
                 thumbhash,
                 thumb_url,
@@ -208,7 +263,7 @@ pub(super) async fn list(
         });
     }
     let (total,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM assets WHERE owner_id = $1 AND deleted_at IS NOT NULL AND purging_at IS NULL",
+        "SELECT count(*) FROM assets WHERE owner_id = $1 AND deleted_at IS NOT NULL AND purging_at IS NULL AND primary_id IS NULL",
     )
     .bind(user.id)
     .fetch_one(&s.db)

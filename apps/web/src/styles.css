@@ -958,3 +958,42 @@ textarea.text-input {
     padding-bottom: 5rem;
   }
 }
+
+/* RAW + JPEG pairs: a small badge on the tile and the pair info in the lightbox. */
+.tile-badge {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  background: rgb(0 19 31 / 0.65);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  pointer-events: none;
+}
+.lightbox-pair {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem 0.75rem;
+  margin: 0;
+  padding: 0 1rem 1rem;
+  font-size: 0.9rem;
+}
+.lightbox-pair ul {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.15rem 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lightbox-pair li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

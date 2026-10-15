@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
     tokio::pin!(shutdown);
     loop {
         let mut claimed = false;
-        for kind in jobs::DEFAULT_PIPELINE {
+        for kind in jobs::DEFAULT_PIPELINE.iter().chain(&[jobs::KIND_PAIR]) {
             // Take a permit before claiming so we never hold a claimed job idle.
             let permit = tokio::select! {
                 p = heavy.clone().acquire_owned() => p?,
