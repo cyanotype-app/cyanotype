@@ -28,6 +28,10 @@ You create the server, Cloud Firewall and DNS yourself; this runbook says what t
 
 Invalid values stop the service at startup instead of falling back to something looser.
 
+`TRASH_RETENTION_DAYS` (assets service, default `30`, 1 to 36500): how long a photo stays in the trash before it is
+deleted permanently. Trash, restore and permanent deletion (including old object versions on this versioned
+bucket) are described in [`library.md`](library.md).
+
 `first_user` is race-safe: registration takes a transaction-scoped Postgres advisory lock, checks that the
 table is empty and inserts, so concurrent sign-ups produce exactly one account (covered by a test that fires
 12 at once). The local compose stack sets `REGISTRATION_MODE=open` by default so `just e2e` can register a
@@ -418,7 +422,8 @@ dc exec backup /usr/local/bin/backup.sh now
 dc exec backup /usr/local/bin/backup.sh list
 ```
 
-**The bucket has object versioning turned on.** Pruning an old dump only adds a delete marker; the old
+**The bucket has object versioning turned on.** (Permanently deleted photos are removed version by version by
+the assets service itself, see [`library.md`](library.md); the advice below is for database dumps.) Pruning an old dump only adds a delete marker; the old
 versions stay and keep using (billed) storage. Add a lifecycle rule on the bucket that expires noncurrent
 versions after some days (Linode supports lifecycle rules via the S3 API or a tool such as `s3cmd`), or
 purge old versions by hand now and then. Backups cover the database only: originals and derived files are

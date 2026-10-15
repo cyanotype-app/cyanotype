@@ -1,8 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, type AssetListItem } from "../api";
 import { useAuth } from "../auth";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Grid } from "../components/Grid";
 import { Lightbox } from "../components/Lightbox";
+import { SelectionBar } from "../components/SelectionBar";
+import { useToast } from "../components/Toast";
+import { useSelection } from "../selection";
 import { ACCEPT, filesFromDrop, filterFiles } from "../upload/files";
 import { useUploads } from "../upload/UploadProvider";
 
@@ -12,6 +16,14 @@ const THUMB_POLL_MAX = 40; // ticks per photo (about two minutes), then leave it
 
 const newestFirst = (a: AssetListItem, b: AssetListItem) =>
   Date.parse(b.sort_time) - Date.parse(a.sort_time) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+
+/** `cur` plus `add`, de-duplicated and back in timeline order (used to put trashed photos back). */
+const mergeItems = (cur: AssetListItem[], add: AssetListItem[]) => {
+  const have = new Set(cur.map((i) => i.id));
+  return [...cur, ...add.filter((i) => !have.has(i.id))].sort(newestFirst);
+};
+
+const photos = (n: number) => `${n} photo${n === 1 ? "" : "s"}`;
 
 export function Library() {
   const { setAnonymous } = useAuth();
@@ -29,6 +41,10 @@ export function Library() {
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
   const [notice, setNotice] = useState<string | null>(null);
+  const itemIds = useMemo(() => items.map((i) => i.id), [items]);
+  const sel = useSelection(itemIds);
+  const [confirmTrash, setConfirmTrash] = useState(false);
+  const { toast, show } = useToast();
 
   const loadMore = useCallback(async () => {
     if (inFlight.current) return;
@@ -164,6 +180,71 @@ export function Library() {
 
   const closeLightbox = useCallback(() => setOpen(null), []);
 
+  // Moving to trash is reversible, so there is no confirmation: the photos leave the grid at once (rolled back if
+  // the server refuses) and a toast offers Undo, which restores them.
+  const failure = useCallback(
+    (e: unknown, what: string) => {
+      if (e instanceof ApiError && e.status === 401) setAnonymous();
+      else show({ tone: "error", message: `${what} ${e instanceof Error ? e.message : ""}`.trim() });
+    },
+    [setAnonymous, show],
+  );
+  const undoTrash = useCallback(
+    async (targets: AssetListItem[]) => {
+      try {
+        await api.restoreAssets(targets.map((t) => t.id));
+        setItems((cur) => mergeItems(cur, targets));
+        show({ message: `${targets.length} restored` });
+      } catch (e) {
+        failure(e, "Couldn’t undo. They are still in the trash.");
+      }
+    },
+    [show, failure],
+  );
+  const trashItems = useCallback(
+    async (targets: AssetListItem[]) => {
+      if (targets.length === 0) return;
+      const gone = new Set(targets.map((t) => t.id));
+      if (items.every((i) => gone.has(i.id))) setOpen(null);
+      setItems((cur) => cur.filter((i) => !gone.has(i.id)));
+      try {
+        await api.trashAssets(targets.map((t) => t.id));
+      } catch (e) {
+        setItems((cur) => mergeItems(cur, targets));
+        failure(e, "Couldn’t move to trash.");
+        return;
+      }
+      show({
+        message: `${targets.length} moved to trash`,
+        action: { label: "Undo", onClick: () => void undoTrash(targets) },
+      });
+    },
+    [items, show, failure, undoTrash],
+  );
+  const trashSelected = useCallback(() => {
+    const ids = new Set(sel.ids);
+    sel.setSelecting(false);
+    void trashItems(items.filter((i) => ids.has(i.id)));
+  }, [sel, items, trashItems]);
+
+  // Keyboard: Escape clears the selection (then leaves selection mode); Delete asks, then trashes the selection.
+  useEffect(() => {
+    if (open !== null || confirmTrash) return; // the lightbox and the dialog own the keyboard
+    function onKey(e: KeyboardEvent) {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest("input, textarea, select, [contenteditable]")) return;
+      if (e.key === "Escape" && sel.selecting) {
+        e.preventDefault();
+        sel.escape();
+      } else if ((e.key === "Delete" || e.key === "Backspace") && sel.ids.length > 0) {
+        e.preventDefault();
+        setConfirmTrash(true);
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, confirmTrash, sel]);
+
   // Opening or paging to one of the last loaded photos pulls in the next page so ‹ › keeps going.
   const select = useCallback(
     (i: number) => {
@@ -197,6 +278,7 @@ export function Library() {
           {notice && <p className="muted small" role="status">{notice}</p>}
           <p className="muted small">The command-line importer is the better fit for a large existing archive.</p>
         </div>
+        {toast}
         {dragging && <DropOverlay />}
       </div>
     );
@@ -207,9 +289,39 @@ export function Library() {
       <h1 className="sr-only">Library</h1>
       <div className="library-bar">
         <UploadButtons onFiles={addFiles} />
+        <button
+          type="button"
+          className="btn btn-quiet"
+          aria-pressed={sel.selecting}
+          onClick={() => sel.setSelecting(!sel.selecting)}
+        >
+          Select
+        </button>
         {notice && <span className="muted small" role="status">{notice}</span>}
       </div>
-      <Grid items={items} onOpen={select} onThumbError={(id) => void refreshItem(id)} />
+      {sel.selecting && (
+        <SelectionBar
+          count={sel.ids.length}
+          total={items.length}
+          onSelectAll={sel.selectAll}
+          onClear={sel.clear}
+          onDone={() => sel.setSelecting(false)}
+        >
+          {/* More actions for the selection (add to album, ...) go here. */}
+          <button type="button" className="btn btn-primary" disabled={sel.ids.length === 0} onClick={trashSelected}>
+            Move to trash
+          </button>
+        </SelectionBar>
+      )}
+      <Grid
+        items={items}
+        onOpen={select}
+        onThumbError={(id) => void refreshItem(id)}
+        selecting={sel.selecting}
+        selected={sel.selected}
+        onSelect={sel.select}
+        onLongPress={sel.begin}
+      />
       <div ref={sentinel} className="sentinel" aria-hidden="true" />
       <p className="muted center small" role="status">
         {loading ? "Loading more…" : done ? `${items.length} photo${items.length === 1 ? "" : "s"}` : ""}
@@ -229,8 +341,23 @@ export function Library() {
           onIndexChange={select}
           onClose={closeLightbox}
           loadDetail={api.getAsset}
+          onTrash={(it) => void trashItems([it])}
         />
       )}
+      {confirmTrash && (
+        <ConfirmDialog
+          title={`Move ${photos(sel.ids.length)} to trash?`}
+          confirmLabel="Move to trash"
+          onCancel={() => setConfirmTrash(false)}
+          onConfirm={() => {
+            setConfirmTrash(false);
+            trashSelected();
+          }}
+        >
+          <p>You can restore {sel.ids.length === 1 ? "it" : "them"} from the trash.</p>
+        </ConfirmDialog>
+      )}
+      {toast}
       {dragging && <DropOverlay />}
     </div>
   );

@@ -61,4 +61,21 @@ describe("Lightbox", () => {
     await waitFor(() => expect(screen.getByText("Could not load this photo.")).toBeInTheDocument());
     expect(screen.getByAltText("photo-1.jpg")).toHaveAttribute("src", "https://s3.test/thumb-1");
   });
+
+  it("offers Move to trash (button and Delete key) for the current photo only when wired up", async () => {
+    const user = userEvent.setup();
+    const onTrash = vi.fn();
+    const { rerender } = render(
+      <Lightbox items={items} index={1} onIndexChange={() => {}} onClose={() => {}} loadDetail={async () => detail(2)} onTrash={onTrash} />,
+    );
+    await user.click(screen.getByRole("button", { name: "Move to trash" }));
+    expect(onTrash).toHaveBeenLastCalledWith(items[1]);
+    await user.keyboard("{Delete}");
+    expect(onTrash).toHaveBeenCalledTimes(2);
+
+    rerender(<Lightbox items={items} index={1} onIndexChange={() => {}} onClose={() => {}} loadDetail={async () => detail(2)} />);
+    expect(screen.queryByRole("button", { name: "Move to trash" })).not.toBeInTheDocument();
+    await user.keyboard("{Delete}");
+    expect(onTrash).toHaveBeenCalledTimes(2);
+  });
 });

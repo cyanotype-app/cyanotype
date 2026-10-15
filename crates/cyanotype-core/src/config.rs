@@ -87,6 +87,29 @@ impl S3Config {
     }
 }
 
+/// Days a photo stays in the trash before the assets janitor deletes it for good (`TRASH_RETENTION_DAYS`).
+pub const DEFAULT_TRASH_RETENTION_DAYS: i32 = 30;
+
+/// Trash retention from `TRASH_RETENTION_DAYS` (default 30). Must be a whole number of days, at least 1.
+pub fn trash_retention_days() -> Result<i32> {
+    parse_retention_days(opt("TRASH_RETENTION_DAYS").as_deref())
+}
+
+fn parse_retention_days(v: Option<&str>) -> Result<i32> {
+    let Some(v) = v else {
+        return Ok(DEFAULT_TRASH_RETENTION_DAYS);
+    };
+    let days: i32 = v
+        .trim()
+        .parse()
+        .with_context(|| format!("TRASH_RETENTION_DAYS must be a whole number of days, got {v:?}"))?;
+    anyhow::ensure!(
+        (1..=36_500).contains(&days),
+        "TRASH_RETENTION_DAYS must be between 1 and 36500, got {days}"
+    );
+    Ok(days)
+}
+
 /// Replace the userinfo password (and any query string) of a URL so it is safe to log.
 pub fn redact_url(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
@@ -119,6 +142,15 @@ mod tests {
         let d = format!("{c:?}");
         assert!(!d.contains("hunter2"), "{d}");
         assert!(d.contains("cyanotype:***@db:5432/cyanotype"), "{d}");
+    }
+
+    #[test]
+    fn retention_days_default_and_validation() {
+        assert_eq!(parse_retention_days(None).unwrap(), 30);
+        assert_eq!(parse_retention_days(Some(" 7 ")).unwrap(), 7);
+        for bad in ["0", "-1", "x", "1.5", "100000"] {
+            assert!(parse_retention_days(Some(bad)).is_err(), "{bad}");
+        }
     }
 
     #[test]

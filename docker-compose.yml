@@ -91,6 +91,8 @@ services:
       <<: [*app-env, *s3-env]
       DD_SERVICE: cyanotype-assets
       ASSETS_BIND_ADDR: 0.0.0.0:3002
+      # Days a photo stays in the trash before it is deleted for good (docs/library.md).
+      TRASH_RETENTION_DAYS: ${TRASH_RETENTION_DAYS:-30}
     labels:
       com.datadoghq.ad.logs: '[{"source":"rust","service":"cyanotype-assets"}]'
     depends_on:
