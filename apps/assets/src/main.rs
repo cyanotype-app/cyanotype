@@ -9,7 +9,7 @@ use anyhow::Result;
 use axum::{Router, extract::FromRef, routing::get};
 use cyanotype_core::{
     config::{self, DatabaseConfig, S3Config},
-    db,
+    db, manifest,
     storage::Storage,
     telemetry,
 };
@@ -46,6 +46,15 @@ async fn main() -> Result<()> {
         trash_retention_days,
         purge_wake: Arc::new(Notify::new()),
     };
+
+    // Daily per-user recovery manifests for `cyanotype reindex` (docs/recovery.md). The first pass waits so that a
+    // freshly restored database can be reconciled before anything is written from it.
+    manifest::spawn(
+        state.db.clone(),
+        state.storage.clone(),
+        manifest::keep_from_env()?,
+        std::time::Duration::from_secs(15 * 60),
+    );
 
     janitor::spawn(
         state.db.clone(),

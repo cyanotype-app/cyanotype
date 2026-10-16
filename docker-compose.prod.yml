@@ -58,6 +58,18 @@ services:
     mem_limit: 256m
     environment: *prod-env
 
+  # Disaster recovery one-shot (docs/recovery.md): `dc run --rm reindex [--apply ...]`, or the "Reindex" workflow.
+  # Not part of the steady-state memory budget above.
+  reindex:
+    image: ghcr.io/cyanotype-app/cyanotype-cli:${CYANOTYPE_VERSION:?set CYANOTYPE_VERSION in .env.prod}
+    build: !reset null
+    pull_policy: missing
+    mem_limit: 512m
+    environment:
+      <<: [*prod-env, *prod-s3]
+    depends_on: !override
+      postgres: { condition: service_healthy }
+
   auth:
     image: ghcr.io/cyanotype-app/cyanotype-auth:${CYANOTYPE_VERSION:?set CYANOTYPE_VERSION in .env.prod}
     build: !reset null

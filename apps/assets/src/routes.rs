@@ -13,7 +13,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use bytes::{Bytes, BytesMut};
 use cyanotype_core::{
-    jobs, keys, pairing,
+    jobs, keys, objmeta, pairing,
     storage::{Storage, UploadedPart},
 };
 use http_body_util::BodyExt;
@@ -26,6 +26,8 @@ mod albums;
 #[cfg(test)]
 mod pair_tests;
 mod trash;
+#[cfg(test)]
+mod upload_meta_tests;
 
 use crate::AppState;
 use cyanotype_service::{ApiError, ApiResult, AuthUser};
@@ -293,7 +295,16 @@ async fn check(
         .clone()
         .unwrap_or_else(|| "application/octet-stream".into());
     let key = keys::original(user.id, &sha, &keys::sanitize_ext(&req.filename));
-    let upload_id = s.storage.create_multipart(&key, &content_type).await?;
+    // The object describes itself (name, owner, upload time, client mtime) so `cyanotype reindex` can rebuild its
+    // row from the bucket alone. It is set here, on CreateMultipartUpload, so no client ever has to send it and
+    // presigned part URLs are unaffected. A multipart upload started before this shipped simply lacks it.
+    let metadata = objmeta::encode(&objmeta::OriginalMeta {
+        name: Some(req.filename.clone()),
+        owner: Some(user.id),
+        created_at: Some(OffsetDateTime::now_utc()),
+        file_modified_at: req.file_modified_at,
+    });
+    let upload_id = s.storage.create_multipart(&key, &content_type, metadata).await?;
     let n_parts = ((req.size_bytes + PART_SIZE - 1) / PART_SIZE) as i32;
     let parts = part_urls(&s, req.transport, &key, &upload_id, 1..=n_parts).await?;
 
