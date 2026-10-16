@@ -121,3 +121,70 @@ async fn deletes_more_than_one_batch_of_versions() {
     assert_eq!(storage.delete_prefix_all_versions(&p).await.unwrap(), 1105);
     assert!(all_keys(&client, &bucket, &p).await.is_empty());
 }
+
+/// One plain HTTP/1.1 GET (what a browser's navigation does, nothing more): `(status, headers lower-cased, body)`.
+async fn http_get(url: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let rest = url
+        .strip_prefix("http://")
+        .expect("an http:// endpoint (local MinIO / SeaweedFS)");
+    let (host, path) = rest.split_once('/').unwrap();
+    let mut conn = tokio::net::TcpStream::connect(host).await.unwrap();
+    // Like a cross-origin top-level navigation: no cookies, no Authorization, only what the URL carries.
+    conn.write_all(format!("GET /{path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut raw = Vec::new();
+    conn.read_to_end(&mut raw).await.unwrap();
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("a complete response");
+    let head = String::from_utf8_lossy(&raw[..split]).to_string();
+    let mut lines = head.lines();
+    let status = lines.next().unwrap().split(' ').nth(1).unwrap().parse().unwrap();
+    let headers = lines
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+        .collect();
+    (status, headers, raw[split + 4..].to_vec())
+}
+
+#[tokio::test]
+async fn presigned_download_is_saved_as_an_attachment_with_the_original_name() {
+    let Some((storage, _client, _bucket)) = setup() else {
+        return;
+    };
+    let key = format!("test-download/{}/blob", Uuid::new_v4());
+    storage
+        .put_bytes(&key, b"original bytes".to_vec(), "image/jpeg")
+        .await
+        .unwrap();
+    for name in ["IMG_1234.CR3", "Zürich \"x\" 100%.jpg"] {
+        let url = storage
+            .presign_get_download(&key, name, std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(url.contains("X-Amz-Expires=60"), "{url}");
+        let (status, headers, body) = http_get(&url).await;
+        assert_eq!(status, 200, "{url}");
+        assert_eq!(body, b"original bytes");
+        let disposition = headers
+            .iter()
+            .find(|(k, _)| k == "content-disposition")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(
+            disposition,
+            Some(cyanotype_core::storage::content_disposition_attachment(name).as_str()),
+            "the store must send the signed response-content-disposition"
+        );
+    }
+    // The same object without the override is still plain (the disposition is what makes it a download).
+    let (_, headers, _) = http_get(&storage.presign_get(&key).await.unwrap()).await;
+    assert!(
+        headers
+            .iter()
+            .all(|(k, v)| k != "content-disposition" || !v.starts_with("attachment"))
+    );
+    storage.delete_all_versions(&[key]).await.unwrap();
+}
