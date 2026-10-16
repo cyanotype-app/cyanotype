@@ -19,7 +19,7 @@ See the project README for the elevator pitch. This file tracks milestones and d
 | Gateway | Caddy (`infra/caddy/Caddyfile`): `/auth/*` -> auth, `/assets/*` -> assets |
 | Logging | `tracing` -> JSON on stdout -> Datadog Agent |
 | DB | Postgres + `sqlx` + pgvector |
-| Object storage | `aws-sdk-s3` (R2, B2, MinIO, AWS) |
+| Object storage | `aws-sdk-s3` (R2, B2, SeaweedFS, AWS) |
 | Image processing | `image`, `fast_image_resize`, `libheif-rs`, `rawler` |
 | Video (post-MVP) | `ffmpeg` subprocess |
 | EXIF | `kamadak-exif` / `nom-exif`, `exiftool` fallback |
@@ -42,7 +42,7 @@ Deleting is two-stage: `DELETE`/`POST /assets/trash` only sets `assets.deleted_a
 
 | # | Scope | Status |
 |---|---|---|
-| 0 | Cargo workspace, Docker Compose (Postgres + MinIO), CI, migrations, auth | done (scaffold) |
+| 0 | Cargo workspace, Docker Compose (Postgres + SeaweedFS), CI, migrations, auth | done (scaffold) |
 | 1 | Presigned upload, dedupe, asset CRUD, basic grid UI | backend done; grid UI done (login/register, infinite-scroll grid with ThumbHash placeholders, lightbox); browser upload done via a temporary backend proxy (`PUT /assets/uploads/{id}/parts/{n}`, bounded to 3 buffered parts) because Linode has no CORS; follow-up: switch back to direct presigned PUTs once storage supports CORS |
 | 2 | Worker, job queue, EXIF, thumbnails, ThumbHash, HEIC | done: queue; metadata (EXIF, sha256 verify) + thumbnail/preview/ThumbHash for JPEG/PNG/WebP, HEIC/HEIF/AVIF (libheif 1.23.1, statically linked) and camera RAW (embedded-preview first, capped rawler develop fallback); magic-byte routing; shared memory budget. Follow-ups: colour-profile conversion for wide-gamut HEIC, HDR gain maps; DCT-scaled JPEG, tile-streamed HEIC grid and row-streamed PNG decoding are done (see Memory discipline) |
 | 3 | Virtualized timeline, lightbox, albums, sharing links | done: lightbox; photo management done (multi-select, trash with undo, restore, delete forever, empty trash, automatic purge after `TRASH_RETENTION_DAYS`; `docs/library.md`). albums done (create/edit/delete, add/remove, cover, add-to-album from the library and lightbox; `docs/library.md`). RAW + JPEG pairs done (a camera's RAW and JPEG/HEIC show as one photo; `docs/library.md`). Virtualized timeline done (month/day headers, only rows near the viewport in the DOM, per-day counts so the whole library has an exact scrollbar, year/month scrubber that jumps to any date without loading what is before it, favorites and the Favorites view, download of originals by presigned attachment URL; `docs/library.md`). Share links done (public links to an album or a set of photos with expiry, password, download policy and revocation; GPS never leaves: derived WebP carry no metadata, downloads are a metadata-free JPEG copy unless the owner includes originals; `docs/library.md`). |
