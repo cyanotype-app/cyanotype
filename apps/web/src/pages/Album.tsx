@@ -48,6 +48,20 @@ function AlbumView({ id }: { id: string }) {
     [setAnonymous, show],
   );
 
+  // Hearts: shown at once, taken back if the server refuses.
+  const setFavorite = useCallback(
+    async (target: string, favorite: boolean) => {
+      refreshItem(target, { favorite });
+      try {
+        await api.favoriteAssets([target], favorite);
+      } catch (e) {
+        refreshItem(target, { favorite: !favorite });
+        failure(e, favorite ? "Couldn’t add to favorites." : "Couldn’t remove from favorites.");
+      }
+    },
+    [refreshItem, failure],
+  );
+
   const loadAlbum = useCallback(async () => {
     try {
       setAlbum(await api.getAlbum(id));
@@ -256,6 +270,7 @@ function AlbumView({ id }: { id: string }) {
           selected={sel.selected}
           onSelect={sel.select}
           onLongPress={sel.begin}
+          onFavorite={(target, favorite) => void setFavorite(target, favorite)}
         />
       )}
       <div ref={sentinel} className="sentinel" aria-hidden="true" />
@@ -274,6 +289,7 @@ function AlbumView({ id }: { id: string }) {
           onIndexChange={select}
           onClose={closeLightbox}
           loadDetail={api.getAsset}
+          onFavorite={(it, favorite) => void setFavorite(it.id, favorite)}
         />
       )}
       {confirmDelete && (

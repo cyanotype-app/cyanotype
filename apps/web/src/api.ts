@@ -33,6 +33,8 @@ export interface AssetSummary {
   height: number | null;
   /** RFC 3339: taken_at, falling back to created_at. */
   sort_time: string;
+  /** Favorited. Absent on older servers (treated as false). */
+  favorite?: boolean;
 }
 
 /** The other file of a RAW + JPEG pair: the RAW stacked behind a visible photo. */
@@ -78,6 +80,19 @@ export interface TrashList {
   /** Everything in the trash, not just this page. */
   total: number;
   retention_days: number;
+}
+
+/** One calendar day (UTC) of the library and how many photos it has. */
+export interface TimelineDay {
+  /** `YYYY-MM-DD`. */
+  day: string;
+  count: number;
+}
+
+/** GET /assets/timeline: per-day photo counts, newest day first. The counts match what `GET /assets` lists. */
+export interface Timeline {
+  total: number;
+  days: TimelineDay[];
 }
 
 /** Most ids the server accepts per bulk request; longer lists are sent in several requests. */
@@ -274,13 +289,26 @@ export const api = {
   listApiKeys: () => request<{ items: ApiKey[] }>("/auth/api-keys"),
   createApiKey: (name: string) => request<CreatedApiKey>("/auth/api-keys", json({ name })),
   revokeApiKey: (id: string) => request<void>(`/auth/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  listAssets: (opts: { cursor?: string | null; before?: string | null; limit?: number } = {}) => {
+  listAssets: (opts: { cursor?: string | null; before?: string | null; limit?: number; favorite?: boolean } = {}) => {
     const q = new URLSearchParams();
     if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts.favorite) q.set("favorite", "true");
     if (opts.cursor) q.set("cursor", opts.cursor);
     else if (opts.before) q.set("before", opts.before);
     const qs = q.toString();
     return request<AssetList>(`/assets${qs ? `?${qs}` : ""}`);
+  },
+  /** Photos per day, newest first (the library's layout; `favorite` limits it to favorites). */
+  timeline: (opts: { favorite?: boolean } = {}) =>
+    request<Timeline>(`/assets/timeline${opts.favorite ? "?favorite=true" : ""}`),
+  /** Favorite or unfavorite photos. `count` is how many changed. */
+  favoriteAssets: async (ids: readonly string[], favorite: boolean): Promise<{ count: number }> => {
+    let count = 0;
+    for (let i = 0; i < ids.length; i += MAX_BULK_IDS) {
+      const r = await request<{ count: number }>("/assets/favorite", json({ ids: ids.slice(i, i + MAX_BULK_IDS), favorite }));
+      count += r.count;
+    }
+    return { count };
   },
   /** Move photos to the trash (reversible). `count` is how many actually moved. */
   trashAssets: (ids: readonly string[]) => bulk("/assets/trash", ids),
@@ -336,5 +364,14 @@ export const api = {
   completeUpload: (uploadId: string, parts: DonePart[]) =>
     request<{ asset_id: string }>("/assets/complete", json({ upload_id: uploadId, parts })),
 };
+
+/**
+ * Where to point a plain link to save an original. The API answers with a redirect to a short-lived presigned URL
+ * whose response headers say `attachment; filename="<original name>"`, so the browser downloads straight from the
+ * bucket (a navigation, not fetch(): no CORS policy needed, no bytes through the API). `file` is the id of the RAW
+ * of a pair (from `paired`); leave it out for the photo's own file.
+ */
+export const downloadHref = (id: string, file?: string) =>
+  `/assets/${encodeURIComponent(id)}/download${file ? `?file=${encodeURIComponent(file)}` : ""}`;
 
 export type Api = typeof api;
