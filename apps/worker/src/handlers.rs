@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use cyanotype_core::{
     jobs, keys, metrics,
     pairing::{self, Paired},
+    places::{self, Geocoded},
     storage::Storage,
 };
 use sha2::{Digest, Sha256};
@@ -108,6 +109,11 @@ pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job, info: &JobInfo) -> Result<Outc
         return pair(ctx, job).await;
     }
 
+    // Reverse geocoding reads the coordinates the metadata job stored: database-only too.
+    if job.kind == jobs::KIND_GEOCODE {
+        return geocode(ctx, job).await;
+    }
+
     if !formats::is_candidate(&asset.content_type, &asset.original_name) {
         tracing::info!(content_type = %asset.content_type, "unsupported content type; skipping");
         return Ok(Outcome::Skipped("unsupported content type"));
@@ -188,6 +194,18 @@ async fn pair(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
         Paired::Already => Ok(Outcome::Skipped("already paired")),
         Paired::NotApplicable => Ok(Outcome::Skipped("not a RAW or JPEG/HEIC, or not live")),
         Paired::NoMatch => Ok(Outcome::Skipped("no counterpart")),
+    }
+}
+
+async fn geocode(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
+    match places::geocode_asset(&ctx.db, job.asset_id)
+        .await
+        .context("geocode asset")?
+    {
+        Geocoded::Placed => Ok(Outcome::Done),
+        Geocoded::NoPlace => Ok(Outcome::Skipped("no populated place within range")),
+        Geocoded::NoCoordinates => Ok(Outcome::Skipped("no coordinates")),
+        Geocoded::Gone => Ok(Outcome::Skipped("asset deleted")),
     }
 }
 
@@ -288,6 +306,14 @@ async fn metadata(ctx: &Arc<Ctx>, job: &jobs::Job, asset: &AssetRow, kind: Kind,
     .execute(&ctx.db)
     .await
     .context("update asset metadata")?;
+    // The coordinates may be new or changed (a re-run after an EXIF fix): look the place up again, or forget it.
+    if e.latitude.is_some() && e.longitude.is_some() {
+        places::requeue(&ctx.db, job.asset_id).await.context("queue geocode")?;
+    } else {
+        places::geocode_asset(&ctx.db, job.asset_id)
+            .await
+            .context("clear place")?;
+    }
     // The capture time and camera are known now: pair with the RAW/JPEG of the same shot if its other half is
     // already here (or, when it is not, the other half's own metadata job pairs them). A failure retries this job.
     if let Paired::Linked { raw, primary } = pairing::pair_asset(&ctx.db, job.asset_id).await.context("pair asset")? {

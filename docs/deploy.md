@@ -462,6 +462,55 @@ dc --profile datadog up -d
 `DEPLOY_PROFILES=datadog` (just). With the profile on, the worker and assets service also send queue and upload metrics to the Agent's DogStatsD (`datadog-agent:8125` on the compose network; nothing is published on the host), and the Agent collects container CPU/memory/OOM metrics for `cyanotype-*` containers only. The dashboard and monitors in `infra/datadog/` are imported by hand (`docs/observability.md`). Details and the log schema are in `docs/observability.md`. Services emit
 `env:<DD_ENV>` and `version:<CYANOTYPE_VERSION>`. Use `DD_ENV=prod` for a future production instance.
 
+## Map (basemap and places)
+
+The map page works without any setup, on a plain background. To get real maps, install a Protomaps basemap once.
+Nothing is called from the browser to a third party: tiles come from your own bucket through the assets service
+(`GET /assets/tiles/world.pmtiles`, login required), and the label fonts are vendored in the web image.
+
+Why it goes through the service: PMTiles is read with HTTP range requests, and Linode's bucket cannot be given a CORS
+policy (see below), so the browser cannot read bucket URLs with `fetch()`. The service relays only the requested bytes
+(at most 2 MiB per request, in practice a few KB to a few hundred KB), so it never holds an archive in memory. The
+gateway lets the browser cache these responses for a day (`/assets/tiles/*` is exempt from `no-store`).
+
+```sh
+cd ~/cyanotype
+scripts/fetch-basemap.sh                 # the world to zoom 7 -> bucket basemap/world.pmtiles (reads .env.prod)
+```
+
+The script downloads the `pmtiles` tool at a pinned version (sha256-checked), extracts the zoom levels you ask for from
+the newest daily Protomaps planet build (only the needed byte ranges are fetched, not the ~140 GB planet) and uploads it with
+`curl --aws-sigv4`; it needs `curl` 7.75+ and the bucket settings from `.env.prod`. It ships with every deploy. Reload
+the map; no restart is needed. Remove it again with `scripts/fetch-basemap.sh --remove world`.
+
+| archive | zoom | size | what you see |
+|---|---|---|---|
+| world, `--maxzoom 6` | 0-6 | 43 MiB | countries, big cities, major roads |
+| world, default `--maxzoom 7` | 0-7 | 180 MiB | adds more towns and roads; the map stays usable down to about zoom 9 (tiles are stretched past zoom 7) |
+| world, `--maxzoom 8` | 0-8 | about 750 MiB (estimate, about 4x per level) | sharper at region level |
+
+(Sizes of the 2026-10-15 build; Protomaps publishes only the last few daily builds, so the data itself cannot be pinned.
+The script picks the newest; `BUILD_DATE=YYYYMMDD` picks another.) Object storage costs the archive's size and
+nothing else: no egress to a third party, and a few KB per tile view.
+
+**Optional detail for the places you photograph**: a regional extract with more zoom levels is drawn on top of the
+world from zoom 8 on (the world keeps drawing everywhere else):
+
+```sh
+scripts/fetch-basemap.sh --detail --bbox=-10,35,30,60 --maxzoom 12   # Europe to zoom 12 -> basemap/detail.pmtiles
+scripts/fetch-basemap.sh --detail --bbox=2.0,48.5,2.7,49.0 --maxzoom 14   # one city
+```
+
+Size grows about 4x per zoom level and with the area, so start with a city or a country and a low `--maxzoom`
+(a 0.7 x 0.5 degree box around Paris to zoom 9 is 2.6 MiB). `--file my.pmtiles --as detail` uploads an archive you made
+with the `pmtiles` tool yourself. Only `world.pmtiles` and `detail.pmtiles` are served.
+
+**Places** (city, region and country of each photo) need nothing from you: the GeoNames snapshot is inside the CLI
+image and `dc run --rm migrate` (part of every deploy) loads it into Postgres (about 22 MB, a few seconds) the first time
+and whenever the image carries a newer snapshot. The worker then fills in the places in the background (a database
+lookup per geotagged photo). Place names come from GeoNames, licensed CC BY 4.0, https://www.geonames.org/ ; the map
+page credits GeoNames, OpenStreetMap contributors (ODbL) and Protomaps. How both work: `docs/library.md`, "Map and places".
+
 ## Known limitation: browser direct uploads and Linode CORS
 
 Browsers cannot PUT file parts straight to the bucket without CORS on the bucket. Linode Object Storage in

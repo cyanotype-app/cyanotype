@@ -1,11 +1,14 @@
 // Renders every page and overlay with mocked API data at phone widths and asserts the page never scrolls
 // sideways. Set SHOT_DIR to also save a screenshot of each state at every width.
 import { expect, test, type Page } from "@playwright/test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { installLibrary, makeAssets, pageOf, timelineOf, type FakeAsset } from "./fakeLibrary";
 
 const SHOT_DIR = process.env.SHOT_DIR;
+// A real Protomaps archive for zoom 0-2 (the world), served with range requests like the assets service does.
+const WORLD_TILES = readFileSync(new URL("./fixtures/world-z2.pmtiles", import.meta.url));
+let basemapInstalled = true;
 const RUNS: { width: number; scheme: "light" | "dark" }[] = [
   ...[320, 360, 375, 390, 414, 1280].map((width) => ({ width, scheme: "light" as const })),
   { width: 360, scheme: "dark" },
@@ -17,6 +20,24 @@ const palette = ["#1d4e7a", "#2f7cb5", "#5c9bcb", "#0a4a78", "#8fbbe0", "#14609a
 const svg = (n: number) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="300" height="300" fill="${palette[n % palette.length]}"/><circle cx="150" cy="150" r="${40 + (n % 5) * 15}" fill="#fff" fill-opacity=".35"/></svg>`;
 const thumb = (n: number) => `/fixture-thumbs/${n}.svg`;
+// Markers of the map page: single photos, clusters of every size class, and a long count.
+const marker = (id: string, lat: number, lon: number, count: number, n: number) => ({
+  id,
+  lat,
+  lon,
+  count,
+  bounds: count > 1 ? [lon - 0.4, lat - 0.3, lon + 0.4, lat + 0.3] : null,
+  thumbhash: null,
+  thumb_url: count === 1 ? thumb(n) : null,
+});
+const MAP_MARKERS = [
+  marker("a1", 30.04, 31.24, 1, 1),
+  marker("a2", 51.5, -0.12, 7, 2),
+  marker("a3", 40.7, -74.0, 128, 3),
+  marker("a4", 35.68, 139.65, 12400, 4),
+  marker("a5", -33.86, 151.2, 1, 5),
+  marker("a6", 37.77, -122.42, 2, 6),
+];
 
 const asset = (n: number) => ({
   id: `a${n}`,
@@ -85,6 +106,23 @@ async function mock(page: Page) {
       const u = new URL(req.url());
       const p = u.pathname;
       const m = req.method();
+      if (p === "/assets/tiles" && m === "GET") return route.fulfill(json({ world: basemapInstalled, detail: false }));
+      if (p === "/assets/tiles/world.pmtiles") {
+        const r = /bytes=(\d+)-(\d+)/.exec(req.headers()["range"] ?? "");
+        if (!basemapInstalled || !r) return route.fulfill({ status: basemapInstalled ? 400 : 404, body: "" });
+        const first = Number(r[1]);
+        const last = Math.min(Number(r[2]), WORLD_TILES.length - 1);
+        return route.fulfill({
+          status: 206,
+          contentType: "application/octet-stream",
+          headers: { "content-range": `bytes ${first}-${last}/${WORLD_TILES.length}`, "accept-ranges": "bytes", etag: '"fixture"' },
+          body: WORLD_TILES.subarray(first, last + 1),
+        });
+      }
+      if (p === "/assets/map" && m === "GET") {
+        const whole = u.searchParams.get("bbox") === "-180,-90,180,90";
+        return route.fulfill(json({ clusters: whole ? MAP_MARKERS : MAP_MARKERS.slice(0, 4), total: whole ? 12632 : 12600, truncated: false }));
+      }
       if (p === "/auth/me") return route.fulfill(json({ id: "u1", email: "someone.with.a.long.address@example-photo-library.org" }));
       if (p === "/auth/api-keys" && m === "GET")
         return route.fulfill(
@@ -247,7 +285,8 @@ for (const { width, scheme } of RUNS) {
           const bad: string[] = [];
           for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
             const b = el.getBoundingClientRect();
-            if (b.width === 0 || el.closest(".tile")) continue; // tiles clip their hover-zoomed image
+            // Tiles clip their hover-zoomed image; map markers sit wherever the map puts them and the pane clips them.
+            if (b.width === 0 || el.closest(".tile") || el.closest(".map-canvas")) continue;
             if (b.right > w + 0.5 || b.left < -0.5) {
               bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} "${(el.textContent ?? "").trim().slice(0, 24)}" [${Math.round(b.left)}..${Math.round(b.right)}]`);
             }
@@ -310,6 +349,45 @@ for (const { width, scheme } of RUNS) {
       await page.getByText("Processing 20,617 photos…").waitFor({ state: "detached", timeout: 10_000 });
       await check("library-processing-done");
       processing = IDLE;
+
+      // Map: with a basemap, a photo from a marker in the lightbox, and the plain-background fallback without one
+      const mapReady = () =>
+        page.locator(".map-thumb, .map-bubble, .map-notice[role=alert]").first().waitFor({ timeout: 20_000 });
+      basemapInstalled = true;
+      await open("/map", "Photos in view");
+      await mapReady();
+      await page.waitForTimeout(1500); // tiles and labels draw
+      await check("map");
+      // A thumbnail that is inside the pane and not under another marker (they overlap at world zoom).
+      let shown = null;
+      for (const t of await page.locator(".map-thumb").all()) {
+        const onTop = await t.evaluate((el) => {
+          const r = el.getBoundingClientRect();
+          const pane = document.querySelector(".map-pane")!.getBoundingClientRect();
+          const inside = r.left > pane.left && r.right < pane.right && r.top > pane.top && r.bottom < pane.bottom;
+          return inside && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === el;
+        });
+        if (onTop) {
+          shown = t;
+          break;
+        }
+      }
+      if (shown) {
+        await shown.click();
+        await page.getByRole("dialog").waitFor();
+        await check("map-lightbox");
+        await page.keyboard.press("Escape");
+      }
+      await page.getByRole("button", { name: /Open IMG_1000/ }).click();
+      await page.getByRole("dialog").waitFor();
+      await check("map-list-lightbox");
+      await page.keyboard.press("Escape");
+      basemapInstalled = false;
+      await open("/map", "Photos in view");
+      await page.getByText(/No basemap is installed/).waitFor();
+      await mapReady();
+      await check("map-no-basemap");
+      basemapInstalled = true;
 
       // Lightbox
       await open("/library", /Open IMG_1000/);

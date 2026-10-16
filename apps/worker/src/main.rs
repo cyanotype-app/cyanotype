@@ -42,7 +42,7 @@ fn handled_kinds() -> impl Iterator<Item = &'static str> {
     jobs::DEFAULT_PIPELINE
         .iter()
         .copied()
-        .chain([jobs::KIND_PAIR, jobs::KIND_SHARE_COPY])
+        .chain([jobs::KIND_PAIR, jobs::KIND_GEOCODE, jobs::KIND_SHARE_COPY])
 }
 
 fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {

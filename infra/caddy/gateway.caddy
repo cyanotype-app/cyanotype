@@ -40,6 +40,19 @@
 		}
 	}
 
+	# Basemap tiles (PMTiles range reads, docs/deploy.md "Map"): the assets service answers them, but unlike the rest
+	# of /assets they may be cached by the browser, so no `no-store` here. The service sets Cache-Control itself.
+	@tiles path /assets/tiles/*
+	handle @tiles {
+		reverse_proxy assets:3002 {
+			import upstream_client_ip
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+			}
+		}
+	}
+
 	@assets path /assets /assets/*
 	# Browser uploads are proxied here too: PUT /assets/uploads/{id}/parts/{n} carries a 16 MiB body. Do NOT add a
 	# `request_body { max_size }` limit below that; Caddy does not buffer request bodies by default (they stream to
