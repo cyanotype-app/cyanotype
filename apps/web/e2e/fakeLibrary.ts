@@ -148,6 +148,11 @@ export async function installLibrary(
       const req = route.request();
       const u = new URL(req.url());
       const p = u.pathname;
+      if (req.method() === "GET" && p === "/assets/processing") {
+        return route.fulfill(
+          json({ active: false, queued: 0, running: 0, failed: 0, by_kind: [], total_photos: assets.length, without_thumbnail: 0, failures: [] }),
+        );
+      }
       if (req.method() === "GET" && p === "/assets/timeline") {
         seen.timeline.push(u.search);
         return route.fulfill(json(timelineOf(assets, u.searchParams.get("favorite") === "true")));

@@ -3,6 +3,7 @@ pub mod db;
 pub mod jobs;
 pub mod keys;
 pub mod manifest;
+pub mod metrics;
 pub mod objmeta;
 pub mod pairing;
 pub mod reindex;

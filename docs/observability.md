@@ -45,8 +45,9 @@ while handling a request also carries `request_id`, `method` and `path`:
 - `path`: the **route template** (`/assets/{id}`), `<unmatched>` for 404s on unknown routes.
 - `status`, `latency_ms`.
 
-Worker: each job runs in a `job` span carrying `job_id`, `kind`, `asset_id`, `attempts`, and
-finishes with one summary line with `outcome` (`done` | `skipped` | `retry` | `failed`) and
+Worker: each job runs in a `job` span carrying `job.id`, `job.kind`, `job.attempts` and `asset.id` (dotted
+attribute names, which Datadog treats as nested attributes), so every line logged while the job runs has them.
+It finishes with one summary line with `outcome` (`done` | `skipped` | `retry` | `failed`) and
 `duration_ms` (plus `error` on failures, and `reason` when skipped).
 
 ## What is deliberately not logged
@@ -60,6 +61,106 @@ finishes with one summary line with `outcome` (`done` | `skipped` | `retry` | `f
 
 Covered by unit tests (`cyanotype-service::http::tests`, `cyanotype-core::telemetry::tests`,
 `cyanotype-core::config::tests`).
+
+## Metrics (DogStatsD)
+
+The worker and the assets service send metrics over UDP to the Agent's DogStatsD port with a tiny built-in sender
+(`crates/cyanotype-core/src/metrics.rs`, no extra dependency). Sending never blocks or fails a job or request: lines go
+through a bounded in-memory queue to a background thread, and anything that cannot be sent (no Agent, DNS failure, full
+queue) is dropped. **With neither `DOGSTATSD_URL` nor `DD_AGENT_HOST` set, nothing is sent and no thread starts.**
+
+| Variable | Meaning |
+|---|---|
+| `DOGSTATSD_URL` (or `DD_DOGSTATSD_URL`) | `udp://host:port` of the Agent (compose sets `udp://datadog-agent:8125`; set it empty to turn metrics off). Unix sockets are not supported. |
+| `DD_AGENT_HOST`, `DD_DOGSTATSD_PORT` | Alternative: host and port (default 8125). |
+
+Every metric carries `env`, `service` and `version` (the same values as the logs) plus the tags below; the Agent adds
+`host`. Counters are sent as DogStatsD counters (query them with `.as_count()`). Durations and sizes are
+**histograms**, so the Agent publishes `.avg`, `.median`, `.95percentile`, `.max` and `.count` series without any
+configuration in Datadog (distributions would need percentile aggregation enabled per metric).
+
+| Metric | Type | Tags | Meaning |
+|---|---|---|---|
+| `cyanotype.queue.queued` | gauge | `kind` | Queued jobs (includes delayed retries). |
+| `cyanotype.queue.running` | gauge | `kind` | Jobs a worker holds. |
+| `cyanotype.queue.failed` | gauge | `kind` | Jobs in state `failed` (cumulative until retried or deleted). |
+| `cyanotype.queue.oldest_queued_age_seconds` | gauge | `kind` | Wait of the oldest runnable queued job; 0 when none. |
+| `cyanotype.queue.stalled_seconds` | gauge | | Runnable work exists and nothing finished: the lesser of the oldest wait and the time since any success; 0 when idle. |
+| `cyanotype.jobs.completed` | count | `kind`, `family`, `outcome` (`done`, `skipped`) | Jobs finished. |
+| `cyanotype.jobs.failed` | count | `kind`, `family`, `outcome:failed`, `permanent` | Jobs that failed for good (use `.as_count()` sums for rates). |
+| `cyanotype.jobs.retried` | count | `kind`, `family`, `outcome:retry` | Failures that will be retried. |
+| `cyanotype.jobs.duration` | histogram (ms) | `kind`, `family`, `outcome` | Wall time per job. |
+| `cyanotype.jobs.decoded_megapixels` | histogram | `kind`, `family` | Size of the image a thumbnail job decoded. |
+| `cyanotype.worker.memory_budget.waits` / `.wait_ms` | count / histogram | | A reservation had to wait for memory held by other jobs, and for how long. |
+| `cyanotype.worker.memory_budget.refusals` | count | `reason` (`over_size_limit`, `over_budget`, `decode_refused`), `family` | Jobs turned away as too big. |
+| `cyanotype.worker.memory_budget.used_bytes` / `.total_bytes` | gauge | | Budget in use and its size (`WORKER_MEMORY_BUDGET_MB`). |
+| `cyanotype.uploads.completed` / `.bytes` | count | `family` | Uploads completed (browser and CLI) and their bytes. |
+| `cyanotype.uploads.parts` | count | `outcome` (`ok`, `timeout` = HTTP 408, `error`) | Proxied (browser) part uploads. |
+| `cyanotype.uploads.part_latency_ms` | histogram | | Time to receive a part from the browser and relay it to the bucket (successful parts). |
+| `cyanotype.uploads.part_bytes` | count | | Bytes relayed. |
+
+`family` is `jpeg`, `heic`, `raw`, `png` or `other` (`unknown` when the asset row is gone), from the content type and
+file extension (`metrics::family`). The job gauges are sampled every 15 s by the worker, one reading per kind every time
+(zeros included, so a drained queue reads 0 rather than going stale); run one worker process, or accept duplicate
+(identical) readings.
+
+Container metrics (`container.memory.usage`, `container.memory.oom_events`, `container.uptime`, `container.cpu.usage`,
+`docker.*`) come from the Agent itself (Docker socket and cgroup mounts in compose) and are scoped, like the logs, to
+`cyanotype-*` containers (`DD_CONTAINER_INCLUDE_METRICS`).
+
+### Is the Agent reachable from the services?
+
+`docker-compose.yml` gives the Agent `DD_DOGSTATSD_NON_LOCAL_TRAFFIC=true` (listen on all interfaces; the port is not
+published, so only containers on the compose network can send) and points the worker and assets service at
+`udp://datadog-agent:8125`. The Agent is still opt-in (`--profile datadog`, which `just deploy` and the Deploy workflow
+add when `DD_API_KEY` is set); without it the name does not resolve, the sender logs one warning and drops its metrics.
+After deploying this version, recreate the stack with the profile on (`dc --profile datadog up -d`) so the Agent
+restarts with the new setting.
+
+## Dashboard and monitors as code
+
+`infra/datadog/dashboard.json` and `infra/datadog/monitors/*.json` are plain Datadog API payloads. Nothing is created
+automatically; import them yourself:
+
+- **Dashboard, UI:** Dashboards > New Dashboard > (gear) Import dashboard JSON, paste the file. Set the `env` variable
+  at the top to `dev`.
+- **Dashboard, API:** `curl -X POST "https://api.us5.datadoghq.com/api/v1/dashboard" -H "DD-API-KEY: $DD_API_KEY" -H
+  "DD-APPLICATION-KEY: $DD_APP_KEY" -H "Content-Type: application/json" -d @infra/datadog/dashboard.json`
+  (an application key with dashboards_write; the site is us5).
+- **Monitors, UI:** Monitors > New Monitor > Import from JSON, one file at a time.
+- **Monitors, API:** `for f in infra/datadog/monitors/*.json; do curl -X POST "https://api.us5.datadoghq.com/api/v1/monitor" -H "DD-API-KEY: $DD_API_KEY" -H "DD-APPLICATION-KEY: $DD_APP_KEY" -H "Content-Type: application/json" -d @$f; done`
+  (application key with monitors_write). Re-running creates duplicates; update existing ones with `PUT /api/v1/monitor/{id}`.
+
+Monitors: job failures spike (more than 25 in 15 min), oldest queued job older than 30 min, worker container
+crash-looping (uptime under 2 min for 15 min), worker OOM kill, and no job completing for 30 min while work is queued.
+They have no notification handle: add `@you@example.com` (or a channel) to each `message` before importing. The queries
+use `{*}`; add `env:dev` inside the braces to scope them. The query syntax of all five was checked with Datadog's
+monitor validator; the metric names do not exist in Datadog until the first deploy that emits them, so a new monitor
+may show "no data" until then (they are set not to alert on no data).
+
+## Watching an import
+
+1. Open the dashboard (env `dev`). **Queue depth by kind** should climb as uploads finish and fall as the worker drains
+   it; **Jobs completed per minute** is the throughput (an estimate of time left is queued / that rate).
+2. **Oldest queued job age** staying under a few minutes means the worker keeps up; a long queue with steady
+   throughput during a 50 GB import is normal. **Stalled seconds** rising means nothing is finishing: check the worker.
+3. **Memory budget waits** and **worker container memory** show whether the 640 MB decode budget (not CPU) is the limit;
+   **refusals** are RAW/HEIC/JPEG files too large for the budget (they fail permanently and show in the web app's
+   failures panel).
+4. **Failed jobs by kind** and the **Worker errors** log stream show why; in Logs, `service:cyanotype-worker
+   outcome:failed` with `@error`, `@asset.id`, `@job.kind`.
+5. The web app shows the same progress to the user (the banner under the Library tabs, [`library.md`](library.md)),
+   with a Retry button for failed jobs once the cause is fixed.
+
+## Instant job pickup (LISTEN/NOTIFY)
+
+A trigger on `jobs` (migration 0007) sends `pg_notify('jobs_queued', kind)` whenever a job becomes queued: an insert
+(upload complete, the pairing backfill, `reindex --rethumb`, ad-hoc SQL) or a transition back to `queued` (a retry
+after a failure, the retry endpoint). The worker holds one dedicated `LISTEN` connection (a `PgListener`, not a
+connection from the pool, so it cannot starve it) and wakes immediately. It still polls every 30 s as a safety net and
+for stale-job reclaim, sleeps exactly until the earliest delayed retry is due, and re-checks after every listener
+reconnect (notifications sent while disconnected are lost). Notifications are delivered only after the enqueuing
+transaction commits.
 
 ## Turning on the Datadog Agent
 
@@ -83,7 +184,7 @@ profile enabled and that the log lines have the shape above.
 ## Recommended Datadog setup
 
 Facets: `@request_id`, `@method`, `@path`, `@status` (measure or string), `@latency_ms` (measure,
-unit ms), `@job_id`, `@kind`, `@asset_id`, `@outcome`, `@attempts` (measure), `@duration_ms` (measure).
+unit ms), `@job.id`, `@job.kind`, `@asset.id`, `@outcome`, `@job.attempts` (measure), `@duration_ms` (measure).
 
 Pipeline (Logs > Configuration > Pipelines, filter `source:rust`):
 
@@ -94,7 +195,7 @@ Pipeline (Logs > Configuration > Pipelines, filter `source:rust`):
   `status` -> `http.status_code`, `path` -> `http.url_details.path`, `latency_ms` -> `duration` (needs
   a ms -> ns arithmetic processor).
 
-Useful monitors: error-level log rate per `service`; worker `outcome:failed`; p95 `latency_ms` by `path`.
+Useful monitors beyond the committed ones: error-level log rate per `service`; p95 `latency_ms` by `path`.
 
 ## Follow-up: tracing (OTLP) not implemented
 

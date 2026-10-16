@@ -1,8 +1,14 @@
 //! Postgres job queue. Enqueue is idempotent per (kind, asset, version);
 //! claiming uses `FOR UPDATE SKIP LOCKED` so any number of workers can run.
+use std::{sync::Arc, time::Duration};
+
 use anyhow::Result;
-use sqlx::{PgExecutor, PgPool};
+use sqlx::{PgExecutor, PgPool, postgres::PgListener};
+use tokio::sync::Notify;
 use uuid::Uuid;
+
+/// The NOTIFY channel a trigger on `jobs` (migration 0007) signals whenever a job becomes queued.
+pub const NOTIFY_CHANNEL: &str = "jobs_queued";
 
 pub const KIND_METADATA: &str = "metadata";
 pub const KIND_THUMBNAIL: &str = "thumbnail";
@@ -115,4 +121,167 @@ pub async fn fail_permanent(pool: &PgPool, id: i64, error: &str) -> Result<()> {
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// How long until the earliest delayed job (a retry waiting out its backoff) among `kinds` becomes due.
+/// `None` when nothing is waiting. Used to sleep exactly as long as needed instead of polling.
+pub async fn next_due_in(pool: &PgPool, kinds: &[&str]) -> Result<Option<Duration>> {
+    let kinds: Vec<String> = kinds.iter().map(|k| (*k).to_string()).collect();
+    let secs: Option<f64> = sqlx::query_scalar(
+        "SELECT extract(epoch FROM min(run_after) - now())::float8 FROM jobs
+         WHERE state = 'queued' AND attempts < $2 AND kind = ANY($1) AND run_after > now()",
+    )
+    .bind(&kinds)
+    .bind(MAX_ATTEMPTS)
+    .fetch_one(pool)
+    .await?;
+    Ok(secs.map(|s| Duration::from_secs_f64(s.max(0.0))))
+}
+
+/// The worker's idle wait: returns when a job was queued (notification), when the earliest delayed retry among
+/// `kinds` comes due, or after `fallback` (the safety net for a missed notification and for stale-job reclaim),
+/// whichever is first. Callers claim again afterwards.
+pub async fn wait_for_work(pool: &PgPool, waker: &JobWaker, kinds: &[&str], fallback: Duration) {
+    let nap = match next_due_in(pool, kinds).await {
+        // A tiny floor so a due-now job (or clock skew) cannot spin the loop.
+        Ok(Some(due)) => due.max(Duration::from_millis(50)).min(fallback),
+        Ok(None) => fallback,
+        Err(e) => {
+            tracing::error!(error = %format!("{e:#}"), "could not look up the next due job");
+            Duration::from_secs(5).min(fallback)
+        }
+    };
+    tokio::select! {
+        () = waker.woken() => {}
+        () = tokio::time::sleep(nap) => {}
+    }
+}
+
+/// Wakes the worker the moment a job is queued. A background task owns one **dedicated** Postgres connection
+/// (not taken from the pool, so it can never starve it) that LISTENs on [`NOTIFY_CHANNEL`] and signals a
+/// [`Notify`]. Wake-ups coalesce: any number of notifications while the worker is busy leave one pending
+/// permit, and the worker then claims until the queue is empty.
+///
+/// Notifications are a latency optimisation, never the source of truth: the worker also polls on a fallback
+/// interval, and the listener signals a wake-up after every (re)connect because notifications sent while it was
+/// disconnected are lost.
+#[derive(Clone)]
+pub struct JobWaker {
+    notify: Arc<Notify>,
+}
+
+impl JobWaker {
+    /// Start listening. Returns immediately; the connection (and any reconnection) happens in the background.
+    pub fn spawn(database_url: &str) -> Self {
+        let notify = Arc::new(Notify::new());
+        tokio::spawn(listen_forever(database_url.to_string(), notify.clone()));
+        Self { notify }
+    }
+
+    /// A waker nothing signals (tests, or a caller that only wants the fallback poll).
+    pub fn inert() -> Self {
+        Self {
+            notify: Arc::new(Notify::new()),
+        }
+    }
+
+    /// Completes when a job was queued since the last call (or the listener (re)connected).
+    pub async fn woken(&self) {
+        self.notify.notified().await;
+    }
+}
+
+async fn listen_forever(url: String, notify: Arc<Notify>) {
+    let mut backoff = Duration::from_millis(500);
+    loop {
+        // (Re)connect. `PgListener` also reconnects by itself after a dropped connection; this loop covers
+        // the initial connect and a listener that could not recover.
+        let mut listener = match connect_listener(&url).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), retry_in_ms = backoff.as_millis() as u64, "job listener could not connect");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+                continue;
+            }
+        };
+        backoff = Duration::from_millis(500);
+        tracing::info!(channel = NOTIFY_CHANNEL, "listening for new jobs");
+        // Anything queued while we were not listening produced no message we can see.
+        notify.notify_one();
+        loop {
+            match listener.try_recv().await {
+                Ok(Some(_)) => notify.notify_one(),
+                // The connection dropped and sqlx re-established it (and re-LISTENed): messages may have been lost.
+                Ok(None) => {
+                    tracing::warn!("job listener reconnected");
+                    notify.notify_one();
+                }
+                Err(e) => {
+                    tracing::warn!(error = %format!("{e:#}"), "job listener failed; reconnecting");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    notify.notify_one();
+                    break;
+                }
+            }
+        }
+    }
+}
+
+async fn connect_listener(url: &str) -> Result<PgListener> {
+    let mut l = PgListener::connect(url).await?;
+    l.listen(NOTIFY_CHANNEL).await?;
+    Ok(l)
+}
+
+/// Unfinished (and failed) job counts per kind and state, for the queue gauges.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueueStats {
+    pub kind: String,
+    pub queued: i64,
+    pub running: i64,
+    pub failed: i64,
+    /// Seconds the oldest *runnable* queued job has been waiting (0 when none; delayed retries do not count).
+    pub oldest_queued_age_secs: f64,
+}
+
+pub async fn queue_stats(pool: &PgPool) -> Result<Vec<QueueStats>> {
+    let rows: Vec<(String, i64, i64, i64, f64)> = sqlx::query_as(
+        "SELECT kind,
+                count(*) FILTER (WHERE state = 'queued'),
+                count(*) FILTER (WHERE state = 'running'),
+                count(*) FILTER (WHERE state = 'failed'),
+                coalesce(extract(epoch FROM now() - min(run_after) FILTER (WHERE state = 'queued' AND run_after <= now())), 0)::float8
+         FROM jobs WHERE state <> 'done' GROUP BY kind ORDER BY kind",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(kind, queued, running, failed, oldest)| QueueStats {
+            kind,
+            queued,
+            running,
+            failed,
+            oldest_queued_age_secs: oldest.max(0.0),
+        })
+        .collect())
+}
+
+/// Seconds the queue has had runnable work and made no progress: the lesser of "how long the oldest runnable job
+/// has waited" and "how long since any job finished successfully". 0 when nothing is waiting. A healthy busy
+/// queue stays near 0; a dead or wedged worker makes it grow, which is what the "no jobs completed" monitor watches.
+pub async fn stalled_seconds(pool: &PgPool) -> Result<f64> {
+    let secs: Option<f64> = sqlx::query_scalar(
+        "SELECT CASE WHEN w.oldest IS NULL THEN 0
+                     ELSE least(w.oldest, coalesce(d.last_done, w.oldest)) END::float8
+         FROM (SELECT extract(epoch FROM now() - min(run_after)) AS oldest
+               FROM jobs WHERE state = 'queued' AND attempts < $1 AND run_after <= now()) w,
+              (SELECT extract(epoch FROM now() - max(finished_at)) AS last_done
+               FROM jobs WHERE state = 'done') d",
+    )
+    .bind(MAX_ATTEMPTS)
+    .fetch_one(pool)
+    .await?;
+    Ok(secs.unwrap_or(0.0).max(0.0))
 }

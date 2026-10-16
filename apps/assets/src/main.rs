@@ -9,7 +9,7 @@ use anyhow::Result;
 use axum::{Router, extract::FromRef, routing::get};
 use cyanotype_core::{
     config::{self, DatabaseConfig, S3Config},
-    db, manifest,
+    db, manifest, metrics,
     storage::Storage,
     telemetry,
 };
@@ -33,6 +33,7 @@ pub struct AppState {
 #[tokio::main]
 async fn main() -> Result<()> {
     telemetry::init(SERVICE);
+    metrics::init(SERVICE);
     let db_cfg = DatabaseConfig::from_env()?;
     let s3_cfg = S3Config::from_env()?;
     let addr = config::bind_addr("ASSETS_BIND_ADDR", "0.0.0.0:3002");
