@@ -427,8 +427,9 @@ the assets service itself, see [`library.md`](library.md); the advice below is f
 versions stay and keep using (billed) storage. Add a lifecycle rule on the bucket that expires noncurrent
 versions after some days (Linode supports lifecycle rules via the S3 API or a tool such as `s3cmd`), or
 purge old versions by hand now and then. Backups cover the database only: originals and derived files are
-already in the bucket, and the database can be rebuilt from them in the worst case, but with loss of
-users, albums and metadata, so keep the dumps.
+already in the bucket, and `cyanotype reindex` rebuilds the photo index from them (restoring the newest dump first
+gets back users and API keys; per-user daily manifests in the bucket carry names, trash, favorites and albums), so
+keep the dumps. See [`recovery.md`](recovery.md) for exactly what comes back and the runbook.
 
 ### Restore
 
@@ -436,7 +437,10 @@ users, albums and metadata, so keep the dumps.
 2. Pick a dump: `dc run --rm backup list` (names sort by time).
 3. Restore into the running database (this drops and recreates the objects in the dump):
    `dc run --rm -e CONFIRM=yes backup restore cyanotype-20261012T031700Z.dump` (omit the name for the newest).
-4. `dc run --rm migrate` (a no-op if the dump is current), then `dc up -d --wait`.
+4. `dc run --rm migrate` (a no-op if the dump is current).
+5. **If the dump is older than the newest uploads, reconcile before starting the stack**: `dc run --rm reindex`
+   (dry run), review, `dc run --rm reindex --apply` (or the **Reindex** workflow), then `dc up -d --wait`. The full
+   runbook and what can and cannot be recovered: [`recovery.md`](recovery.md).
 
 To rehearse without touching production, restore into a scratch database: create it
 (`dc exec postgres createdb -U cyanotype scratch`) and run the restore with

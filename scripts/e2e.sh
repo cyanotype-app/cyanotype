@@ -210,6 +210,23 @@ if [ -n "$have_s3" ]; then
   [ "$(s3_versions "derived/$user_id/$asset_id/")" -ge 2 ] || fail "S3 inspection finds no derived objects for the first photo"
 fi
 
+# ---- Self-describing originals + reindex ---------------------------------------------------------------------------
+# The upload above must have stored the filename, owner and upload time as S3 user metadata on the original, so a
+# bucket scan can rebuild the row. Needs the E2E_S3_* variables (curl's SigV4 signing; never a real bucket).
+if [ -n "$have_s3" ]; then
+  step "originals carry self-describing metadata (direct and proxied uploads)"
+  s3_head() { # s3_head KEY: response headers of a signed HEAD
+    curl -fsS -I --aws-sigv4 "aws:amz:${E2E_S3_REGION:-us-east-1}:s3" --user "$E2E_S3_ACCESS_KEY:$E2E_S3_SECRET_KEY" \
+      "${E2E_S3_ENDPOINT%/}/$E2E_S3_BUCKET/$1" | tr -d '\r' | tr 'A-Z' 'a-z'
+  }
+  h1="$(s3_head "originals/$user_id/${sha:0:2}/$sha.png")"
+  grep -q "^x-amz-meta-cyanotype-name: e2e.png" <<<"$h1" || fail "direct upload: no filename metadata on the original"
+  grep -q "^x-amz-meta-cyanotype-owner: $user_id" <<<"$h1" || fail "direct upload: no owner metadata"
+  h2="$(s3_head "originals/$user_id/${sha2:0:2}/$sha2.png")"
+  grep -q "^x-amz-meta-cyanotype-name: e2e-proxy.png" <<<"$h2" || fail "proxied upload: no filename metadata on the original"
+  echo "metadata present on both originals"
+fi
+
 step "trash: the photo leaves the library but keeps its thumbnail in the trash"
 [ "$(post /assets/trash "$(ids_of "$asset_id" "$asset_id" 00000000-0000-0000-0000-000000000000)" | json 'd["count"]')" = 1 ] || fail "trash: expected count 1"
 [ "$(post /assets/trash "$(ids_of "$asset_id")" | json 'd["count"]')" = 0 ] || fail "trash is not idempotent"
@@ -262,6 +279,26 @@ wait_gone "$orig2" || fail "second photo's original still downloadable after emp
 wait_gone "$thumb2" || fail "second photo's thumbnail still downloadable after emptying the trash"
 if [ -n "$have_s3" ]; then
   [ "$(s3_versions "derived/$user_id/$asset2/")" = 0 ] || fail "derived versions remain for the emptied photo"
+fi
+
+# Optional (E2E_REINDEX=1, local compose only): lose the database rows, then rebuild them from the bucket.
+#   BASE_URL=... E2E_REINDEX=1 E2E_S3_*=... scripts/e2e.sh   (run from the repository root so `docker compose` finds the file)
+if [ "${E2E_REINDEX:-}" = 1 ]; then
+  step "reindex: dry run reports the orphan, apply recreates it with its name"
+  [ -n "$have_s3" ] || fail "E2E_REINDEX needs the E2E_S3_* variables"
+  psql_c() { docker compose exec -T postgres psql -U cyanotype -d cyanotype -tA -c "$1"; }
+  # Photo 2 is in the trash (about to be emptied above), so use a fresh upload: re-upload photo 2's bytes.
+  req="$(python3 -c 'import json,sys; print(json.dumps({"sha256":sys.argv[1],"size_bytes":int(sys.argv[2]),"filename":"e2e-reindex.png","content_type":"image/png","file_modified_at":"2020-01-02T03:04:05Z"}))' "$sha2" "$size2")"
+  c="$(post /assets/check "$req")"
+  etag="$(curl -fsS -X PUT --data-binary "@$file2" "$(printf '%s' "$c" | json 'd["parts"][0]["url"]')" -D - -o /dev/null | tr -d '\r' | awk 'tolower($1)=="etag:"{print $2}')"
+  rid="$(post /assets/complete "$(python3 -c 'import json,sys; print(json.dumps({"upload_id":sys.argv[1],"parts":[{"number":1,"etag":sys.argv[2]}]}))' "$(printf '%s' "$c" | json 'd["upload_id"]')" "$etag")" | json 'd["asset_id"]')"
+  psql_c "DELETE FROM assets WHERE id = '$rid'" >/dev/null
+  out="$(docker compose run --rm -T reindex --min-age-secs 0 --no-manifest --json | tail -n 1)"
+  [ "$(printf '%s' "$out" | json 'd["orphans"]')" -ge 1 ] || fail "reindex dry run found no orphan: $out"
+  [ "$(psql_c "SELECT count(*) FROM assets WHERE id = '$rid' OR sha256 = decode('$sha2','hex')")" = 0 ] || fail "dry run wrote a row"
+  docker compose run --rm -T reindex --apply --min-age-secs 0 --no-manifest --json | tail -n 1 >/dev/null
+  [ "$(psql_c "SELECT original_name FROM assets WHERE sha256 = decode('$sha2','hex')")" = e2e-reindex.png ] || fail "reindex did not restore the filename from object metadata"
+  echo "reindex restored the row from the bucket"
 fi
 
 echo "e2e OK"

@@ -13,10 +13,10 @@ use crate::config::S3Config;
 #[derive(Clone)]
 pub struct Storage {
     /// Used for server-side calls (HEAD, multipart create/complete).
-    client: Client,
+    pub(crate) client: Client,
     /// Used only to presign, so URLs carry the client-reachable host.
     presign_client: Client,
-    bucket: String,
+    pub(crate) bucket: String,
     ttl: Duration,
 }
 
@@ -71,13 +71,21 @@ impl Storage {
         }
     }
 
-    pub async fn create_multipart(&self, key: &str, content_type: &str) -> Result<String> {
+    /// Start a multipart upload. `metadata` becomes the object's user metadata (`x-amz-meta-*`) once the upload
+    /// completes; see `objmeta`. Clients never send it: presigned part URLs carry no metadata.
+    pub async fn create_multipart(
+        &self,
+        key: &str,
+        content_type: &str,
+        metadata: std::collections::HashMap<String, String>,
+    ) -> Result<String> {
         let out = self
             .client
             .create_multipart_upload()
             .bucket(&self.bucket)
             .key(key)
             .content_type(content_type)
+            .set_metadata(Some(metadata))
             .send()
             .await
             .context("create_multipart_upload")?;
