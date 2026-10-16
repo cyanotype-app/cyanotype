@@ -10,7 +10,7 @@ FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 # pnpm at the version pinned in package.json ("packageManager").
 RUN corepack enable
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     pnpm install --frozen-lockfile
 COPY . .
