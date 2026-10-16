@@ -56,7 +56,7 @@ Tasks run through [`just`](https://github.com/casey/just) (`cargo install just -
 or a release binary). `just` lists every recipe.
 
 ```sh
-just up        # whole stack in containers (Postgres, MinIO, migrate, auth, assets, worker, gateway) at http://localhost:3000
+just up        # whole stack in containers (Postgres, SeaweedFS, migrate, auth, assets, worker, gateway) at http://localhost:3000
 just e2e       # register -> check -> PUT -> complete -> worker -> GET, through the gateway
 just down
 ```
@@ -65,8 +65,12 @@ Or run the binaries from source against the compose infrastructure:
 
 ```sh
 cp .env.example .env     # just loads .env automatically
-just dev                 # compose Postgres + MinIO, migrate, then auth :3001, assets :3002, worker
+just dev                 # compose Postgres + SeaweedFS, migrate, then auth :3001, assets :3002, worker
 ```
+
+Local S3 is SeaweedFS (S3 API on host `:9000`, keys from `S3_ACCESS_KEY`/`S3_SECRET_KEY`, versioned `cyanotype` bucket
+created by the `seaweedfs-init` step). Upgrading from the old MinIO setup: `docker volume rm cyanotype_miniodata`
+(local test data only; re-import your photos). No CORS config is needed: browser uploads go through the assets service.
 
 Before pushing: `just check` (fmt-check + clippy `-D warnings` + tests; set `DATABASE_URL` to a Postgres,
 e.g. the compose one, to include the DB integration tests). Other recipes: `fmt`, `lint`, `test`, `migrate`,

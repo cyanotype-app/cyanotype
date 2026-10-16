@@ -5,7 +5,7 @@
 #   docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d
 #   (add --profile datadog to include the Datadog Agent)
 #
-# Differences from local: images come from GHCR and are never built on the server; no MinIO (S3 is
+# Differences from local: images come from GHCR and are never built on the server; no SeaweedFS (S3 is
 # Linode Object Storage via env); Postgres is not published; the gateway serves CYANOTYPE_HOSTNAME with
 # HTTPS on 80/443 only (Let's Encrypt, or a Cloudflare Origin CA cert: CADDY_TLS_MODE); restart policies, healthchecks and memory limits. DD_ENV defaults to
 # dev (the dev-tier instance); set DD_ENV=prod in .env.prod for a production instance.
@@ -46,11 +46,11 @@ services:
     # Sized for a 768m container shared with a small app tier.
     command: ["postgres", "-c", "shared_buffers=192MB", "-c", "effective_cache_size=512MB", "-c", "max_connections=50", "-c", "work_mem=8MB"]
 
-  # No MinIO in production: S3 is Linode Object Storage.
-  minio:
+  # No local S3 in production: S3 is Linode Object Storage.
+  seaweedfs:
     profiles: [local-only]
     ports: !reset []
-  minio-init:
+  seaweedfs-init:
     profiles: [local-only]
 
   migrate:

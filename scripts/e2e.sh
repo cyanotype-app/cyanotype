@@ -7,7 +7,7 @@
 #   trash -> gone from the library, visible in /assets/trash with its thumbnail -> restore -> trash -> delete forever
 #   (the janitor removes the S3 objects: presigned GETs of the original and thumbnail turn into 404s) -> empty trash
 # With E2E_S3_ENDPOINT, E2E_S3_BUCKET, E2E_S3_ACCESS_KEY and E2E_S3_SECRET_KEY set (a path-style endpoint such as
-# local MinIO or SeaweedFS; never a real bucket) it also lists object *versions* and delete markers under the
+# local SeaweedFS; never a real bucket) it also lists object *versions* and delete markers under the
 # photos' keys and asserts none are left after the purge.
 #
 # Usage: BASE_URL=http://localhost:3000 scripts/e2e.sh

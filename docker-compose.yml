@@ -16,13 +16,13 @@ x-metrics-env: &metrics-env
   DOGSTATSD_URL: ${DOGSTATSD_URL-udp://datadog-agent:8125}
 
 x-s3-env: &s3-env
-  S3_ENDPOINT: http://minio:9000
+  S3_ENDPOINT: http://seaweedfs:8333
   # Embedded in presigned URLs, so it must be reachable from the client (your host).
   S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
   S3_REGION: us-east-1
   S3_BUCKET: cyanotype
-  S3_ACCESS_KEY: minioadmin
-  S3_SECRET_KEY: minioadmin
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
   S3_FORCE_PATH_STYLE: "true"
 
 services:
@@ -41,25 +41,51 @@ services:
       interval: 5s
       retries: 10
 
-  minio:
-    image: minio/minio
-    command: server /data --console-address ":9001"
+  # S3 API for local dev (SeaweedFS, pinned like CI). Published on host :9000 (the port the MinIO setup used).
+  # The access/secret key come from S3_ACCESS_KEY / S3_SECRET_KEY (same defaults as .env.example).
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p /etc/seaweedfs
+        printf '{"identities":[{"name":"dev","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' \
+          "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" > /etc/seaweedfs/s3.json
+        exec weed server -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -dir=/data -volume.max=200 -master.volumeSizeLimitMB=64
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-      MINIO_API_CORS_ALLOW_ORIGIN: "*"
-    ports: ["9000:9000", "9001:9001"]
-    volumes: [miniodata:/data]
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+    ports: ["9000:8333"]
+    volumes: [seaweeddata:/data]
+    healthcheck:
+      # SeaweedFS binds to the container IP, not localhost. The S3 port answers 403 to anonymous requests, so probe
+      # the master and filer (the S3 gateway starts after them; the init step waits for S3 itself).
+      test: ["CMD-SHELL", "ip=$$(hostname -i); wget -q -O /dev/null http://$$ip:9333/cluster/status && wget -q -O /dev/null http://$$ip:8888/"]
+      interval: 5s
+      retries: 20
 
-  minio-init:
-    image: minio/mc
-    depends_on: [minio]
-    entrypoint: >
-      /bin/sh -c "
-      until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 1; done;
-      mc mb --ignore-existing local/cyanotype;
-      mc version enable local/cyanotype;
-      "
+  # One-shot: creates the bucket and turns versioning on (production's bucket is versioned; the purge code relies
+  # on it). Idempotent. Reuses the SeaweedFS image (curl signs the requests with SigV4), so no extra image is pulled.
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:4.48
+    depends_on:
+      seaweedfs: { condition: service_healthy }
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      S3_BUCKET: cyanotype
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        s3() { curl -fsS --aws-sigv4 aws:amz:us-east-1:s3 --user "$$S3_ACCESS_KEY:$$S3_SECRET_KEY" "$$@"; }
+        until s3 -o /dev/null http://seaweedfs:8333/; do sleep 1; done
+        s3 -o /dev/null -X PUT http://seaweedfs:8333/$$S3_BUCKET || true
+        s3 -o /dev/null -X PUT "http://seaweedfs:8333/$$S3_BUCKET?versioning" \
+          -d '<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>'
+        s3 "http://seaweedfs:8333/$$S3_BUCKET?versioning" | grep -q Enabled
+        echo "bucket $$S3_BUCKET ready (versioned)"
+    restart: "no"
 
   # One-shot: the only place migrations run. Services wait for it to finish.
   migrate:
@@ -89,7 +115,7 @@ services:
       DD_SERVICE: cyanotype-reindex
     depends_on:
       postgres: { condition: service_healthy }
-      minio-init: { condition: service_completed_successfully }
+      seaweedfs-init: { condition: service_completed_successfully }
     restart: "no"
 
   auth:
@@ -123,7 +149,7 @@ services:
       com.datadoghq.ad.logs: '[{"source":"rust","service":"cyanotype-assets"}]'
     depends_on:
       migrate: { condition: service_completed_successfully }
-      minio-init: { condition: service_completed_successfully }
+      seaweedfs-init: { condition: service_completed_successfully }
 
   worker:
     build: { context: ., target: worker }
@@ -135,7 +161,7 @@ services:
       com.datadoghq.ad.logs: '[{"source":"rust","service":"cyanotype-worker"}]'
     depends_on:
       migrate: { condition: service_completed_successfully }
-      minio-init: { condition: service_completed_successfully }
+      seaweedfs-init: { condition: service_completed_successfully }
 
   # Static web UI (Vite build served by Caddy). Reached through the gateway, not published.
   web:
@@ -166,7 +192,7 @@ services:
       BACKUP_AT: ${BACKUP_AT:-03:17}
     depends_on:
       postgres: { condition: service_healthy }
-      minio-init: { condition: service_completed_successfully }
+      seaweedfs-init: { condition: service_completed_successfully }
 
   # Opt-in log collection. The apps log JSON to stdout; the Agent tails container logs.
   # Datadog ingestion has not been exercised in this repo's CI (no API key); see docs/observability.md.
@@ -197,4 +223,4 @@ services:
 
 volumes:
   pgdata:
-  miniodata:
+  seaweeddata:
