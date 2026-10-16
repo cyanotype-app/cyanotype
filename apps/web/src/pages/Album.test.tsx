@@ -173,4 +173,25 @@ describe("Album page", () => {
     expect(await screen.findByText("Added 2 to the album")).toBeInTheDocument();
     await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(1)); // list re-read from the top
   });
+
+  it("hearts photos on the grid and in the lightbox, and takes the heart back when the server refuses", async () => {
+    vi.spyOn(api, "getAlbum").mockResolvedValue(album(2));
+    vi.spyOn(api, "listAlbumAssets").mockResolvedValue({ items: [item(1), item(2, { favorite: true })], next_cursor: null, next_before: null });
+    const fav = vi.spyOn(api, "favoriteAssets").mockResolvedValue({ count: 1 });
+    const user = userEvent.setup();
+    renderAt("/albums/album-2");
+    await user.click(await screen.findByRole("button", { name: "Add photo-1.jpg to favorites" }));
+    expect(fav).toHaveBeenCalledWith(["id-1"], true);
+    expect(await screen.findByRole("button", { name: "Remove photo-1.jpg from favorites" })).toBeInTheDocument();
+
+    fav.mockRejectedValueOnce(new ApiError(500, "nope"));
+    await user.click(screen.getByRole("button", { name: "Remove photo-2.jpg from favorites" }));
+    expect(await screen.findByText(/Couldn’t remove from favorites\. nope/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove photo-2.jpg from favorites" })).toBeInTheDocument();
+
+    await user.click(tile(1));
+    const box = screen.getByRole("dialog", { name: "photo-1.jpg" });
+    await user.click(within(box).getByRole("button", { name: "Remove from favorites" }));
+    expect(fav).toHaveBeenLastCalledWith(["id-1"], false);
+  });
 });

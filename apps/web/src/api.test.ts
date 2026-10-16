@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, MAX_BULK_IDS } from "./api";
+import { api, ApiError, downloadHref, MAX_BULK_IDS } from "./api";
 
 function mockFetch(res: Response | Error) {
   const fn = vi.fn(async () => {
@@ -274,5 +274,41 @@ describe("album calls", () => {
     const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("/assets/a%20b/unpair");
     expect(init.method).toBe("POST");
+  });
+});
+
+const mockFetchJson = (body: unknown) => mockFetch(jsonRes(200, body));
+
+describe("timeline, favorites and downloads", () => {
+  it("reads the per-day counts, optionally for favorites only", async () => {
+    const f = mockFetchJson({ total: 3, days: [{ day: "2026-10-14", count: 3 }] });
+    expect(await api.timeline()).toEqual({ total: 3, days: [{ day: "2026-10-14", count: 3 }] });
+    expect(f).toHaveBeenLastCalledWith("/assets/timeline", expect.anything());
+    await api.timeline({ favorite: true });
+    expect(f).toHaveBeenLastCalledWith("/assets/timeline?favorite=true", expect.anything());
+  });
+
+  it("lists with a `before` position and the favorite filter", async () => {
+    const f = mockFetchJson({ items: [], next_cursor: null, next_before: null });
+    await api.listAssets({ before: "2026-10-15T00:00:00.000Z", limit: 120, favorite: true });
+    expect(f).toHaveBeenLastCalledWith("/assets?limit=120&favorite=true&before=2026-10-15T00%3A00%3A00.000Z", expect.anything());
+    await api.listAssets({ cursor: "abc", before: "ignored" });
+    expect(f).toHaveBeenLastCalledWith("/assets?cursor=abc", expect.anything());
+  });
+
+  it("favorites in chunks of at most 1000 ids and adds up what changed", async () => {
+    const f = mockFetchJson({ count: 2 });
+    const ids = Array.from({ length: 1500 }, (_, i) => `id-${i}`);
+    expect(await api.favoriteAssets(ids, true)).toEqual({ count: 4 });
+    expect(f).toHaveBeenCalledTimes(2);
+    const [path, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(path).toBe("/assets/favorite");
+    expect(JSON.parse(init.body as string)).toMatchObject({ favorite: true, ids: ids.slice(0, 1000) });
+    expect(JSON.parse((f.mock.calls[1] as unknown as [string, RequestInit])[1].body as string).ids).toHaveLength(500);
+  });
+
+  it("points downloads at the endpoint that redirects to a presigned attachment URL", () => {
+    expect(downloadHref("abc")).toBe("/assets/abc/download");
+    expect(downloadHref("a b", "raw/1")).toBe("/assets/a%20b/download?file=raw%2F1");
   });
 });
