@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, type TrashItem } from "../api";
+import { api, ApiError, isScope, type Target, type TrashItem } from "../api";
 import { useAuth } from "../auth";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Grid } from "../components/Grid";
@@ -12,7 +12,7 @@ const PAGE = 60;
 
 const photos = (n: number) => `${n} photo${n === 1 ? "" : "s"}`;
 
-type Confirm = { kind: "forever"; ids: string[] } | { kind: "empty" };
+type Confirm = { kind: "forever"; target: Target; count: number } | { kind: "empty" };
 
 /** Trashed photos: select to restore or delete forever, or empty the whole trash. */
 export function Trash() {
@@ -30,7 +30,7 @@ export function Trash() {
   const inFlight = useRef(false);
   const sentinel = useRef<HTMLDivElement>(null);
   const itemIds = useMemo(() => items.map((i) => i.id), [items]);
-  const sel = useSelection(itemIds);
+  const sel = useSelection(itemIds, total);
   const { toast, show } = useToast();
   const [now] = useState(() => Date.now()); // captions count days from when the page was opened
 
@@ -92,7 +92,7 @@ export function Trash() {
   useEffect(() => {
     if (confirm) return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape" && sel.ids.length > 0) {
+      if (e.key === "Escape" && sel.count > 0) {
         e.preventDefault();
         sel.clear();
       }
@@ -109,35 +109,49 @@ export function Trash() {
     [setAnonymous, show],
   );
 
-  const remove = useCallback((ids: string[]) => {
-    const gone = new Set(ids);
-    setItems((cur) => cur.filter((i) => !gone.has(i.id)));
-    setTotal((t) => Math.max(0, t - ids.length));
-  }, []);
+  // Drop what an action took out of the trash. After a whole-view action (the server did the work on photos that
+  // were never loaded) the list starts over from the first page.
+  const remove = useCallback(
+    async (target: Target, count: number) => {
+      if (isScope(target)) {
+        const page = await api.listTrash({ limit: PAGE });
+        setItems(page.items);
+        setCursor(page.next_cursor);
+        setDone(page.next_cursor === null);
+        setTotal(page.total);
+        return;
+      }
+      const gone = new Set(target);
+      setItems((cur) => cur.filter((i) => !gone.has(i.id)));
+      setTotal((t) => Math.max(0, t - count));
+    },
+    [],
+  );
 
   const restore = useCallback(async () => {
-    const ids = sel.ids;
-    if (ids.length === 0) return;
+    const count = sel.count;
+    if (count === 0) return;
+    const target = sel.target("trash");
     setBusy(true);
     try {
-      await api.restoreAssets(ids);
-      remove(ids);
-      show({ message: `${ids.length} restored to your library` });
+      await api.restoreAssets(target);
+      await remove(target, count);
+      show({ message: `${count} restored to your library` });
     } catch (e) {
       fail(e, "Couldn’t restore.");
     } finally {
       setBusy(false);
     }
-  }, [sel.ids, remove, show, fail]);
+  }, [sel, remove, show, fail]);
 
   const runConfirmed = useCallback(async () => {
     if (!confirm) return;
     setBusy(true);
     try {
       if (confirm.kind === "forever") {
-        await api.purgeAssets(confirm.ids);
-        remove(confirm.ids);
-        show({ message: `${confirm.ids.length} deleted forever` });
+        await api.purgeAssets(confirm.target);
+        await remove(confirm.target, confirm.count);
+        show({ message: `${confirm.count} deleted forever` });
       } else {
         const { count } = await api.emptyTrash();
         setItems([]);
@@ -193,15 +207,15 @@ export function Trash() {
         </div>
       ) : (
         <>
-          <SelectionBar count={sel.ids.length} total={items.length} onSelectAll={sel.selectAll} onClear={sel.clear}>
-            <button type="button" className="btn btn-primary" disabled={sel.ids.length === 0 || busy} onClick={() => void restore()}>
+          <SelectionBar count={sel.count} total={total} onSelectAll={sel.selectAll} onClear={sel.clear}>
+            <button type="button" className="btn btn-primary" disabled={sel.count === 0 || busy} onClick={() => void restore()}>
               Restore
             </button>
             <button
               type="button"
               className="btn btn-danger"
-              disabled={sel.ids.length === 0 || busy}
-              onClick={() => setConfirm({ kind: "forever", ids: sel.ids })}
+              disabled={sel.count === 0 || busy}
+              onClick={() => setConfirm({ kind: "forever", target: sel.target("trash"), count: sel.count })}
             >
               Delete forever
             </button>
@@ -232,7 +246,7 @@ export function Trash() {
 
       {confirm && (
         <ConfirmDialog
-          title={confirm.kind === "empty" ? "Empty the trash?" : `Delete ${photos(confirm.ids.length)} forever?`}
+          title={confirm.kind === "empty" ? "Empty the trash?" : `Delete ${photos(confirm.count)} forever?`}
           confirmLabel={confirm.kind === "empty" ? `Delete ${photos(total)} forever` : "Delete forever"}
           danger
           busy={busy}
@@ -242,7 +256,7 @@ export function Trash() {
           <p>
             {confirm.kind === "empty"
               ? `All ${photos(total)} in the trash will be permanently deleted, including the original files. `
-              : `${confirm.ids.length === 1 ? "This photo" : "These photos"} will be permanently deleted, including the original files. `}
+              : `${confirm.count === 1 ? "This photo" : "These photos"} will be permanently deleted, including the original files. `}
             <strong>This can’t be undone.</strong>
           </p>
         </ConfirmDialog>

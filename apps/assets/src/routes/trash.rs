@@ -19,6 +19,7 @@ use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::scope::{Pick, Selector};
 use super::{AssetSummary, ListItem, decode_cursor, encode_cursor, paired_files, thumb_fields};
 use crate::AppState;
 use cyanotype_service::{ApiError, ApiResult, AuthUser};
@@ -26,25 +27,18 @@ use cyanotype_service::{ApiError, ApiResult, AuthUser};
 /// Most ids one bulk request may carry.
 pub const MAX_IDS: usize = 1000;
 
-#[derive(Deserialize)]
-pub(super) struct IdsRequest {
-    ids: Vec<Uuid>,
-}
-
-impl IdsRequest {
-    fn validated(mut self) -> ApiResult<Vec<Uuid>> {
-        if self.ids.len() > MAX_IDS {
-            return Err(ApiError::BadRequest(format!("at most {MAX_IDS} ids per request")));
-        }
-        self.ids.sort_unstable();
-        self.ids.dedup();
-        Ok(self.ids)
-    }
-}
-
 #[derive(Serialize)]
 pub(super) struct Count {
     count: u64,
+    /// For a scope-based trash: the batch to pass back as `{"scope": {"trash_batch": ...}}` to undo exactly it.
+    #[serde(skip_serializing_if = "Option::is_none", with = "time::serde::rfc3339::option")]
+    batch: Option<OffsetDateTime>,
+}
+
+impl Count {
+    pub(super) fn new(count: u64) -> Self {
+        Count { count, batch: None }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -71,6 +65,29 @@ struct Changed {
 /// of every photo it changes (or the primary, if a RAW id was given), in one transaction so no reader sees a pair
 /// half-trashed. Ids of other owners, unknown ids and rows in the wrong state are ignored.
 pub(super) async fn apply(db: &sqlx::PgPool, owner: Uuid, op: Op, ids: Option<&[Uuid]>) -> ApiResult<Applied> {
+    let mut tx = db.begin().await?;
+    let applied = apply_in(&mut tx, owner, op, ids).await?;
+    tx.commit().await?;
+    Ok(applied)
+}
+
+/// Like [`apply`] for a request's [`Pick`]: a scope is resolved to ids inside the same transaction as the update.
+/// Also returns the transaction's timestamp (what `deleted_at` was set to), which identifies a trash batch.
+pub(super) async fn apply_pick(
+    db: &sqlx::PgPool,
+    owner: Uuid,
+    op: Op,
+    pick: &Pick,
+) -> ApiResult<(Applied, OffsetDateTime)> {
+    let mut tx = db.begin().await?;
+    let (now,): (OffsetDateTime,) = sqlx::query_as("SELECT now()").fetch_one(&mut *tx).await?;
+    let ids = pick.resolve(&mut tx, owner).await?;
+    let applied = apply_in(&mut tx, owner, op, ids.as_deref()).await?;
+    tx.commit().await?;
+    Ok((applied, now))
+}
+
+async fn apply_in(tx: &mut sqlx::PgConnection, owner: Uuid, op: Op, ids: Option<&[Uuid]>) -> ApiResult<Applied> {
     // (SET clause, state a row must be in)
     let (set, state, partner_state) = match op {
         Op::Trash => ("deleted_at = now()", "deleted_at IS NULL", "deleted_at IS NULL"),
@@ -85,7 +102,6 @@ pub(super) async fn apply(db: &sqlx::PgPool, owner: Uuid, op: Op, ids: Option<&[
             "purging_at IS NULL",
         ),
     };
-    let mut tx = db.begin().await?;
     let first: Vec<Changed> = sqlx::query_as(&format!(
         "UPDATE assets SET {set}
          WHERE owner_id = $1 AND ($2::uuid[] IS NULL OR id = ANY($2)) AND {state}
@@ -107,7 +123,6 @@ pub(super) async fn apply(db: &sqlx::PgPool, owner: Uuid, op: Op, ids: Option<&[
     .bind(&primaries)
     .fetch_all(&mut *tx)
     .await?;
-    tx.commit().await?;
     let mut photos = std::collections::HashSet::new();
     let mut changed = Vec::new();
     for c in first.iter().chain(&partners) {
@@ -123,40 +138,57 @@ pub(super) async fn apply(db: &sqlx::PgPool, owner: Uuid, op: Op, ids: Option<&[
 pub(super) async fn trash(
     State(s): State<AppState>,
     user: AuthUser,
-    Json(req): Json<IdsRequest>,
+    Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let ids = req.validated()?;
-    let count = apply(&s.db, user.id, Op::Trash, Some(&ids)).await?.photos;
-    Ok(Json(Count { count }))
+    let pick = req.validated()?;
+    let (applied, now) = apply_pick(&s.db, user.id, Op::Trash, &pick).await?;
+    let batch = (pick.is_scope() && applied.photos > 0).then_some(now);
+    Ok(Json(Count {
+        count: applied.photos,
+        batch,
+    }))
 }
 
 pub(super) async fn restore(
     State(s): State<AppState>,
     user: AuthUser,
-    Json(req): Json<IdsRequest>,
+    Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let ids = req.validated()?;
-    let applied = apply(&s.db, user.id, Op::Restore, Some(&ids)).await?;
+    let pick = req.validated()?;
+    let (applied, _) = apply_pick(&s.db, user.id, Op::Restore, &pick).await?;
     // Files that were trashed while their counterpart was uploaded were not paired then; they can be now.
-    for id in &applied.changed {
+    // Pairing is per file, so only look at files that have a live, unpaired namesake to pair with (a restore of
+    // tens of thousands of photos has almost none).
+    let candidates: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT a.id FROM assets a
+         WHERE a.id = ANY($1) AND a.primary_id IS NULL AND a.deleted_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM assets r WHERE r.primary_id = a.id)
+           AND EXISTS (SELECT 1 FROM assets b
+                       WHERE b.owner_id = a.owner_id AND asset_stem(b.original_name) = asset_stem(a.original_name)
+                         AND b.id <> a.id AND b.deleted_at IS NULL AND b.purging_at IS NULL AND b.primary_id IS NULL)",
+    )
+    .bind(&applied.changed)
+    .fetch_all(&s.db)
+    .await?;
+    for id in &candidates {
         if let Err(e) = pairing::pair_asset(&s.db, *id).await {
             tracing::warn!(asset_id = %id, error = ?e, "pairing after restore failed");
         }
     }
-    Ok(Json(Count { count: applied.photos }))
+    Ok(Json(Count::new(applied.photos)))
 }
 
 pub(super) async fn purge(
     State(s): State<AppState>,
     user: AuthUser,
-    Json(req): Json<IdsRequest>,
+    Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let ids = req.validated()?;
-    let count = apply(&s.db, user.id, Op::Purge, Some(&ids)).await?.photos;
+    let pick = req.validated()?;
+    let count = apply_pick(&s.db, user.id, Op::Purge, &pick).await?.0.photos;
     if count > 0 {
         s.purge_wake.notify_one();
     }
-    Ok(Json(Count { count }))
+    Ok(Json(Count::new(count)))
 }
 
 pub(super) async fn empty(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<Count>> {
@@ -164,7 +196,7 @@ pub(super) async fn empty(State(s): State<AppState>, user: AuthUser) -> ApiResul
     if count > 0 {
         s.purge_wake.notify_one();
     }
-    Ok(Json(Count { count }))
+    Ok(Json(Count::new(count)))
 }
 
 #[derive(Deserialize)]

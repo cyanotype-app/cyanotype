@@ -8,13 +8,14 @@ use axum::{Json, extract::State};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::trash::MAX_IDS;
+use super::scope::Selector;
 use crate::AppState;
-use cyanotype_service::{ApiError, ApiResult, AuthUser};
+use cyanotype_service::{ApiResult, AuthUser};
 
 #[derive(Deserialize)]
 pub(super) struct FavoriteRequest {
-    ids: Vec<Uuid>,
+    #[serde(flatten)]
+    pick: Selector,
     favorite: bool,
 }
 
@@ -26,13 +27,11 @@ pub(super) struct Count {
 pub(super) async fn set(
     State(s): State<AppState>,
     user: AuthUser,
-    Json(mut req): Json<FavoriteRequest>,
+    Json(req): Json<FavoriteRequest>,
 ) -> ApiResult<Json<Count>> {
-    if req.ids.len() > MAX_IDS {
-        return Err(ApiError::BadRequest(format!("at most {MAX_IDS} ids per request")));
-    }
-    req.ids.sort_unstable();
-    req.ids.dedup();
+    let pick = req.pick.validated()?;
+    let mut tx = s.db.begin().await?;
+    let ids: Vec<Uuid> = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();
     let done = sqlx::query(
         "UPDATE assets SET favorite = $3
          WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL AND favorite IS DISTINCT FROM $3
@@ -40,10 +39,11 @@ pub(super) async fn set(
                                        WHERE owner_id = $1 AND id = ANY($2) AND primary_id IS NOT NULL))",
     )
     .bind(user.id)
-    .bind(&req.ids)
+    .bind(&ids)
     .bind(req.favorite)
-    .execute(&s.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(Json(Count {
         count: done.rows_affected(),
     }))
