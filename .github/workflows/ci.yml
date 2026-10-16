@@ -78,9 +78,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Start MinIO (versioned bucket, like production)
         run: |
-          docker run -d --name minio -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data
+          docker run -d --name minio -p 9000:9000 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin quay.io/minio/minio server /data
           until curl -fsS http://localhost:9000/minio/health/ready; do sleep 1; done
-          docker run --rm --network host --entrypoint /bin/sh minio/mc -c \
+          docker run --rm --network host --entrypoint /bin/sh quay.io/minio/mc -c \
             "mc alias set l http://localhost:9000 minioadmin minioadmin && mc mb l/cyanotype && mc version enable l/cyanotype"
       # The worker builds libheif (vendored, pinned by the libheif-sys crate) from source with cmake,
       # and links the HEVC and AV1 decoder libraries from the system.
