@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "../api";
 import { AuthProvider } from "../auth";
-import { album, detail, item } from "../test/fixtures";
+import { album, detail, item, withRaw } from "../test/fixtures";
 import { AlbumPage } from "./Album";
 import { Albums } from "./Albums";
 
@@ -119,6 +119,35 @@ describe("Album page", () => {
     await waitFor(() => expect(screen.queryByAltText("photo-1.jpg")).not.toBeInTheDocument());
     expect(screen.getByAltText("photo-2.jpg")).toBeInTheDocument();
     expect(screen.getByText("Removed 2 from the album")).toBeInTheDocument();
+  });
+
+  it("Select all removes the whole album, not only the loaded photos", async () => {
+    setup();
+    const remove = vi.spyOn(api, "removeFromAlbum").mockResolvedValue({ count: 3 });
+    const user = userEvent.setup();
+    await screen.findByAltText("photo-1.jpg");
+    await user.click(screen.getByRole("button", { name: "Select" }));
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    expect(screen.getByText("3 selected")).toBeInTheDocument();
+    await user.click(tile(2));
+    await user.click(screen.getByRole("button", { name: "Remove from album" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("album-3", { scope: { album: "album-3" }, except: ["id-2"] }));
+    expect(await screen.findByText("Removed 2 from the album")).toBeInTheDocument();
+  });
+
+  it("unpairs from the album's lightbox", async () => {
+    setup([withRaw(1), item(2)]);
+    const unpair = vi.spyOn(api, "unpair").mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    const t = await screen.findByRole("button", { name: "Open photo-1.jpg" });
+    expect(t).toHaveTextContent("RAW");
+    await user.click(t);
+    await user.click(await screen.findByRole("button", { name: "Unpair" }));
+    expect(unpair).toHaveBeenCalledWith("id-1");
+    expect(await screen.findByText(/Unpaired/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Unpair" })).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.getByRole("button", { name: "Open photo-1.jpg" })).not.toHaveTextContent("RAW");
   });
 
   it("sets exactly one selected photo as the cover", async () => {
