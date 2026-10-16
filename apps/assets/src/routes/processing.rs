@@ -1,0 +1,293 @@
+//! `GET /assets/processing` and `POST /assets/processing/retry`: how far the background work on the caller's own
+//! photos has got, so the web app can show "Processing 1,234 photos..." after a big import and offer a retry.
+//!
+//! Everything is scoped to the caller's assets (jobs are joined to `assets.owner_id`); photos queued for permanent
+//! deletion are ignored. Trashed photos still count: the worker processes them too.
+use axum::{Json, extract::State};
+use serde::Serialize;
+use sqlx::FromRow;
+use uuid::Uuid;
+
+use crate::AppState;
+use cyanotype_service::{ApiResult, AuthUser};
+
+/// Failures listed (newest first); the counts always cover all of them.
+const RECENT_FAILURES: i64 = 20;
+/// Longest `last_error` returned, in characters.
+const ERROR_CHARS: usize = 200;
+
+#[derive(Serialize, FromRow, Debug)]
+pub(super) struct KindCounts {
+    kind: String,
+    queued: i64,
+    running: i64,
+    failed: i64,
+}
+
+#[derive(Serialize, FromRow, Debug)]
+pub(super) struct Failure {
+    job_id: i64,
+    asset_id: Uuid,
+    original_name: String,
+    kind: String,
+    last_error: Option<String>,
+    attempts: i32,
+}
+
+#[derive(Serialize, Debug)]
+pub(super) struct Processing {
+    /// Unfinished work exists (something queued or running): the UI polls while this is true.
+    active: bool,
+    queued: i64,
+    running: i64,
+    failed: i64,
+    by_kind: Vec<KindCounts>,
+    /// Photos in the library (live, not a hidden RAW half of a pair).
+    total_photos: i64,
+    /// Of those, the ones still waiting for their thumbnail (a thumbnail job is queued or running).
+    without_thumbnail: i64,
+    failures: Vec<Failure>,
+}
+
+fn truncate(s: &str) -> String {
+    if s.chars().count() <= ERROR_CHARS {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(ERROR_CHARS).collect();
+    out.push('…');
+    out
+}
+
+pub(super) async fn status(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<Processing>> {
+    let by_kind: Vec<KindCounts> = sqlx::query_as(
+        "SELECT j.kind,
+                count(*) FILTER (WHERE j.state = 'queued') AS queued,
+                count(*) FILTER (WHERE j.state = 'running') AS running,
+                count(*) FILTER (WHERE j.state = 'failed') AS failed
+         FROM jobs j JOIN assets a ON a.id = j.asset_id
+         WHERE a.owner_id = $1 AND a.purging_at IS NULL AND j.state <> 'done'
+         GROUP BY j.kind ORDER BY j.kind",
+    )
+    .bind(user.id)
+    .fetch_all(&s.db)
+    .await?;
+
+    let (total_photos, without_thumbnail): (i64, i64) = sqlx::query_as(
+        "SELECT count(*),
+                count(*) FILTER (WHERE a.thumbhash IS NULL AND EXISTS (
+                    SELECT 1 FROM jobs j WHERE j.asset_id = a.id AND j.kind = 'thumbnail' AND j.state IN ('queued', 'running')))
+         FROM assets a
+         WHERE a.owner_id = $1 AND a.deleted_at IS NULL AND a.purging_at IS NULL AND a.primary_id IS NULL",
+    )
+    .bind(user.id)
+    .fetch_one(&s.db)
+    .await?;
+
+    let mut failures: Vec<Failure> = sqlx::query_as(
+        "SELECT j.id AS job_id, j.asset_id, a.original_name, j.kind, j.last_error, j.attempts
+         FROM jobs j JOIN assets a ON a.id = j.asset_id
+         WHERE a.owner_id = $1 AND a.purging_at IS NULL AND j.state = 'failed'
+         ORDER BY j.finished_at DESC NULLS LAST, j.id DESC LIMIT $2",
+    )
+    .bind(user.id)
+    .bind(RECENT_FAILURES)
+    .fetch_all(&s.db)
+    .await?;
+    for f in &mut failures {
+        f.last_error = f.last_error.as_deref().map(truncate);
+    }
+
+    let (queued, running, failed) = by_kind
+        .iter()
+        .fold((0, 0, 0), |(q, r, f), k| (q + k.queued, r + k.running, f + k.failed));
+    Ok(Json(Processing {
+        active: queued + running > 0,
+        queued,
+        running,
+        failed,
+        by_kind,
+        total_photos,
+        without_thumbnail,
+        failures,
+    }))
+}
+
+#[derive(Serialize)]
+pub(super) struct Requeued {
+    requeued: u64,
+}
+
+/// Put the caller's failed jobs back in the queue with a fresh set of attempts. The trigger on `jobs` wakes the
+/// worker. Other users' jobs are never touched.
+pub(super) async fn retry(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<Requeued>> {
+    let done = sqlx::query(
+        "UPDATE jobs SET state = 'queued', attempts = 0, run_after = now(), locked_at = NULL, finished_at = NULL
+         WHERE state = 'failed'
+           AND asset_id IN (SELECT id FROM assets WHERE owner_id = $1 AND purging_at IS NULL)",
+    )
+    .bind(user.id)
+    .execute(&s.db)
+    .await?;
+    let n = done.rows_affected();
+    tracing::info!(requeued = n, "failed jobs requeued");
+    Ok(Json(Requeued { requeued: n }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testutil::{TestDb, app, asset, send, user};
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    async fn set_state(pool: &sqlx::PgPool, asset: Uuid, kind: &str, state: &str, err: Option<&str>) {
+        sqlx::query("DELETE FROM jobs WHERE asset_id = $1 AND kind = $2")
+            .bind(asset)
+            .bind(kind)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO jobs (kind, asset_id, state, attempts, last_error, finished_at) VALUES ($1,$2,$3,5,$4, CASE WHEN $3 = 'failed' THEN now() END)")
+            .bind(kind)
+            .bind(asset)
+            .bind(state)
+            .bind(err)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn counts_failures_and_owner_isolation() {
+        let Some(t) = TestDb::new().await else { return };
+        let app = app(&t.pool);
+        let (alice, ak) = user(&t.pool, "a@example.com").await;
+        let (bob, bk) = user(&t.pool, "b@example.com").await;
+
+        // Idle: nothing active.
+        let (st, body) = send(&app, "GET", "/assets/processing", &ak, None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(
+            (
+                body["active"].clone(),
+                body["queued"].clone(),
+                body["total_photos"].clone()
+            ),
+            (json!(false), json!(0), json!(0))
+        );
+
+        let a1 = asset(&t.pool, alice, "a1.jpg").await; // testutil queues a thumbnail job
+        let a2 = asset(&t.pool, alice, "a2.jpg").await;
+        let a3 = asset(&t.pool, alice, "a3.jpg").await;
+        let b1 = asset(&t.pool, bob, "b1.jpg").await;
+        set_state(&t.pool, a2, "thumbnail", "running", None).await;
+        set_state(&t.pool, a3, "thumbnail", "failed", Some(&"x".repeat(500))).await;
+        set_state(&t.pool, a1, "metadata", "queued", None).await;
+        set_state(&t.pool, b1, "thumbnail", "failed", Some("bob's problem")).await;
+
+        let (_, body) = send(&app, "GET", "/assets/processing", &ak, None).await;
+        assert_eq!(body["active"], json!(true));
+        assert_eq!(
+            (body["queued"].clone(), body["running"].clone(), body["failed"].clone()),
+            (json!(2), json!(1), json!(1))
+        );
+        assert_eq!(body["total_photos"], json!(3));
+        // a1 (thumbnail queued) and a2 (running) are waiting for a thumbnail; a3's job failed.
+        assert_eq!(body["without_thumbnail"], json!(2));
+        let kinds = body["by_kind"].as_array().unwrap();
+        let thumb = kinds.iter().find(|k| k["kind"] == "thumbnail").unwrap();
+        assert_eq!(
+            (
+                thumb["queued"].clone(),
+                thumb["running"].clone(),
+                thumb["failed"].clone()
+            ),
+            (json!(1), json!(1), json!(1))
+        );
+        let failures = body["failures"].as_array().unwrap();
+        assert_eq!(failures.len(), 1, "only Alice's failure, never Bob's");
+        assert_eq!(failures[0]["asset_id"], json!(a3));
+        assert_eq!(failures[0]["original_name"], json!("a3.jpg"));
+        assert_eq!(failures[0]["kind"], json!("thumbnail"));
+        assert_eq!(failures[0]["attempts"], json!(5));
+        let err = failures[0]["last_error"].as_str().unwrap();
+        assert_eq!(err.chars().count(), ERROR_CHARS + 1, "truncated with an ellipsis");
+
+        // Bob sees only his own.
+        let (_, body) = send(&app, "GET", "/assets/processing", &bk, None).await;
+        assert_eq!(
+            (
+                body["queued"].clone(),
+                body["failed"].clone(),
+                body["total_photos"].clone()
+            ),
+            (json!(0), json!(1), json!(1))
+        );
+        assert_eq!(body["failures"][0]["last_error"], json!("bob's problem"));
+
+        let (st, _) = send(&app, "GET", "/assets/processing", "cyk_nope", None).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+        t.teardown().await;
+    }
+
+    #[tokio::test]
+    async fn photos_queued_for_deletion_and_finished_jobs_are_not_counted() {
+        let Some(t) = TestDb::new().await else { return };
+        let app = app(&t.pool);
+        let (alice, ak) = user(&t.pool, "a@example.com").await;
+        let a1 = asset(&t.pool, alice, "a1.jpg").await;
+        let a2 = asset(&t.pool, alice, "a2.jpg").await;
+        set_state(&t.pool, a1, "thumbnail", "done", None).await;
+        sqlx::query("UPDATE assets SET purging_at = now(), deleted_at = now() WHERE id = $1")
+            .bind(a2)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        let (_, body) = send(&app, "GET", "/assets/processing", &ak, None).await;
+        assert_eq!(
+            (body["active"].clone(), body["total_photos"].clone()),
+            (json!(false), json!(1))
+        );
+        t.teardown().await;
+    }
+
+    #[tokio::test]
+    async fn retry_requeues_only_the_callers_failed_jobs() {
+        let Some(t) = TestDb::new().await else { return };
+        let app = app(&t.pool);
+        let (alice, ak) = user(&t.pool, "a@example.com").await;
+        let (bob, _bk) = user(&t.pool, "b@example.com").await;
+        let a1 = asset(&t.pool, alice, "a1.jpg").await;
+        let a2 = asset(&t.pool, alice, "a2.jpg").await;
+        let b1 = asset(&t.pool, bob, "b1.jpg").await;
+        set_state(&t.pool, a1, "thumbnail", "failed", Some("boom")).await;
+        set_state(&t.pool, a1, "metadata", "failed", Some("boom")).await;
+        set_state(&t.pool, a2, "thumbnail", "running", None).await;
+        set_state(&t.pool, b1, "thumbnail", "failed", Some("boom")).await;
+
+        let (st, body) = send(&app, "POST", "/assets/processing/retry", &ak, None).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(body["requeued"], json!(2));
+
+        let states: Vec<(Uuid, String, String, i32)> =
+            sqlx::query_as("SELECT asset_id, kind, state, attempts FROM jobs ORDER BY asset_id, kind")
+                .fetch_all(&t.pool)
+                .await
+                .unwrap();
+        let state_of = |a: Uuid, k: &str| states.iter().find(|r| r.0 == a && r.1 == k).unwrap().clone();
+        assert_eq!(state_of(a1, "thumbnail").2, "queued");
+        assert_eq!(state_of(a1, "thumbnail").3, 0, "a fresh set of attempts");
+        assert_eq!(state_of(a1, "metadata").2, "queued");
+        assert_eq!(state_of(a2, "thumbnail").2, "running", "running jobs are left alone");
+        assert_eq!(
+            state_of(b1, "thumbnail").2,
+            "failed",
+            "another user's failed job is untouched"
+        );
+
+        // Nothing left to retry.
+        let (_, body) = send(&app, "POST", "/assets/processing/retry", &ak, None).await;
+        assert_eq!(body["requeued"], json!(0));
+        t.teardown().await;
+    }
+}

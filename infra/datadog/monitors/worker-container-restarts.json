@@ -1,0 +1,22 @@
+{
+  "name": "[Cyanotype] Worker container restarting",
+  "type": "query alert",
+  "query": "max(last_15m):max:container.uptime{container_name:cyanotype-worker-*} < 120",
+  "message": "{{#is_alert}}The worker container's uptime has stayed under 2 minutes for 15 minutes: it is crash-looping.{{/is_alert}}\nSee `docker compose logs worker` and the OOM monitor. A single restart after a deploy does not trigger this.",
+  "tags": [
+    "team:cyanotype",
+    "app:cyanotype",
+    "service:cyanotype-worker"
+  ],
+  "priority": null,
+  "options": {
+    "thresholds": {
+      "critical": 120
+    },
+    "notify_no_data": false,
+    "include_tags": true,
+    "notify_audit": false,
+    "require_full_window": false,
+    "renotify_interval": 0
+  }
+}

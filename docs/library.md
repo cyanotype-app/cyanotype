@@ -313,3 +313,33 @@ had on its own moves to the primary. Trashing keeps the flag (restoring brings t
   requests and starts at the target date, favorites and downloads (the redirect target is a separate origin without
   CORS headers). `e2e/mobile-overflow.spec.ts` also covers the headers, scrubber (resting and dragged), selection bar
   with the new button, favorites view and the pair download chooser at 320 to 414px and 1280px with no sideways scroll.
+
+# Processing indicator (after a big import)
+
+## What the user sees
+
+While the worker is still making thumbnails and reading metadata, a slim banner sits under the Library tabs:
+"Processing 1,234 photos..." with a progress bar (the share of the library that already has its thumbnail; an
+indeterminate bar when only metadata/pairing tasks remain). It polls every 3 s while work is going on, then backs off
+(10 s, 20 s, up to 60 s) and stops while the tab is hidden. It disappears when nothing is queued, running or failed.
+
+If jobs failed (corrupt file, a photo too large for the worker's memory budget, ...) a "N failed" button opens a panel
+with the latest 20 (file name, step, attempts, the error, shortened) and a **Retry failed** button that requeues them
+all with a fresh set of attempts. The banner is a full-width row, not a fifth top-bar button, so it fits 320 to 414 px.
+
+## API (assets service, owner-scoped)
+
+| Request | Result |
+|---|---|
+| `GET /assets/processing` | `{active, queued, running, failed, by_kind: [{kind, queued, running, failed}], total_photos, without_thumbnail, failures: [{job_id, asset_id, original_name, kind, last_error, attempts}]}`. `without_thumbnail` counts photos with a thumbnail job queued or running (files the worker skips, such as videos, never count). `failures` is the newest 20; `last_error` is cut at 200 characters. |
+| `POST /assets/processing/retry` | Requeue the caller's `failed` jobs (attempts reset to 0). `{requeued: n}`. Other users' jobs are never touched. |
+
+Photos queued for permanent deletion are ignored; trashed photos still count (the worker processes them too).
+
+## Tests
+
+`cargo test` (DB-backed): counts per kind and state, truncation, owner isolation, finished and purging photos ignored,
+retry requeues only the caller's failed jobs. Web (vitest): idle (renders nothing), progress, polling and back-off,
+a failed poll keeps the last status, the failures panel, retry (and its error). Browser: `e2e/mobile-overflow.spec.ts`
+renders the banner, the open panel (with a very long file name and error) and the state after a retry at 320 to 414 px
+and 1280 px.

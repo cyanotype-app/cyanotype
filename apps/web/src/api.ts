@@ -95,6 +95,34 @@ export interface Timeline {
   days: TimelineDay[];
 }
 
+/** A failed background job (GET /assets/processing). */
+export interface ProcessingFailure {
+  job_id: number;
+  asset_id: string;
+  original_name: string;
+  /** `metadata`, `thumbnail` or `pair`. */
+  kind: string;
+  /** Truncated by the server; null if none was recorded. */
+  last_error: string | null;
+  attempts: number;
+}
+
+/** GET /assets/processing: progress of the background work (thumbnails, metadata, pairing) on your own photos. */
+export interface Processing {
+  /** Something is queued or running. */
+  active: boolean;
+  queued: number;
+  running: number;
+  failed: number;
+  by_kind: { kind: string; queued: number; running: number; failed: number }[];
+  /** Photos in the library. */
+  total_photos: number;
+  /** Of those, how many still wait for a thumbnail. */
+  without_thumbnail: number;
+  /** The most recent failures (at most 20); `failed` counts them all. */
+  failures: ProcessingFailure[];
+}
+
 /** Most ids the server accepts per bulk request; longer lists are sent in several requests. */
 export const MAX_BULK_IDS = 1000;
 
@@ -356,6 +384,8 @@ export const api = {
     bulk(`/assets/albums/${encodeURIComponent(id)}/assets/remove`, ids),
   /** Separate a RAW + JPEG pair into two photos (either file's id); they are not paired again automatically. */
   unpair: (id: string) => request<void>(`/assets/${encodeURIComponent(id)}/unpair`, { method: "POST" }),
+  processing: () => request<Processing>("/assets/processing"),
+  retryFailedJobs: () => request<{ requeued: number }>("/assets/processing/retry", { method: "POST" }),
   getAsset: (id: string) => request<AssetDetail>(`/assets/${encodeURIComponent(id)}`),
   /** Dedupe + part URLs. Defaults to the proxy transport, the only one a browser can use. */
   checkUpload: (req: CheckRequest) => request<CheckResponse>("/assets/check", json({ transport: "proxy", ...req })),
