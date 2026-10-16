@@ -82,7 +82,7 @@ for (const { width, height, touch } of [
       expect(first).toBeLessThanOrEqual(MAX_TILES);
       expect(await page.locator("h2").first().textContent()).toBe("October 2026");
       expect(await page.locator("h3").first().textContent()).toBe("Wed, Oct 14");
-      await expect(page.getByText("20000 photos")).toBeAttached();
+      await expect(page.getByText("20,000 photos")).toBeAttached();
       // The document is as tall as 20,000 photos need, not as tall as what was rendered.
       const docHeight = await page.evaluate(() => document.documentElement.scrollHeight);
       expect(docHeight).toBeGreaterThan(20_000 / 6 * 150);

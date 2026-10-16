@@ -111,6 +111,28 @@ describe("trash api", () => {
     expect(f).toHaveBeenCalledTimes(3);
   });
 
+  it("sends a scope as one request, with the except list, and passes the batch back", async () => {
+    const f = mockFetch(jsonRes(200, { count: 48_213, batch: "2026-10-16T10:00:00Z" }));
+    await expect(api.trashAssets({ scope: "library", except: ["a"] })).resolves.toEqual({
+      count: 48_213,
+      batch: "2026-10-16T10:00:00Z",
+    });
+    await api.restoreAssets({ scope: { trash_batch: "2026-10-16T10:00:00Z" }, except: [] });
+    await api.purgeAssets({ scope: "trash", except: [] });
+    await api.favoriteAssets({ scope: "favorites", except: ["b"] }, false);
+    await api.addToAlbum("al 1", { scope: "library", except: [] });
+    await api.removeFromAlbum("al 1", { scope: { album: "al 1" }, except: ["c"] });
+    const calls = f.mock.calls as unknown as [string, RequestInit][];
+    expect(calls.map(([u, i]) => [u, JSON.parse(i.body as string)])).toEqual([
+      ["/assets/trash", { scope: "library", except: ["a"] }],
+      ["/assets/restore", { scope: { trash_batch: "2026-10-16T10:00:00Z" }, except: [] }],
+      ["/assets/purge", { scope: "trash", except: [] }],
+      ["/assets/favorite", { scope: "favorites", except: ["b"], favorite: false }],
+      ["/assets/albums/al%201/assets", { scope: "library", except: [] }],
+      ["/assets/albums/al%201/assets/remove", { scope: { album: "al 1" }, except: ["c"] }],
+    ]);
+  });
+
   it("sends nothing for an empty list", async () => {
     const f = mockFetch(jsonRes(200, { count: 0 }));
     await expect(api.trashAssets([])).resolves.toEqual({ count: 0 });

@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { emptySelection, prune, selectAll, selectRange, selectedIds, toggle, useSelection } from "./selection";
+import {
+  emptySelection,
+  everything,
+  prune,
+  selectAll,
+  selectRange,
+  selectedCount,
+  selectedIds,
+  targetOf,
+  toggle,
+  useSelection,
+} from "./selection";
 
 const order = ["a", "b", "c", "d", "e"];
 const ids = (s: { ids: ReadonlySet<string> }) => [...s.ids].sort();
@@ -94,5 +105,52 @@ describe("useSelection", () => {
     act(() => result.current.setSelecting(false));
     act(() => result.current.setSelecting(true));
     expect(result.current.ids).toEqual([]);
+  });
+});
+
+describe("select all over the whole view", () => {
+  it("counts from the view total minus the deselected ids", () => {
+    expect(selectedCount(everything, 48_213)).toBe(48_213);
+    const s = toggle(toggle(everything, "b"), "c"); // deselect two
+    expect(selectedCount(s, 48_213)).toBe(48_211);
+    expect(selectedIds(s, order)).toEqual(["a", "d", "e"]);
+    expect(selectedCount(toggle(s, "b"), 48_213)).toBe(48_212); // select one back
+    expect(selectedCount(selectAll(order), 99)).toBe(5); // explicit selections count what they hold
+  });
+
+  it("shift-click selects a range again (takes it out of the exceptions)", () => {
+    let s = toggle(toggle(toggle(everything, "a"), "b"), "d"); // a, b, d deselected
+    s = { ...s, anchor: "a" };
+    s = selectRange(s, order, "c");
+    expect([...s.ids]).toEqual(["d"]);
+  });
+
+  it("is never pruned (the exceptions may be photos that are not loaded)", () => {
+    const s = toggle(everything, "zzz");
+    expect(prune(s, order)).toBe(s);
+  });
+
+  it("builds explicit ids, or the scope with the exceptions", () => {
+    expect(targetOf(toggle(emptySelection, "b"), order, "library")).toEqual(["b"]);
+    expect(targetOf(toggle(everything, "b"), order, "favorites")).toEqual({ scope: "favorites", except: ["b"] });
+    expect(targetOf(everything, order, { album: "x" })).toEqual({ scope: { album: "x" }, except: [] });
+  });
+
+  it("the hook selects everything with a total, and only the loaded ones without", () => {
+    const { result } = renderHook(() => useSelection(order, 500));
+    act(() => result.current.setSelecting(true));
+    act(() => result.current.selectAll());
+    expect([result.current.all, result.current.count, result.current.ids]).toEqual([true, 500, order]);
+    expect(result.current.target("trash")).toEqual({ scope: "trash", except: [] });
+    act(() => result.current.select("c")); // deselect one
+    expect(result.current.count).toBe(499);
+    expect(result.current.selected.has("c")).toBe(false);
+    expect(result.current.target("trash")).toEqual({ scope: "trash", except: ["c"] });
+    act(() => result.current.escape());
+    expect([result.current.all, result.current.count]).toEqual([false, 0]);
+
+    const loadedOnly = renderHook(() => useSelection(order));
+    act(() => loadedOnly.result.current.selectAll());
+    expect([loadedOnly.result.current.all, loadedOnly.result.current.count]).toEqual([false, 5]);
   });
 });
