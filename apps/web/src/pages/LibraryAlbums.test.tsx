@@ -6,19 +6,12 @@ import { api } from "../api";
 import { AuthProvider } from "../auth";
 import { UploadProvider } from "../upload/UploadProvider";
 import { album, detail, item } from "../test/fixtures";
+import { fakeLibrary } from "../test/fakeLibrary";
 import { Library } from "./Library";
 
 beforeEach(() => {
-  vi.stubGlobal(
-    "IntersectionObserver",
-    class {
-      observe() {}
-      disconnect() {}
-      unobserve() {}
-    },
-  );
   vi.spyOn(api, "me").mockResolvedValue({ id: "u", email: "a@b.co" });
-  vi.spyOn(api, "listAssets").mockResolvedValue({ items: [item(1), item(2), item(3)], next_before: null });
+  fakeLibrary([item(1), item(2), item(3)]);
   vi.spyOn(api, "getAsset").mockImplementation(async (id) => ({
     ...detail(Number(id.split("-")[1])),
     albums: id === "id-1" ? [{ id: "album-9", title: "Summer" }] : [],
@@ -26,7 +19,6 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.restoreAllMocks();
-  vi.unstubAllGlobals();
 });
 
 const renderLibrary = () =>

@@ -1,11 +1,5 @@
-import { memo, useRef, useState } from "react";
 import type { AssetListItem } from "../api";
-import { placeholderUrl } from "../thumbhash";
-
-/** Press and hold this long (touch / pen) to start selecting. */
-const LONG_PRESS_MS = 500;
-/** Finger travel that turns a press into a scroll. */
-const LONG_PRESS_SLOP_PX = 10;
+import { Tile } from "./Tile";
 
 interface Props<T extends AssetListItem> {
   items: T[];
@@ -19,10 +13,13 @@ interface Props<T extends AssetListItem> {
   onSelect?: (id: string, shift: boolean) => void;
   /** A tile was long-pressed outside selection mode: the page should enter selection mode with it selected. */
   onLongPress?: (id: string) => void;
+  /** Heart on the tiles (hover, and always while favorited). */
+  onFavorite?: (id: string, favorite: boolean) => void;
   /** Small text over the bottom of a tile (the trash page shows when it will be deleted). */
   caption?: (item: T) => string | null;
 }
 
+/** Plain (not virtualized) grid of tiles, for the short lists of albums, the trash and the photo picker. */
 export function Grid<T extends AssetListItem>({
   items,
   onOpen,
@@ -31,6 +28,7 @@ export function Grid<T extends AssetListItem>({
   selected,
   onSelect,
   onLongPress,
+  onFavorite,
   caption,
 }: Props<T>) {
   return (
@@ -46,6 +44,7 @@ export function Grid<T extends AssetListItem>({
             selected={selected?.has(it.id) ?? false}
             onSelect={onSelect}
             onLongPress={onLongPress}
+            onFavorite={onFavorite}
             caption={caption?.(it) ?? null}
           />
         </li>
@@ -53,112 +52,3 @@ export function Grid<T extends AssetListItem>({
     </ul>
   );
 }
-
-const Tile = memo(function Tile({
-  item,
-  index,
-  onOpen,
-  onThumbError,
-  selecting,
-  selected,
-  onSelect,
-  onLongPress,
-  caption,
-}: {
-  item: AssetListItem;
-  index: number;
-  onOpen: (index: number) => void;
-  onThumbError: (id: string) => void;
-  selecting: boolean;
-  selected: boolean;
-  onSelect?: (id: string, shift: boolean) => void;
-  onLongPress?: (id: string) => void;
-  caption: string | null;
-}) {
-  const [loaded, setLoaded] = useState(false);
-  const [retried, setRetried] = useState(false);
-  const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number } | null>(null);
-  const longPressed = useRef(false);
-  const bg = placeholderUrl(item.thumbhash);
-
-  const cancelPress = () => {
-    if (press.current) clearTimeout(press.current.timer);
-    press.current = null;
-  };
-  const canLongPress = !selecting && onLongPress !== undefined;
-
-  return (
-    <button
-      type="button"
-      className={`tile${selected ? " selected" : ""}`}
-      style={bg ? { backgroundImage: `url(${bg})` } : undefined}
-      onClick={(e) => {
-        if (longPressed.current) {
-          // The click that ends a long-press must not also open the photo.
-          longPressed.current = false;
-          return;
-        }
-        if (selecting) onSelect?.(item.id, e.shiftKey);
-        else onOpen(index);
-      }}
-      onPointerDown={(e) => {
-        longPressed.current = false;
-        if (!canLongPress || e.pointerType === "mouse") return;
-        cancelPress();
-        press.current = {
-          x: e.clientX,
-          y: e.clientY,
-          timer: setTimeout(() => {
-            press.current = null;
-            longPressed.current = true;
-            onLongPress(item.id);
-          }, LONG_PRESS_MS),
-        };
-      }}
-      onPointerMove={(e) => {
-        const p = press.current;
-        if (p && Math.hypot(e.clientX - p.x, e.clientY - p.y) > LONG_PRESS_SLOP_PX) cancelPress();
-      }}
-      onPointerUp={cancelPress}
-      onPointerCancel={cancelPress}
-      onPointerLeave={cancelPress}
-      onContextMenu={(e) => {
-        // Touch long-press would open the browser's image menu instead of selecting.
-        if (canLongPress || selecting) e.preventDefault();
-      }}
-      aria-label={selecting ? `Select ${item.original_name}` : `Open ${item.original_name}`}
-      aria-pressed={selecting ? selected : undefined}
-    >
-      {item.thumb_url ? (
-        <img
-          src={item.thumb_url}
-          alt={item.original_name}
-          loading="lazy"
-          decoding="async"
-          draggable={false}
-          className={loaded ? "loaded" : undefined}
-          onLoad={() => setLoaded(true)}
-          onError={() => {
-            if (!retried) {
-              setRetried(true);
-              onThumbError(item.id);
-            }
-          }}
-        />
-      ) : (
-        <span className="tile-pending">Processing…</span>
-      )}
-      {item.paired && item.paired.length > 0 && (
-        <span className="tile-badge" title="RAW + JPEG: the RAW file is kept with this photo">
-          RAW
-        </span>
-      )}
-      {selecting && (
-        <span className="tile-check" aria-hidden="true">
-          {selected ? "✓" : ""}
-        </span>
-      )}
-      {caption && <span className="tile-caption">{caption}</span>}
-    </button>
-  );
-});
