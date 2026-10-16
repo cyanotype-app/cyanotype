@@ -42,9 +42,14 @@ import /etc/caddy/gateway.caddy
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff
-		Referrer-Policy strict-origin-when-cross-origin
 		-Server
 	}
+	# `header` here SETS the value, replacing whatever the upstream sent, so a blanket Referrer-Policy would
+	# overwrite the `no-referrer` that the web container (/s/*) and the assets service (/assets/public/s/*) set
+	# on share links. Send the default only for everything else (`>` defers the write until the upstream answered, so the
+	# web container's identical value is replaced rather than added a second time).
+	@notshare not path /s /s/* /assets/public/s/*
+	header @notshare >Referrer-Policy strict-origin-when-cross-origin
 }
 
 # Container-internal health endpoint for the compose healthcheck (not published, loopback only).

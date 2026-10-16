@@ -52,6 +52,8 @@ jobs:
               - 'docker-compose*.yml'
               - '.env.prod.example'
               - 'infra/**'
+              - 'apps/web/Caddyfile'
+              - 'scripts/test-gateway-headers.sh'
               - '.github/workflows/ci.yml'
 
   rust:
@@ -156,5 +158,7 @@ jobs:
             docker run --rm -e CYANOTYPE_HOSTNAME=photos-dev.cyanotype.app -v "$PWD/infra/caddy:/etc/caddy:ro" caddy:2-alpine \
               caddy validate --config "/etc/caddy/$f" --adapter caddyfile
           done
+      - name: Share pages send no-referrer through the gateway
+        run: scripts/test-gateway-headers.sh
       - name: Backup script (shellcheck)
         run: shellcheck infra/backup/backup.sh
