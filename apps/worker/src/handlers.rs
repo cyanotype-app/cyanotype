@@ -356,12 +356,38 @@ async fn thumbnail(
     // The decode size is now known: swap the provisional reservation for exactly what is needed.
     // (Release first, then reserve; see `run`.)
     drop(held);
-    let _held = ctx.budget.reserve((base + prepared.cost_bytes).min(total)).await?;
+    let mut _held = ctx.budget.reserve((base + prepared.cost_bytes).min(total)).await?;
+    metrics::global().count(
+        "jobs.decode_path",
+        1,
+        &[("path", prepared.path()), ("family", info.family())],
+    );
 
-    let d = tokio::task::spawn_blocking(move || media::render(&prepared, &bytes))
-        .await
-        .context("thumbnail task panicked")?
-        .map_err(|e| anyhow::Error::from(Permanent(format!("{e:#}"))))?;
+    let prepared = Arc::new(prepared);
+    let rendered = {
+        let (p, b) = (prepared.clone(), bytes.clone());
+        tokio::task::spawn_blocking(move || media::render(&p, &b))
+            .await
+            .context("thumbnail task panicked")?
+    };
+    let d = match rendered {
+        Ok(d) => d,
+        // The reduced-size decoders (DCT-scaled JPEG, streamed PNG) cover the common files; for an odd one they
+        // cannot read, fall back to the plain full decode if that fits the budget.
+        Err(e) => match prepared.full_decode_fallback(&bytes, limits) {
+            Some(full) => {
+                tracing::warn!(key = %asset.original_key, error = %format!("{e:#}"), "reduced-size decode failed; trying a full decode");
+                metrics::global().count("jobs.decode_fallbacks", 1, &[("family", info.family())]);
+                drop(_held);
+                _held = ctx.budget.reserve((base + full.cost_bytes).min(total)).await?;
+                tokio::task::spawn_blocking(move || media::render(&full, &bytes))
+                    .await
+                    .context("thumbnail task panicked")?
+                    .map_err(|e| anyhow::Error::from(Permanent(format!("{e:#}"))))?
+            }
+            None => return Err(Permanent(format!("{e:#}")).into()),
+        },
+    };
     tracing::debug!(width = d.width, height = d.height, "derived images ready");
 
     ctx.storage

@@ -3,6 +3,7 @@ mod exif;
 mod formats;
 mod handlers;
 mod heif;
+mod heif_tiles;
 mod imaging;
 mod media;
 #[cfg(test)]
@@ -10,7 +11,10 @@ mod memcal;
 mod raw;
 #[cfg(test)]
 mod raw_samples;
+mod stream;
 mod strip;
+#[cfg(test)]
+mod testgen;
 
 use std::{sync::Arc, time::Duration};
 
