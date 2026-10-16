@@ -18,7 +18,7 @@ export function SelectionBar({ count, total, onSelectAll, onClear, onDone, child
   return (
     <div className="selection-bar" role="toolbar" aria-label="Selection">
       <span className="selection-count" aria-live="polite">
-        {count === 0 ? "Select photos" : `${count} selected`}
+        {count === 0 ? "Select photos" : `${count.toLocaleString("en-US")} selected`}
       </span>
       <div className="selection-actions">
         <button

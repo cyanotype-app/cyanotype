@@ -107,6 +107,30 @@ describe("Trash page", () => {
     expect(await screen.findByText("2 deleted forever")).toBeInTheDocument();
   });
 
+  it("Select all means the whole trash: the exact count, one scope request, then the list starts over", async () => {
+    const lt = vi.spyOn(api, "listTrash").mockResolvedValue(list(4, { total: 500, next_cursor: "more" }));
+    const purge = vi.spyOn(api, "purgeAssets").mockResolvedValue({ count: 499 });
+    const restore = vi.spyOn(api, "restoreAssets").mockResolvedValue({ count: 499 });
+    const user = userEvent.setup();
+    renderTrash();
+    await screen.findByAltText("photo-1.jpg");
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    expect(screen.getByText("500 selected")).toBeInTheDocument();
+    await user.click(tile(1)); // deselect one
+    expect(screen.getByText("499 selected")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete forever" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Delete 499 photos forever?" });
+    await user.click(within(dialog).getByRole("button", { name: "Delete forever" }));
+    expect(purge).toHaveBeenCalledWith({ scope: "trash", except: ["id-1"] });
+    expect(await screen.findByText("499 deleted forever")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    await user.click(screen.getByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(restore).toHaveBeenCalledWith({ scope: "trash", except: [] }));
+    expect(lt.mock.calls.length).toBeGreaterThanOrEqual(3); // first page, then re-read after each whole-trash action
+  });
+
   it("empties the trash after confirming with the total count (more than what is loaded)", async () => {
     vi.spyOn(api, "listTrash").mockResolvedValue(list(2, { total: 140, next_cursor: "more" }));
     const empty = vi.spyOn(api, "emptyTrash").mockResolvedValue({ count: 140 });

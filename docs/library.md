@@ -3,7 +3,7 @@
 ## What the user sees
 
 - **Select** (library toolbar) turns on selection mode: click or tap to select, Shift-click for a range, long-press on
-  a touch screen to start selecting, "Select all" (everything loaded so far) and "Clear". Escape clears the
+  a touch screen to start selecting, "Select all" (everything in the current view: All photos, Favorites, an album or the Trash, also the photos that are not loaded; the count comes from the view's total) and "Clear". Deselecting a photo after Select all keeps the rest selected. Escape clears the
   selection, a second Escape leaves selection mode. The sticky bar shows the count and **Move to trash**; the Delete
   key asks first and then does the same.
 - In the photo viewer, **Move to trash** (or Delete) removes the current photo and shows the next one.
@@ -27,6 +27,22 @@ to try again in a minute; once the deletion has finished the same file uploads a
 | `GET /assets/trash?limit=&cursor=` | Trashed photos, newest deletion first (`deleted_at DESC, id DESC`, keyset `next_cursor`). Same fields as `GET /assets` plus `deleted_at`, `purge_at`; the response also has `total` and `retention_days`. |
 | `POST /assets/purge {"ids": [...]}` | Delete trashed photos forever (photos not in the trash are ignored). |
 | `POST /assets/trash/empty` | Delete everything in the trash forever. |
+
+### Bulk actions on a whole view
+
+Every bulk endpoint (`POST /assets/trash`, `restore`, `purge`, `favorite`, `albums/{id}/assets` and
+`albums/{id}/assets/remove`) accepts, instead of `ids`, a **scope** and an optional `except` list:
+
+```json
+{"scope": "library" | "favorites" | "trash" | {"album": "<id>"} | {"trash_batch": "<time>"}, "except": ["<id>", ...]}
+```
+
+The scope names the photos the matching view lists (hidden RAW files are not part of it, so a RAW + JPEG pair is one
+photo and acts as one). It is resolved to ids inside the operation's transaction, for the caller's own photos only.
+Sending both `ids` and `scope`, or `except` without a scope, is a `400`; `except` has at most 20,000 ids; another
+user's album is `404`. A scope-based trash answers `{"count", "batch"}`: `batch` is the transaction time, and
+`{"scope": {"trash_batch": batch}}` restores exactly what that request trashed (the Undo toast uses it). The web app
+asks first ("Move 48,213 photos to trash?") before trashing a whole view.
 
 The bulk endpoints take at most 1000 ids (`400` beyond that) and answer `{"count": n}`, the number of photos that
 actually changed. Unknown ids, other people's ids and photos in the wrong state are not errors, they just do not count,
@@ -137,7 +153,7 @@ both, but shows them as one photo.
 
 - The JPEG/HEIC/HEIF/AVIF is the photo: its thumbnail and preview are what the library, albums and trash show. The
   RAW is hidden from the grids, counts and timeline. Tiles of a pair carry a small **RAW** badge.
-- The photo viewer lists **RAW + JPEG** (or **RAW + HEIC**, ...) with both file names and sizes and an **Unpair**
+- The photo viewer (library, Favorites and album pages) lists **RAW + JPEG** (or **RAW + HEIC**, ...) with both file names and sizes and an **Unpair**
   button. Unpairing makes the two independent photos (the RAW appears in the library as its own tile) and is
   remembered: they are never paired again automatically.
 - Moving a pair to the trash, restoring it, deleting it forever, and adding it to an album all work on the photo as a
