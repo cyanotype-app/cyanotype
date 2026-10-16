@@ -7,6 +7,7 @@ import { ProcessingStatus } from "../components/ProcessingStatus";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Lightbox } from "../components/Lightbox";
 import { SelectionBar } from "../components/SelectionBar";
+import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
 import { TimelineGrid } from "../components/TimelineGrid";
 import { useToast } from "../components/Toast";
 import { useSelection } from "../selection";
@@ -36,6 +37,8 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
   // Photos waiting in the "add to album" dialog (explicit ids, or the whole view), and a counter that makes the
   // lightbox re-read the photo's albums.
   const [addIds, setAddIds] = useState<{ target: Target; count: number } | null>(null);
+  // What the share dialog is creating a link for (explicit ids, or the whole view in "select all" mode).
+  const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
   const [albumsVersion, setAlbumsVersion] = useState(0);
   const { toast, show } = useToast();
 
@@ -321,7 +324,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
 
   // Keyboard: Escape clears the selection (then leaves selection mode); Delete asks, then trashes the selection.
   useEffect(() => {
-    if (open !== null || confirmTrash || addIds !== null) return; // the lightbox and the dialog own the keyboard
+    if (open !== null || confirmTrash || addIds !== null || shareTarget !== null) return; // the lightbox and the dialog own the keyboard
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t?.closest("input, textarea, select, [contenteditable]")) return;
@@ -335,7 +338,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, confirmTrash, addIds, sel]);
+  }, [open, confirmTrash, addIds, shareTarget, sel]);
 
   // The lightbox pages through what is loaded around the open photo; keep that stocked as it moves.
   useEffect(() => {
@@ -430,6 +433,14 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
           >
             Add to album
           </button>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            disabled={sel.count === 0 || bulkBusy}
+            onClick={() => setShareTarget(shareTargetOf(sel.target(scope), sel.count))}
+          >
+            Share
+          </button>
           <button type="button" className="btn btn-primary" disabled={sel.count === 0 || bulkBusy} onClick={onTrashClick}>
             Move to trash
           </button>
@@ -469,6 +480,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
           loadDetail={api.getAsset}
           onTrash={(it) => void trashItems([it])}
           onAddToAlbum={(it) => setAddIds({ target: [it.id], count: 1 })}
+          onShare={(it) => setShareTarget({ kind: "photos", ids: [it.id] })}
           onUnpair={(it) => void unpairItem(it)}
           onFavorite={(it, value) => void setFavorite([it], value)}
           refreshKey={albumsVersion}
@@ -501,6 +513,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
           }}
         />
       )}
+      {shareTarget !== null && <ShareDialog target={shareTarget} onClose={() => setShareTarget(null)} />}
       {toast}
       {dragging && <DropOverlay />}
     </div>

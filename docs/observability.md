@@ -57,7 +57,11 @@ It finishes with one summary line with `outcome` (`done` | `skipped` | `retry` |
 - Emails and passwords (the register/login handlers log nothing from the body).
 - Presigned URLs and S3 credentials. `S3Config`/`DatabaseConfig` implement `Debug` by hand and
   redact keys and the DB password; startup logs only the password-redacted DB URL and the bucket name.
-- The gateway (Caddy) access log drops the query string and all request/response headers too.
+- The gateway (Caddy) access log drops the query string and all request/response headers too, and blanks the secret of
+  a share link (`/s/<token>`, `/assets/public/s/<token>/...`). The gateway's own error log (an upstream that is down
+  answers 502 and Caddy logs the request) gets the same redaction.
+- Share tokens and passwords. Share events carry `share_id`; the assets service's `path` is the route template
+  (`/assets/public/s/{token}`), never the token.
 
 Covered by unit tests (`cyanotype-service::http::tests`, `cyanotype-core::telemetry::tests`,
 `cyanotype-core::config::tests`).
@@ -98,6 +102,8 @@ configuration in Datadog (distributions would need percentile aggregation enable
 | `cyanotype.uploads.parts` | count | `outcome` (`ok`, `timeout` = HTTP 408, `error`) | Proxied (browser) part uploads. |
 | `cyanotype.uploads.part_latency_ms` | histogram | | Time to receive a part from the browser and relay it to the bucket (successful parts). |
 | `cyanotype.uploads.part_bytes` | count | | Bytes relayed. |
+| `cyanotype.shares.views` | count | `kind` (`album`, `selection`) | Share link opened (the public page's info request, once a password link is unlocked). Logs carry `share_id`, never the token. |
+| `cyanotype.shares.downloads` | count | `kind` | Download redirects issued by a share link. |
 
 `family` is `jpeg`, `heic`, `raw`, `png` or `other` (`unknown` when the asset row is gone), from the content type and
 file extension (`metrics::family`). The job gauges are sampled every 15 s by the worker, one reading per kind every time

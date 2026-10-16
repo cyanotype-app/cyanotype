@@ -2,6 +2,7 @@
 pub mod auth;
 pub mod error;
 pub mod http;
+pub mod ratelimit;
 
 pub use auth::{AuthUser, SessionUser};
 pub use error::{ApiError, ApiResult};

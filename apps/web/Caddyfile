@@ -10,15 +10,28 @@
 
 	header {
 		X-Content-Type-Options nosniff
-		Referrer-Policy strict-origin-when-cross-origin
 		-Server
 	}
+	# Share links send no Referer at all (see the /s handler below).
+	@notshare not path /s /s/*
+	header @notshare Referrer-Policy strict-origin-when-cross-origin
 
 	# Vite's hashed build output lives under /static (build.assetsDir; /assets is the API's route).
 	# Names change with the content, so cache for a year; a missing file is a real 404, not the SPA shell.
 	handle /static/* {
 		@found file
 		header @found Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	# Share links (/s/<token>): the address is the secret, so keep these pages out of search engines and out of
+	# Referer headers. The page itself is the SPA shell; the API answers with the same headers.
+	@share path /s /s/*
+	handle @share {
+		header X-Robots-Tag "noindex, nofollow, noarchive"
+		header Referrer-Policy no-referrer
+		header Cache-Control "no-cache"
+		try_files /index.html
 		file_server
 	}
 

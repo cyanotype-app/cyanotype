@@ -1712,3 +1712,159 @@ body:has(.selection-bar) .scrubber {
 .processing-error {
   overflow-wrap: anywhere;
 }
+
+/* Share links: the dialog, the owner's list and the public viewer */
+.page-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.share-dialog {
+  width: min(28rem, 100%);
+}
+.share-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+}
+.share-fields > label:not(.share-check) {
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.share-hint {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.share-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  min-height: 1.75rem;
+  cursor: pointer;
+}
+.share-check input {
+  flex: none;
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-top: 0.15rem;
+}
+.share-check span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.share-warning {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.6rem;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+.share-url {
+  font-size: 0.9rem;
+  text-overflow: ellipsis;
+}
+.share-dialog .share-url {
+  margin-bottom: 0.5rem;
+}
+.share-intro {
+  padding: 0 0.25rem;
+}
+.share-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+.share-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  background: var(--surface);
+}
+.share-row.expired {
+  opacity: 0.8;
+}
+.share-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+.share-row-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.share-row-meta {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.share-badge {
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 0.75rem;
+}
+.share-badge-warn {
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  background: transparent;
+}
+.share-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.share-page {
+  min-height: 100vh;
+}
+.share-top {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.share-main {
+  padding: 0 0.25rem 2rem;
+}
+.share-head {
+  padding: 0.25rem 0.75rem 0.75rem;
+}
+.share-head h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.share-head p {
+  margin: 0.25rem 0 0;
+}
+.share-password {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: min(24rem, calc(100% - 2rem));
+  margin: 8vh auto 0;
+  padding: 1.25rem 1.5rem;
+}
+.share-password h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.3rem;
+}
+.share-password label {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.share-password .btn {
+  margin-top: 0.5rem;
+}
