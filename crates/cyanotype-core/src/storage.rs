@@ -281,6 +281,23 @@ impl Storage {
         Ok(req.uri().to_string())
     }
 
+    /// Presigned GET that makes the browser save the object instead of showing it: the signed
+    /// `response-content-disposition` is `attachment` with the given file name, and the URL lives only `ttl`
+    /// (clamped to the configured presign TTL). A top-level navigation or `<a>` click follows it, so the bucket
+    /// needs no CORS policy and the bytes never pass through the API.
+    pub async fn presign_get_download(&self, key: &str, filename: &str, ttl: Duration) -> Result<String> {
+        let req = self
+            .presign_client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .response_content_disposition(content_disposition_attachment(filename))
+            .presigned(PresigningConfig::expires_in(ttl.min(self.ttl))?)
+            .await
+            .context("presign get_object (download)")?;
+        Ok(req.uri().to_string())
+    }
+
     /// Every version and delete marker of every key that starts with `prefix`, across all pages. On a store
     /// that cannot list versions (HTTP 501 / `NotImplemented`) this degrades to a plain listing with
     /// `version_id: None`, which [`Storage::delete_versions`] then deletes without a version id.
@@ -449,5 +466,73 @@ mod tests {
         assert!(is_unsupported(None, Some("NotImplemented")));
         assert!(!is_unsupported(Some(403), Some("AccessDenied")));
         assert!(!is_unsupported(None, None));
+    }
+}
+
+/// `Content-Disposition: attachment` for `filename`. A plain `filename="..."` for ASCII names; otherwise an ASCII
+/// fallback plus the RFC 5987 `filename*` so non-Latin names survive. Quotes, backslashes and control characters
+/// are never emitted raw (no header injection through a crafted upload name).
+pub fn content_disposition_attachment(filename: &str) -> String {
+    let base = filename.rsplit(['/', '\\']).next().unwrap_or(filename);
+    let clean: String = base.chars().filter(|c| !c.is_control()).collect();
+    let clean = if clean.trim().is_empty() {
+        "download".to_string()
+    } else {
+        clean
+    };
+    let ascii: String = clean
+        .chars()
+        .map(|c| {
+            if c.is_ascii() && c != '"' && c != '\\' && c != '%' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if ascii == clean {
+        return format!("attachment; filename=\"{ascii}\"");
+    }
+    let mut encoded = String::new();
+    for b in clean.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(b as char);
+        } else {
+            encoded.push_str(&format!("%{b:02X}"));
+        }
+    }
+    format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
+}
+
+#[cfg(test)]
+mod disposition_tests {
+    use super::content_disposition_attachment as cd;
+
+    #[test]
+    fn plain_names_are_quoted_as_is() {
+        assert_eq!(cd("IMG_1234.CR3"), "attachment; filename=\"IMG_1234.CR3\"");
+        assert_eq!(cd("my photo (1).jpg"), "attachment; filename=\"my photo (1).jpg\"");
+    }
+
+    #[test]
+    fn quotes_paths_and_controls_are_neutralised() {
+        assert_eq!(
+            cd("a\"b.jpg"),
+            "attachment; filename=\"a_b.jpg\"; filename*=UTF-8''a%22b.jpg"
+        );
+        assert_eq!(cd("../../etc/passwd"), "attachment; filename=\"passwd\"");
+        assert_eq!(
+            cd("x\r\nSet-Cookie: a=b.jpg"),
+            "attachment; filename=\"xSet-Cookie: a=b.jpg\""
+        );
+        assert_eq!(cd(""), "attachment; filename=\"download\"");
+    }
+
+    #[test]
+    fn non_ascii_names_get_an_rfc5987_form() {
+        assert_eq!(
+            cd("Zürich 100%.jpg"),
+            "attachment; filename=\"Z_rich 100_.jpg\"; filename*=UTF-8''Z%C3%BCrich%20100%25.jpg"
+        );
     }
 }

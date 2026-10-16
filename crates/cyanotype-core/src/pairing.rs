@@ -232,6 +232,12 @@ pub async fn pair_asset(pool: &PgPool, id: Uuid) -> Result<Paired> {
         .bind(primary)
         .execute(&mut *tx)
         .await?;
+    // The visible photo carries the favorite flag: a RAW that was favorited on its own hands it over.
+    sqlx::query("UPDATE assets SET favorite = favorite OR (SELECT favorite FROM assets WHERE id = $1) WHERE id = $2")
+        .bind(raw)
+        .bind(primary)
+        .execute(&mut *tx)
+        .await?;
     // Albums reference the visible photo: move the RAW's memberships and cover choice onto the primary.
     sqlx::query(
         "INSERT INTO album_assets (album_id, asset_id, added_at)

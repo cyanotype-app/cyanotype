@@ -1,132 +1,97 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { NavLink } from "react-router-dom";
 import { api, ApiError, type AssetListItem } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { Grid } from "../components/Grid";
 import { Lightbox } from "../components/Lightbox";
 import { SelectionBar } from "../components/SelectionBar";
+import { TimelineGrid } from "../components/TimelineGrid";
 import { useToast } from "../components/Toast";
 import { useSelection } from "../selection";
+import { inOrder, runAround } from "../timeline";
+import { PAGE, useTimeline } from "../useTimeline";
 import { ACCEPT, filesFromDrop, filterFiles } from "../upload/files";
 import { useUploads } from "../upload/UploadProvider";
 
-const PAGE = 60;
+const REFRESH_EVERY_MS = 3000;
 const THUMB_POLL_MS = 3000;
 const THUMB_POLL_MAX = 40; // ticks per photo (about two minutes), then leave it to a reload
-
-const newestFirst = (a: AssetListItem, b: AssetListItem) =>
-  Date.parse(b.sort_time) - Date.parse(a.sort_time) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
-
-/** `cur` plus `add`, de-duplicated and back in timeline order (used to put trashed photos back). */
-const mergeItems = (cur: AssetListItem[], add: AssetListItem[]) => {
-  const have = new Set(cur.map((i) => i.id));
-  return [...cur, ...add.filter((i) => !have.has(i.id))].sort(newestFirst);
-};
+/** Photos the lightbox pages through around the current one (it re-centres on every step). */
+const LIGHTBOX_RUN = 60;
 
 const photos = (n: number) => `${n} photo${n === 1 ? "" : "s"}`;
 
-export function Library() {
+/** The library as a date-grouped, virtualized timeline; `favorites` limits it to the photos with a heart. */
+export function Library({ favorites = false }: { favorites?: boolean }) {
   const { setAnonymous } = useAuth();
-  const [items, setItems] = useState<AssetListItem[]>([]);
-  // Position of the next page: a keyset `cursor`, or (older servers) a `before` timestamp.
-  const [next, setNext] = useState<{ cursor?: string; before?: string }>({});
-  const [done, setDone] = useState(false); // the last page has been loaded
-  const [started, setStarted] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [open, setOpen] = useState<number | null>(null);
-  const inFlight = useRef(false);
-  const sentinel = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState<number | null>(null); // global index of the photo in the lightbox
   const { queue } = useUploads();
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
   const [notice, setNotice] = useState<string | null>(null);
-  const itemIds = useMemo(() => items.map((i) => i.id), [items]);
-  const sel = useSelection(itemIds);
   const [confirmTrash, setConfirmTrash] = useState(false);
   // Photos waiting in the "add to album" dialog, and a counter that makes the lightbox re-read the photo's albums.
   const [addIds, setAddIds] = useState<string[] | null>(null);
   const [albumsVersion, setAlbumsVersion] = useState(0);
   const { toast, show } = useToast();
 
-  const loadMore = useCallback(async () => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setLoading(true);
-    setError(null);
-    try {
-      const page = await api.listAssets({ ...next, limit: PAGE });
-      setItems((cur) => {
-        const seen = new Set(cur.map((i) => i.id));
-        return [...cur, ...page.items.filter((i) => !seen.has(i.id))];
-      });
-      if (page.next_cursor) setNext({ cursor: page.next_cursor });
-      else if (page.next_before) setNext({ before: page.next_before });
-      setDone(!page.next_cursor && !page.next_before);
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 401) setAnonymous();
-      else setError(e instanceof Error ? e.message : "Could not load your photos.");
-    } finally {
-      inFlight.current = false;
-      setLoading(false);
-      setStarted(true);
+  const selectedRef = useRef<ReadonlySet<string>>(new Set());
+  const tl = useTimeline({ favorite: favorites, keep: () => selectedRef.current });
+  const { index, loaded, ensure, refresh, remove, patch } = tl;
+  const items = useMemo(() => inOrder(loaded), [loaded]);
+  const itemIds = useMemo(() => items.map((i) => i.id), [items]);
+  const sel = useSelection(itemIds);
+  const selectedIds = sel.selected;
+  useEffect(() => {
+    selectedRef.current = selectedIds;
+  }, [selectedIds]);
+
+  const refreshItem = useCallback(
+    async (id: string) => {
+      try {
+        const d = await api.getAsset(id);
+        patch(new Set([id]), { thumb_url: d.thumb_url, thumbhash: d.thumbhash });
+      } catch {
+        /* leave the tile as is */
+      }
+    },
+    [patch],
+  );
+
+  // Changes that add photos somewhere (uploads, undo, unpair) re-read the counts and the page on screen. Selecting
+  // would lose the selection to the swap, so that waits until selection mode ends.
+  const dirty = useRef(false);
+  const selecting = sel.selecting;
+  const refreshSoon = useCallback(() => {
+    if (selectedRef.current.size > 0 || selecting) dirty.current = true;
+    else void refresh();
+  }, [refresh, selecting]);
+  useEffect(() => {
+    if (!selecting && dirty.current) {
+      dirty.current = false;
+      void refresh();
     }
-  }, [next, setAnonymous]);
+  }, [selecting, refresh]);
 
-  // First page.
+  // Photos finished by the uploader show up without a reload.
   useEffect(() => {
-    void loadMore(); // first page, on mount only
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Infinite scroll: whenever the sentinel is (still) visible and there is more, load the next page.
-  // Re-created after every page so a sentinel that stays on screen keeps loading.
-  useEffect(() => {
-    const el = sentinel.current;
-    if (!el || !started || done || error) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) void loadMore();
-      },
-      { rootMargin: "800px 0px" },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [started, done, error, items.length, loadMore]);
-
-  const refreshItem = useCallback(async (id: string) => {
-    try {
-      const d = await api.getAsset(id);
-      setItems((cur) => cur.map((i) => (i.id === id ? { ...i, thumb_url: d.thumb_url, thumbhash: d.thumbhash } : i)));
-    } catch {
-      /* leave the tile as is */
-    }
-  }, []);
-
-  // Photos finished by the uploader show up without a reload: re-read the newest page and merge it in.
-  useEffect(() => {
+    if (favorites) return; // a new upload is not a favorite
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let last = 0;
+    // A big upload finishes photos every second or so: look again shortly after the first, then at most every 3 s.
     const off = queue.onAssetAdded(() => {
       clearTimeout(timer);
-      timer = setTimeout(async () => {
-        try {
-          const page = await api.listAssets({ limit: PAGE });
-          setItems((cur) => {
-            const have = new Map(cur.map((i) => [i.id, i]));
-            const fresh = page.items.filter((i) => !have.has(i.id));
-            return fresh.length ? [...cur, ...fresh].sort(newestFirst) : cur;
-          });
-        } catch {
-          /* the next completion (or a reload) will catch up */
-        }
-      }, 400);
+      timer = setTimeout(() => {
+        last = Date.now();
+        refreshSoon();
+      }, Math.max(400, last + REFRESH_EVERY_MS - Date.now()));
     });
     return () => {
       off();
       clearTimeout(timer);
     };
-  }, [queue]);
+  }, [queue, favorites, refreshSoon]);
 
   // Thumbnails appear once the worker is done: poll lightly for tiles that still have none.
   const pending = items.filter((i) => !i.thumb_url).map((i) => i.id);
@@ -184,8 +149,6 @@ export function Library() {
 
   const closeLightbox = useCallback(() => setOpen(null), []);
 
-  // Moving to trash is reversible, so there is no confirmation: the photos leave the grid at once (rolled back if
-  // the server refuses) and a toast offers Undo, which restores them.
   const failure = useCallback(
     (e: unknown, what: string) => {
       if (e instanceof ApiError && e.status === 401) setAnonymous();
@@ -193,67 +156,108 @@ export function Library() {
     },
     [setAnonymous, show],
   );
+
+  // Moving to trash is reversible, so there is no confirmation: the photos leave the grid at once (rolled back if
+  // the server refuses) and a toast offers Undo, which restores them.
   const undoTrash = useCallback(
-    async (targets: AssetListItem[]) => {
+    async (ids: string[]) => {
       try {
-        await api.restoreAssets(targets.map((t) => t.id));
-        setItems((cur) => mergeItems(cur, targets));
-        show({ message: `${targets.length} restored` });
+        await api.restoreAssets(ids);
+        void refresh();
+        show({ message: `${ids.length} restored` });
       } catch (e) {
         failure(e, "Couldn’t undo. They are still in the trash.");
       }
     },
-    [show, failure],
-  );
-  // Separate a RAW + JPEG pair: the photo loses its RAW badge and the RAW appears as a photo of its own.
-  const unpairItem = useCallback(
-    async (it: AssetListItem) => {
-      const rawIds = (it.paired ?? []).map((p) => p.id);
-      try {
-        await api.unpair(it.id);
-      } catch (e) {
-        failure(e, "Couldn’t unpair.");
-        return;
-      }
-      setItems((cur) => cur.map((i) => (i.id === it.id ? { ...i, paired: [] } : i)));
-      const raws = await Promise.all(
-        rawIds.map((id) =>
-          api.getAsset(id).then(
-            (d): AssetListItem => ({ ...d, paired: [] }),
-            () => null,
-          ),
-        ),
-      );
-      setItems((cur) => mergeItems(cur, raws.filter((r) => r !== null)));
-      show({ message: "Unpaired. They show as separate photos now." });
-    },
-    [failure, show],
+    [show, failure, refresh],
   );
   const trashItems = useCallback(
     async (targets: AssetListItem[]) => {
       if (targets.length === 0) return;
-      const gone = new Set(targets.map((t) => t.id));
-      if (items.every((i) => gone.has(i.id))) setOpen(null);
-      setItems((cur) => cur.filter((i) => !gone.has(i.id)));
+      const ids = targets.map((t) => t.id);
+      const left = index.total - remove(new Set(ids)).length;
+      // The lightbox shows the photo that took the removed one's place, or closes when nothing is left.
+      setOpen((o) => (o === null || left <= 0 ? null : Math.min(o, left - 1)));
       try {
-        await api.trashAssets(targets.map((t) => t.id));
+        await api.trashAssets(ids);
       } catch (e) {
-        setItems((cur) => mergeItems(cur, targets));
+        void refresh();
         failure(e, "Couldn’t move to trash.");
         return;
       }
       show({
         message: `${targets.length} moved to trash`,
-        action: { label: "Undo", onClick: () => void undoTrash(targets) },
+        action: { label: "Undo", onClick: () => void undoTrash(ids) },
       });
     },
-    [items, show, failure, undoTrash],
+    [index.total, remove, refresh, show, failure, undoTrash],
   );
   const trashSelected = useCallback(() => {
     const ids = new Set(sel.ids);
     sel.setSelecting(false);
     void trashItems(items.filter((i) => ids.has(i.id)));
   }, [sel, items, trashItems]);
+
+  // Separate a RAW + JPEG pair: the photo loses its RAW badge and the RAW appears as a photo of its own.
+  const unpairItem = useCallback(
+    async (it: AssetListItem) => {
+      try {
+        await api.unpair(it.id);
+      } catch (e) {
+        failure(e, "Couldn’t unpair.");
+        return;
+      }
+      patch(new Set([it.id]), { paired: [] });
+      void refresh();
+      show({ message: "Unpaired. They show as separate photos now." });
+    },
+    [failure, show, patch, refresh],
+  );
+
+  // Hearts: shown at once, taken back if the server refuses. In the Favorites view a bulk "Unfavorite" removes the
+  // photos; a single heart keeps the tile until the view is reloaded, so an accidental click can be undone.
+  const setFavorite = useCallback(
+    async (targets: AssetListItem[], favorite: boolean, leave = false) => {
+      if (targets.length === 0) return;
+      const ids = targets.map((t) => t.id);
+      const was = targets.filter((t) => t.favorite === true).map((t) => t.id);
+      patch(new Set(ids), { favorite });
+      try {
+        await api.favoriteAssets(ids, favorite);
+      } catch (e) {
+        patch(new Set(ids), { favorite: false });
+        patch(new Set(was), { favorite: true });
+        failure(e, favorite ? "Couldn’t add to favorites." : "Couldn’t remove from favorites.");
+        return;
+      }
+      if (leave && !favorite) {
+        const left = index.total - remove(new Set(ids)).length;
+        setOpen((o) => (o === null || left <= 0 ? null : Math.min(o, left - 1)));
+      }
+      if (targets.length > 1 || leave) {
+        show({ message: `${targets.length} ${favorite ? "added to" : "removed from"} favorites` });
+      }
+    },
+    [patch, remove, index.total, failure, show],
+  );
+  const favoriteOne = useCallback(
+    (id: string, favorite: boolean) => {
+      const it = items.find((i) => i.id === id);
+      if (it) void setFavorite([it], favorite);
+    },
+    [items, setFavorite],
+  );
+  const selectedItems = useMemo(() => {
+    const ids = new Set(sel.ids);
+    return items.filter((i) => ids.has(i.id));
+  }, [sel.ids, items]);
+  const allSelectedFavorite = selectedItems.length > 0 && selectedItems.every((i) => i.favorite === true);
+  const favoriteSelected = useCallback(() => {
+    const targets = selectedItems;
+    const value = !targets.every((i) => i.favorite === true);
+    sel.setSelecting(false);
+    void setFavorite(targets, value, favorites);
+  }, [selectedItems, sel, setFavorite, favorites]);
 
   // Keyboard: Escape clears the selection (then leaves selection mode); Delete asks, then trashes the selection.
   useEffect(() => {
@@ -273,39 +277,55 @@ export function Library() {
     return () => document.removeEventListener("keydown", onKey);
   }, [open, confirmTrash, addIds, sel]);
 
-  // Opening or paging to one of the last loaded photos pulls in the next page so ‹ › keeps going.
-  const select = useCallback(
-    (i: number) => {
-      setOpen(i);
-      if (i >= items.length - 3 && !done && !error) void loadMore();
-    },
-    [items.length, done, error, loadMore],
-  );
+  // The lightbox pages through what is loaded around the open photo; keep that stocked as it moves.
+  useEffect(() => {
+    if (open !== null) ensure(Math.max(0, open - 5), open + PAGE, true);
+  }, [open, ensure]);
+  const run = open === null ? null : runAround(loaded, open, LIGHTBOX_RUN);
 
-  if (!started) return <p className="center muted" role="status">Loading your photos…</p>;
+  if (tl.status === "loading") return <p className="center muted" role="status">Loading your photos…</p>;
 
-  if (error && items.length === 0) {
+  if (tl.status === "error") {
     return (
       <div className="empty" role="alert">
         <h1>Couldn’t load your library</h1>
-        <p className="muted">{error}</p>
-        <button type="button" className="btn btn-primary" onClick={() => void loadMore()}>
+        <p className="muted">{tl.error}</p>
+        <button type="button" className="btn btn-primary" onClick={tl.retry}>
           Try again
         </button>
       </div>
     );
   }
 
-  if (items.length === 0) {
+  const tabs = (
+    <nav className="library-tabs" aria-label="Library views">
+      <NavLink to="/library" end className="library-tab">
+        All photos
+      </NavLink>
+      <NavLink to="/favorites" end className="library-tab">
+        Favorites
+      </NavLink>
+    </nav>
+  );
+
+  if (index.total === 0) {
     return (
       <div className="library" {...dropProps}>
-        <div className="empty">
-          <h1>Your library is empty</h1>
-          <p>Drop photos or a folder anywhere on this page, or pick them from your computer.</p>
-          <UploadButtons onFiles={addFiles} />
-          {notice && <p className="muted small" role="status">{notice}</p>}
-          <p className="muted small">The command-line importer is the better fit for a large existing archive.</p>
-        </div>
+        {tabs}
+        {favorites ? (
+          <div className="empty">
+            <h1>No favorites yet</h1>
+            <p>Tap the heart on a photo, or select photos and choose Favorite, and they will be here.</p>
+          </div>
+        ) : (
+          <div className="empty">
+            <h1>Your library is empty</h1>
+            <p>Drop photos or a folder anywhere on this page, or pick them from your computer.</p>
+            <UploadButtons onFiles={addFiles} />
+            {notice && <p className="muted small" role="status">{notice}</p>}
+            <p className="muted small">The command-line importer is the better fit for a large existing archive.</p>
+          </div>
+        )}
         {toast}
         {dragging && <DropOverlay />}
       </div>
@@ -314,7 +334,8 @@ export function Library() {
 
   return (
     <div className="library" {...dropProps}>
-      <h1 className="sr-only">Library</h1>
+      <h1 className="sr-only">{favorites ? "Favorites" : "Library"}</h1>
+      {tabs}
       <div className="library-bar">
         <UploadButtons onFiles={addFiles} />
         <button
@@ -335,6 +356,9 @@ export function Library() {
           onClear={sel.clear}
           onDone={() => sel.setSelecting(false)}
         >
+          <button type="button" className="btn btn-quiet" disabled={sel.ids.length === 0} onClick={favoriteSelected}>
+            {allSelectedFavorite ? "Unfavorite" : "Favorite"}
+          </button>
           <button
             type="button"
             className="btn btn-quiet"
@@ -348,37 +372,42 @@ export function Library() {
           </button>
         </SelectionBar>
       )}
-      <Grid
-        items={items}
-        onOpen={select}
+      <TimelineGrid
+        index={index}
+        loaded={loaded}
+        onRange={ensure}
+        onOpen={setOpen}
         onThumbError={(id) => void refreshItem(id)}
         selecting={sel.selecting}
         selected={sel.selected}
         onSelect={sel.select}
         onLongPress={sel.begin}
+        onFavorite={favoriteOne}
       />
-      <div ref={sentinel} className="sentinel" aria-hidden="true" />
       <p className="muted center small" role="status">
-        {loading ? "Loading more…" : done ? `${items.length} photo${items.length === 1 ? "" : "s"}` : ""}
+        {photos(index.total)}
       </p>
-      {error && (
+      {tl.error && (
         <p className="center" role="alert">
-          {error}{" "}
-          <button type="button" className="btn btn-quiet" onClick={() => void loadMore()}>
+          {tl.error}{" "}
+          <button type="button" className="btn btn-quiet" onClick={tl.retry}>
             Retry
           </button>
         </p>
       )}
-      {open !== null && (
+      {open !== null && run && (
         <Lightbox
-          items={items}
-          index={Math.min(open, items.length - 1)}
-          onIndexChange={select}
+          items={run.items}
+          index={open - run.start}
+          offset={run.start}
+          total={index.total}
+          onIndexChange={(rel) => setOpen(run.start + rel)}
           onClose={closeLightbox}
           loadDetail={api.getAsset}
           onTrash={(it) => void trashItems([it])}
           onAddToAlbum={(it) => setAddIds([it.id])}
           onUnpair={(it) => void unpairItem(it)}
+          onFavorite={(it, value) => void setFavorite([it], value)}
           refreshKey={albumsVersion}
         />
       )}
