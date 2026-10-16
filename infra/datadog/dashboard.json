@@ -1,0 +1,970 @@
+{
+  "title": "Cyanotype: import and job queue",
+  "description": "Queue depth, throughput, failures, durations, worker memory and upload throughput. Import via Dashboards > New Dashboard > Import dashboard JSON.",
+  "layout_type": "ordered",
+  "reflow_type": "fixed",
+  "template_variables": [
+    {
+      "name": "env",
+      "prefix": "env",
+      "available_values": [],
+      "default": "*"
+    }
+  ],
+  "widgets": [
+    {
+      "definition": {
+        "type": "note",
+        "content": "## Import progress\nQueue depth, throughput and failures of the photo pipeline. Metrics are emitted by the worker (`cyanotype.jobs.*`) and the assets service (`cyanotype.uploads.*`). Template variable `env` = `DD_ENV`.",
+        "background_color": "white",
+        "font_size": "14",
+        "text_align": "left",
+        "show_tick": false,
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Queued (all kinds)",
+        "autoscale": true,
+        "precision": 0,
+        "requests": [
+          {
+            "response_format": "scalar",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.queue.queued{$env}",
+                "aggregator": "last"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 2,
+        "width": 3,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Running",
+        "autoscale": true,
+        "precision": 0,
+        "requests": [
+          {
+            "response_format": "scalar",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.queue.running{$env}",
+                "aggregator": "last"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 3,
+        "y": 2,
+        "width": 3,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Failed (cumulative)",
+        "autoscale": true,
+        "precision": 0,
+        "requests": [
+          {
+            "response_format": "scalar",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.queue.failed{$env}",
+                "aggregator": "last"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 2,
+        "width": 3,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Oldest queued job (s)",
+        "autoscale": true,
+        "precision": 0,
+        "requests": [
+          {
+            "response_format": "scalar",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "max:cyanotype.queue.oldest_queued_age_seconds{$env}",
+                "aggregator": "last"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 9,
+        "y": 2,
+        "width": 3,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Queue depth by kind",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "area",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.queue.queued{$env} by {kind}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 4,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Running by kind",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "area",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.queue.running{$env} by {kind}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 4,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Oldest queued job age (s) by kind",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "max:cyanotype.queue.oldest_queued_age_seconds{$env} by {kind}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 7,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Stalled seconds (runnable work, nothing finishing)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "max:cyanotype.queue.stalled_seconds{$env}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 7,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "## Throughput and failures",
+        "background_color": "white",
+        "font_size": "14",
+        "text_align": "left",
+        "show_tick": false,
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 10,
+        "width": 12,
+        "height": 1
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Jobs completed per minute by kind",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "bars",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.jobs.completed{$env} by {kind}.as_count().rollup(sum, 60)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 11,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Completed by file family",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "bars",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.jobs.completed{$env} by {family}.as_count().rollup(sum, 60)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 11,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Failed jobs by kind and permanence",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "bars",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.jobs.failed{$env} by {kind,permanent}.as_count().rollup(sum, 60)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 14,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Retries by kind",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "bars",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.jobs.retried{$env} by {kind}.as_count().rollup(sum, 60)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 14,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Failure rate (failed / finished)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "f",
+                "query": "sum:cyanotype.jobs.failed{$env}.as_count().rollup(sum, 300)"
+              },
+              {
+                "data_source": "metrics",
+                "name": "c",
+                "query": "sum:cyanotype.jobs.completed{$env}.as_count().rollup(sum, 300)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "100 * default_zero(f) / (default_zero(f) + default_zero(c))",
+                "alias": "failure %"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 14,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "## Durations and memory",
+        "background_color": "white",
+        "font_size": "14",
+        "text_align": "left",
+        "show_tick": false,
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 17,
+        "width": 12,
+        "height": 1
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Job duration p50 (ms)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "avg:cyanotype.jobs.duration.median{$env,outcome:done} by {kind,family}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 18,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Job duration p95 (ms)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "max:cyanotype.jobs.duration.95percentile{$env,outcome:done} by {kind,family}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 18,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Decoded megapixels p95 by family",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "max:cyanotype.jobs.decoded_megapixels.95percentile{$env} by {family}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 21,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Memory budget in use vs total (bytes)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "u",
+                "query": "avg:cyanotype.worker.memory_budget.used_bytes{$env}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "t",
+                "query": "avg:cyanotype.worker.memory_budget.total_bytes{$env}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "u",
+                "alias": "used"
+              },
+              {
+                "formula": "t",
+                "alias": "budget"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 21,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Budget waits and refusals",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "bars",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "w",
+                "query": "sum:cyanotype.worker.memory_budget.waits{$env}.as_count().rollup(sum, 60)"
+              },
+              {
+                "data_source": "metrics",
+                "name": "r",
+                "query": "sum:cyanotype.worker.memory_budget.refusals{$env} by {reason}.as_count().rollup(sum, 60)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "w",
+                "alias": "waits"
+              },
+              {
+                "formula": "r",
+                "alias": "refusals"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 21,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Worker container memory (bytes)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "u",
+                "query": "avg:container.memory.usage{container_name:cyanotype-worker-*}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "l",
+                "query": "avg:container.memory.limit{container_name:cyanotype-worker-*}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "u",
+                "alias": "usage"
+              },
+              {
+                "formula": "l",
+                "alias": "limit"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 24,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Worker container CPU",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "avg:container.cpu.usage{container_name:cyanotype-worker-*}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 24,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Worker OOM kills and uptime",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "o",
+                "query": "sum:container.memory.oom_events{container_name:cyanotype-worker-*}.as_count()"
+              },
+              {
+                "data_source": "metrics",
+                "name": "u",
+                "query": "max:container.uptime{container_name:cyanotype-worker-*}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "o",
+                "alias": "oom events"
+              },
+              {
+                "formula": "u",
+                "alias": "uptime (s)"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 24,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "## Uploads (assets service)",
+        "background_color": "white",
+        "font_size": "14",
+        "text_align": "left",
+        "show_tick": false,
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 27,
+        "width": 12,
+        "height": 1
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Uploads completed per minute by family",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "bars",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.uploads.completed{$env} by {family}.as_count().rollup(sum, 60)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 28,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Upload throughput (bytes/min)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "bars",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.uploads.bytes{$env}.as_count().rollup(sum, 60)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 28,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Proxied part latency p50 / p95 (ms)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "a",
+                "query": "avg:cyanotype.uploads.part_latency_ms.median{$env}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "b",
+                "query": "max:cyanotype.uploads.part_latency_ms.95percentile{$env}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "a",
+                "alias": "p50"
+              },
+              {
+                "formula": "b",
+                "alias": "p95"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 28,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Parts by outcome (timeout = HTTP 408)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "bars",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.uploads.parts{$env} by {outcome}.as_count().rollup(sum, 60)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 31,
+        "width": 12,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "log_stream",
+        "title": "Worker errors and warnings",
+        "logset": "",
+        "query": "service:cyanotype-worker status:(error OR warn) env:$env",
+        "columns": [
+          "host",
+          "service"
+        ],
+        "indexes": [],
+        "message_display": "expanded-md",
+        "show_date_column": true,
+        "show_message_column": true,
+        "sort": {
+          "column": "time",
+          "order": "desc"
+        }
+      },
+      "layout": {
+        "x": 0,
+        "y": 34,
+        "width": 12,
+        "height": 5
+      }
+    }
+  ],
+  "notify_list": [],
+  "tags": [
+    "team:cyanotype"
+  ]
+}

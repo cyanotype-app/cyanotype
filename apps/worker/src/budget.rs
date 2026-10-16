@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use cyanotype_core::metrics;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const UNIT: u64 = 1 << 20; // 1 MiB
@@ -45,7 +46,26 @@ impl MemoryBudget {
     /// served first-come first-served, so a big job is not starved by a stream of small ones.
     pub async fn reserve(&self, bytes: u64) -> Result<Reservation> {
         let units = bytes.div_ceil(UNIT).clamp(1, self.total_units) as u32;
-        Ok(Reservation(self.sem.clone().acquire_many_owned(units).await?))
+        if (self.sem.available_permits() as u64) >= u64::from(units) {
+            return Ok(Reservation(self.sem.clone().acquire_many_owned(units).await?));
+        }
+        // Not enough free memory right now: the job waits for others to finish. Counting these shows when the
+        // budget (not the CPU or the network) is what limits throughput.
+        let started = std::time::Instant::now();
+        let held = self.sem.clone().acquire_many_owned(units).await?;
+        let m = metrics::global();
+        m.count("worker.memory_budget.waits", 1, &[]);
+        m.histogram(
+            "worker.memory_budget.wait_ms",
+            started.elapsed().as_secs_f64() * 1000.0,
+            &[],
+        );
+        Ok(Reservation(held))
+    }
+
+    /// Bytes currently reserved by in-flight jobs.
+    pub fn used_bytes(&self) -> u64 {
+        self.total_units.saturating_sub(self.sem.available_permits() as u64) * UNIT
     }
 
     #[cfg(test)]

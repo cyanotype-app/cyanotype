@@ -1,0 +1,22 @@
+{
+  "name": "[Cyanotype] Worker container OOM killed",
+  "type": "query alert",
+  "query": "sum(last_10m):sum:container.memory.oom_events{container_name:cyanotype-worker-*}.as_count() > 0",
+  "message": "{{#is_alert}}The kernel OOM-killed a process in the worker container.{{/is_alert}}\nLower WORKER_MEMORY_BUDGET_MB or WORKER_HEAVY_CONCURRENCY, or raise the container mem_limit (docker-compose.prod.yml). The job is retried after the stale timeout.",
+  "tags": [
+    "team:cyanotype",
+    "app:cyanotype",
+    "service:cyanotype-worker"
+  ],
+  "priority": null,
+  "options": {
+    "thresholds": {
+      "critical": 0
+    },
+    "notify_no_data": false,
+    "include_tags": true,
+    "notify_audit": false,
+    "require_full_window": false,
+    "renotify_interval": 0
+  }
+}

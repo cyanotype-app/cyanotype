@@ -10,6 +10,11 @@ x-app-env: &app-env
   DD_ENV: ${DD_ENV:-local}
   DD_VERSION: ${DD_VERSION:-}
 
+# Queue/upload metrics go to the Agent's DogStatsD (UDP 8125) when the `datadog` profile runs; without the Agent the
+# name does not resolve and the services drop their metrics silently (one warning at start). docs/observability.md.
+x-metrics-env: &metrics-env
+  DOGSTATSD_URL: ${DOGSTATSD_URL-udp://datadog-agent:8125}
+
 x-s3-env: &s3-env
   S3_ENDPOINT: http://minio:9000
   # Embedded in presigned URLs, so it must be reachable from the client (your host).
@@ -107,7 +112,7 @@ services:
     build: { context: ., target: assets }
     image: cyanotype-assets
     environment:
-      <<: [*app-env, *s3-env]
+      <<: [*app-env, *s3-env, *metrics-env]
       DD_SERVICE: cyanotype-assets
       ASSETS_BIND_ADDR: 0.0.0.0:3002
       # Days a photo stays in the trash before it is deleted for good (docs/library.md).
@@ -122,7 +127,7 @@ services:
     build: { context: ., target: worker }
     image: cyanotype-worker
     environment:
-      <<: [*app-env, *s3-env]
+      <<: [*app-env, *s3-env, *metrics-env]
       DD_SERVICE: cyanotype-worker
     labels:
       com.datadoghq.ad.logs: '[{"source":"rust","service":"cyanotype-worker"}]'
@@ -171,10 +176,16 @@ services:
       DD_SITE: ${DD_SITE:-datadoghq.com}
       DD_LOGS_ENABLED: "true"
       DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL: "true"
+      # DogStatsD: listen on all interfaces so the other containers can reach it as datadog-agent:8125. The port is
+      # not published, so only containers on this compose network can send to it.
+      DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
       # Never ship other projects' logs from a shared host: exclude everything, then include only this
       # project's containers (compose names them cyanotype-<service>-<n>; the project name is pinned above).
       DD_CONTAINER_EXCLUDE_LOGS: "name:.*"
       DD_CONTAINER_INCLUDE_LOGS: "name:^cyanotype-.*"
+      # Same scoping for container metrics (CPU, memory, restarts): this project's containers only.
+      DD_CONTAINER_EXCLUDE_METRICS: "name:.*"
+      DD_CONTAINER_INCLUDE_METRICS: "name:^cyanotype-.*"
       DD_HOSTNAME: ${DD_HOSTNAME:-cyanotype-compose}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
