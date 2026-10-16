@@ -9,12 +9,24 @@ export default defineConfig({
   reporter: "list",
   use: {
     baseURL: `http://localhost:${PORT}`,
-    launchOptions: {
-      ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),
-      // Headless Chromium has no GPU: the map's WebGL runs on the software rasteriser.
-      args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"],
-    },
+    launchOptions: { ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}) },
   },
+  projects: [
+    // The layout check includes the map page, whose WebGL needs the software rasteriser in headless Chromium (no GPU).
+    // Only this spec gets those flags: they change scrolling and paint timing, which made the timeline spec's
+    // scrubber-jump assertions flaky (a year tap landing ~33,000 px off).
+    {
+      name: "layout",
+      testMatch: "mobile-overflow.spec.ts",
+      use: {
+        launchOptions: {
+          ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),
+          args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"],
+        },
+      },
+    },
+    { name: "timeline", testIgnore: "mobile-overflow.spec.ts" },
+  ],
   webServer: {
     command: `pnpm exec vite build && pnpm exec vite preview --port ${PORT} --strictPort`,
     url: `http://localhost:${PORT}`,
