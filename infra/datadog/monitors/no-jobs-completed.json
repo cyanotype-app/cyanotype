@@ -1,0 +1,23 @@
+{
+  "name": "[Cyanotype] Jobs queued but none completing for 30 minutes",
+  "type": "query alert",
+  "query": "min(last_10m):max:cyanotype.queue.stalled_seconds{*} > 1800",
+  "message": "{{#is_alert}}There is runnable work, and no job has finished successfully for 30 minutes.{{/is_alert}}\n`stalled_seconds` is the lesser of the oldest runnable job's wait and the time since any job completed (0 when nothing waits). Check that the worker is running, can reach Postgres and the bucket, and is not stuck on the memory budget.",
+  "tags": [
+    "team:cyanotype",
+    "app:cyanotype",
+    "service:cyanotype-worker"
+  ],
+  "priority": null,
+  "options": {
+    "thresholds": {
+      "critical": 1800,
+      "warning": 600
+    },
+    "notify_no_data": false,
+    "include_tags": true,
+    "notify_audit": false,
+    "require_full_window": false,
+    "renotify_interval": 0
+  }
+}

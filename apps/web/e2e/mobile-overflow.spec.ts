@@ -53,6 +53,26 @@ const albums = [
   album("l4", "Garden", 7),
 ];
 
+const IDLE = { active: false, queued: 0, running: 0, failed: 0, by_kind: [], total_photos: 30, without_thumbnail: 0, failures: [] };
+const LONG_ERROR =
+  "decode refused: original is 187 MB, which does not fit the worker memory budget of 640 MB (a-very-long-unbroken-error-token-" + "x".repeat(120) + ")";
+const BUSY = {
+  ...IDLE,
+  active: true,
+  queued: 41234,
+  running: 2,
+  total_photos: 52000,
+  without_thumbnail: 20617,
+  by_kind: [{ kind: "thumbnail", queued: 20617, running: 2, failed: 3 }],
+  failed: 1234,
+  failures: [
+    { job_id: 1, asset_id: "a2", original_name: LONG_NAME, kind: "thumbnail", last_error: LONG_ERROR, attempts: 5 },
+    { job_id: 2, asset_id: "a3", original_name: "IMG_1003.CR3", kind: "metadata", last_error: null, attempts: 1 },
+    { job_id: 3, asset_id: "a4", original_name: "IMG_1004.HEIC", kind: "thumbnail", last_error: "sha256 mismatch", attempts: 5 },
+  ],
+};
+let processing: typeof IDLE | typeof BUSY = IDLE;
+
 async function mock(page: Page) {
   const json = (body: unknown) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   await page.route("**/fixture-thumbs/*.svg", (r) =>
@@ -79,6 +99,11 @@ async function mock(page: Page) {
         return route.fulfill(
           json({ id: "k3", name: "new", prefix: "cy_zzzz", created_at: "2024-06-01T00:00:00Z", key: "cy_" + "0123456789abcdef".repeat(5) }),
         );
+      if (p === "/assets/processing" && m === "GET") return route.fulfill(json(processing));
+      if (p === "/assets/processing/retry" && m === "POST") {
+        processing = { ...IDLE };
+        return route.fulfill(json({ requeued: 1234 }));
+      }
       if (p === "/assets/check") return route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"fixture: upload refused"}' });
       if (p === "/assets/trash" && m === "GET")
         return route.fulfill(json({ items: trash, next_cursor: null, total: trash.length, retention_days: 30 }));
@@ -172,6 +197,19 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: "Move to trash" }).last().click();
       await page.getByText("moved to trash").waitFor();
       await check("library-toast-undo");
+
+      // Processing indicator: banner while photos are processed, the failures panel, and after a retry
+      processing = BUSY;
+      await open("/library", /Open IMG_1000/);
+      await page.getByText("Processing 20,617 photos…").waitFor();
+      await check("library-processing");
+      await page.getByRole("button", { name: "1,234 failed" }).click();
+      await page.getByRole("button", { name: "Retry failed" }).waitFor();
+      await check("library-processing-panel");
+      await page.getByRole("button", { name: "Retry failed" }).click();
+      await page.getByText("Processing 20,617 photos…").waitFor({ state: "detached", timeout: 10_000 });
+      await check("library-processing-done");
+      processing = IDLE;
 
       // Lightbox
       await open("/library", /Open IMG_1000/);

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use cyanotype_core::{
-    jobs, keys,
+    jobs, keys, metrics,
     pairing::{self, Paired},
     storage::Storage,
 };
@@ -27,6 +27,19 @@ pub enum Outcome {
     Done,
     /// Finished without doing work (logged); the job is marked done, not failed.
     Skipped(&'static str),
+}
+
+/// Facts a job learns about its asset that the caller wants for tags and logs.
+#[derive(Default)]
+pub struct JobInfo {
+    /// `metrics::family` of the asset (set once the asset row is loaded).
+    pub family: std::sync::OnceLock<&'static str>,
+}
+
+impl JobInfo {
+    pub fn family(&self) -> &'static str {
+        self.family.get().copied().unwrap_or("unknown")
+    }
 }
 
 pub struct Ctx {
@@ -67,7 +80,7 @@ const JOB_OVERHEAD_BYTES: u64 = 48 << 20;
 /// decoder ignores its "dummy" mode; budget for that.
 const RAW_INSPECT_FACTOR: u64 = 3;
 
-pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
+pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job, info: &JobInfo) -> Result<Outcome> {
     // Trashed assets are still processed: the trash view shows their thumbnails and restoring must not leave
     // them blank. Only assets queued for permanent deletion (or already gone) are skipped.
     let Some(asset): Option<AssetRow> = sqlx::query_as(
@@ -82,6 +95,9 @@ pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
         tracing::info!("asset no longer exists; skipping");
         return Ok(Outcome::Skipped("asset deleted"));
     };
+    let _ = info
+        .family
+        .set(metrics::family(&asset.content_type, &asset.original_name));
     if asset.purging {
         tracing::info!("asset is being permanently deleted; skipping");
         return Ok(Outcome::Skipped("asset is being deleted"));
@@ -97,6 +113,7 @@ pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
         return Ok(Outcome::Skipped("unsupported content type"));
     }
     if asset.size_bytes < 0 || asset.size_bytes as u64 > ctx.max_original_bytes {
+        refused("over_size_limit", info);
         return Err(Permanent(format!(
             "original is {} bytes, over the {} byte worker limit",
             asset.size_bytes, ctx.max_original_bytes
@@ -107,6 +124,7 @@ pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
     let total = ctx.budget.total_bytes();
     let base = size + JOB_OVERHEAD_BYTES;
     if base > total {
+        refused("over_budget", info);
         return Err(Permanent(format!(
             "original is {} MB, which does not fit the worker memory budget of {} MB",
             size >> 20,
@@ -145,10 +163,19 @@ pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
 
     match job.kind.as_str() {
         jobs::KIND_METADATA => metadata(ctx, job, &asset, kind, bytes).await?,
-        jobs::KIND_THUMBNAIL => return thumbnail(ctx, job, &asset, kind, bytes, held, base).await,
+        jobs::KIND_THUMBNAIL => return thumbnail(ctx, job, info, &asset, kind, bytes, held, base).await,
         other => anyhow::bail!("no handler for job kind {other}"),
     }
     Ok(Outcome::Done)
+}
+
+/// A job turned away because the file cannot fit the worker's limits; the reason tells size limit from memory budget.
+fn refused(reason: &str, info: &JobInfo) {
+    metrics::global().count(
+        "worker.memory_budget.refusals",
+        1,
+        &[("reason", reason), ("family", info.family())],
+    );
 }
 
 async fn pair(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
@@ -227,9 +254,11 @@ async fn metadata(ctx: &Arc<Ctx>, job: &jobs::Job, asset: &AssetRow, kind: Kind,
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn thumbnail(
     ctx: &Arc<Ctx>,
     job: &jobs::Job,
+    info: &JobInfo,
     asset: &AssetRow,
     kind: Kind,
     bytes: Arc<Vec<u8>>,
@@ -246,7 +275,13 @@ async fn thumbnail(
             .context("thumbnail prepare task panicked")?
             .map_err(|e| Permanent(format!("{e:#}")))?
     };
+    metrics::global().histogram(
+        "jobs.decoded_megapixels",
+        f64::from(prepared.width) * f64::from(prepared.height) / 1e6,
+        &[("kind", &job.kind), ("family", info.family())],
+    );
     if let Some(reason) = &prepared.refusal {
+        refused("decode_refused", info);
         tracing::error!(key = %asset.original_key, reason, "refusing to decode");
         return Err(Permanent(reason.clone()).into());
     }
@@ -388,11 +423,14 @@ mod tests {
         };
         // Purging and nonexistent assets are skipped without touching storage.
         for id in [ids[1], Uuid::new_v4()] {
-            assert!(matches!(run(&ctx, &job(id)).await, Ok(Outcome::Skipped(_))));
+            assert!(matches!(
+                run(&ctx, &job(id), &JobInfo::default()).await,
+                Ok(Outcome::Skipped(_))
+            ));
         }
         // A trashed asset is processed as usual: here it gets as far as the (unsupported) content type check.
         assert!(matches!(
-            run(&ctx, &job(ids[0])).await,
+            run(&ctx, &job(ids[0]), &JobInfo::default()).await,
             Ok(Outcome::Skipped("unsupported content type"))
         ));
 

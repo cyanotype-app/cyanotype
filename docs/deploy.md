@@ -459,7 +459,7 @@ dc --profile datadog up -d
 ```
 
 `just deploy` and the Deploy workflow include the profile when `DD_API_KEY` is set (workflow) or
-`DEPLOY_PROFILES=datadog` (just). Details and the log schema are in `docs/observability.md`. Services emit
+`DEPLOY_PROFILES=datadog` (just). With the profile on, the worker and assets service also send queue and upload metrics to the Agent's DogStatsD (`datadog-agent:8125` on the compose network; nothing is published on the host), and the Agent collects container CPU/memory/OOM metrics for `cyanotype-*` containers only. The dashboard and monitors in `infra/datadog/` are imported by hand (`docs/observability.md`). Details and the log schema are in `docs/observability.md`. Services emit
 `env:<DD_ENV>` and `version:<CYANOTYPE_VERSION>`. Use `DD_ENV=prod` for a future production instance.
 
 ## Known limitation: browser direct uploads and Linode CORS

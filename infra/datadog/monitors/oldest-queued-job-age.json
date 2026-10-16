@@ -1,0 +1,23 @@
+{
+  "name": "[Cyanotype] Oldest queued job older than 30 minutes",
+  "type": "query alert",
+  "query": "min(last_10m):max:cyanotype.queue.oldest_queued_age_seconds{*} > 1800",
+  "message": "{{#is_alert}}Runnable jobs have been waiting more than 30 minutes (the gauge is 0 when the queue is empty, so this only fires while work is queued).{{/is_alert}}\nCheck the worker container (restarts, OOM), its logs, and the memory-budget waits widget. During a very large import a long queue is normal; compare with throughput.",
+  "tags": [
+    "team:cyanotype",
+    "app:cyanotype",
+    "service:cyanotype-worker"
+  ],
+  "priority": null,
+  "options": {
+    "thresholds": {
+      "critical": 1800,
+      "warning": 900
+    },
+    "notify_no_data": false,
+    "include_tags": true,
+    "notify_audit": false,
+    "require_full_window": false,
+    "renotify_interval": 0
+  }
+}

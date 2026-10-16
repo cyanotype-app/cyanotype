@@ -3,6 +3,7 @@ import { NavLink } from "react-router-dom";
 import { api, ApiError, type AssetListItem } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
+import { ProcessingStatus } from "../components/ProcessingStatus";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Lightbox } from "../components/Lightbox";
 import { SelectionBar } from "../components/SelectionBar";
@@ -298,6 +299,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
   }
 
   const tabs = (
+    <>
     <nav className="library-tabs" aria-label="Library views">
       <NavLink to="/library" end className="library-tab">
         All photos
@@ -306,6 +308,8 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
         Favorites
       </NavLink>
     </nav>
+    <ProcessingStatus />
+    </>
   );
 
   if (index.total === 0) {

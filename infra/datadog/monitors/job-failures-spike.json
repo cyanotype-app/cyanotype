@@ -1,0 +1,23 @@
+{
+  "name": "[Cyanotype] Job failures spiking",
+  "type": "query alert",
+  "query": "sum(last_15m):sum:cyanotype.jobs.failed{*}.as_count() > 25",
+  "message": "{{#is_alert}}More than 25 photo jobs failed permanently in 15 minutes.{{/is_alert}}\n{{#is_warning}}Job failures are rising.{{/is_warning}}\nLook at the dashboard's failures widgets and `service:cyanotype-worker outcome:failed` in Logs for the cause (`error` attribute). Failed jobs can be retried from the web app's processing panel once fixed.",
+  "tags": [
+    "team:cyanotype",
+    "app:cyanotype",
+    "service:cyanotype-worker"
+  ],
+  "priority": null,
+  "options": {
+    "thresholds": {
+      "critical": 25,
+      "warning": 10
+    },
+    "notify_no_data": false,
+    "include_tags": true,
+    "notify_audit": false,
+    "require_full_window": false,
+    "renotify_interval": 0
+  }
+}

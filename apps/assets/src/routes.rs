@@ -13,7 +13,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use bytes::{Bytes, BytesMut};
 use cyanotype_core::{
-    jobs, keys, objmeta, pairing,
+    jobs, keys, metrics, objmeta, pairing,
     storage::{Storage, UploadedPart},
 };
 use http_body_util::BodyExt;
@@ -27,6 +27,7 @@ mod download;
 mod favorites;
 #[cfg(test)]
 mod pair_tests;
+mod processing;
 mod timeline;
 #[cfg(test)]
 mod timeline_tests;
@@ -63,6 +64,8 @@ pub fn routes() -> Router<AppState> {
         .route("/assets/count", get(count))
         .route("/assets/timeline", get(timeline::days))
         .route("/assets/favorite", post(favorites::set))
+        .route("/assets/processing", get(processing::status))
+        .route("/assets/processing/retry", post(processing::retry))
         .route("/assets/trash", get(trash::list).post(trash::trash))
         .route("/assets/trash/empty", post(trash::empty))
         .route("/assets/restore", post(trash::restore))
@@ -395,7 +398,30 @@ async fn read_part_body(req: Request, expected: usize) -> ApiResult<Bytes> {
 }
 
 /// Browser upload transport: relay one part to S3 and return its ETag (what `complete` needs).
+/// Emits `uploads.parts{outcome}` (`ok`, `timeout` = the 408 a stalled client gets, `error`) and, for relayed
+/// parts, `uploads.part_latency_ms` (time from the request starting to the ETag, including the client's upload).
 async fn put_part(
+    state: State<AppState>,
+    user: AuthUser,
+    path: Path<(String, i32)>,
+    req: Request,
+) -> ApiResult<Json<serde_json::Value>> {
+    let started = std::time::Instant::now();
+    let result = relay_part(state, user, path, req).await;
+    let m = metrics::global();
+    let outcome = match &result {
+        Ok(_) => "ok",
+        Err(ApiError::RequestTimeout(_)) => "timeout",
+        Err(_) => "error",
+    };
+    m.count("uploads.parts", 1, &[("outcome", outcome)]);
+    if outcome == "ok" {
+        m.histogram("uploads.part_latency_ms", started.elapsed().as_secs_f64() * 1000.0, &[]);
+    }
+    result
+}
+
+async fn relay_part(
     State(s): State<AppState>,
     user: AuthUser,
     Path((upload_id, number)): Path<(String, i32)>,
@@ -431,6 +457,7 @@ async fn put_part(
         .bind(&upload_id)
         .execute(&s.db)
         .await?;
+    metrics::global().count("uploads.part_bytes", expected as u64, &[]);
     tracing::info!(part = number, bytes_proxied = expected, "part proxied");
     Ok(Json(serde_json::json!({"etag": etag})))
 }
@@ -538,6 +565,10 @@ async fn complete(
     }
 
     let asset_id = register_asset(&s.db, user.id, &req.upload_id, &up).await?;
+    let m = metrics::global();
+    let tags = [("family", metrics::family(&up.content_type, &up.original_name))];
+    m.count("uploads.completed", 1, &tags);
+    m.count("uploads.bytes", up.size_bytes.max(0) as u64, &tags);
 
     Ok((StatusCode::CREATED, Json(serde_json::json!({"asset_id": asset_id}))))
 }
