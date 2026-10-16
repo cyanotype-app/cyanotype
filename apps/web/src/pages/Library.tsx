@@ -14,6 +14,7 @@ import { PAGE, useTimeline } from "../useTimeline";
 import { ACCEPT, filesFromDrop, filterFiles } from "../upload/files";
 import { useUploads } from "../upload/UploadProvider";
 
+const REFRESH_EVERY_MS = 3000;
 const THUMB_POLL_MS = 3000;
 const THUMB_POLL_MAX = 40; // ticks per photo (about two minutes), then leave it to a reload
 /** Photos the lightbox pages through around the current one (it re-centres on every step). */
@@ -77,9 +78,14 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
   useEffect(() => {
     if (favorites) return; // a new upload is not a favorite
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let last = 0;
+    // A big upload finishes photos every second or so: look again shortly after the first, then at most every 3 s.
     const off = queue.onAssetAdded(() => {
       clearTimeout(timer);
-      timer = setTimeout(refreshSoon, 400);
+      timer = setTimeout(() => {
+        last = Date.now();
+        refreshSoon();
+      }, Math.max(400, last + REFRESH_EVERY_MS - Date.now()));
     });
     return () => {
       off();
