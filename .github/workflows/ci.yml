@@ -78,7 +78,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Start SeaweedFS (S3 API with a versioned bucket, like production)
         run: |
-          docker run -d --name s3 -p 8333:8333 chrislusf/seaweedfs server -s3 -dir=/data -volume.max=200 -master.volumeSizeLimitMB=64
+          docker run -d --name s3 -p 8333:8333 chrislusf/seaweedfs:4.48 server -s3 -dir=/data -volume.max=200 -master.volumeSizeLimitMB=64
           until curl -fsS -o /dev/null http://localhost:8333/; do sleep 1; done
           curl -fsS -X PUT http://localhost:8333/cyanotype
           curl -fsS -X PUT "http://localhost:8333/cyanotype?versioning" \
