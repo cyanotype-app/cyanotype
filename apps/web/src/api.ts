@@ -298,11 +298,35 @@ function putPart(
   });
 }
 
-/** POST `ids` to a bulk endpoint in chunks of MAX_BULK_IDS; resolves with the total number of items affected. */
-async function bulk(path: string, ids: readonly string[]): Promise<{ count: number }> {
+/**
+ * What a bulk action applies to: explicit ids, or "everything in this view except ..." resolved by the server, so
+ * "Select all" works on photos the browser never loaded. `trash_batch` is what a scope-based trash returns, to undo it.
+ */
+export type Scope = "library" | "favorites" | "trash" | { album: string } | { trash_batch: string };
+export interface ScopeTarget {
+  scope: Scope;
+  except: readonly string[];
+}
+export type Target = readonly string[] | ScopeTarget;
+export const isScope = (t: Target): t is ScopeTarget => !Array.isArray(t);
+
+/** The result of a bulk call; `batch` identifies a scope-based trash (pass `{ scope: { trash_batch } }` to undo). */
+export interface BulkResult {
+  count: number;
+  batch?: string;
+}
+
+/**
+ * POST a target to a bulk endpoint. Ids go in chunks of MAX_BULK_IDS and resolve with the total number of items
+ * affected; a scope is one request (the server does the work in one transaction).
+ */
+async function bulk(path: string, target: Target, extra: object = {}): Promise<BulkResult> {
+  if (isScope(target)) {
+    return request<BulkResult>(path, json({ scope: target.scope, except: target.except, ...extra }));
+  }
   let count = 0;
-  for (let i = 0; i < ids.length; i += MAX_BULK_IDS) {
-    const r = await request<{ count: number }>(path, json({ ids: ids.slice(i, i + MAX_BULK_IDS) }));
+  for (let i = 0; i < target.length; i += MAX_BULK_IDS) {
+    const r = await request<{ count: number }>(path, json({ ids: target.slice(i, i + MAX_BULK_IDS), ...extra }));
     count += r.count;
   }
   return { count };
@@ -330,20 +354,13 @@ export const api = {
   timeline: (opts: { favorite?: boolean } = {}) =>
     request<Timeline>(`/assets/timeline${opts.favorite ? "?favorite=true" : ""}`),
   /** Favorite or unfavorite photos. `count` is how many changed. */
-  favoriteAssets: async (ids: readonly string[], favorite: boolean): Promise<{ count: number }> => {
-    let count = 0;
-    for (let i = 0; i < ids.length; i += MAX_BULK_IDS) {
-      const r = await request<{ count: number }>("/assets/favorite", json({ ids: ids.slice(i, i + MAX_BULK_IDS), favorite }));
-      count += r.count;
-    }
-    return { count };
-  },
+  favoriteAssets: (target: Target, favorite: boolean) => bulk("/assets/favorite", target, { favorite }),
   /** Move photos to the trash (reversible). `count` is how many actually moved. */
-  trashAssets: (ids: readonly string[]) => bulk("/assets/trash", ids),
+  trashAssets: (target: Target) => bulk("/assets/trash", target),
   /** Bring photos back from the trash. */
-  restoreAssets: (ids: readonly string[]) => bulk("/assets/restore", ids),
+  restoreAssets: (target: Target) => bulk("/assets/restore", target),
   /** Delete trashed photos forever. Not reversible. */
-  purgeAssets: (ids: readonly string[]) => bulk("/assets/purge", ids),
+  purgeAssets: (target: Target) => bulk("/assets/purge", target),
   /** Delete everything in the trash forever. Not reversible. */
   emptyTrash: () => request<{ count: number }>("/assets/trash/empty", { method: "POST" }),
   listTrash: (opts: { cursor?: string | null; limit?: number } = {}) => {
@@ -378,10 +395,10 @@ export const api = {
     return request<AssetList>(`/assets/albums/${encodeURIComponent(id)}/assets${qs ? `?${qs}` : ""}`);
   },
   /** Add photos to an album. `count` is how many were new to it (already-present photos are skipped). */
-  addToAlbum: (id: string, ids: readonly string[]) => bulk(`/assets/albums/${encodeURIComponent(id)}/assets`, ids),
+  addToAlbum: (id: string, target: Target) => bulk(`/assets/albums/${encodeURIComponent(id)}/assets`, target),
   /** Take photos out of an album; they stay in the library. */
-  removeFromAlbum: (id: string, ids: readonly string[]) =>
-    bulk(`/assets/albums/${encodeURIComponent(id)}/assets/remove`, ids),
+  removeFromAlbum: (id: string, target: Target) =>
+    bulk(`/assets/albums/${encodeURIComponent(id)}/assets/remove`, target),
   /** Separate a RAW + JPEG pair into two photos (either file's id); they are not paired again automatically. */
   unpair: (id: string) => request<void>(`/assets/${encodeURIComponent(id)}/unpair`, { method: "POST" }),
   processing: () => request<Processing>("/assets/processing"),

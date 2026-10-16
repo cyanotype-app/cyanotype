@@ -1,6 +1,6 @@
 // Client for share links: the owner's calls (signed in, /assets/shares) and the public ones a visitor of /s/<token>
 // makes (no login, /assets/public/s/<token>). Types mirror apps/assets/src/routes/shares.rs and share_public.rs.
-import { ApiError } from "./api";
+import { ApiError, type Scope } from "./api";
 
 /** A share link as its owner sees it. */
 export interface ShareLink {
@@ -29,6 +29,9 @@ export interface ShareLink {
 export interface CreateShare {
   album_id?: string;
   asset_ids?: readonly string[];
+  /** "Select all": a view and the photos to leave out; the server resolves the set. */
+  scope?: Scope;
+  except?: readonly string[];
   title?: string;
   expires_at?: string | null;
   password?: string;

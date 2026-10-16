@@ -1,4 +1,4 @@
-export const photoCount = (n: number) => `${n} photo${n === 1 ? "" : "s"}`;
+export const photoCount = (n: number) => `${n.toLocaleString("en-US")} photo${n === 1 ? "" : "s"}`;
 
 const month = (d: Date) => d.toLocaleDateString(undefined, { month: "short", year: "numeric" });
 

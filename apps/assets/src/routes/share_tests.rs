@@ -1230,3 +1230,55 @@ async fn views_are_counted_and_responses_are_not_indexable_or_cacheable() {
     assert!(one["last_viewed_at"].is_string());
     t.teardown().await;
 }
+
+#[tokio::test]
+async fn a_scope_shares_the_whole_view_minus_except_and_never_other_peoples_photos() {
+    let Some(t) = TestDb::new().await else { return };
+    let (uid, key) = user(&t.pool, "a@example.com").await;
+    let (oid, _) = user(&t.pool, "b@example.com").await;
+    let app = app_with(&t.pool, default_state());
+    let a = asset(&t.pool, uid, "a.jpg").await;
+    let b = asset(&t.pool, uid, "b.jpg").await;
+    let c = asset(&t.pool, uid, "c.jpg").await;
+    let _theirs = asset(&t.pool, oid, "x.jpg").await;
+    sqlx::query("UPDATE assets SET favorite = true WHERE id = ANY($1)")
+        .bind(vec![a, b])
+        .execute(&t.pool)
+        .await
+        .unwrap();
+
+    let (st, v) = send(
+        &app,
+        "POST",
+        "/assets/shares",
+        &key,
+        Some(json!({"scope": "library", "except": [c]})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert_eq!(v["kind"], "selection");
+    assert_eq!(v["item_count"], 2);
+
+    let (st, v) = send(
+        &app,
+        "POST",
+        "/assets/shares",
+        &key,
+        Some(json!({"scope": "favorites"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert_eq!(v["item_count"], 2);
+
+    // An empty result, and a scope mixed with ids, are rejected.
+    let all = json!({"scope": "library", "except": [a, b, c]});
+    assert_eq!(
+        send(&app, "POST", "/assets/shares", &key, Some(all)).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let mixed = json!({"scope": "library", "asset_ids": [a]});
+    assert_eq!(
+        send(&app, "POST", "/assets/shares", &key, Some(mixed)).await.0,
+        StatusCode::BAD_REQUEST
+    );
+}

@@ -3,7 +3,7 @@
 //!
 //! | Request | Effect |
 //! |---|---|
-//! | `POST /assets/shares {album_id \| asset_ids, title?, expires_at?, password?, allow_download?, include_originals?}` | Create (`201`). |
+//! | `POST /assets/shares {album_id \| asset_ids, title?, expires_at?, password?, allow_download?, include_originals?}` | Create (`201`). `scope` (+ `except`) in place of `album_id` \| `asset_ids` shares a whole view, up to 1000 photos. |
 //! | `GET /assets/shares` | Your links, newest first, each with its token, state and live photo count. |
 //! | `GET /assets/shares/{id}` | One link. |
 //! | `PATCH /assets/shares/{id}` | `title`, `expires_at` (`null` = never), `password` (`null` removes it), `allow_download`, `include_originals`. |
@@ -23,7 +23,11 @@ use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::{share_public, trash::MAX_IDS};
+use super::{
+    scope::{self, MAX_EXCEPT, Scope},
+    share_public,
+    trash::MAX_IDS,
+};
 use crate::AppState;
 use cyanotype_service::{ApiError, ApiResult, AuthUser};
 
@@ -197,6 +201,10 @@ async fn get_one(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>
 struct CreateBody {
     album_id: Option<Uuid>,
     asset_ids: Option<Vec<Uuid>>,
+    /// "Select all": every photo of a view except `except`, resolved here (at most `MAX_IDS` of them).
+    scope: Option<Scope>,
+    #[serde(default)]
+    except: Vec<Uuid>,
     title: Option<String>,
     #[serde(default, with = "time::serde::rfc3339::option")]
     expires_at: Option<OffsetDateTime>,
@@ -223,14 +231,9 @@ async fn create(
     };
     let allow_download = req.allow_download.unwrap_or(true);
     let include_originals = allow_download && req.include_originals.unwrap_or(false);
-    let (kind, ids) = match (req.album_id, req.asset_ids) {
-        (Some(_), Some(_)) | (None, None) => {
-            return Err(ApiError::BadRequest(
-                "give either album_id or asset_ids (the photos to share)".into(),
-            ));
-        }
-        (Some(_), None) => ("album", Vec::new()),
-        (None, Some(ids)) => {
+    let (kind, ids) = match (req.album_id, req.asset_ids, req.scope) {
+        (Some(_), None, None) => ("album", Vec::new()),
+        (None, Some(ids), None) => {
             if ids.is_empty() {
                 return Err(ApiError::BadRequest("choose at least one photo to share".into()));
             }
@@ -238,6 +241,25 @@ async fn create(
                 return Err(ApiError::BadRequest(format!("at most {MAX_IDS} photos per link")));
             }
             ("selection", ids)
+        }
+        (None, None, Some(scope)) => {
+            if req.except.len() > MAX_EXCEPT {
+                return Err(ApiError::BadRequest(format!("at most {MAX_EXCEPT} except ids")));
+            }
+            let mut conn = s.db.acquire().await?;
+            let ids = scope::resolve(&mut conn, user.id, &scope, &req.except).await?;
+            if ids.is_empty() {
+                return Err(ApiError::BadRequest("choose at least one photo to share".into()));
+            }
+            if ids.len() > MAX_IDS {
+                return Err(ApiError::BadRequest(format!("at most {MAX_IDS} photos per link")));
+            }
+            ("selection", ids)
+        }
+        _ => {
+            return Err(ApiError::BadRequest(
+                "give either album_id, asset_ids or a scope (the photos to share)".into(),
+            ));
         }
     };
     if let Some(album) = req.album_id {
