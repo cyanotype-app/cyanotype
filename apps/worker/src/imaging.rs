@@ -196,7 +196,7 @@ pub fn derive_image(img: DynamicImage, orientation: u8) -> Result<Derived> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exif::testutil::{exif_app1, with_app1};
+    use crate::exif::testutil::{ascii, exif_app1, rationals, with_app1};
     use image::{Rgb, RgbImage};
 
     fn jpeg(w: u32, h: u32) -> Vec<u8> {
@@ -283,6 +283,66 @@ mod tests {
         assert_eq!(info.orientation, 8);
         let d = derive(&bytes, info.orientation).unwrap();
         assert_eq!((d.width, d.height), (100, 300));
+    }
+
+    /// The RIFF chunk types of a WebP file.
+    fn webp_chunks(b: &[u8]) -> Vec<String> {
+        assert!(b.starts_with(b"RIFF") && &b[8..12] == b"WEBP");
+        let mut chunks = Vec::new();
+        let mut pos = 12;
+        while pos + 8 <= b.len() {
+            let len = u32::from_le_bytes(b[pos + 4..pos + 8].try_into().unwrap()) as usize;
+            chunks.push(String::from_utf8_lossy(&b[pos..pos + 4]).into_owned());
+            pos += 8 + len + (len & 1);
+        }
+        chunks
+    }
+
+    /// Privacy: share links hand out the thumbnail and preview, so neither may carry the original's metadata.
+    /// A JPEG with a GPS position, camera make and XMP goes in; the WebP files that come out have no EXIF, XMP or
+    /// ICC chunk (only image data), and no EXIF reader finds a position in them.
+    #[test]
+    fn derived_images_carry_no_exif_or_gps() {
+        let gps = [
+            (0x0001, 2, ascii("N")),
+            (0x0002, 5, rationals(&[(48, 1), (51, 1), (30, 1)])),
+            (0x0003, 2, ascii("E")),
+            (0x0004, 5, rationals(&[(2, 1), (17, 1), (40, 1)])),
+        ];
+        let app1 = exif_app1(
+            &[
+                (0x010F, 2, ascii("SECRETMAKE")),
+                (0x0112, 3, 6u16.to_le_bytes().to_vec()),
+            ],
+            &[],
+            &gps,
+        );
+        let src = with_app1(&jpeg(1600, 900), &app1);
+        let info = crate::exif::parse(&src);
+        assert!(
+            info.latitude.is_some() && info.longitude.is_some(),
+            "fixture must have a position"
+        );
+
+        let d = derive(&src, info.orientation).unwrap();
+        for (name, webp) in [("thumb", &d.thumb_webp), ("preview", &d.preview_webp)] {
+            let chunks = webp_chunks(webp);
+            assert!(
+                chunks
+                    .iter()
+                    .all(|c| matches!(c.as_str(), "VP8 " | "VP8L" | "VP8X" | "ALPH")),
+                "{name} has metadata chunks: {chunks:?}"
+            );
+            for needle in [&b"EXIF"[..], b"XMP ", b"ICCP", b"SECRETMAKE", b"GPS"] {
+                assert!(
+                    !webp.windows(needle.len()).any(|w| w == needle),
+                    "{name} contains {:?}",
+                    String::from_utf8_lossy(needle)
+                );
+            }
+            let again = crate::exif::parse(webp);
+            assert_eq!((again.latitude, again.longitude, again.camera_make), (None, None, None));
+        }
     }
 
     #[test]

@@ -66,6 +66,7 @@ pub(super) async fn status(State(s): State<AppState>, user: AuthUser) -> ApiResu
                 count(*) FILTER (WHERE j.state = 'failed') AS failed
          FROM jobs j JOIN assets a ON a.id = j.asset_id
          WHERE a.owner_id = $1 AND a.purging_at IS NULL AND j.state <> 'done'
+           AND j.kind <> 'share_copy' -- made on demand for share links, not part of importing a photo
          GROUP BY j.kind ORDER BY j.kind",
     )
     .bind(user.id)

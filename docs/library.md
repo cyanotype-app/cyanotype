@@ -359,3 +359,115 @@ retry requeues only the caller's failed jobs. Web (vitest): idle (renders nothin
 a failed poll keeps the last status, the failures panel, retry (and its error). Browser: `e2e/mobile-overflow.spec.ts`
 renders the banner, the open panel (with a very long file name and error) and the state after a retry at 320 to 414 px
 and 1280 px.
+
+
+# Share links
+
+A share link gives anyone who has it a read-only view of an album or of a handful of photos, without an account.
+`https://<host>/s/<token>` opens the public viewer.
+
+## What the owner sees
+
+- **Share** in the library's selection bar, on an album page (the whole album, or the selected photos), and in the
+  photo viewer. The dialog asks for an optional title, an expiry (1 day, 1 week, 1 month, never), an optional password
+  and the download policy, then shows the link and copies it.
+- **Shared links** (`/shared`, reached from the Albums page so the top bar keeps its four buttons at 320 px) lists every
+  link with what it shares, its state (expired, password, originals), views and its address, with **Copy link**,
+  **Open**, **Edit** (title, expiry, password, downloads) and **Revoke** (confirmation).
+- An **album link** follows the album live: photos added later appear, trashed photos disappear (and come back when
+  restored), and deleting the album revokes the link. A **selection link** is a fixed set of photos; trashed or purged
+  photos disappear from it. A RAW + JPEG pair counts as one photo.
+
+## What a visitor sees
+
+A minimal page: the title (the link's own, else the album's), the number of photos, the expiry, a grid of thumbnails and
+a viewer with the preview-size image. Nothing else: no owner name or email (accounts have no display name, and the
+email is never sent), no file names, no camera data, no location, no links into the app, and no ids except the random
+ids of the shared photos themselves. The page is `noindex` three ways (`<meta name="robots">`, `X-Robots-Tag` on the
+page and on every API answer) and sends no `Referer`.
+
+- **Password links** show only a password form until the right password is given. The server then sets an `HttpOnly`,
+  `SameSite=Lax` cookie that lives six hours and is sent only to that one link's API path (and `Secure` when
+  `COOKIE_SECURE` is true, as for sessions). The cookie holds a random value; the database keeps its hash. Changing or
+  removing the password ends every unlock.
+- **Unknown, revoked and expired** links are the same `404` with the same body. A visitor cannot tell them apart.
+- **Downloads** (when the owner allows them) are plain links that redirect to a presigned attachment URL valid for one
+  minute; the bucket has no CORS policy, so these are navigations, never `fetch()`. For a RAW + JPEG pair both files
+  are offered only when the owner chose to include originals.
+
+## Privacy: no location leaves with a share
+
+| What a visitor can fetch | What it contains |
+|---|---|
+| Thumbnails and previews (`thumb.webp`, `preview.webp`) | Pixels only. The worker re-encodes to WebP from decoded pixels and writes no EXIF, XMP or ICC chunk. A worker test feeds a JPEG with a GPS position, camera make and serial number through the pipeline and asserts that the RIFF chunks are image data only, that none of those strings occur, and that an EXIF reader finds nothing. |
+| **Download, default** | A JPEG original is served as `derived/{user}/{asset}/share.jpg`: the same compressed image data, byte for byte (no re-encode), with every metadata segment removed (EXIF including GPS, serial numbers, embedded thumbnail and maker notes; XMP; IPTC/Photoshop; comments; MPF; any vendor APPn segment; anything stored after the end-of-image marker such as a motion-photo video) except the ICC colour profile, the Adobe colour marker and a freshly written EXIF block that holds only the orientation. A test builds a JPEG with location in the EXIF, XMP, IPTC, a comment, an MPF block and trailing data and asserts that none of it survives and that the pixels are identical. |
+| Download of **HEIC, RAW, PNG, WebP, AVIF** by default | Not offered. Their metadata cannot be stripped safely, so a share never serves them unless the owner opts in below. |
+| Download with **Include originals (contains location)** | The untouched files, with GPS, camera and everything else. The dialog and the links list say so, in a warning. Off by default, and it cannot be on while downloads are off. |
+
+The copy is made by the worker (`share_copy` job), not on request and not for every upload: a visitor who opens a JPEG
+in the viewer asks for it (`POST .../prepare`), the viewer shows "Preparing download..." and polls until the link
+appears. It is written once per photo, lives under the photo's `derived/` prefix (so a purge removes it) and is
+regenerable. Photos nobody downloads never cost storage.
+
+## Token storage and revocation
+
+The token is 24 random bytes (192 bits) from the OS-seeded CSPRNG, URL-safe base64, 32 characters, stored as-is in a
+unique index. The alternative, storing only a hash, would mean a link can be shown once and never copied again; the
+list page and **Copy link** depend on seeing it. Plaintext is acceptable here because everything the token opens is
+already something the owner chose to publish, a password link still needs its (argon2id-hashed) password, and anyone
+who can read the table can already read every photo's metadata and S3 key (database backups live in the bucket the
+originals live in, so they share a trust domain). Revoking deletes the row, and every public request reads the row, so
+a revoked link answers `404` on the next request; nothing is cached (`Cache-Control: no-store`).
+
+## Rate limits and lockout
+
+All per client IP (the same token-bucket limiter as login and register, in `cyanotype-service::ratelimit`; the client
+address follows `TRUSTED_PROXIES` exactly as in the auth service; IPv6 by /64):
+
+| Budget | Default | Spent by |
+|---|---|---|
+| Public requests | 120 burst, 120/min | every request under `/assets/public/s/` |
+| Dead tokens | 10 burst, 10/min | requests for a token that is unknown, revoked or expired (`429` after that, even for other paths) |
+| Passwords | 5 burst, 5/min | each password attempt, right or wrong |
+
+Per link, ten wrong passwords in a row (from any addresses) lock it for ten minutes (`429` with `Retry-After`, even for
+the right password); a right password or the owner changing the password clears it. Limits are in memory per assets
+instance.
+
+## API
+
+Owner (assets service, signed in; another user's link or an unknown id is `404`):
+
+| Request | Effect |
+|---|---|
+| `POST /assets/shares {album_id \| asset_ids, title?, expires_at?, password?, allow_download?, include_originals?}` | Create (`201`, with the `token`). Exactly one of `album_id` and `asset_ids` (1 to 1000, your live photos; a RAW's id means its JPEG). The expiry must be in the future, the password 4 to 200 characters, the title at most 200. |
+| `GET /assets/shares` | `{items}`: `id`, `kind`, `album`, `title`, `token`, `has_password`, `allow_download`, `include_originals`, `expires_at`, `expired`, `item_count` (what a visitor sees now), `view_count`, `last_viewed_at`, times. Newest first. |
+| `GET\|PATCH\|DELETE /assets/shares/{id}` | One link; edit `title`, `expires_at` (`null` = never), `password` (`null` removes), `allow_download`, `include_originals`; revoke. |
+
+Public (no login; the gateway sends `/assets/*` to the assets service, `/s/*` to the web app):
+
+| Request | Answer |
+|---|---|
+| `GET /assets/public/s/{token}` | Info (`title`, `kind`, `item_count`, `allow_download`, `include_originals`, `expires_at`); `{needs_password: true, unlocked: false}` for a locked password link. Counts as a view (metric `cyanotype.shares.views`, log line with `share_id`). |
+| `POST .../unlock {password}` | `204` + cookie, `401` wrong password, `429` limited or locked. |
+| `GET .../items?limit&cursor` | `{items, next_cursor}`: `id`, `width`, `height`, `sort_time`, `thumbhash`, `thumb_url`, `preview_url` (presigned, 10 minutes), `downloads: [{id, label, size_bytes}]`, `download_pending`. Same order and keyset paging as the library. |
+| `GET .../items/{id}` | One item, same shape. |
+| `POST .../items/{id}/prepare` | `202 {pending}`: queue the download copy if it is needed. |
+| `GET .../items/{id}/download?file=` | `307` to a presigned attachment URL (one minute). `403` when downloads are off, `409` while the copy is being made, `404` for anything that is not offered (a RAW without "include originals", HEIC by default, another photo). |
+
+Migration `0009_shares.sql` (`shares`, `share_assets`, `share_unlocks`, `assets.share_copy_at`).
+
+## Logs
+
+Share events log `share_id` and, for downloads, the asset id; never the token, a password or a presigned URL. The
+assets service logs the route template, and the gateway's access and error logs blank the token (`docs/observability.md`).
+
+## Tests
+
+`cargo test` (DB-backed, `DATABASE_URL`): create, list, edit and revoke, owner isolation, validation, tokens,
+album-live against selection-fixed, trash, restore and purge, paging, someone else's photos never shown, identical `404`s,
+rate limits and lockout, the password flow and cookie, downloads on and off and with originals, pairs, a JPEG with a
+position, a camera and an owner behind it that exposes none of them, view counts and headers. Worker: the JPEG stripper
+and the WebP-has-no-metadata test. Web (vitest): the share dialog, the links page, the public viewer. Browser:
+`e2e/mobile-overflow.spec.ts` renders the dialog, the links page and the public viewer (grid, viewer with downloads,
+password form, unavailable) at 320 to 414 px and 1280 px.

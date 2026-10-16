@@ -8,6 +8,8 @@ import { ApiKeys } from "./pages/ApiKeys";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { Register } from "./pages/Register";
+import { ShareView } from "./pages/ShareView";
+import { SharedLinks } from "./pages/SharedLinks";
 import { Trash } from "./pages/Trash";
 import { UploadProvider } from "./upload/UploadProvider";
 import { UploadTray } from "./upload/UploadTray";
@@ -19,11 +21,14 @@ export function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/logout" element={<Logout />} />
+      {/* Public share links: no login, outside the signed-in shell. */}
+      <Route path="/s/:token" element={<ShareView />} />
       <Route element={<RequireAuth />}>
         <Route path="/library" element={<Library key="all" />} />
         <Route path="/favorites" element={<Library key="favorites" favorites />} />
         <Route path="/albums" element={<Albums />} />
         <Route path="/albums/:id" element={<AlbumPage />} />
+        <Route path="/shared" element={<SharedLinks />} />
         <Route path="/trash" element={<Trash />} />
         <Route path="/settings/api-keys" element={<ApiKeys />} />
       </Route>

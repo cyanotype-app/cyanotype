@@ -164,6 +164,7 @@ pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job, info: &JobInfo) -> Result<Outc
     match job.kind.as_str() {
         jobs::KIND_METADATA => metadata(ctx, job, &asset, kind, bytes).await?,
         jobs::KIND_THUMBNAIL => return thumbnail(ctx, job, info, &asset, kind, bytes, held, base).await,
+        jobs::KIND_SHARE_COPY => return share_copy(ctx, job, &asset, kind, bytes).await,
         other => anyhow::bail!("no handler for job kind {other}"),
     }
     Ok(Outcome::Done)
@@ -188,6 +189,47 @@ async fn pair(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
         Paired::NotApplicable => Ok(Outcome::Skipped("not a RAW or JPEG/HEIC, or not live")),
         Paired::NoMatch => Ok(Outcome::Skipped("no counterpart")),
     }
+}
+
+/// Write `derived/{owner}/{asset}/share.jpg`: the JPEG original minus all metadata but orientation, which is what share
+/// links let visitors download (see `strip`). Other formats have no such copy (nothing here can strip them), so the
+/// job finishes without one and shares only offer their original when the owner opted in to that.
+async fn share_copy(
+    ctx: &Arc<Ctx>,
+    job: &jobs::Job,
+    asset: &AssetRow,
+    kind: Kind,
+    bytes: Arc<Vec<u8>>,
+) -> Result<Outcome> {
+    if kind != Kind::Jpeg {
+        return Ok(Outcome::Skipped("not a JPEG"));
+    }
+    let stripped = tokio::task::spawn_blocking(move || {
+        let orientation = exif::parse(&bytes).orientation;
+        crate::strip::strip_jpeg(&bytes, orientation)
+    })
+    .await
+    .context("share copy task panicked")?
+    .map_err(|e| anyhow::Error::from(Permanent(format!("{e:#}"))))?;
+    ctx.storage
+        .put_bytes(&keys::share_copy(asset.owner_id, job.asset_id), stripped, "image/jpeg")
+        .await?;
+    // Same publish rule as thumbnails: a purge that started while this ran has removed (or will remove) derived
+    // objects, so take back what was just written.
+    let published = sqlx::query("UPDATE assets SET share_copy_at = now() WHERE id = $1 AND purging_at IS NULL")
+        .bind(job.asset_id)
+        .execute(&ctx.db)
+        .await
+        .context("mark share copy")?
+        .rows_affected();
+    if published == 0 {
+        ctx.storage
+            .delete_prefix_all_versions(&keys::derived_prefix(asset.owner_id, job.asset_id))
+            .await
+            .context("remove derived objects of a deleted asset")?;
+        return Ok(Outcome::Skipped("asset deleted while writing the share copy"));
+    }
+    Ok(Outcome::Done)
 }
 
 struct Metadata {

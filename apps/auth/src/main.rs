@@ -1,5 +1,4 @@
 //! Auth service: registration, login, logout, `/auth/me`. Routes live under `/auth/*`.
-mod ratelimit;
 mod routes;
 mod settings;
 
