@@ -3,6 +3,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { installLibrary, makeAssets, pageOf, timelineOf, type FakeAsset } from "./fakeLibrary";
 
 const SHOT_DIR = process.env.SHOT_DIR;
 const RUNS: { width: number; scheme: "light" | "dark" }[] = [
@@ -87,7 +88,8 @@ async function mock(page: Page) {
         if (am[2]) return route.fulfill(json({ items: assets.slice(0, 18), next_cursor: null, next_before: null }));
         return route.fulfill(json(albums.find((a) => a.id === am[1]) ?? albums[0]));
       }
-      if (p === "/assets" && m === "GET") return route.fulfill(json({ items: assets, next_cursor: null, next_before: null }));
+      if (p === "/assets/timeline" && m === "GET") return route.fulfill(json(timelineOf(assets as FakeAsset[], false)));
+      if (p === "/assets" && m === "GET") return route.fulfill(json(pageOf(assets as FakeAsset[], u.searchParams)));
       const dm = /^\/assets\/(a\d+)$/.exec(p);
       if (dm && m === "GET") {
         const a = assets.find((x) => x.id === dm[1])!;
@@ -233,6 +235,36 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("dialog", { name: "Add photos" }).getByRole("button", { name: "Cancel" }).click();
       await page.getByRole("button", { name: /Open IMG_1000/ }).click();
       await check("album-lightbox");
+
+      // Timeline of a larger library: month and day headers, the scrubber (resting and dragged), hearts, downloads.
+      await installLibrary(page, makeAssets(4000), (r) => r.fallback());
+      await open("/library", /Open IMG_00000/);
+      await page.locator(".scrubber").waitFor();
+      await check("timeline");
+      const handle = (await page.getByRole("slider").boundingBox())!;
+      const rail = (await page.locator(".scrubber").boundingBox())!;
+      await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(handle.x + handle.width / 2, rail.y + rail.height * 0.55, { steps: 6 });
+      await page.locator(".scrubber-bubble").waitFor();
+      await check("timeline-scrubber-drag");
+      await page.mouse.up();
+      await page.locator(".tile-cell img").first().waitFor();
+      await check("timeline-scrolled");
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.getByRole("button", { name: "Select", exact: true }).click();
+      await page.getByRole("button", { name: /Select IMG_00001/ }).click();
+      await check("timeline-select");
+      await page.getByRole("button", { name: "Done" }).click();
+      await page.getByRole("button", { name: /Open IMG_00000/ }).click(); // a RAW + JPEG pair
+      await page.getByRole("dialog").getByRole("button", { name: "Download" }).click();
+      await page.getByRole("link", { name: /Download RAW/ }).waitFor();
+      await check("lightbox-download-pair");
+      await page.getByRole("button", { name: "Add to favorites" }).click();
+      await check("lightbox-favorited");
+      await page.keyboard.press("Escape");
+      await open("/favorites", /Open IMG_00003/);
+      await check("favorites-view");
 
       // API keys
       await open("/settings/api-keys", "API keys");

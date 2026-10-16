@@ -211,3 +211,105 @@ Bulk trash/restore/purge counts are photos: a pair is `1`.
 `cargo test` (DB-backed): the pure matching rule (stems, case, +/- 1 s, missing time, camera fallback, ambiguity,
 RAW-only, two JPEGs); pairing in either order, trash/restore/purge/expiry of a pair, albums, unpair persistence,
 re-upload and restore, backfill idempotency, concurrent pairing. Web: badge, viewer info, Unpair.
+
+# Timeline, favorites and downloads
+
+## What the user sees
+
+- **Date-grouped library.** Photos sit under month headers ("October 2026") and day sub-headers ("Wed, Oct 14"), newest
+  first (`coalesce(taken_at, file_modified_at, created_at) DESC, id DESC`, as before). Days are UTC calendar days of
+  that time, the same bucketing on server and client, so a photo never changes day between the counts and the list.
+- **Virtualized.** Only the rows near the viewport exist in the page (about 20 to 40 tiles on a phone or desktop, a
+  few hundred at most), however large the library is. Scrolling, selection, shift-range, select all, the lightbox and
+  uploads work as before; a tile whose photo has not arrived yet is a grey placeholder, and photos arrive with their
+  ThumbHash as before.
+- **Scrubber.** A thin rail on the right edge lists the years (and a tick per month) of the whole library. Drag the
+  handle (mouse, touch or pen) and a bubble names the month under it ("October 2022"); let go and the page shows that
+  month. Tap a year to go to its first month, tap anywhere else on the rail to go to that point. With the keyboard
+  the handle is a slider: Up/Down move a month, PageUp/PageDown a year, Home/End the ends. The rail is not shown for a
+  library that fits on a couple of screens. It is 26px wide (30px on touch screens) and leaves its own gutter, so it
+  never covers tiles.
+- **Favorites.** A heart on each tile (on hover on desktop, always while favorited; on touch screens it only marks
+  favorites, to avoid accidental taps), a heart in the photo viewer, and **Favorite / Unfavorite** in the selection bar
+  (it unfavorites when every selected photo is already a favorite). **Favorites** (`/favorites`, a tab next to **All
+  photos** at the top of the library, not a new top-bar button, so the phone nav keeps fitting at 320px) shows only
+  favorites in the same timeline. In that view a bulk Unfavorite removes the photos; a single heart keeps the tile
+  until the page is reloaded so an accidental click can be undone. Albums have hearts too.
+- **Download.** The photo viewer's **Download** saves the original file under its original name. For a RAW + JPEG pair
+  it opens a chooser with **Download JPEG** (or HEIC/AVIF) and **Download RAW** and the sizes. (This replaces the old
+  "Original" link, which opened the file in a tab.)
+
+## How it works
+
+**Layout from counts.** `GET /assets/timeline` returns `{total, days: [{day, count}]}`, newest day first, for photos
+that are not trashed and not hidden RAW files (`?favorite=true` for favorites). From that the web app builds rows of
+fixed height: a month header (52px), a day header (34px) and `ceil(count / columns)` rows of square tiles per day.
+Because every height is known, the page is exactly as tall as the library needs, and scrollbar and scrubber positions
+are stable before any photo is loaded. (The query selects only the timeline expression, so it is an index-only scan of
+`assets_timeline_idx`, or `assets_favorites_idx` for favorites; a test asserts the plan. About 50,000 photos over ten
+years give a few thousand rows of JSON.)
+
+**Windowed virtualization.** `@tanstack/react-virtual` (pinned `3.14.20`) renders the visible rows plus 3 rows of
+overscan, with the page itself as the scroll container (a window virtualizer), so sticky bars, browser scroll
+restoration and touch scrolling are untouched. Columns follow the width (3 below 400px, 4 up to 600px, then as many
+tiles of at least 152px/192px as fit).
+
+**Photos by global index.** The position of a photo in the whole library (newest = 0) is the sum of the counts before
+its day plus its place within the day. The web app keeps loaded photos in a map keyed by that index. For the photos on
+screen (plus 60 ahead) it fetches the first missing one's page: `GET /assets?before=<end of that photo's day>&limit=120`
+starts exactly at the top of that day, so a jump to any month fetches one page there and nothing before it; the
+response's `next_cursor` is remembered for the following page. Each stored page is checked against the counts (every
+photo must fall on the day its index says); if not (photos were added or removed in between) the counts are read again.
+Jumping into the middle of a very large day walks from the top of that day, one page at a time. While the scrubber is
+being dragged nothing is fetched; it is fetched when the handle is let go.
+
+**Bounded memory.** Beyond 2,400 loaded photos those farther than 1,000 from the viewport are dropped (the selection is
+kept) and fetched again if scrolled back to, which also refreshes their short-lived thumbnail URLs. "Select all"
+therefore means everything currently loaded, as before.
+
+**Changes.** Moving to trash removes the photos locally and closes the gaps (later photos move up, day counts shrink);
+anything that adds photos (an upload finishing, Undo, unpair) re-reads the counts and the page on screen and swaps both
+in at once, so nothing flickers; while selecting, that waits for selection mode to end.
+
+## API
+
+| Request | Effect |
+|---|---|
+| `GET /assets/timeline[?favorite=true]` | `{total, days: [{day: "YYYY-MM-DD", count}]}`, newest first, owner-scoped. |
+| `GET /assets?before=<RFC 3339>&limit=` | A page starting at a date: photos strictly older than `before` (the keyset position for "the end of that day"); continue with `next_cursor`. Existing parameter, now covered by tests with the day counts. |
+| `GET /assets?favorite=true` | Favorites only (also combines with `before` / `cursor`). Items of every listing (library, trash, albums) and `GET /assets/{id}` carry `favorite`. |
+| `POST /assets/favorite {ids, favorite}` | Set or clear the flag. `{count}` = photos that changed; unknown, foreign and trashed ids are ignored; at most 1000 ids; a hidden RAW's id means its primary. Idempotent. |
+| `GET /assets/{id}/download[?file=<id>]` | `307` to a presigned S3 URL (valid 60 seconds, `Cache-Control: no-store`) that signs `response-content-disposition: attachment; filename="<original name>"` (names with quotes, slashes, control characters or non-ASCII get a sanitised `filename` plus an RFC 5987 `filename*`). `file` is the id of the RAW of a pair (from `paired`). `404` for another user's photo, a trashed one, a RAW as a photo of its own, or a file that is not part of the photo. |
+
+**Downloads need no bucket CORS.** The viewer's Download is a plain `<a href="/assets/{id}/download">`: a top-level
+navigation to the API (session cookie, same origin) that is redirected to the bucket, which answers with an
+`attachment` disposition, so the browser saves the file and the page stays where it is. Nothing uses `fetch()`/XHR
+against the bucket (that is what would need CORS), the bytes never pass through the API, and the URL is signed when the
+link is clicked, so a page left open for hours never holds an expired one. The browser test serves the redirect target
+from another origin that sends no CORS headers and checks the requests were navigations.
+
+## Model
+
+Migration `0006_favorites.sql`: `assets.favorite boolean NOT NULL DEFAULT false` (instant: constant default) and the
+partial index `assets_favorites_idx (owner_id, timeline expression DESC, id DESC) WHERE favorite AND deleted_at IS NULL
+AND primary_id IS NULL`. For a RAW + JPEG pair the visible primary carries the flag; when a pair forms, a flag the RAW
+had on its own moves to the primary. Trashing keeps the flag (restoring brings the photo back as a favorite).
+
+## Tests
+
+- `cargo test` (DB-backed): day counts (exclude trashed photos and hidden RAWs, owner isolation, file-mtime and
+  created-at fallbacks, favorites only, empty library, index-only plan on both indexes); the `before` position and
+  cursor continuation without gaps, with favorites and other owners; favorites (bulk, idempotent, owner isolation,
+  trashed, trash/restore, albums, pairs through either id, flag handover when pairing, 1000 cap, auth); downloads
+  (redirect, signed attachment disposition, 60 second TTL, RAW of a pair, wrong file, hidden RAW, other user, trashed,
+  restored, escaping); the disposition header builder.
+- Web (vitest): grouping, layout, row/offset/month lookup, index arithmetic, page placement and staleness, eviction,
+  removal, lightbox run, scrubber mapping and mark thinning; the scrubber (drag, tap, year jump, keyboard, follows the
+  page); the library (headers, virtualized tile count and paging by scroll, lightbox across page boundaries, hearts,
+  bulk favorite, Favorites view, selection and trash with the new store, uploads); lightbox heart and downloads.
+- Browser (`pnpm test:mobile`, Playwright with a mocked API): `e2e/timeline.spec.ts` builds a 20,000-photo library over
+  seven years and checks the number of tile cells in the DOM at the top, after scrubber jumps (drag, year tap, end,
+  start) and while scrolling (at most 300 allowed; about 20 to 40 observed), that a jump issues at most a few list
+  requests and starts at the target date, favorites and downloads (the redirect target is a separate origin without
+  CORS headers). `e2e/mobile-overflow.spec.ts` also covers the headers, scrubber (resting and dragged), selection bar
+  with the new button, favorites view and the pair download chooser at 320 to 414px and 1280px with no sideways scroll.
