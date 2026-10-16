@@ -1,0 +1,156 @@
+name: Reindex
+# Disaster recovery on the VPS, without a local CLI: runs `cyanotype reindex` as a one-shot container next to the
+# stack, over SSH exactly like deploy.yml (same GitHub Environment `dev`, same secrets: DEPLOY_HOST, DEPLOY_USER,
+# DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS). Read docs/recovery.md first.
+#
+# It uses the image version already on the server (CYANOTYPE_VERSION in .env.prod), so deploy a release that includes
+# `reindex` before running it. Default is a DRY RUN: it reports what it would change and writes nothing. Applying
+# needs mode=apply AND the word REINDEX in `confirm`. Stop auth/assets/worker on the server first when recovering
+# from a restored dump (docs/recovery.md); this workflow does not touch running services.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry-run reports only (default). apply writes (needs confirm=REINDEX)."
+        type: choice
+        options: [dry-run, apply]
+        default: dry-run
+      confirm:
+        description: "Type REINDEX to allow mode=apply."
+        required: false
+        default: ""
+      mark_missing:
+        description: "--mark-missing: move rows whose original is gone from the bucket to the trash"
+        type: boolean
+        default: false
+      rethumb:
+        description: "--rethumb: re-queue thumbnail jobs for rows missing thumbnail/preview"
+        type: boolean
+        default: false
+      backfill_metadata:
+        description: "--backfill-metadata: copy existing originals onto themselves to add metadata (doubles their storage on a versioned bucket until old versions are purged)"
+        type: boolean
+        default: false
+      no_manifest:
+        description: "--no-manifest: ignore the daily per-user manifests"
+        type: boolean
+        default: false
+      assign_to:
+        description: "--assign-to: email of an existing account that adopts objects whose owner no longer exists"
+        required: false
+        default: ""
+
+concurrency:
+  group: deploy-dev # never next to a deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  reindex:
+    name: Reindex (${{ inputs.mode }})
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+    steps:
+      - name: Check out (for the scripts)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs
+        id: args
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+          MARK_MISSING: ${{ inputs.mark_missing }}
+          RETHUMB: ${{ inputs.rethumb }}
+          BACKFILL: ${{ inputs.backfill_metadata }}
+          NO_MANIFEST: ${{ inputs.no_manifest }}
+          ASSIGN_TO: ${{ inputs.assign_to }}
+        run: |
+          set -euo pipefail
+          flags=()
+          if [ "$MODE" = apply ]; then
+            [ "$CONFIRM" = REINDEX ] || { echo "::error::mode=apply needs the confirm input to be exactly REINDEX"; exit 1; }
+            flags+=(--apply)
+          fi
+          [ "$MARK_MISSING" = true ] && flags+=(--mark-missing)
+          [ "$RETHUMB" = true ] && flags+=(--rethumb)
+          [ "$BACKFILL" = true ] && flags+=(--backfill-metadata)
+          [ "$NO_MANIFEST" = true ] && flags+=(--no-manifest)
+          if [ -n "$ASSIGN_TO" ]; then
+            [[ "$ASSIGN_TO" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || { echo "::error::assign_to must be an email address"; exit 1; }
+            flags+=(--assign-to "$ASSIGN_TO")
+          fi
+          # One line, newline-free: every element was validated above.
+          echo "flags=${flags[*]:-}" >> "$GITHUB_OUTPUT"
+          echo "reindex flags: ${flags[*]:-(dry run)}"
+
+      - name: Configure SSH (pinned host key, no TOFU)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<CFG
+          Host target
+            HostName $DEPLOY_HOST
+            User $DEPLOY_USER
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            BatchMode yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+          CFG
+          sed -i 's/^ *//' ~/.ssh/config
+
+      - name: Run reindex on the server
+        id: run
+        env:
+          DEPLOY_SSH: target
+          FLAGS: ${{ steps.args.outputs.flags }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086  # FLAGS holds only validated flags, split on purpose
+          set +e
+          scripts/reindex.sh $FLAGS 2>&1 | tee reindex.out
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Summary
+        if: always()
+        env:
+          MODE: ${{ inputs.mode }}
+          STATUS: ${{ steps.run.outputs.status }}
+        run: |
+          {
+            echo "## Reindex (${MODE})"
+            if [ ! -s reindex.out ]; then echo; echo "No output (the run did not reach the server)."; exit 0; fi
+            report="$(grep '^{"mode"' reindex.out | tail -n 1 || true)"
+            if [ -z "$report" ]; then
+              echo; echo "No report was printed (exit status ${STATUS:-?}). Last log lines:"; echo '```'; tail -n 20 reindex.out; echo '```'
+              exit 0
+            fi
+            echo
+            if [ "$MODE" = dry-run ]; then echo "**Dry run: nothing was changed.**"; else echo "**Applied.**"; fi
+            echo
+            echo "| Counter | Value |"; echo "|---|---|"
+            jq -r 'to_entries[] | select(.value|type=="number") | "| \(.key) | \(.value) |"' <<<"$report"
+            echo
+            echo "### Per user"; echo
+            echo "| User | objects | indexed | orphans | skipped (no such user) | missing originals | missing thumbs |"; echo "|---|---|---|---|---|---|---|"
+            jq -r '.users | to_entries[] | "| \(.key)\(if .value.unknown_user then " (no such user)" else "" end) | \(.value.objects) | \(.value.present) | \(.value.orphans) | \(.value.orphans_skipped) | \(.value.missing_originals) | \(.value.thumbs_missing) |"' <<<"$report"
+            echo
+            echo "### Examples"; echo
+            jq -r '.samples | to_entries[] | "**\(.key)**\n" + (.value | map("- `" + . + "`") | join("\n")) + "\n"' <<<"$report"
+          } >> "$GITHUB_STEP_SUMMARY"

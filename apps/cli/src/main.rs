@@ -2,6 +2,7 @@ mod api;
 mod cache;
 mod config;
 mod import;
+mod reindex;
 mod walk;
 
 use std::io::{BufRead, IsTerminal, Write};
@@ -25,6 +26,10 @@ struct Cli {
 enum Command {
     /// Apply database migrations. The only place migrations run; services never do it on boot.
     Migrate,
+    /// Rebuild or repair the asset index from the bucket (disaster recovery). Dry run unless --apply.
+    Reindex(reindex::ReindexArgs),
+    /// Write today's per-user recovery manifests to the bucket now (the assets service also does this daily).
+    Manifest,
     /// Log in to a Cyanotype server and store an API key for the other commands.
     Login(LoginArgs),
     /// Import photos and videos from files and directories (resumable; safe to re-run).
@@ -72,6 +77,8 @@ async fn run() -> Result<ExitCode> {
             db::migrate(&db::connect(&cfg.url).await?).await?;
             tracing::info!("migrations applied");
         }
+        Command::Reindex(a) => return reindex::run(a).await,
+        Command::Manifest => reindex::write_manifests().await?,
         Command::Login(a) => login(a).await?,
         Command::Status => status().await?,
         Command::Import(a) => {
