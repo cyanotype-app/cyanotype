@@ -22,9 +22,20 @@ webp = "0.3.1"
 # HEIC/HEIF/AVIF. libheif is vendored (pinned by this crate version: libheif-sys 5.3.1 = libheif 1.23.1)
 # and linked statically, so every build uses the same libheif. See docs/build.md.
 libheif-rs = { version = "=3.0.0", default-features = false, features = ["embedded-libheif", "v1_21"] }
+# The tile calls (heif_tiling.h) are not wrapped by libheif-rs; heif_tiles.rs declares them. Same crate and features
+# libheif-rs already resolves to, so there is still exactly one statically linked libheif.
+libheif-sys = { version = "=5.3.1", default-features = false, features = ["v1_21"] }
 # RAW: metadata fallback and the last-resort develop path (pure Rust, from dnglab).
 rawler = { version = "=0.8.0", default-features = false }
 memchr = "2"
+# DCT-scaled JPEG decoding (decode at 1/2, 1/4, 1/8 size); the `image` crate has no scaled path.
+jpeg-decoder = { version = "=0.3.2", default-features = false }
+# PNG rows are decoded one at a time and averaged down as they arrive. Same version the `image` crate resolves to.
+png = { version = "=0.18.1", default-features = false }
 
 time.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# Test fixtures only: writes progressive / CMYK / restart-interval JPEGs, which the `image` encoder cannot.
+jpeg-encoder = { version = "=0.7.1", default-features = false }

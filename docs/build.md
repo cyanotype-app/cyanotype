@@ -60,8 +60,10 @@ subprocess is shipped; see "Supported formats" below for what that means in prac
 
 | Kind | Detected by | Metadata | Thumbnail and preview |
 |---|---|---|---|
-| JPEG, PNG, WebP | magic bytes | EXIF via kamadak-exif; size from the header | full decode, resize, orient by EXIF |
-| HEIC / HEIF / AVIF | `ftyp` brands (`heic`, `mif1`, `avif`, ...) | EXIF from the HEIF Exif item; size is the display size | libheif full-size decode to 8-bit RGB(A), resize. irot/imir are applied by libheif; the EXIF orientation is ignored (never applied twice). 10/12-bit is down-converted. HDR gain maps are ignored (the SDR base image is used). Only the primary image is decoded (no burst or sequence frames). |
+| JPEG | magic bytes | EXIF via kamadak-exif; size from the header | DCT-scaled decode: the IDCT produces 1/2, 1/4 or 1/8 of the size (the smallest that still covers the 1440 px preview), then resize and orient by EXIF. Images too small to benefit are decoded whole. |
+| PNG | magic bytes | EXIF via kamadak-exif; size from the header | rows are decoded one at a time and averaged down as they arrive (interlaced PNGs are decoded whole), then resize and orient by EXIF |
+| WebP | magic bytes | EXIF via kamadak-exif; size from the header | full decode, resize, orient by EXIF (the decoder has no row or scaled interface) |
+| HEIC / HEIF / AVIF | `ftyp` brands (`heic`, `mif1`, `avif`, ...) | EXIF from the HEIF Exif item; size is the display size | grid images (iPhone and most phones: independently coded tiles, usually 512x512) are decoded tile by tile through libheif's tile API and averaged down as they arrive; anything else (single-image HEIC, AVIF, images with alpha) is decoded whole by libheif and read straight from its plane. irot/imir are applied by libheif; the EXIF orientation is ignored (never applied twice). 10/12-bit is down-converted. HDR gain maps are ignored (the SDR base image is used). Only the primary image is decoded (no burst or sequence frames). |
 | RAW (CR2, CR3, NEF, NRW, ARW, SRF/SR2, RAF, ORF, RW2/RWL, PEF, DNG, SRW, 3FR, IIQ, ERF, KDC, MRW, X3F, CRW, ...) | CR3 `ftyp crx`, RAF/CRW/MRW/X3F/RW2/ORF magics, TIFF magic with a non-.tif name | EXIF from the TIFF container, else from the embedded JPEG (RAF, RW2), topped up from rawler (CR3 and others). Size is the real sensor size (rawler, else RW2 sensor tags, else the camera's EXIF dimensions, else the largest embedded JPEG), never the preview's | the embedded full-size JPEG preview (found by scanning for well-formed JPEG streams, so it works across vendors), oriented once. Only if there is no usable preview: rawler's develop pipeline, pixel-capped (see below). |
 
 Routing is by content: the worker downloads the original and sniffs it, so an
@@ -89,24 +91,68 @@ says why), not attempted:
    `+ estimated decode peak` once the header says how big the image is. Requests queue first come first
    served. A job whose own need exceeds the whole budget fails permanently.
 
-The decode estimate is bytes per pixel, measured with `apps/worker/src/memcal.rs`
-(`CYANOTYPE_MEMCAL_FILE=<file> cargo test -p cyanotype-worker memcal -- --nocapture`, one process per file):
+The decode estimate depends on the path (`apps/worker/src/media.rs` picks it; the `jobs.decode_path` metric says which ran),
+and is measured with `apps/worker/src/memcal.rs`
+(`CYANOTYPE_MEMCAL_FILE=<file> cargo test -p cyanotype-worker --release memcal -- --nocapture`, one process per file;
+`CYANOTYPE_MEMGEN=...` writes synthetic JPEGs and HEIC grids, see the test's doc comment):
 
 | Path | Estimate | Measured (peak RSS growth) |
 |---|---|---|
-| JPEG / PNG, RGB8 | 5 B/px | 3.5-4 B/px (50 MP JPEG: 174 MB) |
-| RGBA8 (alpha PNG/WebP) | 12 B/px | 11 B/px (20 MP: 223 MB) |
-| HEIC / AVIF, 8-bit | 12 B/px | 8.3 B/px (24 MP: 200 MB) |
-| HEIC / AVIF, 10-bit+ | 16 B/px | not measured separately |
+| JPEG, baseline, DCT-scaled | scaled pixels x (3 + sampled components) + 24 MB, i.e. 30-40 MB for any size | 50 MP: 26 MB; 100 MP: 21 MB; 200 MP: 29 MB |
+| JPEG, progressive, DCT-scaled | the above + 2.3 B per source pixel per sample (4:2:0: 3.5 B/px) for the coefficients | 50 MP: 160 MB; 100 MP: 295 MB |
+| JPEG, too small to scale (long edge < 2880 px), WebP, interlaced PNG, PNG < ~4000 px | 5 B/px RGB8, 12 B/px RGBA8 | RGB8 3.5-4 B/px, RGBA8 11 B/px |
+| PNG, streamed | output buffer (about 1.5-2.9k px on the long edge, 12 B/px) + 24 MB | 50 MP: 30 MB |
+| HEIC grid, tile by tile | output buffer + 24 B per tile pixel + 40 MB, i.e. 65-85 MB for any size | 48 MP: 35 MB; 100 MP: 36 MB; 200 MP: 48 MB |
+| HEIC / AVIF single image (no grid), 8-bit | 6 B/px + output buffer | 50 MP: 238 MB (4.2 B/px + buffer) |
+| HEIC / AVIF single image, 10-bit+ | 9 B/px + output buffer | 20 MP: 151 MB |
+| HEIC / AVIF with alpha | as single image (alpha is decoded whole) | |
 | RAW embedded preview | 6 B/px of the *preview* | 6 B/px (12 MP preview: 73 MB) |
 | RAW develop (rawler) | 48 B/px of the sensor | 36-43 B/px (4 MP: 179 MB) |
 
-Consequences with the default 640 MB budget and a typical 100 MB original (leaving about 490 MB for the
-decode): a 100 MP RAW is fine **if it has an embedded preview** (the worker picks the cheapest preview that is at
-least 1440 px, usually 1.6 MP; a preview that would need more than the budget is never decoded), but with
-no preview it is refused (the develop path needs about 4.8 GB, and is also capped at 150 MP regardless of
-budget, and disabled with `WORKER_RAW_DEVELOP=0`). In practice the develop fallback only runs for sensors
-up to roughly 10 MP. HEIC/AVIF tops out around 45 MP and JPEG/PNG around 100 MP.
+Before and after on the same synthetic files (release build, this host; time is the whole thumbnail + preview +
+ThumbHash render, one thread):
+
+| File | Before: peak / time | After: peak / time |
+|---|---|---|
+| JPEG 50 MP baseline (8000x6250) | 178 MB / 0.67 s | 26 MB / 0.37 s |
+| JPEG 50 MP progressive | 296 MB / 0.90 s | 160 MB / 0.64 s |
+| JPEG 100 MP baseline (12500x8000) | 336 MB / 1.13 s | 21 MB / 0.51 s |
+| JPEG 100 MP progressive | 590 MB / 1.78 s | 294 MB / 0.99 s |
+| JPEG 200 MP baseline (16000x12500) | refused by the decoder (allocation limit) | 29 MB / 0.91 s |
+| HEIC 48 MP grid (8064x6048, 512 px tiles) | 285 MB / 4.98 s | 35 MB / 3.39 s |
+| HEIC 48 MP grid, rotated | 285 MB / 5.06 s | 34 MB / 3.11 s |
+| HEIC 100 MP grid | 589 MB / 9.1 s | 36 MB / 6.8 s |
+| HEIC 200 MP grid | 1168 MB / 18.1 s | 48 MB / 13.1 s |
+| HEIC 50 MP single image | 334 MB / 3.7 s | 238 MB / 3.6 s |
+| HEIC 20 MP single image, 10-bit | 150 MB / 2.8 s | 151 MB / 3.0 s |
+| PNG 50 MP RGB8 (8000x6250, 95 MB file) | 174 MB / 1.06 s | 30 MB / 2.6 s (test-profile build, not release) |
+
+The synthetic JPEGs are smoother than camera files (about 1 bit per pixel against 2-3), so Huffman decoding time on
+real photos is somewhat higher; the memory numbers do not depend on content. `memcal::peak_memory_*` in the worker
+tests repeat the JPEG and HEIC grid measurements in a child process and assert both a ceiling and that the estimate
+covers the measurement (the large cases run with `--ignored`).
+
+Consequences with the default 640 MB budget and a typical 100 MB original (leaving about 490 MB for the decode):
+
+- **JPEG**: baseline JPEGs have no practical ceiling any more: the worker's pixel guard (400 MP) and the original size
+  limit are what stop a file, not memory. Progressive JPEGs hold every coefficient until the last scan, so they top out
+  around 150 MP (4:2:0) or 75 MP (4:4:4). Before, all JPEGs stopped at about 95 MP.
+- **HEIC grids** (every iPhone photo, 12 or 48 MP): up to libheif's own 200 MP limit, whatever the memory budget.
+  Single-image HEIC and AVIF (some Android cameras, Canon HIF, most AVIF) and any HEIC with alpha: about 90 MP 8-bit and
+  60 MP 10-bit, up from about 45 and 36 MP.
+- **PNG**: non-interlaced PNGs up to the 400 MP guard; interlaced PNGs and WebP about 100 MP (RGB8) and 40 MP (RGBA).
+- A 100 MP RAW is fine **if it has an embedded preview** (the worker picks the cheapest preview that is at
+  least 1440 px, usually 1.6 MP; a preview that would need more than the budget is never decoded), but with
+  no preview it is refused (the develop path needs about 4.8 GB, and is also capped at 150 MP regardless of
+  budget, and disabled with `WORKER_RAW_DEVELOP=0`). In practice the develop fallback only runs for sensors
+  up to roughly 10 MP.
+
+Why these reductions are safe: the DCT-scaled decode and the box-averaged streams only change *how the 1440 px
+preview is reached* (IDCT-domain reduction or an integer box average, then the same Lanczos resize as before); the
+preview, thumbnail and ThumbHash come from the same pipeline as before and are compared against the full-decode output in
+the tests (PSNR above 30 dB on the synthetic fixtures; the differences are filter differences). The reduced decoders
+are only used when their estimate is lower than the plain decode's, and if one fails on a file it cannot read the job
+falls back to a full decode when that fits the budget (`jobs.decode_fallbacks`).
 
 One gap is accounted for rather than eliminated: between the first reservation (the original) and the
 second (the decode), the job releases and re-reserves instead of topping up in place (topping up could
@@ -114,8 +160,13 @@ deadlock two jobs each waiting for the other). While it waits, its downloaded or
 unaccounted. That is bounded by `WORKER_HEAVY_CONCURRENCY` originals, and the 384 MB between the budget
 and the container limit absorbs it.
 
-Follow-up (tracked in `docs/PLAN.md`): DCT-scaled JPEG decoding and tiled/streamed HEIC decoding. HEIC is
-decoded at full size and then resized, and JPEG too, so those two are the heaviest paths per megapixel.
+Photos refused before this change ("decoding a ... image needs about N MB, over the worker memory budget") are requeued
+by migration `0010_requeue_memory_refusals.sql` the first time it runs, so a deploy reprocesses them. Anything the
+migration does not match (originals larger than the budget itself, RAW without a preview) stays failed and is retried by
+"Retry failed" in the app or `POST /assets/processing/retry`, which requeues every failed job of the caller.
+
+Remaining follow-ups (`docs/PLAN.md`): streamed WebP and interlaced PNG, decoding HEIC alpha grids by tile, a
+reduced-size decode for single-image HEIC (libheif has none), and colour-profile conversion.
 
 ## Caching
 
