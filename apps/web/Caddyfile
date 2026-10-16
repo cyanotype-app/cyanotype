@@ -24,6 +24,13 @@
 		file_server
 	}
 
+	# Map label glyphs (vendored Noto Sans, scripts/vendor-map-fonts.sh). A missing range is a real 404, not the SPA shell.
+	handle /map/fonts/* {
+		@found file
+		header @found Cache-Control "public, max-age=604800"
+		file_server
+	}
+
 	# Share links (/s/<token>): the address is the secret, so keep these pages out of search engines and out of
 	# Referer headers. The page itself is the SPA shell; the API answers with the same headers.
 	@share path /s /s/*

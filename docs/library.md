@@ -360,6 +360,98 @@ a failed poll keeps the last status, the failures panel, retry (and its error). 
 renders the banner, the open panel (with a very long file name and error) and the state after a retry at 320 to 414 px
 and 1280 px.
 
+# Map and places
+
+## What the user sees
+
+- **Map** is the third tab beside "All photos" and "Favorites" (`/map`; three pills fit at 320 px, so the top bar
+  gained no button). It shows the user's geotagged photos on a map: a single photo is a round thumbnail, photos that
+  are close together are a count bubble. Tapping a bubble zooms to the photos in it; tapping a thumbnail opens the
+  photo in the same lightbox as the library (favorite, download, add to album, trash with undo).
+- Under the map on a phone, beside it on a wide screen, a list shows the photos in the part of the map on screen,
+  newest first, loading more as you scroll. Panning or zooming starts the list again for the new area.
+- Hidden RAW files and trashed photos are not on the map, exactly as in the library.
+- The lightbox caption shows where a photo was taken ("Paris, Île-de-France, France") once the worker has looked it up.
+- Without a basemap installed (docs/deploy.md, "Map") the markers sit on a plain background with a notice. Without
+  WebGL the map is replaced by a notice and the list of all geotagged photos. The credits (OpenStreetMap contributors,
+  Protomaps, GeoNames) are on the map.
+- A library without GPS photos shows an explanation instead of an empty map.
+
+## API (assets service, owner-scoped)
+
+- `GET /assets/map?bbox=west,south,east,north&zoom=Z[&favorite=true]`: clusters for the box. `west > east` (or longitudes
+  beyond +-180, which a map scrolled past the date line produces) means the box crosses the antimeridian; a box 360
+  degrees or wider is the world. Response: `{clusters: [{id, lat, lon, count, bounds, thumbhash, thumb_url}], total, truncated}`.
+  `bounds` (`[west, south, east, north]` of the cluster's photos) is null for a single photo; `thumbhash`/`thumb_url` are
+  set for single photos only (clusters are drawn as bubbles). `total` is the number of photos in the box.
+- `GET /assets?bbox=west,south,east,north[&cursor=...&limit=...]`: the same list as the library, restricted to geotagged
+  photos in the box, with the usual keyset `next_cursor`.
+- `GET /assets/{id}` gained `place`: `{city, region, country, country_code}` or null.
+- `GET /assets/tiles` (which basemap archives are installed) and `GET /assets/tiles/{world,detail}.pmtiles` (range reads).
+
+## How clustering works
+
+Photos are grouped in SQL into a fixed grid in degrees whose cell size halves with every zoom level: a cell is
+`360 / 2^(floor(zoom) + 3)` degrees, which is 64 to 128 screen pixels on a 512 px tile map. The grid is anchored at
+the date line and equator, so clusters stay put while panning, split cleanly when zooming in, and a cluster never
+straddles the antimeridian. Each cluster returns its count, the mean position, and the bounds of its photos (a click
+fits them; photos that share one spot zoom in instead). A response holds at most 3000 cells (it is bounded by the
+screen, a few hundred in practice); more sets `truncated`.
+
+Why clusters instead of sending every point: 50,000 photos are about 3.5 MB of JSON before any thumbnail URL, re-sent
+on each pan, and the browser would have to cluster them. The query is served by the partial index `assets_geo_idx`
+(`(owner_id, latitude, longitude)` over live, visible, geotagged photos only, so it stays small for a library where
+few photos have GPS). Measured on PostgreSQL 17 (docker, warm cache) with 50,000 geotagged photos, 70% concentrated
+around 40 cities and 30% scattered worldwide, the worst case in which every photo has a position:
+
+| request | rows read | time |
+|---|---|---|
+| clusters, whole world (zoom 0, 32 cells) | 50,000 (sequential scan) | ~130 ms |
+| clusters, whole world at zoom 6 (14,000 cells, capped to 3000) | 50,000 | ~90 ms |
+| clusters, a city-sized box (zoom 10, 211 cells) | 1,251 (index) | ~5 ms |
+| viewport list, 60 photos of a city-sized box | 1,200 (index, top-N sort) | ~4 ms |
+| viewport list, whole world | 60 (timeline index) | <1 ms |
+
+The expensive requests are the zoomed-out ones, which the first view of the map makes once; panning around a city is
+a few milliseconds.
+
+## Places (offline reverse geocoding)
+
+A `geocode` job (version 1) turns a photo's coordinates into `place_city`, `place_region`, `place_country` and
+`place_country_code` on the asset. No external service is called.
+
+- **Data**: GeoNames `cities1000` (171,306 populated places with more than 1000 inhabitants), `admin1CodesASCII` and
+  `countryInfo`, licensed CC BY 4.0, https://www.geonames.org/ . GeoNames files are rebuilt daily and are not
+  versioned, so a snapshot is committed instead of downloaded at deploy time: `apps/cli/data/places.tsv.gz` (2.6 MB,
+  header records the snapshot date and source checksums), built by `scripts/build-places-dataset.sh`.
+- **Loading**: the snapshot is compiled into the CLI image and `cyanotype migrate` loads it into the `places` table
+  (about 22 MB with its index in Postgres, a few seconds) whenever its version differs from the one in
+  `place_dataset`; otherwise it is a no-op. `migrate` runs on every deploy, so nothing is done by hand and offline
+  deploys work. A new version replaces the table and queues the geocode job again for every geotagged photo.
+- **Lookup**: a latitude/longitude box around the photo (50 km, widened for latitude, wrapped across the antimeridian,
+  all longitudes near the poles) is read from the btree `places_lat_lon_idx` and ranked by great-circle distance; the
+  nearest place within 50 km wins (ties go to the larger place). Farther than that (open sea, polar regions, deserts) a
+  photo has no place rather than a misleading one. The nearest place decides the country, so a photo just across a
+  border gets the neighbouring country's name; the place can be a small village. No PostGIS or extension is needed;
+  the lookup is a few milliseconds and runs in the worker as a database-only job (no memory budget, no download).
+- **When it runs**: the metadata job queues it when a photo has coordinates (and clears the place when a re-run finds
+  none); migration `0008` queued it for every photo that already had coordinates, like the pairing backfill.
+  Re-queuing is idempotent (`UNIQUE (kind, asset_id, version)`). While the dataset is not loaded the job fails and
+  retries instead of recording "no place".
+- Worker memory is unchanged: the dataset lives in Postgres, not in the worker.
+
+## Tests
+
+- DB integration tests (`apps/assets/src/routes/map_tests.rs`, `crates/cyanotype-core/tests/places.rs`,
+  `apps/cli/src/places.rs`): cluster counts, bounds and zoom splitting, owner/trash/hidden-RAW filtering, malformed
+  boxes, boxes across the antimeridian (three spellings), the viewport list's keyset pagination, nearest place within
+  range, across a border, in the open sea, at the poles and across the date line, the geocode job body, backfill
+  idempotency, dataset reloads, and the real bundled dataset (Paris, San Francisco, Basel/Saint-Louis, across the date line, ocean).
+- `apps/assets/src/routes/tiles_tests.rs` (needs the S3 API like the upload tests): range relay, ETag/If-Match, caps,
+  and that only the two archive names are served.
+- Web: `geo.test.ts`, `MapCanvas.test.tsx` (MapLibre stand-in), `MapPage.test.tsx`; Playwright
+  `mobile-overflow.spec.ts` covers the map page at phone widths.
+
 
 # Share links
 
