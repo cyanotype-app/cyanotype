@@ -137,6 +137,98 @@ async function mock(page: Page) {
   );
 }
 
+// Share links: the owner's list, create and edit calls, and the public viewer's. Registered after `mock`, so these win
+// for the paths they handle and everything else falls through to it.
+const TOKEN = (n: number) => `tok${n}`.padEnd(32, "x");
+const share = (n: number, over: Record<string, unknown> = {}) => ({
+  id: `s${n}`,
+  kind: "selection",
+  album: null,
+  title: null,
+  token: TOKEN(n),
+  has_password: false,
+  allow_download: true,
+  include_originals: false,
+  expires_at: null,
+  expired: false,
+  item_count: 12,
+  view_count: 3,
+  last_viewed_at: null,
+  created_at: "2024-06-01T00:00:00Z",
+  updated_at: "2024-06-01T00:00:00Z",
+  ...over,
+});
+const shares = [
+  share(1, { kind: "album", album: { id: "l1", title: LONG_ALBUM }, item_count: 30, has_password: true, expires_at: "2099-01-01T00:00:00Z", view_count: 1234 }),
+  share(2, { title: "Averyveryveryveryveryveryveryveryveryveryveryverylongsinglewordsharetitle", include_originals: true, expired: true, expires_at: "2020-01-01T00:00:00Z" }),
+  share(3, { allow_download: false }),
+];
+const publicItem = (n: number, downloads: unknown[]) => ({
+  id: `p${n}`,
+  width: 4000,
+  height: 3000,
+  sort_time: new Date(Date.UTC(2024, 5, 30 - n, 12)).toISOString(),
+  thumbhash: null,
+  thumb_url: thumb(n),
+  preview_url: thumb(n),
+  downloads,
+  download_pending: false,
+});
+const PUBLIC_ITEMS = Array.from({ length: 18 }, (_, n) =>
+  publicItem(
+    n,
+    n === 0
+      ? [
+          { id: "p0", label: "JPEG", size_bytes: 3_000_000 },
+          { id: "raw0", label: "RAW", size_bytes: 25_000_000 },
+        ]
+      : [{ id: `p${n}`, label: "JPEG", size_bytes: null }],
+  ),
+);
+let unlocked = false;
+
+async function mockShares(page: Page) {
+  const json = (body: unknown, status = 200) => ({ status, contentType: "application/json", body: JSON.stringify(body) });
+  await page.route(
+    (u) => /^\/assets\/(shares|public\/s\/)/.test(u.pathname),
+    async (route) => {
+      const req = route.request();
+      const p = new URL(req.url()).pathname;
+      const m = req.method();
+      if (p === "/assets/shares" && m === "GET") return route.fulfill(json({ items: shares }));
+      if (p === "/assets/shares" && m === "POST") return route.fulfill(json(share(9, { title: LONG_ALBUM, item_count: 2 }), 201));
+      if (/^\/assets\/shares\/s\d+$/.test(p)) return route.fulfill(m === "DELETE" ? { status: 204 } : json(shares[0]));
+      const pm = /^\/assets\/public\/s\/([^/]+)(\/.*)?$/.exec(p);
+      if (!pm) return route.fallback();
+      const [, token, rest = ""] = pm;
+      if (token === "gone") return route.fulfill(json({ error: "not found" }, 404));
+      const locked = token === "locked" && !unlocked;
+      if (rest === "") {
+        if (locked) return route.fulfill(json({ needs_password: true, unlocked: false }));
+        return route.fulfill(
+          json({
+            needs_password: token === "locked",
+            unlocked: true,
+            kind: "album",
+            title: LONG_ALBUM,
+            item_count: PUBLIC_ITEMS.length,
+            allow_download: true,
+            include_originals: true,
+            expires_at: new Date(Date.now() + 3 * 86_400_000).toISOString(),
+          }),
+        );
+      }
+      if (rest === "/unlock") {
+        const ok = (req.postDataJSON() as { password: string }).password === "right";
+        if (ok) unlocked = true;
+        return route.fulfill(ok ? { status: 204 } : json({ error: "unauthorized" }, 401));
+      }
+      if (rest === "/items") return route.fulfill(json({ items: PUBLIC_ITEMS, next_cursor: null }));
+      return route.fulfill(json({ error: "not mocked" }, 404));
+    },
+  );
+}
+
 for (const { width, scheme } of RUNS) {
   test.describe(`${width}px ${scheme}`, () => {
     test.use({ colorScheme: scheme, viewport: { width, height: width === 1280 ? 800 : 740 }, hasTouch: width < 600 });
@@ -170,6 +262,8 @@ for (const { width, scheme } of RUNS) {
       };
 
       await mock(page);
+      await mockShares(page);
+      unlocked = false;
 
       // Auth
       await page.route("**/auth/me", (r) => r.fulfill({ status: 401, contentType: "application/json", body: '{"error":"no"}' }));
@@ -273,6 +367,53 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("dialog", { name: "Add photos" }).getByRole("button", { name: "Cancel" }).click();
       await page.getByRole("button", { name: /Open IMG_1000/ }).click();
       await check("album-lightbox");
+
+      // Share links: the dialog (with and without the originals warning, and once created), the owner's list with its
+      // edit and revoke dialogs, and the public viewer (grid, viewer with a RAW + JPEG download menu, password form, gone).
+      await open("/library", /Open IMG_1000/);
+      await page.getByRole("button", { name: "Select", exact: true }).click();
+      await page.getByRole("button", { name: /Select IMG_1000/ }).click();
+      await page.getByRole("button", { name: "Share", exact: true }).click();
+      await page.getByRole("dialog", { name: /Share 1 photo/ }).waitFor();
+      await check("dialog-share");
+      await page.getByLabel(/Include originals/).check();
+      await page.getByLabel("Password (optional)").fill("a-fairly-long-password-to-type");
+      await check("dialog-share-originals");
+      await page.getByRole("button", { name: "Create link" }).click();
+      await page.getByRole("heading", { name: "Link created" }).waitFor();
+      await check("dialog-share-created");
+      await page.getByRole("dialog").getByRole("button", { name: "Done" }).click();
+
+      await open("/shared", "Shared links");
+      await page.getByRole("list", { name: "Shared links" }).waitFor();
+      await check("shared-links");
+      await page.getByRole("button", { name: "Edit" }).first().click();
+      await page.getByRole("dialog", { name: "Edit link" }).waitFor();
+      await check("dialog-share-edit");
+      await page.getByRole("button", { name: "Cancel" }).click();
+      await page.getByRole("button", { name: "Revoke" }).first().click();
+      await check("dialog-share-revoke");
+      await page.getByRole("button", { name: "Cancel" }).click();
+
+      await open("/s/open", /Open photo 1 of/);
+      await check("share-view");
+      await page.getByRole("button", { name: /Open photo 1 of/ }).click();
+      await page.getByRole("dialog", { name: "Photo" }).getByRole("button", { name: "Download" }).click();
+      await page.getByRole("link", { name: /Download RAW/ }).waitFor();
+      await check("share-view-lightbox");
+      await page.keyboard.press("Escape");
+      await open("/s/locked", "This link is protected");
+      await check("share-password");
+      await page.getByLabel("Password").fill("wrong");
+      await page.getByRole("button", { name: "View photos" }).click();
+      await page.getByText("That password is not right.").waitFor();
+      await check("share-password-error");
+      await page.getByLabel("Password").fill("right");
+      await page.getByRole("button", { name: "View photos" }).click();
+      await page.getByRole("button", { name: /Open photo 1 of/ }).waitFor();
+      await check("share-view-unlocked");
+      await open("/s/gone", "This link is not available");
+      await check("share-gone");
 
       // Timeline of a larger library: month and day headers, the scrubber (resting and dragged), hearts, downloads.
       await installLibrary(page, makeAssets(4000), (r) => r.fallback());

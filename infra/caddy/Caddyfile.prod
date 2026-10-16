@@ -17,6 +17,20 @@
 		import /etc/caddy/tls/{$CADDY_TLS_MODE:auto}/servers.caddy
 	}
 	import /etc/caddy/tls/{$CADDY_TLS_MODE:auto}/global.caddy
+	# Errors the gateway logs itself (an upstream that is down answers 502 and Caddy logs the whole request): same
+	# redaction as the access log in gateway.caddy, so a share token, a query string or a Cookie never lands there.
+	log error_requests {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "(/s/)[^/?]+|(\?).*" "${1}${2}"
+				request>headers delete
+				resp_headers delete
+			}
+		}
+		include http.log.error
+	}
 }
 
 import /etc/caddy/gateway.caddy

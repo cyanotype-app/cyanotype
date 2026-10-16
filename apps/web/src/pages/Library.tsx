@@ -7,6 +7,7 @@ import { ProcessingStatus } from "../components/ProcessingStatus";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Lightbox } from "../components/Lightbox";
 import { SelectionBar } from "../components/SelectionBar";
+import { ShareDialog } from "../components/ShareDialog";
 import { TimelineGrid } from "../components/TimelineGrid";
 import { useToast } from "../components/Toast";
 import { useSelection } from "../selection";
@@ -34,6 +35,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
   const [confirmTrash, setConfirmTrash] = useState(false);
   // Photos waiting in the "add to album" dialog, and a counter that makes the lightbox re-read the photo's albums.
   const [addIds, setAddIds] = useState<string[] | null>(null);
+  const [shareIds, setShareIds] = useState<string[] | null>(null);
   const [albumsVersion, setAlbumsVersion] = useState(0);
   const { toast, show } = useToast();
 
@@ -262,7 +264,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
 
   // Keyboard: Escape clears the selection (then leaves selection mode); Delete asks, then trashes the selection.
   useEffect(() => {
-    if (open !== null || confirmTrash || addIds !== null) return; // the lightbox and the dialog own the keyboard
+    if (open !== null || confirmTrash || addIds !== null || shareIds !== null) return; // the lightbox and the dialog own the keyboard
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t?.closest("input, textarea, select, [contenteditable]")) return;
@@ -276,7 +278,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, confirmTrash, addIds, sel]);
+  }, [open, confirmTrash, addIds, shareIds, sel]);
 
   // The lightbox pages through what is loaded around the open photo; keep that stocked as it moves.
   useEffect(() => {
@@ -371,6 +373,14 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
           >
             Add to album
           </button>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            disabled={sel.ids.length === 0}
+            onClick={() => setShareIds(sel.ids)}
+          >
+            Share
+          </button>
           <button type="button" className="btn btn-primary" disabled={sel.ids.length === 0} onClick={trashSelected}>
             Move to trash
           </button>
@@ -410,6 +420,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
           loadDetail={api.getAsset}
           onTrash={(it) => void trashItems([it])}
           onAddToAlbum={(it) => setAddIds([it.id])}
+          onShare={(it) => setShareIds([it.id])}
           onUnpair={(it) => void unpairItem(it)}
           onFavorite={(it, value) => void setFavorite([it], value)}
           refreshKey={albumsVersion}
@@ -441,6 +452,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
           }}
         />
       )}
+      {shareIds !== null && <ShareDialog target={{ kind: "photos", ids: shareIds }} onClose={() => setShareIds(null)} />}
       {toast}
       {dragging && <DropOverlay />}
     </div>

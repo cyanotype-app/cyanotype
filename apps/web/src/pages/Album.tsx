@@ -6,6 +6,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Grid } from "../components/Grid";
 import { Lightbox } from "../components/Lightbox";
 import { SelectionBar } from "../components/SelectionBar";
+import { ShareDialog, type ShareTarget } from "../components/ShareDialog";
 import { useToast } from "../components/Toast";
 import { dateRange, photoCount } from "../albumText";
 import { useSelection } from "../selection";
@@ -27,6 +28,7 @@ function AlbumView({ id }: { id: string }) {
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [sharing, setSharing] = useState<ShareTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
   const { toast, show } = useToast();
@@ -149,7 +151,7 @@ function AlbumView({ id }: { id: string }) {
 
   // Keyboard: Escape clears the selection, then leaves selection mode.
   useEffect(() => {
-    if (open !== null || confirmDelete || adding || editing) return;
+    if (open !== null || confirmDelete || adding || editing || sharing) return;
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t?.closest("input, textarea, select, [contenteditable]")) return;
@@ -160,7 +162,7 @@ function AlbumView({ id }: { id: string }) {
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, confirmDelete, adding, editing, sel]);
+  }, [open, confirmDelete, adding, editing, sharing, sel]);
 
   const select = useCallback(
     (i: number) => {
@@ -214,6 +216,13 @@ function AlbumView({ id }: { id: string }) {
             <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
               Add photos
             </button>
+            <button
+              type="button"
+              className="btn btn-quiet"
+              onClick={() => setSharing({ kind: "album", albumId: id, albumTitle: album.title })}
+            >
+              Share
+            </button>
             {items.length > 0 && (
               <button
                 type="button"
@@ -245,6 +254,14 @@ function AlbumView({ id }: { id: string }) {
             onClick={() => void setCover()}
           >
             Set as cover
+          </button>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            disabled={sel.ids.length === 0 || busy}
+            onClick={() => setSharing({ kind: "photos", ids: sel.ids })}
+          >
+            Share
           </button>
           <button
             type="button"
@@ -289,6 +306,7 @@ function AlbumView({ id }: { id: string }) {
           onIndexChange={select}
           onClose={closeLightbox}
           loadDetail={api.getAsset}
+          onShare={(it) => setSharing({ kind: "photos", ids: [it.id] })}
           onFavorite={(it, favorite) => void setFavorite(it.id, favorite)}
         />
       )}
@@ -304,6 +322,7 @@ function AlbumView({ id }: { id: string }) {
           <p>The photos stay in your library. Only the album is deleted.</p>
         </ConfirmDialog>
       )}
+      {sharing && <ShareDialog target={sharing} onClose={() => setSharing(null)} />}
       {adding && <PhotoPicker albumId={id} onCancel={() => setAdding(false)} onAdded={(n) => void onPhotosAdded(n)} />}
       {toast}
     </div>
