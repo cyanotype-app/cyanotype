@@ -1,5 +1,5 @@
 //! Permanent deletion against a real S3 API. Needs a bucket: set S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY and
-//! S3_SECRET_KEY (and S3_FORCE_PATH_STYLE=true for MinIO / SeaweedFS). Without S3_ENDPOINT the tests return early.
+//! S3_SECRET_KEY (and S3_FORCE_PATH_STYLE=true for SeaweedFS). Without S3_ENDPOINT the tests return early.
 //! Versioning is exercised when the bucket has it enabled (the production bucket does); on an unversioned bucket
 //! the same assertions hold with one version per key.
 use aws_sdk_s3::{
@@ -127,7 +127,7 @@ async fn http_get(url: &str) -> (u16, Vec<(String, String)>, Vec<u8>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let rest = url
         .strip_prefix("http://")
-        .expect("an http:// endpoint (local MinIO / SeaweedFS)");
+        .expect("an http:// endpoint (local SeaweedFS)");
     let (host, path) = rest.split_once('/').unwrap();
     let mut conn = tokio::net::TcpStream::connect(host).await.unwrap();
     // Like a cross-origin top-level navigation: no cookies, no Authorization, only what the URL carries.

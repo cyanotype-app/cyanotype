@@ -1,6 +1,6 @@
 //! `reindex` and the recovery manifests against a real Postgres and a real S3 API.
 //! Needs `DATABASE_URL` (role may CREATE DATABASE) and `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`
-//! (+ `S3_FORCE_PATH_STYLE=true` for MinIO / SeaweedFS). Each test creates its own bucket (versioning on, like
+//! (+ `S3_FORCE_PATH_STYLE=true` for SeaweedFS). Each test creates its own bucket (versioning on, like
 //! production) and database; without both variables the tests return early.
 use std::time::Duration;
 

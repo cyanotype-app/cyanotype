@@ -43,10 +43,10 @@ migrate:
 import *args:
     cargo run -q --release -p cyanotype-cli -- import {{args}}
 
-# Dev loop: compose Postgres + MinIO, migrate, run auth/assets/worker from source (Ctrl-C stops; :3001/:3002).
+# Dev loop: compose Postgres + SeaweedFS, migrate, run auth/assets/worker from source (Ctrl-C stops; :3001/:3002).
 dev:
-    docker compose up -d --wait postgres minio
-    docker compose up minio-init
+    docker compose up -d --wait postgres seaweedfs
+    docker compose up seaweedfs-init
     cargo run -q -p cyanotype-cli -- migrate; \
     trap 'kill 0' EXIT INT TERM; \
     cargo run -q -p cyanotype-auth & \
