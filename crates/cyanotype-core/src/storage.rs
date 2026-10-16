@@ -45,6 +45,22 @@ pub struct UploadedPart {
     pub size: i64,
 }
 
+/// The outcome of [`Storage::get_range`].
+#[derive(Debug)]
+pub enum RangeRead {
+    Found {
+        body: bytes::Bytes,
+        /// The store's `Content-Range` (`bytes 0-99/12345`).
+        content_range: Option<String>,
+        etag: Option<String>,
+    },
+    NotFound,
+    /// The range starts past the end of the object.
+    Unsatisfiable,
+    /// `if_match` no longer matches.
+    PreconditionFailed,
+}
+
 /// One stored version of a key, or a delete marker. `version_id` is None on stores without versioning
 /// support (see [`Storage::list_versions`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,6 +264,37 @@ impl Storage {
             anyhow::bail!("object {key} exceeded the {max_bytes} byte limit");
         }
         Ok(bytes.to_vec())
+    }
+
+    /// One byte range of an object (`range` is an HTTP range such as `bytes=0-16383`), for serving map tiles out of
+    /// a PMTiles archive. The caller bounds the length; the body is buffered. `if_match` makes the store answer 412
+    /// when the object changed since the client first read it.
+    pub async fn get_range(&self, key: &str, range: &str, if_match: Option<&str>) -> Result<RangeRead> {
+        let mut req = self.client.get_object().bucket(&self.bucket).key(key).range(range);
+        if let Some(e) = if_match {
+            req = req.if_match(e);
+        }
+        match req.send().await {
+            Ok(o) => {
+                let content_range = o.content_range.clone();
+                let etag = o.e_tag.clone();
+                let body = o.body.collect().await.context("read object range")?.into_bytes();
+                Ok(RangeRead::Found {
+                    body,
+                    content_range,
+                    etag,
+                })
+            }
+            Err(e) => match (
+                e.raw_response().map(|r| r.status().as_u16()),
+                e.as_service_error().is_some_and(|s| s.is_no_such_key()),
+            ) {
+                (_, true) | (Some(404), _) => Ok(RangeRead::NotFound),
+                (Some(416), _) => Ok(RangeRead::Unsatisfiable),
+                (Some(412), _) => Ok(RangeRead::PreconditionFailed),
+                _ => Err(e).context("get_object (range)"),
+            },
+        }
     }
 
     /// Download an object fully into memory (no size cap; prefer `get_bytes_limited`).

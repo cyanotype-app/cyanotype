@@ -6,6 +6,7 @@ pub mod manifest;
 pub mod metrics;
 pub mod objmeta;
 pub mod pairing;
+pub mod places;
 pub mod reindex;
 pub mod scan;
 pub mod storage;

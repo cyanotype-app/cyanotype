@@ -2,6 +2,7 @@ mod api;
 mod cache;
 mod config;
 mod import;
+mod places;
 mod reindex;
 mod walk;
 
@@ -24,7 +25,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Apply database migrations. The only place migrations run; services never do it on boot.
+    /// Apply database migrations and load the bundled places dataset. The only place migrations run; services never
+    /// do it on boot.
     Migrate,
     /// Rebuild or repair the asset index from the bucket (disaster recovery). Dry run unless --apply.
     Reindex(reindex::ReindexArgs),
@@ -74,8 +76,10 @@ async fn run() -> Result<ExitCode> {
             telemetry::init("cyanotype-cli");
             let cfg = DatabaseConfig::from_env()?;
             tracing::info!(database = %redact_url(&cfg.url), "applying migrations");
-            db::migrate(&db::connect(&cfg.url).await?).await?;
+            let pool = db::connect(&cfg.url).await?;
+            db::migrate(&pool).await?;
             tracing::info!("migrations applied");
+            places::load_bundled(&pool).await?;
         }
         Command::Reindex(a) => return reindex::run(a).await,
         Command::Manifest => reindex::write_manifests().await?,

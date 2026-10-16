@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { NavLink } from "react-router-dom";
 import { api, ApiError, type AssetListItem } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
 import { ProcessingStatus } from "../components/ProcessingStatus";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Lightbox } from "../components/Lightbox";
+import { LibraryTabs } from "../components/LibraryTabs";
 import { SelectionBar } from "../components/SelectionBar";
 import { TimelineGrid } from "../components/TimelineGrid";
 import { useToast } from "../components/Toast";
@@ -300,14 +300,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
 
   const tabs = (
     <>
-    <nav className="library-tabs" aria-label="Library views">
-      <NavLink to="/library" end className="library-tab">
-        All photos
-      </NavLink>
-      <NavLink to="/favorites" end className="library-tab">
-        Favorites
-      </NavLink>
-    </nav>
+    <LibraryTabs />
     <ProcessingStatus />
     </>
   );

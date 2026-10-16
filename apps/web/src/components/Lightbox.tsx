@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { downloadHref, type AssetDetail, type AssetListItem } from "../api";
+import { placeLine } from "../map/geo";
 import { fileSize, pairLabel, primaryFormat } from "../pairText";
 import { placeholderUrl } from "../thumbhash";
 import { HeartIcon } from "./Tile";
@@ -246,6 +247,7 @@ export function Lightbox({
         <span className="muted">
           {item.width && item.height ? `${item.width} × ${item.height} · ` : ""}
           <time dateTime={item.sort_time}>{Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString()}</time>
+          {detail?.place && <span className="lightbox-place"> · {placeLine(detail.place)}</span>}
         </span>
       </p>
       {paired.length > 0 && (

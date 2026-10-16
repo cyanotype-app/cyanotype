@@ -1712,3 +1712,140 @@ body:has(.selection-bar) .scrubber {
 .processing-error {
   overflow-wrap: anywhere;
 }
+
+/* Map: a clustered photo map with the photos in view beside it (wide) or under it (phones). */
+.map-page .map-notice {
+  margin: 0.5rem 1rem 0;
+  overflow-wrap: anywhere;
+}
+.map-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  height: calc(100dvh - 10rem);
+  min-height: 24rem;
+  margin-top: 0.75rem;
+}
+.map-pane {
+  position: relative;
+  flex: 1 1 52%;
+  min-height: 11rem;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+/* MapLibre gives its container `position: relative`, so fill the pane by size, not by inset. */
+.map-canvas {
+  width: 100%;
+  height: 100%;
+}
+.map-loading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+}
+.map-attrib {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  max-width: 100%;
+  margin: 0;
+  padding: 0.1rem 0.4rem;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  color: var(--muted);
+  font-size: 0.6875rem;
+  line-height: 1.35;
+  border-top-left-radius: 6px;
+}
+.map-attrib a {
+  color: inherit;
+}
+.map-list {
+  flex: 1 1 48%;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.map-count {
+  margin: 0 0 0.4rem;
+}
+.map-sentinel {
+  height: 1px;
+}
+@media (min-width: 900px) {
+  .map-layout {
+    flex-direction: row;
+    gap: 0.75rem;
+  }
+  .map-pane {
+    flex: 1 1 auto;
+  }
+  .map-list {
+    flex: 0 0 22rem;
+  }
+  .map-list .grid {
+    grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+  }
+}
+@media (max-width: 600px) {
+  .map-page .map-notice {
+    margin-inline: 0.75rem;
+  }
+  .map-layout {
+    margin-inline: 0;
+  }
+  .map-pane {
+    border-radius: 0;
+    border-inline: 0;
+  }
+  .map-list {
+    padding-inline: 4px;
+  }
+  .map-count {
+    padding-inline: 0.5rem;
+  }
+}
+/* The photo markers are DOM elements MapLibre positions; sizes are set inline for the count bubbles. */
+.map-thumb,
+.map-bubble {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgb(0 19 31 / 0.45);
+}
+.map-thumb {
+  width: 52px;
+  height: 52px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--pb-400) center / cover no-repeat;
+}
+.map-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+.map-bubble {
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: 700 0.8125rem/1 system-ui, sans-serif;
+}
+.map-thumb:focus-visible,
+.map-bubble:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+.lightbox-place {
+  overflow-wrap: anywhere;
+}

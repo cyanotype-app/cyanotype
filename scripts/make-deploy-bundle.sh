@@ -3,7 +3,7 @@
 # The server never runs git; scripts/deploy.sh ships this tarball over SSH.
 #
 # Contents: docker-compose.yml, docker-compose.prod.yml, infra/caddy/** (Caddyfiles, tls/ modes,
-# cloudflare-ips.caddy), .env.prod.example, scripts/update-cloudflare-ips.sh, and VERSION (the image tag).
+# cloudflare-ips.caddy), .env.prod.example, scripts/update-cloudflare-ips.sh, scripts/fetch-basemap.sh (run on the server: docs/deploy.md, "Map"), and VERSION (the image tag).
 # Never included: .env*, certs/, source code.
 #
 # Usage: scripts/make-deploy-bundle.sh [-o OUT.tar.gz] [-r GIT_REF] [-v VERSION]
@@ -24,7 +24,7 @@ done
 
 cd "$(dirname "$0")/.."
 # Managed paths (relative to the repo root). A path missing at an older ref is simply skipped.
-paths=(docker-compose.yml docker-compose.prod.yml infra/caddy .env.prod.example scripts/update-cloudflare-ips.sh)
+paths=(docker-compose.yml docker-compose.prod.yml infra/caddy .env.prod.example scripts/update-cloudflare-ips.sh scripts/fetch-basemap.sh)
 
 if [ -z "$version" ]; then version="sha-$(git rev-parse --short=7 "${ref:-HEAD}^{commit}")"; fi
 [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad version: $version" >&2; exit 2; }

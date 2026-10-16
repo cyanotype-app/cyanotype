@@ -7,6 +7,7 @@ import { Albums } from "./pages/Albums";
 import { ApiKeys } from "./pages/ApiKeys";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
+import { MapPage } from "./pages/MapPage";
 import { Register } from "./pages/Register";
 import { Trash } from "./pages/Trash";
 import { UploadProvider } from "./upload/UploadProvider";
@@ -22,6 +23,7 @@ export function App() {
       <Route element={<RequireAuth />}>
         <Route path="/library" element={<Library key="all" />} />
         <Route path="/favorites" element={<Library key="favorites" favorites />} />
+        <Route path="/map" element={<MapPage />} />
         <Route path="/albums" element={<Albums />} />
         <Route path="/albums/:id" element={<AlbumPage />} />
         <Route path="/trash" element={<Trash />} />

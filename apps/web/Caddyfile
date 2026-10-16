@@ -22,6 +22,13 @@
 		file_server
 	}
 
+	# Map label glyphs (vendored Noto Sans, scripts/vendor-map-fonts.sh). A missing range is a real 404, not the SPA shell.
+	handle /map/fonts/* {
+		@found file
+		header @found Cache-Control "public, max-age=604800"
+		file_server
+	}
+
 	# Everything else: a real file (manifest, icons) or the SPA shell for client-side routes.
 	# index.html names the current hashed files, so it must always be revalidated.
 	handle {
