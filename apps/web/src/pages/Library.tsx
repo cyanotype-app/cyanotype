@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, type AssetListItem } from "../api";
+import { api, ApiError, isScope, type AssetListItem, type Target } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
 import { ProcessingStatus } from "../components/ProcessingStatus";
@@ -7,6 +7,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Lightbox } from "../components/Lightbox";
 import { LibraryTabs } from "../components/LibraryTabs";
 import { SelectionBar } from "../components/SelectionBar";
+import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
 import { TimelineGrid } from "../components/TimelineGrid";
 import { useToast } from "../components/Toast";
 import { useSelection } from "../selection";
@@ -21,7 +22,7 @@ const THUMB_POLL_MAX = 40; // ticks per photo (about two minutes), then leave it
 /** Photos the lightbox pages through around the current one (it re-centres on every step). */
 const LIGHTBOX_RUN = 60;
 
-const photos = (n: number) => `${n} photo${n === 1 ? "" : "s"}`;
+const photos = (n: number) => `${n.toLocaleString("en-US")} photo${n === 1 ? "" : "s"}`;
 
 /** The library as a date-grouped, virtualized timeline; `favorites` limits it to the photos with a heart. */
 export function Library({ favorites = false }: { favorites?: boolean }) {
@@ -32,21 +33,27 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
   const dragDepth = useRef(0);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmTrash, setConfirmTrash] = useState(false);
-  // Photos waiting in the "add to album" dialog, and a counter that makes the lightbox re-read the photo's albums.
-  const [addIds, setAddIds] = useState<string[] | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  // Photos waiting in the "add to album" dialog (explicit ids, or the whole view), and a counter that makes the
+  // lightbox re-read the photo's albums.
+  const [addIds, setAddIds] = useState<{ target: Target; count: number } | null>(null);
+  // What the share dialog is creating a link for (explicit ids, or the whole view in "select all" mode).
+  const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
   const [albumsVersion, setAlbumsVersion] = useState(0);
   const { toast, show } = useToast();
 
   const selectedRef = useRef<ReadonlySet<string>>(new Set());
   const tl = useTimeline({ favorite: favorites, keep: () => selectedRef.current });
+  const scope = favorites ? "favorites" : "library";
   const { index, loaded, ensure, refresh, remove, patch } = tl;
   const items = useMemo(() => inOrder(loaded), [loaded]);
   const itemIds = useMemo(() => items.map((i) => i.id), [items]);
-  const sel = useSelection(itemIds);
+  const sel = useSelection(itemIds, index.total);
   const selectedIds = sel.selected;
   useEffect(() => {
-    selectedRef.current = selectedIds;
-  }, [selectedIds]);
+    // Selecting everything must not pin every loaded page in memory: only an explicit selection is kept loaded.
+    selectedRef.current = sel.all ? new Set() : selectedIds;
+  }, [selectedIds, sel.all]);
 
   const refreshItem = useCallback(
     async (id: string) => {
@@ -161,11 +168,11 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
   // Moving to trash is reversible, so there is no confirmation: the photos leave the grid at once (rolled back if
   // the server refuses) and a toast offers Undo, which restores them.
   const undoTrash = useCallback(
-    async (ids: string[]) => {
+    async (target: Target, count: number) => {
       try {
-        await api.restoreAssets(ids);
+        await api.restoreAssets(target);
         void refresh();
-        show({ message: `${ids.length} restored` });
+        show({ message: `${count.toLocaleString("en-US")} restored` });
       } catch (e) {
         failure(e, "Couldn’t undo. They are still in the trash.");
       }
@@ -188,16 +195,40 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
       }
       show({
         message: `${targets.length} moved to trash`,
-        action: { label: "Undo", onClick: () => void undoTrash(ids) },
+        action: { label: "Undo", onClick: () => void undoTrash(ids, ids.length) },
       });
     },
     [index.total, remove, refresh, show, failure, undoTrash],
   );
+  // "Select all" covers photos that are not loaded, so the server trashes the whole view (minus what was deselected)
+  // and the grid is re-read; Undo restores exactly that batch.
+  const trashView = useCallback(
+    async (target: Target) => {
+      setBulkBusy(true);
+      try {
+        const r = await api.trashAssets(target);
+        setOpen(null);
+        void refresh();
+        const back: Target = r.batch ? { scope: { trash_batch: r.batch }, except: [] } : [];
+        show({
+          message: `${r.count.toLocaleString("en-US")} moved to trash`,
+          action: r.batch ? { label: "Undo", onClick: () => void undoTrash(back, r.count) } : undefined,
+        });
+      } catch (e) {
+        failure(e, "Couldn’t move to trash.");
+      } finally {
+        setBulkBusy(false);
+      }
+    },
+    [refresh, show, failure, undoTrash],
+  );
   const trashSelected = useCallback(() => {
+    const target = sel.target(scope);
     const ids = new Set(sel.ids);
     sel.setSelecting(false);
-    void trashItems(items.filter((i) => ids.has(i.id)));
-  }, [sel, items, trashItems]);
+    if (isScope(target)) void trashView(target);
+    else void trashItems(items.filter((i) => ids.has(i.id)));
+  }, [sel, scope, items, trashItems, trashView]);
 
   // Separate a RAW + JPEG pair: the photo loses its RAW badge and the RAW appears as a photo of its own.
   const unpairItem = useCallback(
@@ -252,31 +283,62 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
     const ids = new Set(sel.ids);
     return items.filter((i) => ids.has(i.id));
   }, [sel.ids, items]);
-  const allSelectedFavorite = selectedItems.length > 0 && selectedItems.every((i) => i.favorite === true);
+  // For the whole view the loaded photos say nothing about the rest: in Favorites everything is a favorite, in All
+  // photos "Favorite" adds the lot.
+  const allSelectedFavorite = sel.all
+    ? favorites
+    : selectedItems.length > 0 && selectedItems.every((i) => i.favorite === true);
+  const favoriteView = useCallback(
+    async (target: Target, value: boolean) => {
+      setBulkBusy(true);
+      try {
+        const r = await api.favoriteAssets(target, value);
+        void refresh();
+        show({ message: `${r.count.toLocaleString("en-US")} ${value ? "added to" : "removed from"} favorites` });
+      } catch (e) {
+        failure(e, value ? "Couldn’t add to favorites." : "Couldn’t remove from favorites.");
+      } finally {
+        setBulkBusy(false);
+      }
+    },
+    [refresh, show, failure],
+  );
   const favoriteSelected = useCallback(() => {
+    if (sel.all) {
+      const target = sel.target(scope);
+      sel.setSelecting(false);
+      void favoriteView(target, !allSelectedFavorite);
+      return;
+    }
     const targets = selectedItems;
     const value = !targets.every((i) => i.favorite === true);
     sel.setSelecting(false);
     void setFavorite(targets, value, favorites);
-  }, [selectedItems, sel, setFavorite, favorites]);
+  }, [selectedItems, sel, scope, setFavorite, favoriteView, allSelectedFavorite, favorites]);
+
+  // Trashing the whole view asks first, with the exact number; a few photos go straight to the trash (Undo).
+  const onTrashClick = useCallback(() => {
+    if (sel.all) setConfirmTrash(true);
+    else trashSelected();
+  }, [sel.all, trashSelected]);
 
   // Keyboard: Escape clears the selection (then leaves selection mode); Delete asks, then trashes the selection.
   useEffect(() => {
-    if (open !== null || confirmTrash || addIds !== null) return; // the lightbox and the dialog own the keyboard
+    if (open !== null || confirmTrash || addIds !== null || shareTarget !== null) return; // the lightbox and the dialog own the keyboard
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t?.closest("input, textarea, select, [contenteditable]")) return;
       if (e.key === "Escape" && sel.selecting) {
         e.preventDefault();
         sel.escape();
-      } else if ((e.key === "Delete" || e.key === "Backspace") && sel.ids.length > 0) {
+      } else if ((e.key === "Delete" || e.key === "Backspace") && sel.count > 0) {
         e.preventDefault();
         setConfirmTrash(true);
       }
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, confirmTrash, addIds, sel]);
+  }, [open, confirmTrash, addIds, shareTarget, sel]);
 
   // The lightbox pages through what is loaded around the open photo; keep that stocked as it moves.
   useEffect(() => {
@@ -347,24 +409,32 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
       </div>
       {sel.selecting && (
         <SelectionBar
-          count={sel.ids.length}
-          total={items.length}
+          count={sel.count}
+          total={index.total}
           onSelectAll={sel.selectAll}
           onClear={sel.clear}
           onDone={() => sel.setSelecting(false)}
         >
-          <button type="button" className="btn btn-quiet" disabled={sel.ids.length === 0} onClick={favoriteSelected}>
+          <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || bulkBusy} onClick={favoriteSelected}>
             {allSelectedFavorite ? "Unfavorite" : "Favorite"}
           </button>
           <button
             type="button"
             className="btn btn-quiet"
-            disabled={sel.ids.length === 0}
-            onClick={() => setAddIds(sel.ids)}
+            disabled={sel.count === 0 || bulkBusy}
+            onClick={() => setAddIds({ target: sel.target(scope), count: sel.count })}
           >
             Add to album
           </button>
-          <button type="button" className="btn btn-primary" disabled={sel.ids.length === 0} onClick={trashSelected}>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            disabled={sel.count === 0 || bulkBusy}
+            onClick={() => setShareTarget(shareTargetOf(sel.target(scope), sel.count))}
+          >
+            Share
+          </button>
+          <button type="button" className="btn btn-primary" disabled={sel.count === 0 || bulkBusy} onClick={onTrashClick}>
             Move to trash
           </button>
         </SelectionBar>
@@ -402,7 +472,8 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
           onClose={closeLightbox}
           loadDetail={api.getAsset}
           onTrash={(it) => void trashItems([it])}
-          onAddToAlbum={(it) => setAddIds([it.id])}
+          onAddToAlbum={(it) => setAddIds({ target: [it.id], count: 1 })}
+          onShare={(it) => setShareTarget({ kind: "photos", ids: [it.id] })}
           onUnpair={(it) => void unpairItem(it)}
           onFavorite={(it, value) => void setFavorite([it], value)}
           refreshKey={albumsVersion}
@@ -410,7 +481,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
       )}
       {confirmTrash && (
         <ConfirmDialog
-          title={`Move ${photos(sel.ids.length)} to trash?`}
+          title={`Move ${photos(sel.count)} to trash?`}
           confirmLabel="Move to trash"
           onCancel={() => setConfirmTrash(false)}
           onConfirm={() => {
@@ -418,15 +489,16 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
             trashSelected();
           }}
         >
-          <p>You can restore {sel.ids.length === 1 ? "it" : "them"} from the trash.</p>
+          <p>You can restore {sel.count === 1 ? "it" : "them"} from the trash.</p>
         </ConfirmDialog>
       )}
       {addIds !== null && (
         <AddToAlbumDialog
-          ids={addIds}
+          ids={addIds.target}
+          count={addIds.count}
           onClose={() => setAddIds(null)}
           onDone={(r) => {
-            const requested = addIds.length;
+            const requested = addIds.count;
             setAddIds(null);
             sel.setSelecting(false);
             setAlbumsVersion((v) => v + 1);
@@ -434,6 +506,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
           }}
         />
       )}
+      {shareTarget !== null && <ShareDialog target={shareTarget} onClose={() => setShareTarget(null)} />}
       {toast}
       {dragging && <DropOverlay />}
     </div>

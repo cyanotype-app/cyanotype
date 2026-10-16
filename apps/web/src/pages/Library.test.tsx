@@ -218,6 +218,49 @@ describe("Library", () => {
       expect(screen.getAllByRole("img").map((i) => i.getAttribute("alt"))).toEqual(["photo-1.jpg", "photo-2.jpg", "photo-3.jpg", "photo-4.jpg"]);
     });
 
+    it("Select all covers photos that are not loaded: asks with the exact count, trashes the view and undoes the batch", async () => {
+      const many = Array.from({ length: 250 }, (_, i) =>
+        item(i + 1, { sort_time: `2026-03-${String(1 + Math.floor(i / 10)).padStart(2, "0")}T12:00:00Z` }),
+      );
+      const lib = fakeLibrary(many);
+      const user = userEvent.setup();
+      renderLibrary();
+      await screen.findByAltText("photo-250.jpg");
+      await user.click(screen.getByRole("button", { name: "Select" }));
+      await user.click(screen.getByRole("button", { name: "Select all" }));
+      expect(screen.getByText("250 selected")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Select all" })).toBeDisabled();
+      // Deselect one loaded photo: the count follows.
+      await user.click(tile(250));
+      expect(screen.getByText("249 selected")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Move to trash" }));
+      expect(screen.getByRole("heading", { name: "Move 249 photos to trash?" })).toBeInTheDocument();
+      await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Move to trash" }));
+      expect(await screen.findByText("249 moved to trash")).toBeInTheDocument();
+      expect(api.trashAssets).toHaveBeenCalledWith({ scope: "library", except: ["id-250"] });
+      expect(lib.trashed).toHaveLength(249);
+      expect(lib.photos.map((p) => p.id)).toEqual(["id-250"]);
+
+      await user.click(screen.getByRole("button", { name: "Undo" }));
+      expect(await screen.findByText("249 restored")).toBeInTheDocument();
+      expect(api.restoreAssets).toHaveBeenLastCalledWith({ scope: { trash_batch: "batch-1" }, except: [] });
+      expect(lib.photos).toHaveLength(250);
+    });
+
+    it("Select all in Favorites unfavorites exactly the favorites view", async () => {
+      const lib = fakeLibrary([item(1, { favorite: true }), item(2, { favorite: true }), item(3)]);
+      const user = userEvent.setup();
+      renderLibrary(true);
+      await screen.findByAltText("photo-1.jpg");
+      await user.click(screen.getByRole("button", { name: "Select" }));
+      await user.click(screen.getByRole("button", { name: "Select all" }));
+      await user.click(screen.getByRole("button", { name: "Unfavorite" }));
+      expect(await screen.findByText("2 removed from favorites")).toBeInTheDocument();
+      expect(api.favoriteAssets).toHaveBeenCalledWith({ scope: "favorites", except: [] }, false);
+      expect(lib.photos.filter((p) => p.favorite === true)).toHaveLength(0);
+    });
+
     it("Escape clears the selection, then leaves selection mode", async () => {
       three();
       const user = userEvent.setup();

@@ -1,7 +1,7 @@
 // An in-memory stand-in for the assets service's timeline, list, favorite and trash endpoints, so the Library page can
 // be tested against realistic paging (counts per day, `before` and keyset cursors) instead of canned responses.
 import { vi } from "vitest";
-import { api, type AssetListItem } from "../api";
+import { api, isScope, type AssetListItem, type Target } from "../api";
 import { dayOfTime } from "../timeline";
 
 const newestFirst = (a: AssetListItem, b: AssetListItem) =>
@@ -47,22 +47,39 @@ export function fakeLibrary(initial: AssetListItem[]): FakeLibrary {
     };
   });
 
-  vi.spyOn(api, "trashAssets").mockImplementation(async (ids) => {
-    const gone = lib.photos.filter((p) => ids.includes(p.id));
-    lib.photos = lib.photos.filter((p) => !ids.includes(p.id));
+  // Explicit ids, or a scope resolved like the server does (the view minus `except`; a batch is what one trash took).
+  const batches = new Map<string, Set<string>>();
+  const pick = (t: Target, from: AssetListItem[]) => {
+    if (!isScope(t)) return from.filter((p) => t.includes(p.id));
+    const s = t.scope;
+    const rows =
+      s === "favorites"
+        ? from.filter((p) => p.favorite === true)
+        : typeof s === "object" && "trash_batch" in s
+          ? from.filter((p) => batches.get(s.trash_batch)?.has(p.id))
+          : from;
+    return rows.filter((p) => !t.except.includes(p.id));
+  };
+  vi.spyOn(api, "trashAssets").mockImplementation(async (target) => {
+    const gone = pick(target, lib.photos);
+    const ids = new Set(gone.map((p) => p.id));
+    lib.photos = lib.photos.filter((p) => !ids.has(p.id));
     lib.trashed.push(...gone);
-    return { count: gone.length };
+    const batch = isScope(target) ? `batch-${batches.size + 1}` : undefined;
+    if (batch) batches.set(batch, ids);
+    return { count: gone.length, batch };
   });
-  vi.spyOn(api, "restoreAssets").mockImplementation(async (ids) => {
-    const back = lib.trashed.filter((p) => ids.includes(p.id));
-    lib.trashed = lib.trashed.filter((p) => !ids.includes(p.id));
+  vi.spyOn(api, "restoreAssets").mockImplementation(async (target) => {
+    const back = pick(target, lib.trashed);
+    const ids = new Set(back.map((p) => p.id));
+    lib.trashed = lib.trashed.filter((p) => !ids.has(p.id));
     lib.photos.push(...back);
     return { count: back.length };
   });
-  vi.spyOn(api, "favoriteAssets").mockImplementation(async (ids, favorite) => {
+  vi.spyOn(api, "favoriteAssets").mockImplementation(async (target, favorite) => {
     let count = 0;
-    for (const p of lib.photos) {
-      if (ids.includes(p.id) && (p.favorite === true) !== favorite) {
+    for (const p of pick(target, lib.photos)) {
+      if ((p.favorite === true) !== favorite) {
         p.favorite = favorite;
         count++;
       }
