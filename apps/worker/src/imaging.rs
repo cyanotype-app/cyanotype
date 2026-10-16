@@ -7,7 +7,7 @@ use fast_image_resize::{
     FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer,
     images::{Image as FirImage, ImageRef as FirImageRef},
 };
-use image::{DynamicImage, ImageReader};
+use image::{DynamicImage, ImageReader, RgbImage};
 
 pub const THUMB_EDGE: u32 = 320;
 pub const PREVIEW_EDGE: u32 = 1440;
@@ -165,6 +165,230 @@ pub fn thumbhash(img: &DynamicImage) -> Result<Vec<u8>> {
     Ok(thumbhash::rgba_to_thumb_hash(w as usize, h as usize, small.as_raw()))
 }
 
+// ---- JPEG: DCT-scaled decoding -------------------------------------------------------------------------------------
+
+/// What the scaled JPEG path needs to know about a file, read from its frame header (SOFn) without decoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JpegInfo {
+    pub width: u32,
+    pub height: u32,
+    pub progressive: bool,
+    /// The SOFn marker byte: 0xC0 baseline, 0xC1 extended sequential, 0xC2 progressive (Huffman), others are
+    /// lossless or arithmetic coded.
+    pub sof: u8,
+    /// Sample precision in bits (8 for nearly every file).
+    pub precision: u8,
+    /// Per component: horizontal and vertical sampling factors.
+    pub components: Vec<(u8, u8)>,
+}
+
+/// Read the frame header of a JPEG. `None` when there is none before the first scan, or the file is not a JPEG.
+pub fn jpeg_info(bytes: &[u8]) -> Option<JpegInfo> {
+    if !bytes.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut i = 2;
+    while i + 4 <= bytes.len() {
+        if bytes[i] != 0xFF {
+            return None;
+        }
+        let m = bytes[i + 1];
+        if m == 0xFF {
+            i += 1; // fill byte
+            continue;
+        }
+        if m == 0x01 || (0xD0..=0xD8).contains(&m) {
+            i += 2; // markers without a length
+            continue;
+        }
+        if m == 0xD9 || m == 0xDA {
+            return None; // end of image / start of scan before any frame header
+        }
+        let len = usize::from(u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]));
+        // SOF0..SOF15 except DHT (C4), JPG (C8) and DAC (CC).
+        if (0xC0..=0xCF).contains(&m) && !matches!(m, 0xC4 | 0xC8 | 0xCC) {
+            let seg = bytes.get(i + 4..i + 2 + len)?;
+            if seg.len() < 6 {
+                return None;
+            }
+            let (h, w) = (
+                u32::from(u16::from_be_bytes([seg[1], seg[2]])),
+                u32::from(u16::from_be_bytes([seg[3], seg[4]])),
+            );
+            let n = usize::from(seg[5]);
+            if seg.len() < 6 + 3 * n || n == 0 {
+                return None;
+            }
+            let components = (0..n).map(|c| (seg[7 + 3 * c] >> 4, seg[7 + 3 * c] & 15)).collect();
+            return Some(JpegInfo {
+                width: w,
+                height: h,
+                progressive: m == 0xC2,
+                sof: m,
+                precision: seg[0],
+                components,
+            });
+        }
+        i += 2 + len;
+    }
+    None
+}
+
+impl JpegInfo {
+    /// The scaled decoder handles baseline and progressive Huffman JPEGs of 8-bit gray, YCbCr/RGB and CMYK/YCCK.
+    /// Anything else (12-bit, lossless, arithmetic coding, a zero height from a DNL marker) takes the full decode.
+    pub fn scalable(&self) -> bool {
+        matches!(self.sof, 0xC0..=0xC2)
+            && self.precision == 8
+            && self.height > 0
+            && self.width > 0
+            && matches!(self.components.len(), 1 | 3 | 4)
+            && self
+                .components
+                .iter()
+                .all(|&(h, v)| (1..=4).contains(&h) && (1..=4).contains(&v))
+    }
+
+    /// Reduction chosen for this image: `n` in eighths, i.e. the decoder produces `n/8` of the size. 8 means no
+    /// reduction. It is the smallest `n` whose long edge is still at least [`PREVIEW_EDGE`].
+    pub fn scale_eighths(&self) -> u32 {
+        let long = self.width.max(self.height);
+        [1u32, 2, 4]
+            .into_iter()
+            .find(|&n| scaled_len(long, n) >= PREVIEW_EDGE)
+            .unwrap_or(8)
+    }
+
+    /// Size of the decoded image at `n` eighths.
+    pub fn scaled_dims(&self, n: u32) -> (u32, u32) {
+        (scaled_len(self.width, n), scaled_len(self.height, n))
+    }
+
+    /// Estimated peak bytes of [`decode_jpeg_scaled`] at the reduction [`Self::scale_eighths`] picks.
+    ///
+    /// Baseline: the decoder works one MCU row at a time and keeps only its scaled component planes plus the packed
+    /// output. Progressive: every coefficient of the full-size image (2 bytes each) is kept until the last scan.
+    pub fn scaled_cost_bytes(&self) -> u64 {
+        let n = self.scale_eighths();
+        let (sw, sh) = self.scaled_dims(n);
+        let spx = u64::from(sw) * u64::from(sh);
+        let fpx = u64::from(self.width) * u64::from(self.height);
+        let (hmax, vmax) = self.components.iter().fold((1u32, 1u32), |(a, b), &(h, v)| {
+            (a.max(u32::from(h)), b.max(u32::from(v)))
+        });
+        // Samples per image pixel over all components: 1.5 for 4:2:0 YCbCr, 3 for 4:4:4, 1 for gray.
+        let per_px: f64 = self
+            .components
+            .iter()
+            .map(|&(h, v)| f64::from(u32::from(h) * u32::from(v)) / f64::from(hmax * vmax))
+            .sum();
+        let out_ch = 3.0; // packed RGB (gray and CMYK are converted to RGB too)
+        let planes = spx as f64 * (per_px + out_ch);
+        // x1.15 on the coefficients: block padding to whole MCUs and allocator slack (measured +295..310 MB at 100 MP
+        // 4:2:0 against 300 MB computed).
+        let coeffs = if self.progressive {
+            fpx as f64 * per_px * 2.0 * 1.15
+        } else {
+            0.0
+        };
+        // Resize and encode buffers on top of the decoded image: bounded by the preview, a few MB.
+        (planes + coeffs) as u64 + (24 << 20)
+    }
+}
+
+fn scaled_len(len: u32, eighths: u32) -> u32 {
+    (len * eighths).div_ceil(8).max(1)
+}
+
+/// Decode a JPEG at a reduced size using the IDCT's scaling (1/2, 1/4 or 1/8), so the full-size image never exists.
+/// The result is at least [`PREVIEW_EDGE`] on the long edge whenever the source is. Colour handling matches the full
+/// decode: ICC profiles are ignored in both, Adobe CMYK/YCCK is converted to RGB. EXIF orientation is not applied.
+pub fn decode_jpeg_scaled(bytes: &[u8]) -> Result<DynamicImage> {
+    let mut dec = jpeg_decoder::Decoder::new(Cursor::new(bytes));
+    dec.read_info().context("read JPEG header")?;
+    let edge = u16::try_from(PREVIEW_EDGE).unwrap_or(u16::MAX);
+    let (w, h) = dec.scale(edge, edge).context("choose JPEG scale")?;
+    let px = dec.decode().context("decode JPEG")?;
+    let info = dec.info().context("JPEG info")?;
+    let (w, h) = (u32::from(w), u32::from(h));
+    match info.pixel_format {
+        jpeg_decoder::PixelFormat::L8 => image::GrayImage::from_raw(w, h, px).map(DynamicImage::ImageLuma8),
+        jpeg_decoder::PixelFormat::RGB24 => RgbImage::from_raw(w, h, px).map(DynamicImage::ImageRgb8),
+        jpeg_decoder::PixelFormat::CMYK32 => {
+            // jpeg-decoder undoes Adobe's inversion for both CMYK and YCCK, so these are ink amounts (255 = full
+            // ink). The usual naive conversion, the same as for the full-size decode: R = (1 - C)(1 - K).
+            let mut rgb = Vec::with_capacity(px.len() / 4 * 3);
+            for p in px.as_chunks::<4>().0 {
+                let paper = 255 - u32::from(p[3]);
+                rgb.extend(
+                    p[..3]
+                        .iter()
+                        .map(|&c| (((255 - u32::from(c)) * paper + 127) / 255) as u8),
+                );
+            }
+            RgbImage::from_raw(w, h, rgb).map(DynamicImage::ImageRgb8)
+        }
+        jpeg_decoder::PixelFormat::L16 => anyhow::bail!("16-bit JPEG"),
+    }
+    .context("JPEG pixel buffer")
+}
+
+// ---- PNG: row streaming --------------------------------------------------------------------------------------------
+
+fn png_decoder(bytes: &[u8]) -> png::Decoder<Cursor<&[u8]>> {
+    let mut dec = png::Decoder::new(Cursor::new(bytes));
+    // Palette and low bit depths expanded, 16-bit cut to 8: rows come out as 8-bit gray/gray+alpha/RGB/RGBA.
+    dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    dec
+}
+
+/// `Some(has_alpha)` when the PNG can be decoded row by row: not interlaced (Adam7 needs the whole image to put the
+/// passes together). Other PNGs take the normal decode.
+pub fn png_streamable(bytes: &[u8]) -> Option<bool> {
+    let reader = png_decoder(bytes).read_info().ok()?;
+    if reader.info().interlaced {
+        return None;
+    }
+    let (color, _) = reader.output_color_type();
+    Some(matches!(color, png::ColorType::GrayscaleAlpha | png::ColorType::Rgba))
+}
+
+/// Decode a PNG one row at a time, averaging rows down into a buffer of roughly [`PREVIEW_EDGE`] on the long edge as
+/// they arrive. Peak memory is that buffer plus one row and the inflate window, whatever the PNG's size.
+pub fn decode_png_streamed(bytes: &[u8]) -> Result<DynamicImage> {
+    let mut reader = png_decoder(bytes).read_info().context("read PNG header")?;
+    let (w, h) = (reader.info().width, reader.info().height);
+    let (color, _) = reader.output_color_type();
+    let alpha = matches!(color, png::ColorType::GrayscaleAlpha | png::ColorType::Rgba);
+    let mut acc = crate::stream::Accum::new(w, h, PREVIEW_EDGE, alpha)?;
+    let ch = if alpha { 4 } else { 3 };
+    let mut row_buf = vec![0u8; w as usize * ch];
+    for y in 0..h {
+        let row = reader
+            .next_row()
+            .context("decode PNG row")?
+            .context("PNG ended early")?;
+        let data = row.data();
+        match color {
+            png::ColorType::Rgb | png::ColorType::Rgba => acc.add_row(y, data, false),
+            png::ColorType::Grayscale => {
+                for (o, &g) in row_buf.as_chunks_mut::<3>().0.iter_mut().zip(data) {
+                    *o = [g, g, g];
+                }
+                acc.add_row(y, &row_buf, false);
+            }
+            png::ColorType::GrayscaleAlpha => {
+                for (o, p) in row_buf.as_chunks_mut::<4>().0.iter_mut().zip(data.as_chunks::<2>().0) {
+                    *o = [p[0], p[0], p[0], p[1]];
+                }
+                acc.add_row(y, &row_buf, false);
+            }
+            png::ColorType::Indexed => anyhow::bail!("palette PNG was not expanded"),
+        }
+    }
+    acc.finish()
+}
+
 /// Decode `bytes`, orient by EXIF `orientation`, and produce all derived artifacts.
 pub fn derive(bytes: &[u8], orientation: u8) -> Result<Derived> {
     derive_image(decode(bytes)?, orientation)
@@ -173,7 +397,15 @@ pub fn derive(bytes: &[u8], orientation: u8) -> Result<Derived> {
 /// Resize first, then orient the (small) results: rotating a full-size image would need a second
 /// full-size buffer. `orientation` is applied exactly once, here.
 pub fn derive_image(img: DynamicImage, orientation: u8) -> Result<Derived> {
-    let (sw, sh) = (img.width(), img.height());
+    let (w, h) = (img.width(), img.height());
+    derive_scaled(img, orientation, w, h)
+}
+
+/// Like [`derive_image`] for an `img` that is a reduced-size decode (DCT-scaled JPEG, streamed HEIF/PNG) of a source
+/// that is `full_w` x `full_h` as stored. Output sizes, the reported dimensions and the orientation all follow the
+/// source; `img` must be at least as large as the preview in the long edge, so nothing is upscaled.
+pub fn derive_scaled(img: DynamicImage, orientation: u8, full_w: u32, full_h: u32) -> Result<Derived> {
+    let (sw, sh) = (full_w, full_h);
     let (width, height) = oriented_dims(sw, sh, orientation);
 
     let (pw, ph) = fit_within(sw, sh, PREVIEW_EDGE);
@@ -343,6 +575,358 @@ mod tests {
             let again = crate::exif::parse(webp);
             assert_eq!((again.latitude, again.longitude, again.camera_make), (None, None, None));
         }
+    }
+
+    // ---- DCT-scaled JPEG ----
+
+    use crate::testgen::{self, JpegSpec, psnr};
+
+    fn info_of(w: u32, h: u32) -> JpegInfo {
+        JpegInfo {
+            width: w,
+            height: h,
+            progressive: false,
+            sof: 0xC0,
+            precision: 8,
+            components: vec![(2, 2), (1, 1), (1, 1)],
+        }
+    }
+
+    #[test]
+    fn scale_picks_the_smallest_size_that_still_covers_the_preview() {
+        // (width, height) -> eighths. The long edge after scaling must stay >= 1440 and the next step down must not.
+        for (w, h, want) in [
+            (12000, 9000, 1), // 1/8 -> 1500
+            (8000, 6000, 2),  // 1/8 -> 1000 (too small), 1/4 -> 2000
+            (11520, 1000, 1), // panorama: only the long edge counts
+            (4000, 3000, 4),  // 1/4 -> 1000, 1/2 -> 2000
+            (2880, 2000, 4),  // 1/2 -> 1440, exactly enough
+            (2879, 2000, 8),  // 1/2 -> 1440 (ceil), still enough?
+            (2000, 1500, 8),  // 1/2 -> 1000: no reduction possible
+            (1440, 1080, 8),
+            (800, 600, 8),
+        ] {
+            let i = info_of(w, h);
+            let n = i.scale_eighths();
+            let long = |n| scaled_len(w.max(h), n);
+            assert!(n == 8 || long(n) >= PREVIEW_EDGE, "{w}x{h}: {n}/8 gives {}", long(n));
+            if n > 1 && n < 8 {
+                assert!(long(n / 2) < PREVIEW_EDGE, "{w}x{h}: {n}/8 is not the smallest");
+            }
+            if (w, h) != (2879, 2000) {
+                assert_eq!(n, want, "{w}x{h}");
+            }
+        }
+    }
+
+    #[test]
+    fn jpeg_info_reads_the_frame_header() {
+        let base = testgen::jpeg(JpegSpec::new(321, 123));
+        let i = jpeg_info(&base).unwrap();
+        assert_eq!((i.width, i.height, i.progressive, i.precision), (321, 123, false, 8));
+        assert_eq!(i.components, vec![(2, 2), (1, 1), (1, 1)]);
+        assert!(i.scalable());
+
+        let mut s = JpegSpec::new(100, 50);
+        s.progressive = true;
+        s.subsample = false;
+        let i = jpeg_info(&testgen::jpeg(s)).unwrap();
+        assert!(i.progressive);
+        assert_eq!(i.components, vec![(1, 1), (1, 1), (1, 1)]);
+
+        assert!(jpeg_info(b"not a jpeg").is_none());
+        assert!(jpeg_info(&base[..30]).is_none());
+        // 12-bit samples are left to the full decoder.
+        let mut twelve = base.clone();
+        let sof = twelve.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
+        twelve[sof + 4] = 12;
+        assert!(!jpeg_info(&twelve).unwrap().scalable());
+        // Arithmetic-coded and lossless frames likewise.
+        let mut arith = base.clone();
+        arith[sof + 1] = 0xC9;
+        assert_eq!(jpeg_info(&arith).unwrap().sof, 0xC9);
+        assert!(!jpeg_info(&arith).unwrap().scalable());
+    }
+
+    #[test]
+    fn scaled_decode_returns_the_chosen_size() {
+        let bytes = testgen::jpeg(JpegSpec::new(4001, 2999));
+        let i = jpeg_info(&bytes).unwrap();
+        assert_eq!(i.scale_eighths(), 4);
+        let img = decode_jpeg_scaled(&bytes).unwrap();
+        assert_eq!((img.width(), img.height()), i.scaled_dims(4));
+        assert_eq!((img.width(), img.height()), (2001, 1500));
+    }
+
+    /// The scaled path must give the same pictures as decoding everything and resizing, within the difference
+    /// between a Lanczos filter and the IDCT's own reduction. Smooth synthetic content, so the bar is high.
+    fn assert_scaled_matches_full(spec: JpegSpec, orientation: u8) {
+        let bytes = testgen::jpeg(spec);
+        let info = jpeg_info(&bytes).unwrap();
+        assert!(
+            info.scalable() && info.scale_eighths() < 8,
+            "fixture must take the scaled path"
+        );
+        let (w, h) = (u32::from(spec.w), u32::from(spec.h));
+        let full = derive(&bytes, orientation).unwrap();
+        let scaled = derive_scaled(decode_jpeg_scaled(&bytes).unwrap(), orientation, w, h).unwrap();
+        assert_eq!((scaled.width, scaled.height), (full.width, full.height));
+        for (name, a, b) in [
+            ("preview", &full.preview_webp, &scaled.preview_webp),
+            ("thumb", &full.thumb_webp, &scaled.thumb_webp),
+        ] {
+            let (da, db) = (
+                webp::Decoder::new(a).decode().unwrap(),
+                webp::Decoder::new(b).decode().unwrap(),
+            );
+            assert_eq!((da.width(), da.height()), (db.width(), db.height()), "{name} size");
+            let (ia, ib) = (da.to_image().to_rgb8(), db.to_image().to_rgb8());
+            let p = psnr(&ia, &ib);
+            assert!(p > 30.0, "{name} differs from the full decode: {p:.1} dB");
+        }
+        assert_eq!(full.thumbhash.len(), scaled.thumbhash.len());
+    }
+
+    #[test]
+    fn scaled_baseline_matches_full_decode() {
+        assert_scaled_matches_full(JpegSpec::new(3000, 2000), 1);
+    }
+
+    #[test]
+    fn scaled_progressive_matches_full_decode() {
+        let mut s = JpegSpec::new(3000, 1900);
+        s.progressive = true;
+        assert_scaled_matches_full(s, 1);
+    }
+
+    #[test]
+    fn scaled_444_with_restart_markers_matches_full_decode() {
+        let mut s = JpegSpec::new(3000, 1800);
+        s.subsample = false;
+        s.restart_interval = 7;
+        assert_scaled_matches_full(s, 1);
+    }
+
+    #[test]
+    fn scaled_progressive_with_restart_markers_matches_full_decode() {
+        let mut s = JpegSpec::new(2950, 1700);
+        s.progressive = true;
+        s.restart_interval = 11;
+        assert_scaled_matches_full(s, 1);
+    }
+
+    #[test]
+    fn scaled_decode_keeps_orientation() {
+        for o in [1, 3, 5, 6, 8] {
+            assert_scaled_matches_full(JpegSpec::new(2900, 1000), o);
+        }
+        // And end to end through the EXIF tag in the file: a stored 3200x1600 with orientation 6 is shown 1600x3200.
+        let app1 = exif_app1(&[(0x0112, 3, 6u16.to_le_bytes().to_vec())], &[], &[]);
+        let bytes = with_app1(&testgen::jpeg(JpegSpec::new(3200, 1600)), &app1);
+        let o = crate::exif::parse(&bytes).orientation;
+        assert_eq!(o, 6);
+        let d = derive_scaled(decode_jpeg_scaled(&bytes).unwrap(), o, 3200, 1600).unwrap();
+        assert_eq!((d.width, d.height), (1600, 3200));
+        assert_eq!(webp_dims(&d.preview_webp), (720, 1440));
+        assert_eq!(webp_dims(&d.thumb_webp), (160, 320));
+    }
+
+    #[test]
+    fn scaled_decode_pixels_are_where_they_should_be() {
+        // Left half red, right half blue, rotated 90 CW by the EXIF tag: red ends up on top.
+        let mut img = RgbImage::new(3200, 1600);
+        for (x, _, p) in img.enumerate_pixels_mut() {
+            *p = if x < 1600 {
+                Rgb([230, 20, 20])
+            } else {
+                Rgb([20, 20, 230])
+            };
+        }
+        let mut raw = Vec::new();
+        jpeg_encoder::Encoder::new(&mut raw, 90)
+            .encode(img.as_raw(), 3200, 1600, jpeg_encoder::ColorType::Rgb)
+            .unwrap();
+        let app1 = exif_app1(&[(0x0112, 3, 6u16.to_le_bytes().to_vec())], &[], &[]);
+        let bytes = with_app1(&raw, &app1);
+        let d = derive_scaled(decode_jpeg_scaled(&bytes).unwrap(), 6, 3200, 1600).unwrap();
+        let prev = webp::Decoder::new(&d.preview_webp)
+            .decode()
+            .unwrap()
+            .to_image()
+            .to_rgb8();
+        let (top, bottom) = (prev.get_pixel(360, 200).0, prev.get_pixel(360, 1240).0);
+        assert!(top[0] > 190 && top[2] < 70, "top should be red, got {top:?}");
+        assert!(
+            bottom[2] > 190 && bottom[0] < 70,
+            "bottom should be blue, got {bottom:?}"
+        );
+    }
+
+    #[test]
+    fn scaled_cmyk_converts_like_the_full_decoder() {
+        for ycck in [false, true] {
+            scaled_cmyk(ycck);
+        }
+    }
+
+    fn scaled_cmyk(ycck: bool) {
+        let mut s = JpegSpec::new(3000, 2000);
+        s.cmyk = true;
+        s.ycck = ycck;
+        s.subsample = false;
+        let bytes = testgen::jpeg(s);
+        let info = jpeg_info(&bytes).unwrap();
+        assert_eq!(info.components.len(), 4);
+        assert!(info.scalable());
+        let scaled = decode_jpeg_scaled(&bytes).unwrap().to_rgb8();
+        assert_eq!(
+            (scaled.width(), scaled.height()),
+            info.scaled_dims(info.scale_eighths())
+        );
+        // The picture is what went in: the fixture stores the RGB test pattern as Adobe-style inverted CMYK with no black ink.
+        let (sw, sh) = (scaled.width(), scaled.height());
+        for (x, y) in [(sw / 4, sh / 4), (sw / 2, sh / 2), (3 * sw / 4, sh / 3)] {
+            let want = testgen::pixel(x * 8 / info.scale_eighths(), y * 8 / info.scale_eighths(), 3000, 2000);
+            let got = scaled.get_pixel(x, y).0;
+            for c in 0..3 {
+                assert!(
+                    (i32::from(got[c]) - i32::from(want[c])).abs() < 24,
+                    "({x},{y}) channel {c}: got {got:?}, want {want:?}"
+                );
+            }
+        }
+        // The full decoder, when it takes the file at all, agrees about the colours.
+        if let Ok(full) = decode(&bytes) {
+            let (fw, fh) = (full.width(), full.height());
+            let want = resize(&full, scaled.width(), scaled.height()).unwrap().to_rgb8();
+            assert_eq!((fw, fh), (3000, 2000));
+            let p = psnr(&want, &scaled);
+            assert!(p > 28.0, "CMYK differs from the full decoder: {p:.1} dB");
+        }
+    }
+
+    #[test]
+    fn scaled_grayscale_jpeg() {
+        let (w, h) = (3000u32, 2000u32);
+        let luma: Vec<u8> = (0..w * h).map(|i| ((i % w) * 255 / w) as u8).collect();
+        let mut raw = Vec::new();
+        jpeg_encoder::Encoder::new(&mut raw, 90)
+            .encode(&luma, w as u16, h as u16, jpeg_encoder::ColorType::Luma)
+            .unwrap();
+        let info = jpeg_info(&raw).unwrap();
+        assert_eq!(info.components.len(), 1);
+        let d = derive_scaled(decode_jpeg_scaled(&raw).unwrap(), 1, w, h).unwrap();
+        assert_eq!(webp_dims(&d.preview_webp), (1440, 960));
+    }
+
+    #[test]
+    fn truncated_jpeg_fails_cleanly_in_the_scaled_path() {
+        let bytes = testgen::jpeg(JpegSpec::new(3000, 2000));
+        // Either an error or a partial picture is acceptable; a panic is not.
+        let _ = decode_jpeg_scaled(&bytes[..bytes.len() / 2]);
+        assert!(decode_jpeg_scaled(&bytes[..40]).is_err());
+    }
+
+    // ---- PNG streaming ----
+
+    fn png_of(img: DynamicImage) -> Vec<u8> {
+        let mut out = Vec::new();
+        img.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn streamed_png_matches_full_decode() {
+        let img = RgbImage::from_fn(2950, 2000, |x, y| Rgb(testgen::pixel(x, y, 2950, 2000)));
+        let bytes = png_of(DynamicImage::ImageRgb8(img));
+        assert_eq!(png_streamable(&bytes), Some(false));
+        let full = derive(&bytes, 1).unwrap();
+        let streamed = derive_scaled(decode_png_streamed(&bytes).unwrap(), 1, 2950, 2000).unwrap();
+        assert_eq!((streamed.width, streamed.height), (2950, 2000));
+        let (a, b) = (
+            webp::Decoder::new(&full.preview_webp)
+                .decode()
+                .unwrap()
+                .to_image()
+                .to_rgb8(),
+            webp::Decoder::new(&streamed.preview_webp)
+                .decode()
+                .unwrap()
+                .to_image()
+                .to_rgb8(),
+        );
+        assert!(psnr(&a, &b) > 35.0);
+    }
+
+    #[test]
+    fn streamed_png_handles_gray_alpha_palette_and_16_bit() {
+        use image::{GrayAlphaImage, GrayImage, ImageBuffer, LumaA, Rgba};
+        let (w, h) = (2900u32, 1450u32);
+        let gray = DynamicImage::ImageLuma8(GrayImage::from_fn(w, h, |x, y| image::Luma([((x + y) % 251) as u8])));
+        let ga = DynamicImage::ImageLumaA8(GrayAlphaImage::from_fn(w, h, |x, _| LumaA([200, (x * 255 / w) as u8])));
+        let rgba = DynamicImage::ImageRgba8(image::RgbaImage::from_fn(w, h, |x, y| {
+            let [r, g, b] = testgen::pixel(x, y, w, h);
+            Rgba([r, g, b, 40 + (y * 200 / h) as u8])
+        }));
+        let rgb16 = DynamicImage::ImageRgb16(ImageBuffer::from_fn(w, h, |x, y| {
+            let [r, g, b] = testgen::pixel(x, y, w, h);
+            image::Rgb([u16::from(r) * 257, u16::from(g) * 257, u16::from(b) * 257])
+        }));
+        for (name, img) in [("gray", gray), ("gray+alpha", ga), ("rgba", rgba), ("rgb16", rgb16)] {
+            let bytes = png_of(img);
+            let alpha = png_streamable(&bytes).unwrap_or_else(|| panic!("{name} not streamable"));
+            let streamed = decode_png_streamed(&bytes).unwrap();
+            assert_eq!(streamed.color().has_alpha(), alpha, "{name}");
+            assert!(
+                streamed.width() >= PREVIEW_EDGE && streamed.width() < 2 * PREVIEW_EDGE,
+                "{name}"
+            );
+            let full = decode(&bytes).unwrap();
+            let target = resize(&full, streamed.width(), streamed.height()).unwrap();
+            if alpha {
+                // Compare colour where it is visible (the colour of a nearly transparent pixel means nothing) and
+                // alpha everywhere. Box averaging and Lanczos differ on the fixture's pixel-level texture, so allow
+                // a small mean difference and a larger worst case.
+                let (mut sum, mut n, mut worst_alpha) = (0u64, 0u64, 0i32);
+                let (a, b) = (target.to_rgba8(), streamed.to_rgba8());
+                for (p, q) in a.pixels().zip(b.pixels()) {
+                    worst_alpha = worst_alpha.max((i32::from(p[3]) - i32::from(q[3])).abs());
+                    if p[3] > 48 && q[3] > 48 {
+                        for c in 0..3 {
+                            sum += u64::from(p[c].abs_diff(q[c]));
+                            n += 1;
+                        }
+                    }
+                }
+                let mean = sum as f64 / n.max(1) as f64;
+                assert!(
+                    mean < 4.0 && worst_alpha < 12,
+                    "{name}: mean colour diff {mean:.2}, worst alpha diff {worst_alpha}"
+                );
+            } else {
+                let p = psnr(&target.to_rgb8(), &streamed.to_rgb8());
+                assert!(p > 30.0, "{name}: {p:.1} dB");
+            }
+        }
+    }
+
+    #[test]
+    fn interlaced_png_is_not_streamed() {
+        // A 1x1 interlaced PNG written by hand through the png crate.
+        let mut out = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut out, 4, 4);
+            enc.set_color(png::ColorType::Rgb);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut w = enc.write_header().unwrap();
+            w.write_image_data(&[7u8; 48]).unwrap();
+        }
+        assert_eq!(png_streamable(&out), Some(false));
+        // Flip the IHDR interlace byte (offset 28) and fix nothing else: still parses as interlaced for the header.
+        let mut adam = out.clone();
+        adam[28] = 1;
+        assert_eq!(png_streamable(&adam), None);
     }
 
     #[test]

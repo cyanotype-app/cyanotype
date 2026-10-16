@@ -476,3 +476,71 @@ async fn stalled_seconds_is_zero_when_idle_or_progressing_and_grows_when_wedged(
     assert!((55.0..90.0).contains(&s), "{s}");
     t.teardown().await;
 }
+
+/// Migration 0010 requeues the thumbnail jobs the worker refused for memory, and only those.
+#[tokio::test]
+async fn migration_0010_requeues_only_memory_refusals() {
+    let Some(db) = TestDb::new().await else { return };
+    let asset = make_asset(&db.pool).await;
+    let memory =
+        "decoding a 14000x7000 image needs about 477 MB, over the worker memory budget (493 MB available to this job)";
+    let rows = [
+        ("thumbnail", memory),
+        (
+            "thumbnail",
+            "decoding a 9000x9000 image needs about 1000 MB, over the worker memory budget (400 MB available to this job)",
+        ),
+        (
+            "thumbnail",
+            "original is 700 MB, which does not fit the worker memory budget of 640 MB",
+        ),
+        ("thumbnail", "decode image: unexpected EOF"),
+        ("metadata", memory), // same words, different job: left alone
+    ];
+    // One asset can only have one job per kind and version; use separate versions for the thumbnail rows.
+    for (i, (kind, err)) in rows.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO jobs (kind, asset_id, version, state, attempts, last_error, finished_at)
+             VALUES ($1, $2, $3, 'failed', 3, $4, now())",
+        )
+        .bind(kind)
+        .bind(asset)
+        .bind(i as i32 + 1)
+        .bind(err)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+    let done: (i64,) = sqlx::query_as("SELECT count(*) FROM jobs")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(done.0, 5);
+
+    let sql = include_str!("../migrations/0010_requeue_memory_refusals.sql");
+    let state = || async {
+        sqlx::query_as::<_, (i32, String, i32, Option<String>)>(
+            "SELECT version, state, attempts, last_error FROM jobs ORDER BY version",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .unwrap()
+    };
+    sqlx::raw_sql(sql).execute(&db.pool).await.unwrap();
+    let after = state().await;
+    assert_eq!(
+        after.iter().map(|r| r.1.as_str()).collect::<Vec<_>>(),
+        ["queued", "queued", "failed", "failed", "failed"]
+    );
+    assert_eq!(after[0].2, 0, "a fresh set of attempts");
+    assert_eq!(after[0].3, None);
+    assert!(
+        after[2].3.as_deref().unwrap().starts_with("original is"),
+        "other errors are kept"
+    );
+
+    // Idempotent: a second run changes nothing.
+    sqlx::raw_sql(sql).execute(&db.pool).await.unwrap();
+    assert_eq!(state().await, after);
+    db.teardown().await;
+}
