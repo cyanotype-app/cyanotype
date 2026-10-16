@@ -43,3 +43,29 @@ tower-http = { version = "0.6", features = ["trace", "cors", "request-id"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# The worker's tests decode and encode multi-megapixel images. Optimise just the pixel-pushing dependencies in the
+# dev/test profiles (the workspace crates stay unoptimised); a 3000x2000 decode drops from seconds to milliseconds.
+[profile.dev.package.jpeg-decoder]
+opt-level = 3
+[profile.dev.package.jpeg-encoder]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.fast_image_resize]
+opt-level = 3
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+[profile.dev.package.zune-core]
+opt-level = 3
+[profile.dev.package.image-webp]
+opt-level = 3
+# The worker's own test fixtures (synthetic photos generated pixel by pixel) are the other slow part.
+[profile.dev.package.cyanotype-worker]
+opt-level = 2

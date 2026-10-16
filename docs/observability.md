@@ -95,6 +95,8 @@ configuration in Datadog (distributions would need percentile aggregation enable
 | `cyanotype.jobs.retried` | count | `kind`, `family`, `outcome:retry` | Failures that will be retried. |
 | `cyanotype.jobs.duration` | histogram (ms) | `kind`, `family`, `outcome` | Wall time per job. |
 | `cyanotype.jobs.decoded_megapixels` | histogram | `kind`, `family` | Size of the image a thumbnail job decoded. |
+| `cyanotype.jobs.decode_path` | count | `path` (`jpeg_scaled`, `png_streamed`, `heif_tiled`, `heif`, `raw`, `full`), `family` | Which decoder a thumbnail job used. `full` is the plain full-size decode; a rising share for big JPEGs/HEICs means the reduced paths are being skipped. |
+| `cyanotype.jobs.decode_fallbacks` | count | `family` | A reduced-size decoder (scaled JPEG, streamed PNG) failed on a file and the job retried with a full decode. Should be near zero. |
 | `cyanotype.worker.memory_budget.waits` / `.wait_ms` | count / histogram | | A reservation had to wait for memory held by other jobs, and for how long. |
 | `cyanotype.worker.memory_budget.refusals` | count | `reason` (`over_size_limit`, `over_budget`, `decode_refused`), `family` | Jobs turned away as too big. |
 | `cyanotype.worker.memory_budget.used_bytes` / `.total_bytes` | gauge | | Budget in use and its size (`WORKER_MEMORY_BUDGET_MB`). |
