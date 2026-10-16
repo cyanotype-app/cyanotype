@@ -117,4 +117,79 @@ describe("Lightbox", () => {
       expect(screen.queryByRole("button", { name: "Unpair" })).not.toBeInTheDocument();
     });
   });
+
+  describe("favorite", () => {
+    it("shows the heart only when wired up, reflects the state and toggles it", async () => {
+      const user = userEvent.setup();
+      const onFavorite = vi.fn();
+      const { rerender } = render(
+        <Lightbox items={[item(1)]} index={0} onIndexChange={() => {}} onClose={() => {}} loadDetail={async () => detail(1)} />,
+      );
+      expect(screen.queryByRole("button", { name: /favorites/ })).not.toBeInTheDocument();
+
+      rerender(
+        <Lightbox items={[item(1)]} index={0} onIndexChange={() => {}} onClose={() => {}} loadDetail={async () => detail(1)} onFavorite={onFavorite} />,
+      );
+      await user.click(screen.getByRole("button", { name: "Add to favorites" }));
+      expect(onFavorite).toHaveBeenLastCalledWith(expect.objectContaining({ id: "id-1" }), true);
+
+      const fav = item(1, { favorite: true });
+      rerender(
+        <Lightbox items={[fav]} index={0} onIndexChange={() => {}} onClose={() => {}} loadDetail={async () => detail(1)} onFavorite={onFavorite} />,
+      );
+      expect(screen.getByRole("button", { name: "Remove from favorites" })).toHaveAttribute("aria-pressed", "true");
+      await user.click(screen.getByRole("button", { name: "Remove from favorites" }));
+      expect(onFavorite).toHaveBeenLastCalledWith(fav, false);
+    });
+  });
+
+  describe("download", () => {
+    it("is a plain link (a navigation, not fetch) to the download endpoint for a single file", () => {
+      render(<Harness />);
+      const link = screen.getByRole("link", { name: "Download" });
+      expect(link).toHaveAttribute("href", "/assets/id-1/download");
+      expect(link).not.toHaveAttribute("target"); // the page stays; the attachment header saves the file
+    });
+
+    it("offers both files of a RAW + JPEG pair, with sizes", async () => {
+      const user = userEvent.setup();
+      render(<Lightbox items={[withRaw(1)]} index={0} onIndexChange={() => {}} onClose={() => {}} loadDetail={async () => detail(1)} />);
+      expect(screen.queryByRole("link", { name: /Download/ })).not.toBeInTheDocument();
+      const open = screen.getByRole("button", { name: "Download" });
+      expect(open).toHaveAttribute("aria-expanded", "false");
+      await user.click(open);
+      expect(open).toHaveAttribute("aria-expanded", "true");
+      const jpeg = screen.getByRole("link", { name: /Download JPEG/ });
+      const raw = screen.getByRole("link", { name: /Download RAW/ });
+      expect(jpeg).toHaveAttribute("href", "/assets/id-1/download");
+      expect(raw).toHaveAttribute("href", "/assets/id-1/download?file=raw-1");
+      expect(jpeg).toHaveTextContent("1001 B");
+      expect(raw).toHaveTextContent("24 MB");
+      await user.click(open);
+      expect(screen.queryByRole("link", { name: /Download RAW/ })).not.toBeInTheDocument();
+    });
+
+    it("names a HEIC primary and closes the chooser when moving to another photo", async () => {
+      const user = userEvent.setup();
+      const heic = item(1, { content_type: "image/heic", original_name: "photo-1.HEIC", paired: withRaw(1).paired });
+      function Two() {
+        const [i, setI] = useState(0);
+        return <Lightbox items={[heic, item(2)]} index={i} onIndexChange={setI} onClose={() => {}} loadDetail={async (id) => detail(Number(id.split("-")[1]))} />;
+      }
+      render(<Two />);
+      await user.click(screen.getByRole("button", { name: "Download" }));
+      expect(screen.getByRole("link", { name: /Download HEIC/ })).toBeInTheDocument();
+      await user.keyboard("{ArrowRight}");
+      expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("href", "/assets/id-2/download");
+      expect(screen.queryByRole("link", { name: /Download HEIC/ })).not.toBeInTheDocument();
+    });
+  });
+
+  it("counts from the position in the whole list when only part of it is loaded", () => {
+    render(
+      <Lightbox items={items} index={1} offset={500} total={900} onIndexChange={() => {}} onClose={() => {}} loadDetail={async () => detail(2)} />,
+    );
+    expect(screen.getByText("502 / 900")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Previous photo" })).toBeEnabled();
+  });
 });

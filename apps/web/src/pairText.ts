@@ -14,7 +14,7 @@ export function fileSize(bytes: number): string {
 }
 
 /** What the visible file of a pair is called: JPEG, HEIC or AVIF (by content type, then extension). */
-function primaryFormat(primary: Pick<AssetSummary, "content_type" | "original_name">): string {
+export function primaryFormat(primary: Pick<AssetSummary, "content_type" | "original_name">): string {
   const probe = `${primary.content_type} ${primary.original_name.split(".").pop() ?? ""}`.toLowerCase();
   if (/heic|heif|hif/.test(probe)) return "HEIC";
   if (/avif/.test(probe)) return "AVIF";
