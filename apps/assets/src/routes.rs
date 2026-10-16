@@ -31,6 +31,13 @@ mod map_tests;
 #[cfg(test)]
 mod pair_tests;
 mod processing;
+mod scope;
+#[cfg(test)]
+mod scope_tests;
+mod share_public;
+#[cfg(test)]
+mod share_tests;
+mod shares;
 mod tiles;
 #[cfg(test)]
 mod tiles_tests;
@@ -59,7 +66,14 @@ const PART_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12
 const BODY_LIMIT_MARGIN: usize = 64 * 1024;
 
 pub fn routes() -> Router<AppState> {
+    routes_with(share_public::ShareState::from_env().expect("invalid COOKIE_SECURE or TRUSTED_PROXIES"))
+}
+
+/// The routes, with explicit limiter and cookie settings for the public share links (tests use small budgets).
+fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
     Router::new()
+        .merge(shares::routes())
+        .merge(share_public::routes(share_state))
         .route("/assets/check", post(check))
         .route("/assets/complete", post(complete))
         .route(

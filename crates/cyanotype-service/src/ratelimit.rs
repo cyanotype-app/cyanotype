@@ -192,6 +192,33 @@ pub fn client_ip(peer: IpAddr, forwarded_for: Option<&str>, trusted: &[Cidr]) ->
     peer
 }
 
+/// Parse `TRUSTED_PROXIES`. Default: loopback and private ranges, which covers the compose network the gateway
+/// lives on. `none` trusts no proxy (forwarded headers are ignored).
+pub fn parse_proxies(v: Option<&str>) -> anyhow::Result<Vec<Cidr>> {
+    const DEFAULT: &str = "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7";
+    let v = v.unwrap_or(DEFAULT).trim();
+    if v.eq_ignore_ascii_case("none") {
+        return Ok(vec![]);
+    }
+    v.split(',').map(|s| s.trim().parse()).collect()
+}
+
+/// The client address of a request (see [`client_ip`]); `0.0.0.0` when the peer is unknown (tests).
+pub fn request_ip(req: &axum::http::request::Parts, trusted: &[Cidr]) -> IpAddr {
+    let peer = req
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip())
+        .unwrap_or(IpAddr::from([0, 0, 0, 0]));
+    let xff = req.headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
+    client_ip(peer, xff, trusted)
+}
+
+/// `Retry-After` seconds for a wait.
+pub fn retry_after_secs(wait: Duration) -> u64 {
+    wait.as_secs().max(1) + u64::from(wait.subsec_nanos() > 0 && wait.as_secs() >= 1)
+}
+
 #[derive(Clone)]
 pub struct LimitState {
     pub limiter: Arc<RateLimiter>,
@@ -210,7 +237,7 @@ pub async fn limit(State(s): State<LimitState>, req: Request, next: Next) -> Res
     match s.limiter.check(ip, Instant::now()) {
         Ok(()) => next.run(req).await,
         Err(wait) => {
-            let secs = wait.as_secs().max(1) + u64::from(wait.subsec_nanos() > 0 && wait.as_secs() >= 1);
+            let secs = retry_after_secs(wait);
             let mut res = (
                 StatusCode::TOO_MANY_REQUESTS,
                 axum::Json(json!({"error": "too many requests, slow down"})),

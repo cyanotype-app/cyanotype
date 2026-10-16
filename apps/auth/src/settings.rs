@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use anyhow::{Result, bail};
 
-use crate::ratelimit::{Cidr, RateLimitConfig};
+use cyanotype_service::ratelimit::{Cidr, RateLimitConfig, parse_proxies};
 
 /// Who may create accounts (`REGISTRATION_MODE`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,17 +78,6 @@ fn parse_bool(name: &str, v: &str) -> Result<bool> {
         "false" | "0" | "no" | "off" => Ok(false),
         other => bail!("{name} must be true or false (got {other:?})"),
     }
-}
-
-/// Default: loopback and private ranges, which covers the compose network the gateway lives on.
-/// `none` trusts no proxy (forwarded headers are ignored).
-fn parse_proxies(v: Option<&str>) -> Result<Vec<Cidr>> {
-    const DEFAULT: &str = "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7";
-    let v = v.unwrap_or(DEFAULT).trim();
-    if v.eq_ignore_ascii_case("none") {
-        return Ok(vec![]);
-    }
-    v.split(',').map(|s| s.trim().parse()).collect()
 }
 
 impl Default for AuthConfig {

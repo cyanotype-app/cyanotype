@@ -17,6 +17,9 @@ pub const KIND_EMBED: &str = "embed";
 /// Backfill: try to pair an existing asset with its RAW/JPEG counterpart (`pairing`). New uploads pair inline when
 /// their metadata job finishes, so this is never in `DEFAULT_PIPELINE`.
 pub const KIND_PAIR: &str = "pair";
+/// Write the location-free JPEG that share links serve for downloads (`derived/{user}/{asset}/share.jpg`).
+/// Enqueued when a share that allows downloads is created or viewed, never for every upload.
+pub const KIND_SHARE_COPY: &str = "share_copy";
 
 /// Jobs enqueued for every new asset. Later pipeline stages are enqueued by earlier ones
 /// or by the milestones that implement them.

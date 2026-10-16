@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { api, ApiError, type AssetListItem, type MapCluster, type TilesInstalled } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
+import { ShareDialog } from "../components/ShareDialog";
 import { Grid } from "../components/Grid";
 import { LibraryTabs } from "../components/LibraryTabs";
 import { Lightbox } from "../components/Lightbox";
@@ -33,6 +34,7 @@ export function MapPage() {
   const [dark, setDark] = useState(() => darkQuery()?.matches ?? false);
   const [lightbox, setLightbox] = useState<{ items: AssetListItem[]; index: number } | null>(null);
   const [addIds, setAddIds] = useState<string[] | null>(null);
+  const [shareIds, setShareIds] = useState<string[] | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
   const unauthorized = useCallback(() => setAnonymous(), [setAnonymous]);
@@ -324,12 +326,15 @@ export function MapPage() {
           loadDetail={api.getAsset}
           onTrash={(it) => void trash(it)}
           onAddToAlbum={(it) => setAddIds([it.id])}
+          onShare={(it) => setShareIds([it.id])}
           onFavorite={(it, favorite) => void setFavorite(it, favorite)}
         />
       )}
+      {shareIds && <ShareDialog target={{ kind: "photos", ids: shareIds }} onClose={() => setShareIds(null)} />}
       {addIds && (
         <AddToAlbumDialog
           ids={addIds}
+          count={addIds.length}
           onClose={() => setAddIds(null)}
           onDone={(r) => {
             const requested = addIds.length;

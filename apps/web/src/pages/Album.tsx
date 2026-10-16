@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, ApiError, type Album as AlbumData } from "../api";
+import { api, ApiError, isScope, type Album as AlbumData, type AssetListItem } from "../api";
 import { useAuth } from "../auth";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Grid } from "../components/Grid";
 import { Lightbox } from "../components/Lightbox";
 import { SelectionBar } from "../components/SelectionBar";
+import { ShareDialog, type ShareTarget } from "../components/ShareDialog";
 import { useToast } from "../components/Toast";
 import { dateRange, photoCount } from "../albumText";
 import { useSelection } from "../selection";
@@ -27,6 +28,7 @@ function AlbumView({ id }: { id: string }) {
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [sharing, setSharing] = useState<ShareTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
   const { toast, show } = useToast();
@@ -38,7 +40,7 @@ function AlbumView({ id }: { id: string }) {
   const { items, setItems, done, started, error: pagesError, loadMore, sentinel, refreshItem, reset } =
     useAssetPages(fetchPage);
   const itemIds = useMemo(() => items.map((i) => i.id), [items]);
-  const sel = useSelection(itemIds);
+  const sel = useSelection(itemIds, album?.photo_count);
 
   const failure = useCallback(
     (e: unknown, what: string) => {
@@ -87,16 +89,23 @@ function AlbumView({ id }: { id: string }) {
   }
 
   async function removeSelected() {
-    const ids = sel.ids;
-    if (ids.length === 0) return;
+    const count = sel.count;
+    if (count === 0) return;
+    const target = sel.target({ album: id });
     setBusy(true);
     try {
-      await api.removeFromAlbum(id, ids);
-      const gone = new Set(ids);
-      if (items.every((i) => gone.has(i.id))) setOpen(null);
-      setItems((cur) => cur.filter((i) => !gone.has(i.id)));
+      await api.removeFromAlbum(id, target);
+      if (isScope(target)) {
+        // Photos that were never loaded went too: start the list over.
+        setOpen(null);
+        reset();
+      } else {
+        const gone = new Set(target);
+        if (items.every((i) => gone.has(i.id))) setOpen(null);
+        setItems((cur) => cur.filter((i) => !gone.has(i.id)));
+      }
       sel.setSelecting(false);
-      show({ message: `Removed ${ids.length} from the album` });
+      show({ message: `Removed ${count} from the album` });
       void loadAlbum();
     } catch (e) {
       failure(e, "Couldn’t remove them.");
@@ -107,7 +116,7 @@ function AlbumView({ id }: { id: string }) {
 
   async function setCover() {
     const [cover] = sel.ids;
-    if (sel.ids.length !== 1 || !cover) return;
+    if (sel.count !== 1 || sel.all || !cover) return;
     setBusy(true);
     try {
       setAlbum(await api.updateAlbum(id, { cover_asset_id: cover }));
@@ -119,6 +128,21 @@ function AlbumView({ id }: { id: string }) {
       setBusy(false);
     }
   }
+
+  // Separate a RAW + JPEG pair: the photo loses its RAW badge (the RAW becomes a photo of its own in the library).
+  const unpairItem = useCallback(
+    async (it: AssetListItem) => {
+      try {
+        await api.unpair(it.id);
+      } catch (e) {
+        failure(e, "Couldn’t unpair.");
+        return;
+      }
+      refreshItem(it.id, { paired: [] });
+      show({ message: "Unpaired. They show as separate photos now." });
+    },
+    [failure, show, refreshItem],
+  );
 
   async function deleteAlbum() {
     setBusy(true);
@@ -149,7 +173,7 @@ function AlbumView({ id }: { id: string }) {
 
   // Keyboard: Escape clears the selection, then leaves selection mode.
   useEffect(() => {
-    if (open !== null || confirmDelete || adding || editing) return;
+    if (open !== null || confirmDelete || adding || editing || sharing) return;
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t?.closest("input, textarea, select, [contenteditable]")) return;
@@ -160,7 +184,7 @@ function AlbumView({ id }: { id: string }) {
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, confirmDelete, adding, editing, sel]);
+  }, [open, confirmDelete, adding, editing, sharing, sel]);
 
   const select = useCallback(
     (i: number) => {
@@ -214,6 +238,13 @@ function AlbumView({ id }: { id: string }) {
             <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
               Add photos
             </button>
+            <button
+              type="button"
+              className="btn btn-quiet"
+              onClick={() => setSharing({ kind: "album", albumId: id, albumTitle: album.title })}
+            >
+              Share
+            </button>
             {items.length > 0 && (
               <button
                 type="button"
@@ -232,8 +263,8 @@ function AlbumView({ id }: { id: string }) {
       )}
       {sel.selecting && (
         <SelectionBar
-          count={sel.ids.length}
-          total={items.length}
+          count={sel.count}
+          total={album.photo_count}
           onSelectAll={sel.selectAll}
           onClear={sel.clear}
           onDone={() => sel.setSelecting(false)}
@@ -241,15 +272,23 @@ function AlbumView({ id }: { id: string }) {
           <button
             type="button"
             className="btn btn-quiet"
-            disabled={sel.ids.length !== 1 || busy}
+            disabled={sel.count !== 1 || sel.all || busy}
             onClick={() => void setCover()}
           >
             Set as cover
           </button>
           <button
             type="button"
-            className="btn btn-primary"
+            className="btn btn-quiet"
             disabled={sel.ids.length === 0 || busy}
+            onClick={() => setSharing({ kind: "photos", ids: sel.ids })}
+          >
+            Share
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={sel.count === 0 || busy}
             onClick={() => void removeSelected()}
           >
             Remove from album
@@ -289,7 +328,9 @@ function AlbumView({ id }: { id: string }) {
           onIndexChange={select}
           onClose={closeLightbox}
           loadDetail={api.getAsset}
+          onShare={(it) => setSharing({ kind: "photos", ids: [it.id] })}
           onFavorite={(it, favorite) => void setFavorite(it.id, favorite)}
+          onUnpair={(it) => void unpairItem(it)}
         />
       )}
       {confirmDelete && (
@@ -304,6 +345,7 @@ function AlbumView({ id }: { id: string }) {
           <p>The photos stay in your library. Only the album is deleted.</p>
         </ConfirmDialog>
       )}
+      {sharing && <ShareDialog target={sharing} onClose={() => setSharing(null)} />}
       {adding && <PhotoPicker albumId={id} onCancel={() => setAdding(false)} onAdded={(n) => void onPhotosAdded(n)} />}
       {toast}
     </div>
@@ -386,12 +428,24 @@ function PhotoPicker({
     sentinel: pickSentinel,
   } = useAssetPages(fetchPage);
   const itemIds = useMemo(() => pickItems.map((i) => i.id), [pickItems]);
-  const sel = useSelection(itemIds);
+  const [libraryTotal, setLibraryTotal] = useState<number | undefined>(undefined);
+  const sel = useSelection(itemIds, libraryTotal);
   const { setSelecting } = sel;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => setSelecting(true), [setSelecting]);
+  useEffect(() => {
+    // "Select all" in the picker means the whole library; the count is the timeline's total.
+    let live = true;
+    api.timeline().then(
+      (t) => live && setLibraryTotal(t.total),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
   useEffect(() => {
     const overflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -413,7 +467,7 @@ function PhotoPicker({
     setBusy(true);
     setError(null);
     try {
-      onAdded((await api.addToAlbum(albumId, sel.ids)).count);
+      onAdded((await api.addToAlbum(albumId, sel.target("library"))).count);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) setAnonymous();
       else setError(e instanceof Error ? e.message : "Could not add the photos.");
@@ -430,18 +484,18 @@ function PhotoPicker({
         </button>
       </div>
       <SelectionBar
-        count={sel.ids.length}
-        total={pickItems.length}
+        count={sel.count}
+        total={libraryTotal ?? pickItems.length}
         onSelectAll={sel.selectAll}
         onClear={sel.clear}
       >
         <button
           type="button"
           className="btn btn-primary"
-          disabled={sel.ids.length === 0 || busy}
+          disabled={sel.count === 0 || busy}
           onClick={() => void add()}
         >
-          {sel.ids.length === 0 ? "Add" : `Add ${sel.ids.length}`}
+          {sel.count === 0 ? "Add" : `Add ${sel.count.toLocaleString()}`}
         </button>
       </SelectionBar>
       {error && <p role="alert" className="form-error center">{error}</p>}

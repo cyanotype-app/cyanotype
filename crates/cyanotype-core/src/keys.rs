@@ -104,6 +104,12 @@ pub fn preview(user: Uuid, asset: Uuid) -> String {
     format!("derived/{user}/{asset}/preview.webp")
 }
 
+/// The JPEG that share links offer for download: the original's pixels with every piece of metadata removed except
+/// the orientation (so no GPS, no camera serial, no thumbnails or XMP). Only written for JPEG originals.
+pub fn share_copy(user: Uuid, asset: Uuid) -> String {
+    format!("derived/{user}/{asset}/share.jpg")
+}
+
 /// Prefix of everything derived from one asset (thumbnail, preview, and whatever later stages add).
 /// Purging an asset deletes all versions of every key under it.
 pub fn derived_prefix(user: Uuid, asset: Uuid) -> String {

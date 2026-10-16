@@ -13,13 +13,15 @@
 	request_header @noreqid X-Request-Id {http.request.uuid}
 
 	# Access log as JSON on stdout. Query strings and all headers are dropped so tokens,
-	# cookies and Authorization never reach the logs.
+	# cookies and Authorization never reach the logs. The one regexp below blanks both: the query (after the "?") and
+	# the secret in a share link's address, /s/<token> (the page) and /assets/public/s/<token>/... (its API); the
+	# share is logged by its id inside the assets service instead. Caddy allows one filter per field, hence one pattern.
 	log {
 		output stdout
 		format filter {
 			wrap json
 			fields {
-				request>uri regexp \?.* ""
+				request>uri regexp "(/s/)[^/?]+|(\?).*" "${1}${2}"
 				request>headers delete
 				resp_headers delete
 			}

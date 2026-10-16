@@ -1,18 +1,20 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { api, ApiError, type Album } from "../api";
+import { api, ApiError, isScope, type Album, type Target } from "../api";
 import { useAuth } from "../auth";
 import { photoCount } from "../albumText";
 
 interface Props {
-  /** The photos to add. */
-  ids: readonly string[];
+  /** The photos to add: explicit ids, or a whole view. */
+  ids: Target;
+  /** How many photos that is (shown in the title). */
+  count: number;
   onClose: () => void;
   /** `count` is how many were new to the album; `created` when the album was made by this dialog. */
   onDone: (result: { album: Album; count: number; created: boolean }) => void;
 }
 
 /** Modal to pick an album (with search) or create one inline, then add `ids` to it. */
-export function AddToAlbumDialog({ ids, onClose, onDone }: Props) {
+export function AddToAlbumDialog({ ids, count, onClose, onDone }: Props) {
   const { setAnonymous } = useAuth();
   const [albums, setAlbums] = useState<Album[] | null>(null);
   const [query, setQuery] = useState("");
@@ -95,6 +97,12 @@ export function AddToAlbumDialog({ ids, onClose, onDone }: Props) {
     const t = title.trim();
     if (!t) return;
     void run(async () => {
+      if (isScope(ids)) {
+        // A whole view: create the album empty, then let the server add the photos in one go.
+        const album = await api.createAlbum({ title: t });
+        const added = await api.addToAlbum(album.id, ids);
+        return { album, count: added.count, created: true };
+      }
       const album = await api.createAlbum({ title: t, asset_ids: ids });
       return { album, count: album.photo_count, created: true };
     });
@@ -103,7 +111,7 @@ export function AddToAlbumDialog({ ids, onClose, onDone }: Props) {
   return (
     <div className="modal-backdrop">
       <div className="modal card album-dialog" role="dialog" aria-modal="true" aria-labelledby="add-album-title" ref={ref}>
-        <h2 id="add-album-title">Add {photoCount(ids.length)} to album</h2>
+        <h2 id="add-album-title">Add {photoCount(count)} to album</h2>
         {creating ? (
           <form onSubmit={create}>
             <label htmlFor="new-album-title" className="sr-only">
