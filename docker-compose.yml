@@ -117,6 +117,8 @@ services:
       ASSETS_BIND_ADDR: 0.0.0.0:3002
       # Days a photo stays in the trash before it is deleted for good (docs/library.md).
       TRASH_RETENTION_DAYS: ${TRASH_RETENTION_DAYS:-30}
+      # Cookie of a password-protected share link (same setting as the session cookie).
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     labels:
       com.datadoghq.ad.logs: '[{"source":"rust","service":"cyanotype-assets"}]'
     depends_on:

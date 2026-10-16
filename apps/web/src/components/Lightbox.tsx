@@ -15,6 +15,8 @@ interface Props {
   onTrash?: (item: AssetListItem) => void;
   /** Open the "add to album" dialog for the current photo. */
   onAddToAlbum?: (item: AssetListItem) => void;
+  /** Open the "share link" dialog for the current photo. */
+  onShare?: (item: AssetListItem) => void;
   /** Separate the current photo from its RAW (offered in the pair info when the photo has one). */
   onUnpair?: (item: AssetListItem) => void;
   /** Favorite or unfavorite the current photo (the parent updates `item.favorite`). Shows the heart when given. */
@@ -35,6 +37,7 @@ export function Lightbox({
   loadDetail,
   onTrash,
   onAddToAlbum,
+  onShare,
   onUnpair,
   onFavorite,
   offset = 0,
@@ -191,6 +194,11 @@ export function Lightbox({
             {onAddToAlbum && (
               <button type="button" className="btn btn-glass" onClick={() => onAddToAlbum(item)}>
                 Add to album
+              </button>
+            )}
+            {onShare && (
+              <button type="button" className="btn btn-glass" onClick={() => onShare(item)}>
+                Share
               </button>
             )}
             {onTrash && (

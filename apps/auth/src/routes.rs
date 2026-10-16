@@ -20,13 +20,11 @@ use uuid::Uuid;
 use cyanotype_service::{
     ApiError, ApiResult, AuthUser, SessionUser,
     auth::{SESSION_COOKIE as COOKIE, sha256},
+    ratelimit::{self, LimitState, RateLimiter},
 };
 use sqlx::PgPool;
 
-use crate::{
-    ratelimit::{self, LimitState, RateLimiter},
-    settings::{AuthConfig, RegistrationMode},
-};
+use crate::settings::{AuthConfig, RegistrationMode};
 
 const SESSION_DAYS: i64 = 30;
 /// Serialises first-user registration across all auth replicas (transaction-scoped advisory lock).

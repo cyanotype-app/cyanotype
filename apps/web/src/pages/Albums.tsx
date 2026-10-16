@@ -48,9 +48,14 @@ export function Albums() {
     <div className="albums">
       <div className="page-head">
         <h1>Albums</h1>
-        <button type="button" className="btn btn-primary" onClick={() => setNaming(true)}>
-          New album
-        </button>
+        <div className="page-head-actions">
+          <Link to="/shared" className="btn btn-quiet">
+            Shared links
+          </Link>
+          <button type="button" className="btn btn-primary" onClick={() => setNaming(true)}>
+            New album
+          </button>
+        </div>
       </div>
       {error && (
         <p className="center" role="alert">

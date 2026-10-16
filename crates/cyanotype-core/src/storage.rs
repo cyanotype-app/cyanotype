@@ -281,6 +281,20 @@ impl Storage {
         Ok(req.uri().to_string())
     }
 
+    /// Like [`Storage::presign_get`] with a shorter life (`ttl`, clamped to the configured presign TTL): for URLs that
+    /// go to people who are not signed in (share links).
+    pub async fn presign_get_ttl(&self, key: &str, ttl: Duration) -> Result<String> {
+        let req = self
+            .presign_client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .presigned(PresigningConfig::expires_in(ttl.min(self.ttl))?)
+            .await
+            .context("presign get_object")?;
+        Ok(req.uri().to_string())
+    }
+
     /// Presigned GET that makes the browser save the object instead of showing it: the signed
     /// `response-content-disposition` is `attachment` with the given file name, and the URL lives only `ttl`
     /// (clamped to the configured presign TTL). A top-level navigation or `<a>` click follows it, so the bucket
