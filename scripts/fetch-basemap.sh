@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Installs the map's basemap: extracts a Protomaps PMTiles archive for the zoom levels you want and uploads it to the
-# bucket, where the assets service serves it to the browser (docs/deploy.md, "Map"). Run it on the server (or any
-# machine that can reach the bucket); the planet build is ~140 GB but only the needed byte ranges are downloaded.
+# bucket, where the assets service serves it to the browser (docs/deploy.md, "Map"). Run it ON THE SERVER, in the
+# deploy directory (default ~/cyanotype, where .env.prod with the bucket settings lives), not on your dev machine.
+# The planet build is ~140 GB but only the needed byte ranges are downloaded.
+#
+#   ssh <server>
+#   cd ~/cyanotype
 #
 #   scripts/fetch-basemap.sh                              # the world to zoom 7 -> basemap/world.pmtiles
 #   scripts/fetch-basemap.sh --maxzoom 6                  # a smaller world
@@ -10,7 +14,7 @@
 #   scripts/fetch-basemap.sh --file my.pmtiles --as world # upload an archive you made yourself
 #   scripts/fetch-basemap.sh --remove detail              # delete an installed archive
 #
-# Bucket settings come from the environment, or from ENV_FILE (default .env.prod when it exists):
+# Bucket settings come from the environment, or from ENV_FILE (default ./.env.prod when it exists):
 #   S3_ENDPOINT  S3_BUCKET  S3_ACCESS_KEY  S3_SECRET_KEY  [S3_REGION, default us-east-1]
 # Needs curl (7.75+, for --aws-sigv4), tar and sha256sum. The `pmtiles` tool is downloaded at a pinned version and
 # checked against a pinned sha256 (cached in ~/.cache/cyanotype-basemap).
@@ -60,9 +64,33 @@ if [ -n "$env_file" ]; then
   . "$env_file"
   set +a
 fi
+missing=""
 for v in S3_ENDPOINT S3_BUCKET S3_ACCESS_KEY S3_SECRET_KEY; do
-  [ -n "${!v:-}" ] || die "$v is not set (export it, or put it in ENV_FILE / .env.prod)"
+  [ -n "${!v:-}" ] || missing="$missing $v"
 done
+if [ -n "$missing" ]; then
+  if [ -n "$env_file" ]; then
+    where="$env_file was read but does not set:$missing"
+  else
+    where="no .env.prod in $PWD, and these are not exported:$missing"
+  fi
+  die "$where
+
+This script is meant to run on the server, in the deploy directory (default ~/cyanotype), where .env.prod holds the
+bucket settings. On the server:
+
+  ssh <server>
+  cd ~/cyanotype
+  scripts/fetch-basemap.sh
+
+Elsewhere, point it at an env file with the four settings:
+
+  ENV_FILE=/path/to/.env.prod scripts/fetch-basemap.sh
+
+or export them first:
+
+  export S3_ENDPOINT=... S3_BUCKET=... S3_ACCESS_KEY=... S3_SECRET_KEY=...   # S3_REGION is optional"
+fi
 region="${S3_REGION:-us-east-1}"
 endpoint="${S3_ENDPOINT%/}"
 key="basemap/$kind.pmtiles"
