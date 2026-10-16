@@ -131,6 +131,8 @@ async function mock(page: Page) {
           }),
         );
       }
+      if (p === "/assets/trash" && m === "POST")
+        return route.fulfill(json({ count: 48213, batch: "2026-10-16T00:00:00Z" }));
       if (m === "POST" || m === "PATCH" || m === "DELETE") return route.fulfill(json({ count: 1 }));
       return route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not mocked"}' });
     },
@@ -288,8 +290,12 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: /new album/i }).click().catch(() => undefined);
       await check("dialog-add-to-album-new");
       await page.keyboard.press("Escape");
+      // Select all means the whole library, so trashing it asks first and names the exact count.
       await page.getByRole("button", { name: "Move to trash" }).last().click();
-      await page.getByText("moved to trash").waitFor();
+      await page.getByRole("alertdialog").getByRole("heading", { name: /^Move [\d,]+ photos to trash\?$/ }).waitFor();
+      await check("dialog-confirm-trash-all");
+      await page.getByRole("alertdialog").getByRole("button", { name: "Move to trash" }).click();
+      await page.getByText(/[\d,]+ moved to trash/).waitFor();
       await check("library-toast-undo");
 
       // Processing indicator: banner while photos are processed, the failures panel, and after a retry

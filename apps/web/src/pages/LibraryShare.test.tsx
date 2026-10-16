@@ -59,4 +59,18 @@ describe("Library: share", () => {
     expect(screen.queryByRole("dialog", { name: /Link created|Share/ })).not.toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "photo-2.jpg" })).toBeInTheDocument();
   });
+
+  it("Select all shares the whole view by scope, minus the deselected photos", async () => {
+    const create = vi.spyOn(shareApi, "create").mockResolvedValue(link(1));
+    const user = userEvent.setup();
+    renderLibrary();
+    await user.click(await screen.findByRole("button", { name: "Select" }));
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    await user.click(screen.getByRole("button", { name: /Select photo-2/ }));
+    await user.click(screen.getByRole("button", { name: "Share" }));
+    const dialog = screen.getByRole("dialog", { name: "Share 2 photos" });
+    await user.click(within(dialog).getByRole("button", { name: "Create link" }));
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ scope: "library", except: ["id-2"] }));
+    expect(create.mock.calls[0]![0]).not.toHaveProperty("asset_ids");
+  });
 });

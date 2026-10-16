@@ -21,6 +21,7 @@ use sqlx::FromRow;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use super::scope::Selector;
 use super::{ListQuery, ListResponse, ListRow, decode_cursor, encode_cursor, list_items, thumb_fields, trash::MAX_IDS};
 use crate::AppState;
 use cyanotype_service::{ApiError, ApiResult, AuthUser};
@@ -371,11 +372,6 @@ pub(super) async fn assets(
     }))
 }
 
-#[derive(Deserialize)]
-pub(super) struct IdsBody {
-    ids: Vec<Uuid>,
-}
-
 #[derive(Serialize)]
 pub(super) struct Count {
     count: u64,
@@ -386,11 +382,12 @@ pub(super) async fn add(
     State(s): State<AppState>,
     user: AuthUser,
     Path(id): Path<Uuid>,
-    Json(req): Json<IdsBody>,
+    Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let ids = clean_ids(req.ids)?;
+    let pick = req.validated()?;
     let mut tx = s.db.begin().await?;
     lock_album(&mut tx, user.id, id).await?;
+    let ids = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();
     let count = insert_members(&mut tx, user.id, id, &ids).await?;
     if count > 0 {
         sqlx::query("UPDATE albums SET updated_at = now() WHERE id = $1")
@@ -407,11 +404,12 @@ pub(super) async fn remove_assets(
     State(s): State<AppState>,
     user: AuthUser,
     Path(id): Path<Uuid>,
-    Json(req): Json<IdsBody>,
+    Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let ids = clean_ids(req.ids)?;
+    let pick = req.validated()?;
     let mut tx = s.db.begin().await?;
     lock_album(&mut tx, user.id, id).await?;
+    let ids = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();
     let count = sqlx::query("DELETE FROM album_assets WHERE album_id = $1 AND asset_id = ANY($2)")
         .bind(id)
         .bind(&ids)

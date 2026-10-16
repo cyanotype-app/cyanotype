@@ -1,12 +1,25 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { ApiError } from "../api";
+import { ApiError, isScope, type Target, type ScopeTarget } from "../api";
 import { photoCount } from "../albumText";
 import { shareApi, type ShareLink } from "../shareApi";
 import { EXPIRY_PRESETS, copyText, expiryFromPreset, expiryText, shareUrl, type ExpiryPreset } from "../shareText";
 
-/** What a new link shares: a whole album (followed live) or these photos (a fixed set). */
-export type ShareTarget = { kind: "album"; albumId: string; albumTitle: string } | { kind: "photos"; ids: readonly string[] };
+/**
+ * What a new link shares: a whole album (followed live), these photos (a fixed set), or, for "Select all", a view
+ * minus some photos (`count` of them; the server resolves the set when the link is created).
+ */
+export type ShareTarget =
+  | { kind: "album"; albumId: string; albumTitle: string }
+  | { kind: "photos"; ids: readonly string[] }
+  | { kind: "scope"; target: ScopeTarget; count: number };
+
+/** The share target for a bulk-action target (`count` photos). */
+export function shareTargetOf(target: Target, count: number): ShareTarget {
+  return isScope(target) ? { kind: "scope", target, count } : { kind: "photos", ids: target };
+}
+
+const photosIn = (t: ShareTarget) => (t.kind === "photos" ? t.ids.length : t.kind === "scope" ? t.count : 0);
 
 /** The most photos one link can hold (the server's bulk limit). */
 export const MAX_SHARE_PHOTOS = 1000;
@@ -141,9 +154,9 @@ export function ShareDialog({
   const [created, setCreated] = useState<ShareLink | null>(null);
   const [copied, setCopied] = useState<"yes" | "no" | null>(null);
 
-  const tooMany = target.kind === "photos" && target.ids.length > MAX_SHARE_PHOTOS;
+  const tooMany = target.kind !== "album" && photosIn(target) > MAX_SHARE_PHOTOS;
   const what =
-    target.kind === "album" ? `the album ${target.albumTitle}` : photoCount(target.kind === "photos" ? target.ids.length : 0);
+    target.kind === "album" ? `the album ${target.albumTitle}` : photoCount(photosIn(target));
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -152,7 +165,11 @@ export function ShareDialog({
     setError(null);
     try {
       const share = await shareApi.create({
-        ...(target.kind === "album" ? { album_id: target.albumId } : { asset_ids: target.ids }),
+        ...(target.kind === "album"
+          ? { album_id: target.albumId }
+          : target.kind === "scope"
+            ? { scope: target.target.scope, except: target.target.except }
+            : { asset_ids: target.ids }),
         title: title.trim() || undefined,
         expires_at: expiryFromPreset(preset),
         password: password || undefined,

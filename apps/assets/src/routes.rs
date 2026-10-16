@@ -28,6 +28,9 @@ mod favorites;
 #[cfg(test)]
 mod pair_tests;
 mod processing;
+mod scope;
+#[cfg(test)]
+mod scope_tests;
 mod share_public;
 #[cfg(test)]
 mod share_tests;
