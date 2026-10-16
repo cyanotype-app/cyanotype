@@ -120,5 +120,18 @@ HOME="$work/home" FAKE_SSH_SKIP_ROLLOUT=1 FAKE_LOG_DIR="$work/skip/logs" PATH="$
 check "missing marker fails the deploy" test "$?" != 0
 check "missing marker explained" grep -q 'did not report DEPLOY-OK' "$work/skip/out"
 
+# scripts/reindex.sh: a dry run by default, only known flags reach the server, compose run reindex with --json.
+echo "== reindex.sh"
+rx="$work/reindex-server"; mkdir -p "$rx" "$work/rx/logs"; printf 'CYANOTYPE_VERSION=v1\n' > "$rx/.env.prod"
+rxrun() { HOME="$work/home" FAKE_LOG_DIR="$work/rx/logs" PATH="$work/bin:$PATH" DEPLOY_SSH=fake-host DEPLOY_DIR="$rx" "$here/reindex.sh" "$@" > "$work/rx/out" 2>&1; }
+: > "$work/rx/logs/docker"
+rxrun; check "reindex.sh dry run exits 0" test "$?" = 0
+check "reindex.sh runs the one-shot service with --json only" grep -qE 'run --rm -T reindex --json$' "$work/rx/logs/docker"
+check "reindex.sh dry run passes no --apply" no_match -- '--apply' "$work/rx/logs/docker"
+rxrun --apply --mark-missing --assign-to me@example.com; check "reindex.sh apply exits 0" test "$?" = 0
+check "reindex.sh forwards flags" grep -qF 'reindex --json --apply --mark-missing --assign-to me@example.com' "$work/rx/logs/docker"
+rxrun --apply '; rm -rf /'; check "reindex.sh rejects unknown flags" test "$?" = 2
+rxrun --assign-to 'x;y'; check "reindex.sh rejects a bad email" test "$?" = 2
+
 [ "$fail" = 0 ] && echo "all passed" || echo "SOME TESTS FAILED"
 exit "$fail"

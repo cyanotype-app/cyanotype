@@ -68,6 +68,25 @@ services:
       postgres: { condition: service_healthy }
     restart: "no"
 
+  # One-shot disaster recovery, never started by `up` (profile `tools`): rebuild or repair the asset index from the
+  # bucket. A dry run unless --apply is passed; extra arguments are appended to the subcommand:
+  #   docker compose run --rm reindex                                  # report only
+  #   docker compose run --rm reindex --apply --rethumb                # write
+  # Read docs/recovery.md first (stop auth/assets/worker, restore the dump, dry run, review, apply).
+  reindex:
+    build: { context: ., target: cli }
+    image: cyanotype-cli
+    profiles: [tools]
+    entrypoint: ["/usr/local/bin/app", "reindex"]
+    command: []
+    environment:
+      <<: [*app-env, *s3-env]
+      DD_SERVICE: cyanotype-reindex
+    depends_on:
+      postgres: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+    restart: "no"
+
   auth:
     build: { context: ., target: auth }
     image: cyanotype-auth

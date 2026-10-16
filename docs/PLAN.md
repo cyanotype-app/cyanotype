@@ -63,7 +63,7 @@ Non-goals for MVP: native mobile apps, face recognition, video transcoding, live
 - Multi-user schema (`owner_id` everywhere) even while the UI is single-user.
 - Auth: argon2, HttpOnly session cookies, API keys for CLIs, OIDC later. Per-tenant S3 prefixes, short presign TTLs, GPS stripped on shared links.
 - Memory discipline: stream everything, DCT-scaled JPEG decode, semaphores around heavy jobs. Today: a shared byte budget (`WORKER_MEMORY_BUDGET_MB`) refuses jobs that cannot fit the container limit, and HEIC and JPEG are decoded at full size then resized. **Follow-up:** DCT-scaled JPEG decode and tiled/streamed HEIC decode would cut the per-megapixel cost 4-8x and lift the ~40 MP HEIC / ~95 MP JPEG ceilings (`docs/build.md`, "Memory budget").
-- `reindex` command that rebuilds the DB from the bucket.
+- `reindex` command that rebuilds the DB from the bucket (done: `cyanotype reindex`, [`recovery.md`](recovery.md)).
 - `tracing` + Prometheus metrics + job dashboards.
 - Idempotent, versioned jobs so models can be swapped and re-run.
 
