@@ -25,9 +25,15 @@ use uuid::Uuid;
 mod albums;
 mod download;
 mod favorites;
+mod map;
+#[cfg(test)]
+mod map_tests;
 #[cfg(test)]
 mod pair_tests;
 mod processing;
+mod tiles;
+#[cfg(test)]
+mod tiles_tests;
 mod timeline;
 #[cfg(test)]
 mod timeline_tests;
@@ -63,6 +69,9 @@ pub fn routes() -> Router<AppState> {
         .route("/assets", get(list))
         .route("/assets/count", get(count))
         .route("/assets/timeline", get(timeline::days))
+        .route("/assets/map", get(map::clusters))
+        .route("/assets/tiles", get(tiles::installed))
+        .route("/assets/tiles/{name}", get(tiles::tile_range))
         .route("/assets/favorite", post(favorites::set))
         .route("/assets/processing", get(processing::status))
         .route("/assets/processing/retry", post(processing::retry))
@@ -681,6 +690,8 @@ struct ListQuery {
     /// `true` lists favorites only (served by the partial index `assets_favorites_idx`).
     #[serde(default)]
     favorite: bool,
+    /// `west,south,east,north`: only geotagged photos inside this box (the map's viewport list; see `map`).
+    bbox: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -733,11 +744,14 @@ async fn list(State(s): State<AppState>, user: AuthUser, Query(q): Query<ListQue
     };
     // Row comparison against the (owner_id, sort expression DESC, id DESC) index; two statements so the planner
     // never has to guess around an optional predicate.
-    let select = if q.favorite {
+    let mut select = if q.favorite {
         format!("{LIST_SELECT} AND favorite")
     } else {
         LIST_SELECT.to_string()
     };
+    if let Some(b) = &q.bbox {
+        select.push_str(&map::Bbox::parse(b)?.sql());
+    }
     let rows = match after {
         Some((ts, id)) => {
             sqlx::query_as::<_, ListRow>(&format!(
@@ -823,6 +837,7 @@ async fn get_one(
     v["albums"] = albums::containing(&s.db, user.id, id).await?;
     v["paired"] = serde_json::to_value(paired_files(&s.db, &[id]).await?.remove(&id).unwrap_or_default())
         .map_err(anyhow::Error::from)?;
+    v["place"] = place_of(&s.db, id).await?;
     v["original_url"] = s.storage.presign_get(&key).await?.into();
     // The worker sets `thumbhash` only after both derived objects are uploaded, so it doubles
     // as the "derived images exist" flag. Until then the URLs are null rather than 404s.
@@ -835,6 +850,32 @@ async fn get_one(
         serde_json::Value::Null
     };
     Ok(Json(v))
+}
+
+/// Where the photo was taken (`city`, `region`, `country`, `country_code`), or null: no coordinates, or nothing
+/// close enough in the places dataset (docs/library.md, "Places").
+async fn place_of(db: &sqlx::PgPool, id: Uuid) -> ApiResult<serde_json::Value> {
+    #[derive(FromRow)]
+    struct PlaceRow {
+        place_city: Option<String>,
+        place_region: Option<String>,
+        place_country: Option<String>,
+        place_country_code: Option<String>,
+    }
+    let row: Option<PlaceRow> =
+        sqlx::query_as("SELECT place_city, place_region, place_country, place_country_code FROM assets WHERE id = $1")
+            .bind(id)
+            .fetch_optional(db)
+            .await?;
+    Ok(match row {
+        Some(PlaceRow {
+            place_city: Some(city),
+            place_region: region,
+            place_country: Some(country),
+            place_country_code: code,
+        }) => serde_json::json!({"city": city, "region": region, "country": country, "country_code": code}),
+        _ => serde_json::Value::Null,
+    })
 }
 
 /// Move one photo (and its paired RAW) to the trash (`POST /assets/trash` does the same for many). Permanent

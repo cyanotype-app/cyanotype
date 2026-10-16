@@ -23,6 +23,7 @@ tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
+flate2 = "1"
 futures-util = "0.3"
 globset = "0.4"
 indicatif = "0.17"

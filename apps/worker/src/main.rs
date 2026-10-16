@@ -38,7 +38,10 @@ const GAUGE_EVERY: Duration = Duration::from_secs(15);
 
 /// Every kind this worker claims, in claim order.
 fn handled_kinds() -> impl Iterator<Item = &'static str> {
-    jobs::DEFAULT_PIPELINE.iter().copied().chain([jobs::KIND_PAIR])
+    jobs::DEFAULT_PIPELINE
+        .iter()
+        .copied()
+        .chain([jobs::KIND_PAIR, jobs::KIND_GEOCODE])
 }
 
 fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {

@@ -168,9 +168,49 @@ export interface AssetDetail extends AssetSummary {
   /** The RAW stacked behind this photo. Absent on older servers. */
   paired?: PairedFile[];
   thumbhash: string | null;
+  /** Where it was taken, from the offline places dataset; null without GPS or when nothing is near. Absent on older servers. */
+  place?: Place | null;
   original_url: string;
   thumb_url: string | null;
   preview_url: string | null;
+}
+
+/** Where a photo was taken: the nearest populated place (GeoNames), looked up offline. */
+export interface Place {
+  city: string;
+  region: string | null;
+  country: string;
+  country_code: string | null;
+}
+
+/** One marker of GET /assets/map: a photo (count 1) or a cluster of photos in one grid cell. */
+export interface MapCluster {
+  /** The photo when `count` is 1; otherwise an arbitrary photo of the cluster (not meant to be shown). */
+  id: string;
+  lat: number;
+  lon: number;
+  count: number;
+  /** `[west, south, east, north]` of the cluster's photos; null for a single photo. */
+  bounds: [number, number, number, number] | null;
+  /** Single photos only (null for clusters, and until the worker has produced the derived images). */
+  thumbhash: string | null;
+  /** Presigned; same conditions as `thumbhash`. */
+  thumb_url: string | null;
+}
+
+/** GET /assets/map */
+export interface MapResponse {
+  clusters: MapCluster[];
+  /** Photos in the box. */
+  total: number;
+  /** Too many cells matched and some were dropped; zoom in. */
+  truncated: boolean;
+}
+
+/** GET /assets/tiles: which basemap archives the server has. */
+export interface TilesInstalled {
+  world: boolean;
+  detail: boolean;
 }
 
 /** POST /assets/check body. `transport: "proxy"` asks for same-origin part URLs (browsers cannot PUT to S3 cross-origin). */
@@ -317,8 +357,11 @@ export const api = {
   listApiKeys: () => request<{ items: ApiKey[] }>("/auth/api-keys"),
   createApiKey: (name: string) => request<CreatedApiKey>("/auth/api-keys", json({ name })),
   revokeApiKey: (id: string) => request<void>(`/auth/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  listAssets: (opts: { cursor?: string | null; before?: string | null; limit?: number; favorite?: boolean } = {}) => {
+  listAssets: (
+    opts: { cursor?: string | null; before?: string | null; limit?: number; favorite?: boolean; bbox?: string } = {},
+  ) => {
     const q = new URLSearchParams();
+    if (opts.bbox) q.set("bbox", opts.bbox);
     if (opts.limit !== undefined) q.set("limit", String(opts.limit));
     if (opts.favorite) q.set("favorite", "true");
     if (opts.cursor) q.set("cursor", opts.cursor);
@@ -329,6 +372,11 @@ export const api = {
   /** Photos per day, newest first (the library's layout; `favorite` limits it to favorites). */
   timeline: (opts: { favorite?: boolean } = {}) =>
     request<Timeline>(`/assets/timeline${opts.favorite ? "?favorite=true" : ""}`),
+  /** The geotagged photos in `bbox` (`west,south,east,north`) as markers for a map at `zoom`. */
+  mapClusters: (bbox: string, zoom: number, signal?: AbortSignal) =>
+    request<MapResponse>(`/assets/map?bbox=${encodeURIComponent(bbox)}&zoom=${zoom}`, { signal }),
+  /** Which basemap archives are installed (the map draws a plain background without one). */
+  tiles: () => request<TilesInstalled>("/assets/tiles"),
   /** Favorite or unfavorite photos. `count` is how many changed. */
   favoriteAssets: async (ids: readonly string[], favorite: boolean): Promise<{ count: number }> => {
     let count = 0;
