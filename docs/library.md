@@ -249,7 +249,7 @@ are stable before any photo is loaded. (The query selects only the timeline expr
 `assets_timeline_idx`, or `assets_favorites_idx` for favorites; a test asserts the plan. About 50,000 photos over ten
 years give a few thousand rows of JSON.)
 
-**Windowed virtualization.** `@tanstack/react-virtual` (pinned `3.14.20`) renders the visible rows plus 3 rows of
+**Windowed virtualization.** `@tanstack/react-virtual` (pinned `3.14.13`) renders the visible rows plus 3 rows of
 overscan, with the page itself as the scroll container (a window virtualizer), so sticky bars, browser scroll
 restoration and touch scrolling are untouched. Columns follow the width (3 below 400px, 4 up to 600px, then as many
 tiles of at least 152px/192px as fit).
