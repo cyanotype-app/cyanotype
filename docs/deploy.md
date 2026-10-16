@@ -473,15 +473,20 @@ policy (see below), so the browser cannot read bucket URLs with `fetch()`. The s
 (at most 2 MiB per request, in practice a few KB to a few hundred KB), so it never holds an archive in memory. The
 gateway lets the browser cache these responses for a day (`/assets/tiles/*` is exempt from `no-store`).
 
+Run the script **on the server**, in the deploy directory (`~/cyanotype`, where `.env.prod` lives), not on your dev
+machine: it reads the bucket settings from `.env.prod`, which exists only there.
+
 ```sh
+ssh <server>
 cd ~/cyanotype
 scripts/fetch-basemap.sh                 # the world to zoom 7 -> bucket basemap/world.pmtiles (reads .env.prod)
 ```
 
 The script downloads the `pmtiles` tool at a pinned version (sha256-checked), extracts the zoom levels you ask for from
 the newest daily Protomaps planet build (only the needed byte ranges are fetched, not the ~140 GB planet) and uploads it with
-`curl --aws-sigv4`; it needs `curl` 7.75+ and the bucket settings from `.env.prod`. It ships with every deploy. Reload
-the map; no restart is needed. Remove it again with `scripts/fetch-basemap.sh --remove world`.
+`curl --aws-sigv4`; it needs `curl` 7.75+ and the bucket settings from `.env.prod`. It ships with every deploy. If you must
+run it elsewhere, pass the settings with `ENV_FILE=/path/to/env scripts/fetch-basemap.sh` or export `S3_ENDPOINT`,
+`S3_BUCKET`, `S3_ACCESS_KEY` and `S3_SECRET_KEY` first. Reload the map; no restart is needed. Remove it again with `scripts/fetch-basemap.sh --remove world`.
 
 | archive | zoom | size | what you see |
 |---|---|---|---|
