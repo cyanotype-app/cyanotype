@@ -20,7 +20,8 @@ export function App() {
       <Route path="/register" element={<Register />} />
       <Route path="/logout" element={<Logout />} />
       <Route element={<RequireAuth />}>
-        <Route path="/library" element={<Library />} />
+        <Route path="/library" element={<Library key="all" />} />
+        <Route path="/favorites" element={<Library key="favorites" favorites />} />
         <Route path="/albums" element={<Albums />} />
         <Route path="/albums/:id" element={<AlbumPage />} />
         <Route path="/trash" element={<Trash />} />

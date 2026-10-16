@@ -6,28 +6,10 @@ import { api, ApiError } from "../api";
 import { AuthProvider } from "../auth";
 import { UploadProvider } from "../upload/UploadProvider";
 import { detail, item, withRaw } from "../test/fixtures";
+import { fakeLibrary } from "../test/fakeLibrary";
 import { Library } from "./Library";
 
-type IOCallback = (entries: { isIntersecting: boolean }[]) => void;
-let observers: { cb: IOCallback; target?: Element }[] = [];
-
 beforeEach(() => {
-  observers = [];
-  vi.stubGlobal(
-    "IntersectionObserver",
-    class {
-      entry: { cb: IOCallback; target?: Element };
-      constructor(cb: IOCallback) {
-        this.entry = { cb };
-        observers.push(this.entry);
-      }
-      observe(el: Element) {
-        this.entry.target = el;
-      }
-      disconnect() {}
-      unobserve() {}
-    },
-  );
   vi.spyOn(api, "me").mockResolvedValue({ id: "u", email: "a@b.co" });
   vi.spyOn(api, "getAsset").mockImplementation(async (id) => detail(Number(id.split("-")[1])));
 });
@@ -36,20 +18,28 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const renderLibrary = () =>
+const renderLibrary = (favorites = false) =>
   render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[favorites ? "/favorites" : "/library"]}>
       <AuthProvider>
         <UploadProvider deps={{ api, hash: async () => "0".repeat(64) }}>
-          <Library />
+          <Library favorites={favorites} />
         </UploadProvider>
       </AuthProvider>
     </MemoryRouter>,
   );
 
+/** Scroll the window the way a user would: the virtualizer listens for the scroll event. */
+const scrollTo = (y: number) => {
+  Object.defineProperty(window, "scrollY", { value: y, configurable: true });
+  act(() => {
+    window.dispatchEvent(new Event("scroll"));
+  });
+};
+
 describe("Library", () => {
   it("offers browser uploads when empty", async () => {
-    vi.spyOn(api, "listAssets").mockResolvedValue({ items: [], next_before: null });
+    fakeLibrary([]);
     renderLibrary();
     expect(await screen.findByText(/drop photos or a folder/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Upload photos" })).toBeInTheDocument();
@@ -57,10 +47,7 @@ describe("Library", () => {
   });
 
   it("queues picked photos, skips other files, and merges finished uploads into the grid", async () => {
-    const list = vi
-      .spyOn(api, "listAssets")
-      .mockResolvedValueOnce({ items: [item(1)], next_before: null })
-      .mockResolvedValue({ items: [item(1), item(2)], next_before: null });
+    const lib = fakeLibrary([item(1)]);
     vi.spyOn(api, "checkUpload").mockResolvedValue({
       status: "upload",
       upload_id: "u",
@@ -69,7 +56,10 @@ describe("Library", () => {
       uploaded: [],
     });
     const put = vi.spyOn(api, "putPart").mockResolvedValue({ etag: '"e"' });
-    const complete = vi.spyOn(api, "completeUpload").mockResolvedValue({ asset_id: "id-2" });
+    const complete = vi.spyOn(api, "completeUpload").mockImplementation(async () => {
+      lib.photos.push(item(2));
+      return { asset_id: "id-2" };
+    });
     const user = userEvent.setup({ applyAccept: false });
     renderLibrary();
     await screen.findByAltText("photo-1.jpg");
@@ -80,30 +70,62 @@ describe("Library", () => {
     await waitFor(() => expect(complete).toHaveBeenCalledWith("u", [{ number: 1, etag: '"e"' }]));
     expect(put).toHaveBeenCalledTimes(1);
     expect(await screen.findByAltText("photo-2.jpg")).toBeInTheDocument();
-    expect(list.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByAltText("photo-1.jpg")).toBeInTheDocument();
+    expect(lib.timeline.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("renders a thumbnail grid, pages with `before` on scroll, and opens the lightbox with the keyboard", async () => {
-    const list = vi
-      .spyOn(api, "listAssets")
-      .mockResolvedValueOnce({ items: [item(1), item(2)], next_cursor: "cursor-1", next_before: "2026-01-01T00:00:00Z" })
-      .mockResolvedValueOnce({ items: [item(3)], next_cursor: null, next_before: null });
+  it("groups photos under month and day headers, newest first", async () => {
+    const photos = [
+      item(1, { sort_time: "2026-10-14T09:00:00Z" }),
+      item(2, { sort_time: "2026-10-14T07:00:00Z" }),
+      item(3, { sort_time: "2026-10-02T07:00:00Z" }),
+      item(4, { sort_time: "2025-12-31T23:59:59Z" }),
+    ];
+    fakeLibrary(photos);
+    renderLibrary();
+    await screen.findByAltText("photo-1.jpg");
+    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["October 2026", "December 2025"]);
+    expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual(["Wed, Oct 14", "Fri, Oct 2", "Wed, Dec 31"]);
+    expect(screen.getAllByRole("img").map((i) => i.getAttribute("alt"))).toEqual(["photo-1.jpg", "photo-2.jpg", "photo-3.jpg", "photo-4.jpg"]);
+    expect(screen.getByText("4 photos")).toBeInTheDocument();
+  });
+
+  it("only renders the tiles near the viewport and loads further pages as the page scrolls", async () => {
+    // 600 photos, one every hour: 25 days.
+    const many = Array.from({ length: 600 }, (_, n) =>
+      item(n, { id: `id-${n}`, original_name: `photo-${n}.jpg`, sort_time: new Date(Date.UTC(2026, 5, 30, 23) - n * 3_600_000).toISOString() }),
+    );
+    const lib = fakeLibrary(many);
+    renderLibrary();
+    await screen.findByAltText("photo-0.jpg");
+    const tiles = () => document.querySelectorAll(".tile-cell").length;
+    expect(tiles()).toBeGreaterThan(5);
+    expect(tiles()).toBeLessThan(80);
+    expect(screen.queryByAltText("photo-300.jpg")).not.toBeInTheDocument();
+    expect(lib.listAssets).toHaveBeenCalledTimes(1);
+
+    // Far down the library (about the 300th photo): that page is fetched on its own, starting at its day.
+    scrollTo(14_000);
+    await waitFor(() => expect(lib.listAssets.mock.calls.length).toBeGreaterThan(1));
+    const jumped = lib.listAssets.mock.calls.at(-1)![0] as { before?: string; cursor?: string };
+    expect(jumped.before ?? jumped.cursor).toBeTruthy();
+    await waitFor(() => expect(document.querySelectorAll(".tile-cell img").length).toBeGreaterThan(5));
+    expect(screen.queryByAltText("photo-0.jpg")).not.toBeInTheDocument();
+    expect(tiles()).toBeLessThan(100);
+  });
+
+  it("opens the lightbox with the keyboard and pages through the photos around it", async () => {
+    fakeLibrary([item(1), item(2), item(3)]);
     const user = userEvent.setup();
     renderLibrary();
-
     expect(await screen.findByAltText("photo-1.jpg")).toHaveAttribute("src", "https://s3.test/thumb-1");
-    expect(list).toHaveBeenCalledTimes(1);
-
-    // The sentinel scrolls into view: the next page is requested with the cursor.
-    await act(async () => observers.at(-1)!.cb([{ isIntersecting: true }]));
-    await screen.findByAltText("photo-3.jpg");
-    expect(list).toHaveBeenLastCalledWith({ cursor: "cursor-1", limit: 60 });
 
     // Keyboard: focus a tile, Enter opens, arrows navigate, Esc closes and focus returns to the tile.
     const tile = screen.getByRole("button", { name: "Open photo-2.jpg" });
     tile.focus();
     await user.keyboard("{Enter}");
     expect(screen.getByRole("dialog", { name: "photo-2.jpg" })).toBeInTheDocument();
+    expect(screen.getByText("2 / 3")).toBeInTheDocument();
     await user.keyboard("{ArrowRight}");
     expect(screen.getByRole("dialog", { name: "photo-3.jpg" })).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByAltText("photo-3.jpg").some((i) => i.getAttribute("src") === "https://s3.test/preview-3")).toBe(true));
@@ -112,33 +134,36 @@ describe("Library", () => {
     expect(tile).toHaveFocus();
   });
 
-  it("falls back to `before` / `next_before` against an older server without cursors", async () => {
-    const list = vi
-      .spyOn(api, "listAssets")
-      .mockResolvedValueOnce({ items: [item(1)], next_before: "2026-01-01T00:00:00Z" })
-      .mockResolvedValueOnce({ items: [item(2)], next_before: null });
+  it("keeps paging in the lightbox past the end of what is loaded", async () => {
+    // More photos than one page: the lightbox walks across the page boundary.
+    const many = Array.from({ length: 130 }, (_, n) =>
+      item(n, { id: `id-${n}`, original_name: `photo-${n}.jpg`, sort_time: new Date(Date.UTC(2026, 5, 30, 23) - n * 60_000).toISOString() }),
+    );
+    fakeLibrary(many);
+    vi.mocked(api.getAsset).mockImplementation(async (id) => ({ ...detail(Number(id.split("-")[1])), id, original_name: `photo-${id.split("-")[1]}.jpg` }));
+    const user = userEvent.setup();
     renderLibrary();
-    await screen.findByAltText("photo-1.jpg");
-    await act(async () => observers.at(-1)!.cb([{ isIntersecting: true }]));
-    await screen.findByAltText("photo-2.jpg");
-    expect(list).toHaveBeenLastCalledWith({ before: "2026-01-01T00:00:00Z", limit: 60 });
-  });
+    await user.click(await screen.findByRole("button", { name: "Open photo-3.jpg" }));
+    for (let i = 0; i < 125; i++) await user.keyboard("{ArrowRight}");
+    expect(await screen.findByRole("dialog", { name: "photo-128.jpg" })).toBeInTheDocument();
+    expect(screen.getByText("129 / 130")).toBeInTheDocument();
+  }, 30_000);
 
   it("shows a placeholder for photos still being processed", async () => {
-    vi.spyOn(api, "listAssets").mockResolvedValue({ items: [item(1, { thumb_url: null })], next_before: null });
+    fakeLibrary([item(1, { thumb_url: null })]);
     renderLibrary();
     expect(await screen.findByText("Processing…")).toBeInTheDocument();
   });
 
   describe("selecting and trashing", () => {
-    const three = () => vi.spyOn(api, "listAssets").mockResolvedValue({ items: [item(1), item(2), item(3), item(4)], next_before: null });
+    const three = () => fakeLibrary([item(1), item(2), item(3), item(4)]);
     const tile = (n: number) => screen.getByRole("button", { name: new RegExp(`^(Open|Select) photo-${n}\\.jpg$`) });
     const present = (n: number) => screen.queryByAltText(`photo-${n}.jpg`) !== null;
 
     it("selects with clicks and shift-click ranges, select all and clear, then trashes with an Undo toast", async () => {
       three();
-      const trash = vi.spyOn(api, "trashAssets").mockResolvedValue({ count: 2 });
-      const restore = vi.spyOn(api, "restoreAssets").mockResolvedValue({ count: 2 });
+      const trash = vi.mocked(api.trashAssets);
+      const restore = vi.mocked(api.restoreAssets);
       const user = userEvent.setup();
       renderLibrary();
       await screen.findByAltText("photo-1.jpg");
@@ -181,7 +206,7 @@ describe("Library", () => {
 
     it("puts the photos back and says so when the server refuses", async () => {
       three();
-      vi.spyOn(api, "trashAssets").mockRejectedValue(new ApiError(500, "internal error"));
+      vi.mocked(api.trashAssets).mockRejectedValue(new ApiError(500, "internal error"));
       const user = userEvent.setup();
       renderLibrary();
       await screen.findByAltText("photo-1.jpg");
@@ -209,7 +234,7 @@ describe("Library", () => {
 
     it("the Delete key asks first, then trashes the selection", async () => {
       three();
-      const trash = vi.spyOn(api, "trashAssets").mockResolvedValue({ count: 1 });
+      const trash = vi.mocked(api.trashAssets);
       const user = userEvent.setup();
       renderLibrary();
       await screen.findByAltText("photo-1.jpg");
@@ -263,8 +288,8 @@ describe("Library", () => {
 
     it("trashing from the lightbox moves on to the next photo, and Undo brings it back", async () => {
       three();
-      const trash = vi.spyOn(api, "trashAssets").mockResolvedValue({ count: 1 });
-      const restore = vi.spyOn(api, "restoreAssets").mockResolvedValue({ count: 1 });
+      const trash = vi.mocked(api.trashAssets);
+      const restore = vi.mocked(api.restoreAssets);
       const user = userEvent.setup();
       renderLibrary();
       await screen.findByAltText("photo-1.jpg");
@@ -287,8 +312,7 @@ describe("Library", () => {
     });
 
     it("closes the lightbox when the last photo is trashed", async () => {
-      vi.spyOn(api, "listAssets").mockResolvedValue({ items: [item(1)], next_before: null });
-      vi.spyOn(api, "trashAssets").mockResolvedValue({ count: 1 });
+      fakeLibrary([item(1)]);
       const user = userEvent.setup();
       renderLibrary();
       await user.click(await screen.findByRole("button", { name: "Open photo-1.jpg" }));
@@ -300,8 +324,11 @@ describe("Library", () => {
   });
 
   it("unpairs from the lightbox: the badge goes and the RAW shows up as its own photo", async () => {
-    vi.spyOn(api, "listAssets").mockResolvedValue({ items: [withRaw(1), item(3)], next_before: null });
-    const unpair = vi.spyOn(api, "unpair").mockResolvedValue(undefined);
+    const lib = fakeLibrary([withRaw(1), item(3)]);
+    const unpair = vi.spyOn(api, "unpair").mockImplementation(async () => {
+      lib.photos = lib.photos.map((p) => (p.id === "id-1" ? { ...p, paired: [] } : p));
+      lib.photos.push(item(1, { id: "raw-1", original_name: "photo-1.CR3", sort_time: "2026-01-29T00:00:00Z" }));
+    });
     vi.mocked(api.getAsset).mockImplementation(async (id) =>
       id === "raw-1"
         ? { ...detail(2), id: "raw-1", original_name: "photo-1.CR3", content_type: "image/x-canon-cr3" }
@@ -322,7 +349,7 @@ describe("Library", () => {
   });
 
   it("keeps the pair when the server refuses to unpair", async () => {
-    vi.spyOn(api, "listAssets").mockResolvedValue({ items: [withRaw(1)], next_before: null });
+    fakeLibrary([withRaw(1)]);
     vi.spyOn(api, "unpair").mockRejectedValue(new ApiError(404, "not found"));
     const user = userEvent.setup();
     renderLibrary();
@@ -330,5 +357,106 @@ describe("Library", () => {
     await user.click(await screen.findByRole("button", { name: "Unpair" }));
     expect(await screen.findByText(/Couldn.t unpair/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Unpair" })).toBeInTheDocument();
+  });
+
+  describe("favorites", () => {
+    const heart = (n: number, on: boolean) =>
+      screen.getByRole("button", { name: `${on ? "Remove" : "Add"} photo-${n}.jpg ${on ? "from" : "to"} favorites` });
+
+    it("hearts a tile at once, and takes it back with a message when the server refuses", async () => {
+      fakeLibrary([item(1), item(2, { favorite: true })]);
+      const user = userEvent.setup();
+      renderLibrary();
+      await screen.findByAltText("photo-1.jpg");
+      expect(heart(2, true)).toHaveAttribute("aria-pressed", "true");
+      expect(heart(1, false)).toHaveAttribute("aria-pressed", "false");
+
+      await user.click(heart(1, false));
+      expect(api.favoriteAssets).toHaveBeenCalledWith(["id-1"], true);
+      expect(heart(1, true)).toBeInTheDocument();
+
+      vi.mocked(api.favoriteAssets).mockRejectedValueOnce(new ApiError(500, "internal error"));
+      await user.click(heart(2, true));
+      expect(await screen.findByText(/Couldn’t remove from favorites\. internal error/)).toBeInTheDocument();
+      expect(heart(2, true)).toBeInTheDocument(); // back to favorited
+      expect(heart(1, true)).toBeInTheDocument(); // the other one is untouched
+    });
+
+    it("favorites and unfavorites the whole selection from the selection bar", async () => {
+      fakeLibrary([item(1), item(2, { favorite: true }), item(3)]);
+      const user = userEvent.setup();
+      renderLibrary();
+      await screen.findByAltText("photo-1.jpg");
+      await user.click(screen.getByRole("button", { name: "Select" }));
+      expect(screen.getByRole("button", { name: "Favorite" })).toBeDisabled();
+      await user.click(screen.getByRole("button", { name: "Select photo-1.jpg" }));
+      await user.click(screen.getByRole("button", { name: "Select photo-2.jpg" }));
+      // A mix: the action is "Favorite" and hearts the ones that are not yet.
+      await user.click(screen.getByRole("button", { name: "Favorite" }));
+      expect(api.favoriteAssets).toHaveBeenCalledWith(["id-1", "id-2"], true);
+      expect(await screen.findByText("2 added to favorites")).toBeInTheDocument();
+      expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+      expect(heart(1, true)).toBeInTheDocument();
+
+      // All favorites now: the same button un-hearts them.
+      await user.click(screen.getByRole("button", { name: "Select" }));
+      await user.click(screen.getByRole("button", { name: "Select photo-1.jpg" }));
+      await user.click(screen.getByRole("button", { name: "Select photo-2.jpg" }));
+      await user.click(screen.getByRole("button", { name: "Unfavorite" }));
+      expect(api.favoriteAssets).toHaveBeenLastCalledWith(["id-1", "id-2"], false);
+      expect(await screen.findByText("2 removed from favorites")).toBeInTheDocument();
+      expect(heart(1, false)).toBeInTheDocument();
+    });
+
+    it("hearts from the lightbox", async () => {
+      fakeLibrary([item(1), item(2)]);
+      const user = userEvent.setup();
+      renderLibrary();
+      await user.click(await screen.findByRole("button", { name: "Open photo-1.jpg" }));
+      const box = screen.getByRole("dialog", { name: "photo-1.jpg" });
+      await user.click(within(box).getByRole("button", { name: "Add to favorites" }));
+      expect(api.favoriteAssets).toHaveBeenCalledWith(["id-1"], true);
+      expect(within(box).getByRole("button", { name: "Remove from favorites" })).toHaveAttribute("aria-pressed", "true");
+      await user.click(within(box).getByRole("button", { name: "Remove from favorites" }));
+      expect(api.favoriteAssets).toHaveBeenLastCalledWith(["id-1"], false);
+    });
+
+    it("lists only favorites in the Favorites view, and unfavoriting a selection removes them from it", async () => {
+      const lib = fakeLibrary([item(1), item(2, { favorite: true }), item(3), item(4, { favorite: true })]);
+      const user = userEvent.setup();
+      renderLibrary(true);
+      await screen.findByAltText("photo-2.jpg");
+      expect(lib.timeline).toHaveBeenCalledWith({ favorite: true });
+      expect(lib.listAssets).toHaveBeenCalledWith(expect.objectContaining({ favorite: true }));
+      expect(screen.getAllByRole("img").map((i) => i.getAttribute("alt"))).toEqual(["photo-2.jpg", "photo-4.jpg"]);
+      expect(screen.getByText("2 photos")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Select" }));
+      await user.click(screen.getByRole("button", { name: "Select photo-2.jpg" }));
+      await user.click(screen.getByRole("button", { name: "Unfavorite" }));
+      await waitFor(() => expect(screen.queryByAltText("photo-2.jpg")).not.toBeInTheDocument());
+      expect(screen.getByAltText("photo-4.jpg")).toBeInTheDocument();
+      expect(screen.getByText("1 photo")).toBeInTheDocument();
+      expect(await screen.findByText("1 removed from favorites")).toBeInTheDocument();
+    });
+
+    it("says how to add favorites when there are none", async () => {
+      fakeLibrary([item(1)]);
+      renderLibrary(true);
+      expect(await screen.findByRole("heading", { name: "No favorites yet" })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Favorites" })).toHaveAttribute("aria-current", "page");
+      expect(screen.getByRole("link", { name: "All photos" })).toHaveAttribute("href", "/library");
+    });
+  });
+
+  describe("downloads", () => {
+    it("offers the original of a single photo as a plain link to the download endpoint", async () => {
+      fakeLibrary([item(1)]);
+      const user = userEvent.setup();
+      renderLibrary();
+      await user.click(await screen.findByRole("button", { name: "Open photo-1.jpg" }));
+      const link = within(screen.getByRole("dialog")).getByRole("link", { name: "Download" });
+      expect(link).toHaveAttribute("href", "/assets/id-1/download");
+    });
   });
 });

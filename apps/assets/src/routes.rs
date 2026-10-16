@@ -23,8 +23,13 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 mod albums;
+mod download;
+mod favorites;
 #[cfg(test)]
 mod pair_tests;
+mod timeline;
+#[cfg(test)]
+mod timeline_tests;
 mod trash;
 #[cfg(test)]
 mod upload_meta_tests;
@@ -56,6 +61,8 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/assets", get(list))
         .route("/assets/count", get(count))
+        .route("/assets/timeline", get(timeline::days))
+        .route("/assets/favorite", post(favorites::set))
         .route("/assets/trash", get(trash::list).post(trash::trash))
         .route("/assets/trash/empty", post(trash::empty))
         .route("/assets/restore", post(trash::restore))
@@ -70,6 +77,7 @@ pub fn routes() -> Router<AppState> {
         .route("/assets/albums/{id}/assets", get(albums::assets).post(albums::add))
         .route("/assets/albums/{id}/assets/remove", post(albums::remove_assets))
         .route("/assets/{id}/unpair", post(unpair))
+        .route("/assets/{id}/download", get(download::download))
         .route("/assets/{id}", get(get_one))
         .route("/assets/{id}", delete(remove))
 }
@@ -544,6 +552,8 @@ struct AssetSummary {
     height: Option<i32>,
     #[serde(with = "time::serde::rfc3339")]
     sort_time: OffsetDateTime,
+    /// Favorited (a RAW + JPEG pair carries it on the visible photo).
+    favorite: bool,
 }
 
 #[derive(FromRow)]
@@ -637,6 +647,9 @@ struct ListQuery {
     /// a sort time across a page boundary.
     #[serde(default, with = "time::serde::rfc3339::option")]
     before: Option<OffsetDateTime>,
+    /// `true` lists favorites only (served by the partial index `assets_favorites_idx`).
+    #[serde(default)]
+    favorite: bool,
 }
 
 #[derive(Serialize)]
@@ -675,7 +688,7 @@ fn decode_cursor(c: &str) -> Option<(OffsetDateTime, Uuid)> {
 }
 
 const LIST_SELECT: &str = "SELECT id, original_name, content_type, size_bytes, width, height,
-        coalesce(taken_at, file_modified_at, created_at) AS sort_time, thumbhash
+        coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite, thumbhash
  FROM assets WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL";
 
 async fn list(State(s): State<AppState>, user: AuthUser, Query(q): Query<ListQuery>) -> ApiResult<Json<ListResponse>> {
@@ -689,10 +702,15 @@ async fn list(State(s): State<AppState>, user: AuthUser, Query(q): Query<ListQue
     };
     // Row comparison against the (owner_id, sort expression DESC, id DESC) index; two statements so the planner
     // never has to guess around an optional predicate.
+    let select = if q.favorite {
+        format!("{LIST_SELECT} AND favorite")
+    } else {
+        LIST_SELECT.to_string()
+    };
     let rows = match after {
         Some((ts, id)) => {
             sqlx::query_as::<_, ListRow>(&format!(
-                "{LIST_SELECT} AND (coalesce(taken_at, file_modified_at, created_at), id) < ($2, $3)
+                "{select} AND (coalesce(taken_at, file_modified_at, created_at), id) < ($2, $3)
                  ORDER BY coalesce(taken_at, file_modified_at, created_at) DESC, id DESC LIMIT $4"
             ))
             .bind(user.id)
@@ -704,7 +722,7 @@ async fn list(State(s): State<AppState>, user: AuthUser, Query(q): Query<ListQue
         }
         None => {
             sqlx::query_as::<_, ListRow>(&format!(
-                "{LIST_SELECT}
+                "{select}
                  ORDER BY coalesce(taken_at, file_modified_at, created_at) DESC, id DESC LIMIT $2"
             ))
             .bind(user.id)
@@ -757,7 +775,7 @@ async fn get_one(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let a: AssetSummary = sqlx::query_as(
-        "SELECT id, original_name, content_type, size_bytes, width, height, coalesce(taken_at, file_modified_at, created_at) AS sort_time
+        "SELECT id, original_name, content_type, size_bytes, width, height, coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite
          FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL",
     )
     .bind(id)
@@ -1395,6 +1413,7 @@ mod tests {
                 width: Some(4),
                 height: None,
                 sort_time: OffsetDateTime::UNIX_EPOCH,
+                favorite: false,
             },
             thumbhash: Some("AQ==".into()),
             thumb_url: None,

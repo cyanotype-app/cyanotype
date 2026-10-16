@@ -1,8 +1,9 @@
 import { Link } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AssetDetail, AssetListItem } from "../api";
-import { fileSize, pairLabel } from "../pairText";
+import { downloadHref, type AssetDetail, type AssetListItem } from "../api";
+import { fileSize, pairLabel, primaryFormat } from "../pairText";
 import { placeholderUrl } from "../thumbhash";
+import { HeartIcon } from "./Tile";
 
 interface Props {
   items: AssetListItem[];
@@ -16,12 +17,34 @@ interface Props {
   onAddToAlbum?: (item: AssetListItem) => void;
   /** Separate the current photo from its RAW (offered in the pair info when the photo has one). */
   onUnpair?: (item: AssetListItem) => void;
+  /** Favorite or unfavorite the current photo (the parent updates `item.favorite`). Shows the heart when given. */
+  onFavorite?: (item: AssetListItem, favorite: boolean) => void;
+  /** Position of `items[0]` in the whole list and the size of the whole list, when `items` is only the part that is
+   * loaded around the current photo (the counter and the end stops use them). */
+  offset?: number;
+  total?: number;
   /** Bump after the photo's albums changed so its details (the "In albums" line) are fetched again. */
   refreshKey?: number;
 }
 
-export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onTrash, onAddToAlbum, onUnpair, refreshKey = 0 }: Props) {
+export function Lightbox({
+  items,
+  index,
+  onIndexChange,
+  onClose,
+  loadDetail,
+  onTrash,
+  onAddToAlbum,
+  onUnpair,
+  onFavorite,
+  offset = 0,
+  total = items.length,
+  refreshKey = 0,
+}: Props) {
   const item = items[index];
+  // Which photo's file chooser is open (it closes by itself when the photo changes).
+  const [downloadsFor, setDownloadsFor] = useState<string | null>(null);
+  const downloadsOpen = item !== undefined && downloadsFor === item.id;
   const [details, setDetails] = useState<Record<string, AssetDetail>>({});
   const [failed, setFailed] = useState<Record<string, true>>({});
   const requested = useRef(new Set<string>());
@@ -120,6 +143,13 @@ export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onT
   const showPending = detail && !src;
   const date = new Date(item.sort_time);
   const paired = detail?.paired ?? item.paired ?? [];
+  const favorite = item.favorite === true;
+  // The files that can be saved: the photo itself and, for a RAW + JPEG pair, its RAW.
+  const files = [
+    { key: item.id, href: downloadHref(item.id), label: paired.length > 0 ? primaryFormat(item) : "", size: item.size_bytes },
+    ...paired.map((p) => ({ key: p.id, href: downloadHref(item.id, p.id), label: "RAW", size: p.size_bytes })),
+  ];
+  const position = offset + index;
 
   return (
     <div className="lightbox" role="dialog" aria-modal="true" aria-label={item.original_name} ref={dialogRef}>
@@ -128,33 +158,65 @@ export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onT
           Close
         </button>
         <span className="lightbox-count" aria-live="polite">
-          {index + 1} / {items.length}
+          {position + 1} / {total}
         </span>
-        <div className="lightbox-actions">
-          {detail && (
-            <a className="btn btn-glass" href={detail.original_url} target="_blank" rel="noreferrer">
-              Original
-            </a>
-          )}
-          {onAddToAlbum && (
-            <button type="button" className="btn btn-glass" onClick={() => onAddToAlbum(item)}>
-              Add to album
+        <div className="lightbox-right">
+          {onFavorite && (
+            <button
+              type="button"
+              className={`btn btn-glass lightbox-heart${favorite ? " on" : ""}`}
+              aria-pressed={favorite}
+              aria-label={favorite ? "Remove from favorites" : "Add to favorites"}
+              onClick={() => onFavorite(item, !favorite)}
+            >
+              <HeartIcon filled={favorite} />
             </button>
           )}
-          {onTrash && (
-            <button type="button" className="btn btn-glass" onClick={() => onTrash(item)}>
-              Move to trash
-            </button>
-          )}
+          <div className="lightbox-actions">
+            {files.length === 1 ? (
+              <a className="btn btn-glass" href={files[0]!.href} rel="noopener">
+                Download
+              </a>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-glass"
+                aria-expanded={downloadsOpen}
+                aria-controls="lightbox-downloads"
+                onClick={() => setDownloadsFor(downloadsOpen ? null : item.id)}
+              >
+                Download
+              </button>
+            )}
+            {onAddToAlbum && (
+              <button type="button" className="btn btn-glass" onClick={() => onAddToAlbum(item)}>
+                Add to album
+              </button>
+            )}
+            {onTrash && (
+              <button type="button" className="btn btn-glass" onClick={() => onTrash(item)}>
+                Move to trash
+              </button>
+            )}
+          </div>
         </div>
       </div>
+      {files.length > 1 && downloadsOpen && (
+        <div className="lightbox-downloads" id="lightbox-downloads">
+          {files.map((f) => (
+            <a key={f.key} className="btn btn-glass" href={f.href} rel="noopener">
+              Download {f.label} <span className="muted">{fileSize(f.size)}</span>
+            </a>
+          ))}
+        </div>
+      )}
       <div className="lightbox-stage" style={bg ? { backgroundImage: `url(${bg})` } : undefined}>
         <button
           type="button"
           className="nav nav-prev"
           aria-label="Previous photo"
           onClick={() => go(-1)}
-          disabled={index === 0}
+          disabled={position === 0}
         >
           ‹
         </button>
@@ -174,7 +236,7 @@ export function Lightbox({ items, index, onIndexChange, onClose, loadDetail, onT
           className="nav nav-next"
           aria-label="Next photo"
           onClick={() => go(1)}
-          disabled={index === items.length - 1}
+          disabled={position >= total - 1}
         >
           ›
         </button>

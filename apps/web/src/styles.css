@@ -274,11 +274,16 @@ main {
     gap: 6px;
   }
 }
+.tile-cell {
+  position: relative;
+  min-width: 0;
+  aspect-ratio: 1;
+}
 .tile {
   display: block;
   position: relative;
   width: 100%;
-  aspect-ratio: 1;
+  height: 100%;
   padding: 0;
   border: 0;
   border-radius: 6px;
@@ -1322,4 +1327,306 @@ textarea.text-input {
 .lightbox-pair li {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* Library views: All photos / Favorites */
+.library-tabs {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.75rem 1rem 0;
+}
+.library-tab {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.25rem;
+  padding: 0 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+.library-tab:hover {
+  background: var(--surface-2);
+}
+.library-tab[aria-current="page"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.library-tabs + .library-bar {
+  padding-top: 0.5rem;
+}
+
+/* Timeline: month and day headers over rows of tiles, only the rows near the viewport are in the DOM. */
+.timeline {
+  --scrub-w: 26px;
+  position: relative;
+  margin-top: 0.5rem;
+}
+@media (pointer: coarse) {
+  .timeline {
+    --scrub-w: 30px;
+  }
+}
+.tl-list {
+  position: relative;
+  margin-right: var(--scrub-w);
+}
+.tl-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  overflow: hidden;
+}
+.tl-month,
+.tl-day {
+  display: flex;
+  align-items: flex-end;
+  padding: 0 0.5rem 0.35rem;
+}
+.tl-month h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+.tl-day h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.tl-tiles {
+  display: grid;
+  align-content: start;
+}
+.tile-skeleton {
+  border-radius: 6px;
+  background-color: var(--surface-2);
+}
+
+/* Hearts on tiles: on hover (desktop) and always while favorited; on touch screens they only mark favorites. */
+.tile-heart {
+  position: absolute;
+  left: 0.35rem;
+  bottom: 0.35rem;
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0.35rem;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(0 19 31 / 0.5);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.tile-cell:hover .tile-heart,
+.tile-heart:focus-visible,
+.tile-heart.on {
+  opacity: 1;
+}
+.tile-heart.on {
+  color: #ff6b81;
+}
+span.tile-heart {
+  pointer-events: none;
+}
+@media (hover: none) {
+  .tile-heart {
+    pointer-events: none;
+  }
+}
+
+/* Year/month scrubber on the right edge. The rail floats inside the timeline and sticks to the viewport, so it
+   starts below the bars above the list and never covers the top bar. */
+.scrubber {
+  --top: 4.25rem; /* clears the sticky top bar */
+  --bottom: 0.75rem;
+  position: sticky;
+  float: right;
+  top: var(--top);
+  z-index: 3;
+  width: var(--scrub-w);
+  height: calc(100vh - var(--top) - var(--bottom) - var(--shrink, 0px));
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: pointer;
+}
+@supports (height: 100dvh) {
+  .scrubber {
+    height: calc(100dvh - var(--top) - var(--bottom) - var(--shrink, 0px));
+  }
+}
+body:has(.selection-bar) .scrubber {
+  --top: 8rem; /* below the sticky selection bar */
+}
+.scrubber-marks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.scrub-year,
+.scrub-tick {
+  position: absolute;
+  left: 0;
+  right: 0;
+  transform: translateY(-50%);
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1;
+  pointer-events: auto;
+}
+.scrub-tick {
+  left: 50%;
+  right: auto;
+  width: 8px;
+  height: 2px;
+  margin-left: -4px;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: 0.45;
+}
+.scrubber-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--accent) 88%, transparent);
+  box-shadow: var(--shadow);
+  cursor: grab;
+}
+.dragging .scrubber-handle {
+  cursor: grabbing;
+  background: var(--accent-hover);
+}
+.scrubber-grip {
+  width: 10px;
+  height: 10px;
+  border-block: 2px solid rgb(255 255 255 / 0.85);
+  box-shadow: inset 0 0 0 0 transparent;
+  background: linear-gradient(rgb(255 255 255 / 0.85), rgb(255 255 255 / 0.85)) center / 100% 2px no-repeat;
+}
+.scrubber-bubble {
+  position: absolute;
+  right: calc(100% + 8px);
+  transform: translateY(-50%);
+  padding: 0.4rem 0.75rem;
+  border-radius: 0.6rem;
+  background: var(--pb-900);
+  color: #fff;
+  font-size: 0.95rem;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
+
+/* Lightbox: heart and download */
+.lightbox-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.lightbox-heart {
+  width: 2.5rem;
+  padding: 0;
+}
+.lightbox-heart svg {
+  width: 1.3rem;
+  height: 1.3rem;
+}
+.lightbox-heart.on {
+  color: #ff6b81;
+}
+.lightbox-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0 1rem 0.75rem;
+}
+.lightbox-downloads .muted {
+  font-weight: 400;
+}
+
+@media (max-width: 600px) {
+  .library-tabs {
+    padding-inline: 1rem;
+  }
+  .library-tab {
+    flex: 1 1 0;
+    justify-content: center;
+    min-height: 2.75rem;
+  }
+  .tl-month,
+  .tl-day {
+    padding-inline: 1rem;
+  }
+  .tile-skeleton {
+    border-radius: 2px;
+  }
+  .tile-heart {
+    left: 0.25rem;
+    bottom: 0.25rem;
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0.3rem;
+  }
+  body:has(.selection-bar) .timeline {
+    padding-bottom: calc(9rem + env(safe-area-inset-bottom)); /* keep the last row clear of the fixed bar */
+  }
+  .scrubber {
+    --top: 0.5rem;
+  }
+  body:has(.selection-bar) .scrubber {
+    --top: 0.5rem;
+    --bottom: 9rem; /* above the fixed selection bar */
+  }
+  body:has(.tray) .scrubber {
+    --bottom: 7rem;
+  }
+  body:has(.selection-bar):has(.tray) .scrubber {
+    --bottom: 14.5rem;
+  }
+  .lightbox-bar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .lightbox-right {
+    display: contents;
+  }
+  .lightbox-heart {
+    width: 2.75rem;
+  }
+  .lightbox-count {
+    grid-column: 2;
+  }
+  .lightbox-downloads {
+    padding-inline: max(1rem, env(safe-area-inset-left));
+  }
+  .lightbox-downloads .btn {
+    flex: 1 1 auto;
+    padding: 0 0.6rem;
+    font-size: 0.875rem;
+  }
+}
+@media (max-width: 360px) {
+  .library-tab {
+    padding: 0 0.4rem;
+    font-size: 0.8125rem;
+  }
 }
