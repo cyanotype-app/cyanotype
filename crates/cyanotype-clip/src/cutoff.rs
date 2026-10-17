@@ -166,7 +166,7 @@ mod tests {
         // A query nothing matches: CLIP still returns its nearest photos as strong (documented limitation).
         let t = tiers(Model::ClipB32, &[0.12, 0.119, 0.118, 0.1, 0.05]);
         assert_eq!(t.strong, 3);
-        assert_eq!(t.weak, 5);
+        assert_eq!(t.weak, 4, "within 0.04 of the best");
     }
 
     #[test]
