@@ -9,5 +9,7 @@ node_modules/
 certs/
 apps/web/test-results/
 apps/web/playwright-report/
-# CLIP model files (scripts/fetch-models.sh); only models/clip.lock is committed
+# Search model files and the evaluation set (scripts/fetch-models.sh, scripts/fetch-eval-set.sh); only models/*.lock are committed
 /models/clip/
+/models/siglip2/
+/models/eval/

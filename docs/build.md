@@ -173,103 +173,261 @@ reduced-size decode for single-image HEIC (libheif has none), and colour-profile
 
 ## Semantic search model
 
-Search embeds every photo and every query with **OpenAI CLIP ViT-B/32** and compares them by cosine similarity
-(`docs/library.md`, "Search"). The model runs in-process, in Rust, with **ONNX Runtime** through the `ort` crate and the
-`tokenizers` crate, in `crates/cyanotype-clip`: no Python, no sidecar, no network at runtime.
+Search embeds every photo and every query with a text-image model and compares them by cosine similarity
+(`docs/library.md`, "Search"). Two models are supported and `SEARCH_MODEL` picks one: **SigLIP 2 base (patch 16, 224 px)**,
+the default, and **OpenAI CLIP ViT-B/32**, the previous default. They run in-process, in Rust, with **ONNX Runtime** through
+the `ort` crate and the `tokenizers` crate, in `crates/cyanotype-clip`: no Python, no sidecar, no network at runtime.
 
-### Which model, and why
+### Which model, and why (the bake-off)
 
-| Candidate | Licence | Verdict |
+Measured with `crates/cyanotype-clip/tests/bakeoff.rs` (`just bakeoff`) on **209 CC0 / public-domain photos from Wikimedia
+Commons in 21 categories** (`scripts/fetch-eval-set.sh`, the list with sources in `crates/cyanotype-clip/tests/eval/photos.tsv`),
+**42 queries** (each category by name and as "a photo of a ..."), labels from the category a photo was found under (noisy:
+a sunset over a mountain is a "sunset", so a "mountain" query is penalised for it, equally for every model), every photo ranked
+for every query:
+
+| Image tower / text tower | File sizes (image + text) | P@1 | P@5 | mAP | R@10 |
+|---|---|---|---|---|---|
+| **CLIP B/32 int8 / int8** (before) | 89 + 64 MB | 0.952 | 0.924 | 0.859 | 0.820 |
+| **SigLIP 2 B/16 4-bit / int8 (shipped)** | 63 + 283 MB | 0.952 | **0.981** | 0.899 | 0.847 |
+| SigLIP 2 B/16 fp32 / fp32 | 372 + 1,129 MB | 1.000 | 0.962 | 0.904 | 0.866 |
+| SigLIP 2 B/16 fp32 / int8 | 372 + 283 MB | 1.000 | 0.962 | 0.909 | 0.870 |
+| SigLIP 2 B/16 fp16 / fp16 | 186 + 565 MB | 1.000 | 0.962 | 0.904 | 0.866 |
+| SigLIP 2 B/16 int8 / int8 | 95 + 283 MB | 0.952 | 0.905 | 0.809 | 0.774 |
+| SigLIP 2 B/16 int8 / fp32 | 95 + 1,129 MB | 0.952 | 0.886 | 0.787 | 0.736 |
+
+(21 to 42 queries over 209 photos: differences of 0.01 to 0.02 are noise, one query moves P@1 by 0.024. The fp16 graphs give
+the fp32 numbers exactly and run no faster on this CPU, so they are not an option; `SigLIP 2 224` is the one tested, the
+256 px variant costs a third more compute for a gain that was not measured.) Findings:
+
+- **SigLIP 2 beats CLIP**: P@5 0.981 against 0.924, mAP 0.899 against 0.859, recall@10 0.847 against 0.820 on the same photos,
+  and it is **much** better outside English: category names in Spanish, German and French (P@5 / mAP) 0.905 / 0.845, 0.886 /
+  0.823, 0.943 / 0.870 against CLIP's 0.476 / 0.432, 0.457 / 0.409, 0.457 / 0.453 ("perro en la playa" finds the dog on the
+  beach; CLIP's English-only tokenizer garbles it). The queries each model misses (rank 1 wrong or P@5 under 0.6): CLIP
+  "bridge" and "a photo of a bridge" (top 5: two bridges and a beach, a mountain, a forest), "mountain" (a sunset first);
+  SigLIP 2: only "mountain" and "a photo of a mountain" (a sunset first, P@5 0.8). Its remaining misses are the label noise.
+- **The export's 8-bit image tower is the one thing not to ship.** SigLIP 2's 8-bit ONNX image tower (dynamic quantisation,
+  the published `vision_model_int8.onnx`) moves the vectors far (cosine to fp32 **0.76** on average, 0.52 at worst, against
+  0.957 for CLIP's 8-bit tower) and costs 0.09 mAP, which would make SigLIP 2 *worse* than CLIP. The same export's
+  **4-bit weight-only quantisation** (`vision_model_q4.onnx`, ONNX Runtime's `MatMulNBits`, activations stay fp32) keeps cosine
+  0.957 (0.91 at worst) to fp32, loses nothing measurable (mAP 0.899 against 0.904) and is the smallest file, 63 MB. The
+  text tower is fine in 8 bits (cosine 0.985 to fp32), and its 4-bit and fp16 forms are bigger, not smaller (the 256,000-token
+  embedding table stays fp32 or fp16): so image q4 and text int8. (The export's `bnb4`, `q4f16` and `uint8` variants were
+  measured too: bnb4 and q4f16 rank as well as q4 (mAP 0.89), bnb4 is 16 % slower; uint8 is as bad as int8, mAP 0.805.)
+- **Per-query comparisons use the 20-photo smoke test too** (`crates/cyanotype-clip/tests/model.rs`, runs on every CI build):
+  top-1 39/40 and top-3 40/40 queries for both models.
+- **Cost: about 4x the compute per photo.** ViT-B/16 sees 196 patches against B/32's 49. Measured numbers are in "Memory, speed
+  and sizes" below: the one-time backfill takes about four times as long as CLIP's did, and this is the price of the move.
+  Resident memory of the image tower is the same (about 150 MB), and the text tower is bigger (335 MB, below).
+
+Decision: **SigLIP 2 B/16 (image 4-bit, text 8-bit) is the default.** Better ranking in English, usable in other languages,
+and the only one of the two with a calibrated score, which the result cut-off needs (below). CLIP stays selectable
+(`SEARCH_MODEL=clip-b32`) and is the model a library is searched with while it is re-indexed (`docs/library.md`, "Changing the
+search model").
+
+### Provenance and licences
+
+| Model | Weights | Export (the files in `models/*.lock`) |
 |---|---|---|
-| **OpenAI CLIP ViT-B/32** (ONNX export by Xenova / transformers.js, int8) | code and weights MIT (github.com/openai/CLIP) | **chosen** |
-| OpenCLIP ViT-B/32 LAION-2B | MIT | about 3 points better zero-shot (66.6 vs 63.3 % ImageNet) but nobody hosts a quantised ONNX export with a stable URL; quantising it ourselves would mean hosting an artifact we cannot pin by an upstream checksum. The swap path is open: change `MODEL_ID`/`MODEL_VERSION` and `models/clip.lock` |
-| SigLIP base/16 | Apache 2.0 | better, but ViT-B/16 at 224 is about 4x the compute of B/32 (196 tokens against 49): the backfill would take hours more on this CPU |
-| MobileCLIP (Apple) | Apple's own model licence, research use | rejected: not a licence a self-hosted product can pass on |
+| **SigLIP 2 base, patch 16, 224 px** | Google, **Apache 2.0** (`google/siglip2-base-patch16-224`, model card `license: apache-2.0`; Tschannen et al., "SigLIP 2", 2025) | `onnx-community/siglip2-base-patch16-224-ONNX` on Hugging Face (the transformers.js team's conversion), **pinned to commit `ba1f3b0843f24bc5417d38e19c37b287d719b2f4`** (2025-02-21, eight months before this change). The export repository's card states no licence of its own; the weights it converts are Apache 2.0, and we take the files as a conversion of them (not confirmed with the repository's authors). Every file is pinned by sha256 in `models/siglip2.lock`; `scripts/fetch-models.sh` checks them. |
+| **OpenAI CLIP ViT-B/32** | OpenAI, **MIT** (github.com/openai/CLIP; Radford et al., 2021) | `Xenova/clip-vit-base-patch32`, pinned to commit `d15189d7028b43f1d3e65039190477f6af591c2a`; same note about the export's missing licence statement. `models/clip.lock`. |
 
-B/32 is the quality-per-MB point for a 2-core shared host: 4.4 GFLOPs an image, 512-d vectors, and a 64 MB text tower.
-Attribution: Radford et al., "Learning Transferable Visual Models From Natural Language Supervision" (2021); weights from
-`openai/clip-vit-base-patch32`; ONNX exports from `Xenova/clip-vit-base-patch32` on Hugging Face, **pinned to commit
-`d15189d7028b43f1d3e65039190477f6af591c2a`**. The export repository does not state a licence of its own; the weights it
-converts are MIT, and we take the export as a conversion of them (not verified with the repository's author).
+The calibration constants of SigLIP 2 (`logit_scale` 4.7245, so a scale of 112.669, and `logit_bias` -16.7717) are read from
+the checkpoint (`model.safetensors` of `google/siglip2-base-patch16-224`, revision `75de2d55`) and written into
+`Model::calibration`. Changing a lock file is a model change: bump `Model::version()` in the same commit so photos are
+re-embedded. A published export is used rather than our own because we cannot host files, and exporting at image build
+time would need PyTorch in the build.
 
-| File (`models/clip.lock`) | Size | sha256 | Goes into |
-|---|---|---|---|
-| `vision_model_int8.onnx` | 88.6 MB | `0ab0c1b3...6cb9bd93` | worker image |
-| `text_model_int8.onnx` | 64.1 MB | `18845f2c...5efd3a21` | assets image |
-| `tokenizer.json` | 2.2 MB | `f7f3b7af...697a90cd` | assets image |
+Other candidates, not shipped: OpenCLIP ViT-B/32 LAION-2B (about 3 points better zero-shot than OpenAI's, no stable quantised
+export to pin), MobileCLIP (Apple's model licence is research-only), SigLIP 1 base/16 (superseded by SigLIP 2 at the same cost).
 
-(Full checksums in `models/clip.lock`, verified by `scripts/fetch-models.sh` for the images and for a checkout alike; a
-mismatch deletes the download and fails the build.)
+### What differs between the models in code
 
-### 8-bit against full precision
+| | CLIP B/32 | SigLIP 2 B/16 |
+|---|---|---|
+| Image input | shorter side to 224 (bicubic), centre crop, CLIP mean/std | **whole image squashed to 224 x 224** (bilinear, anti-aliased, no crop, aspect ratio not kept), mean 0.5 / std 0.5 (SiglipImageProcessor) |
+| Text input | BPE (OpenAI), up to 77 tokens, unpadded | Gemma tokenizer (256,000 tokens), **lower-cased by us** (the tokenizer file does not, though the model was trained on lower-case text), truncated to 63 + `<eos>`, **padded with `<pad>` to exactly 64** (the graph pools the last position) |
+| Output | `image_embeds` / `text_embeds` (512) | `pooler_output` (768), unit-length |
+| Calibration | none | `sigmoid(112.669 x cos - 16.7717)` |
+| Query preparation | none | short queries (up to 4 words) become "a photo of a ..." |
+| Vectors | `halfvec(512)`, HNSW `asset_embeddings_clip_b32_hnsw` | `halfvec(768)`, `asset_embeddings_siglip2_b16_hnsw` |
 
-The 8-bit exports are 4x smaller and a little faster (118 against 144 ms an image on one thread), but dynamic
-quantisation moves the vectors: the cosine between an int8 and the fp32 vector of the same photo is **0.957** on average
-(0.90 at worst) for images and **0.919** (0.61 at worst) for text. Whether that matters for *search* was measured on 209
-CC0 photos (Wikimedia Commons, 21 categories, 42 queries, labels from the category the photo was found under, so noisy but
-equally noisy for every row), ranking all photos for each query:
+Parity tests (`crates/cyanotype-clip/tests/model.rs`) check all of this against a Python reference (Pillow, `tokenizers`,
+onnxruntime, with small committed fixtures: `tests/fixtures/reference.json`, `reference_siglip2.json`).
 
-| Image tower / text tower | P@1 | P@5 | mAP |
-|---|---|---|---|
-| fp32 / fp32 (reference) | 0.952 | 0.910 | 0.849 |
-| fp16 / fp16 (176 MB + 127 MB, no loss) | 0.952 | 0.910 | 0.849 |
-| **int8 / int8 (shipped)** | 0.952 | 0.910 | 0.854 |
-| int8 / fp32 | 0.976 | 0.948 | 0.866 |
+### The query template
 
-Retrieval quality is unchanged within the noise of that set (the vectors move, the rankings do not), so int8 it is: 153 MB
-instead of 482 MB of model, and a text tower that loads in a moment. fp16 would be lossless, but ONNX Runtime has no fast
-fp16 path on CPU (measured: 145 ms against 10 ms a query for the text tower). The 20-photo smoke test in
-`crates/cyanotype-clip/tests/model.rs` runs on every CI build: **top-3 recall 40/40 queries, top-1 39/40**.
+SigLIP 2 was trained on captions. A bare keyword ("airplane") scores far lower against its own photo than "a photo of a
+airplane", and since the cut-off reads those absolute scores the template is what makes them usable: on the evaluation set the
+best photo of an answerable keyword query had a probability of at least 0.9 % with the bare query and a query nothing answers
+(a giraffe) up to 0.8 %, against at least 6.7 % and at most 1.7 % with the template: the two kinds of query are four times apart
+instead of barely apart. Ranking is unchanged within noise (keyword queries, P@5 / mAP: bare 0.962 / 0.889, "a photo of a ..."
+0.981 / 0.899). **Averaging several templates** ("a photo of {q}", "a picture of {q}", ...) was measured on both models and
+**not kept**: SigLIP 2 0.962 / 0.889 bare, 0.962 / 0.889 averaged over two, 0.962 / 0.890 over three; CLIP 0.914 / 0.860, 0.914 /
+0.860, 0.914 / 0.857: nothing beyond noise, for a text tower run two or three times per query. (The single "a photo of a" template
+on CLIP gave 0.933 / 0.859: P@5 up by one query's worth, mAP flat, and no absolute scale to calibrate, so CLIP is left alone.)
+
+### The cut-off ("only results that match")
+
+Which results are *strong* and which *weaker* is cut from the ranked cosines by `crates/cyanotype-clip/src/cutoff.rs`
+(rules in `docs/library.md`). Tuned on the same evaluation set, 42 answerable queries and **12 that nothing in the set answers**
+("a giraffe", "a submarine", "an astronaut", "a bowl of soup", "a tennis match", "a library bookshelf", "a dinosaur skeleton",
+"a medieval castle", "an elephant", "a snowman", "a wedding dress", "a chess board"), precision and recall of what is returned
+against a plain top 10:
+
+| Model, list | Precision | Recall | Returned per answerable query | Returned per unanswerable query | Unanswerable queries that return nothing |
+|---|---|---|---|---|---|
+| CLIP, top 10 | 0.817 | 0.821 | 10.0 | 10.0 | 0 of 12 |
+| CLIP, strong tier | 0.870 | 0.718 | 8.2 | 18.6 | 0 of 12 |
+| CLIP, strong + weaker | 0.692 | 0.801 | 11.5 | 40.4 | 0 of 12 |
+| **SigLIP 2, top 10** | 0.843 | 0.847 | 10.0 | 10.0 | 0 of 12 |
+| **SigLIP 2, strong tier** (what a search shows) | **0.870** | **0.804** | 9.2 | **0.4** | **9 of 12** |
+| **SigLIP 2, strong + weaker** | 0.786 | 0.895 | 11.3 | 0.8 | 6 of 12 |
+
+(Recall is of all photos of the category, about 10 a query, so a list of 10 cannot do better than about 0.9.) The strong tier has
+the precision of CLIP's with a recall 8 points higher, and, unlike any CLIP list, returns almost nothing for a subject the library does
+not have; against a plain top 10 it trades 4 points of recall for 3 points of precision and the empty answer, and "Show weaker
+matches" brings the recall to 0.895.
+
+What the numbers say, and the choices they led to:
+
+- **The model's probability is real but small for short queries.** The best photo of an answerable keyword query has a median
+  probability of 17 % with the template (7 % bare), the worst 6.7 % (0.9 % bare), because the sigmoid was trained on full
+  captions. A threshold at 50 % would return nothing, so the strong tier uses p >= 0.3 %: absolute-only thresholds give F1 over
+  the 21 keyword queries of 0.84 / 0.83 / 0.83 at 0.2 % / 0.3 % / 0.5 % (flat; 1 % gives 0.79), and 0.3 % is the lowest in that
+  range that still sends most unanswerable queries home empty. With the full rules, 9 of the 12 unanswerable queries return
+  nothing strong (the other three one or two photos each), and 6 of 12 return nothing even with the weaker tier. Plain top 10
+  returns ten photos for "a giraffe". (Python harness numbers; the table above is the Rust harness.)
+- **Relative and gap rules do the rest**, and matter more in a real library than in this 209-photo set (10 relevant photos per
+  query, so a "within 0.06" rule is rarely what stops the list here). Relative only, SigLIP 2, on the 42 queries: within 0.02 of the
+  best: precision 0.94, recall 0.60; within 0.03: 0.90 / 0.73; within 0.04: 0.83 / 0.84; within 0.05: 0.72 / 0.89 (CLIP: 0.92 /
+  0.55, 0.85 / 0.72, 0.72 / 0.82, 0.51 / 0.88; Python harness, bare queries). The largest-gap rule on top changed precision and
+  recall by less than 0.01 here, and is kept as a guard for long, smooth tails. For SigLIP 2 the relative rule is generous
+  (0.06) because the absolute floor does the work against junk; for CLIP, which has only the relative rule, it is tight (0.03).
+- **CLIP gets no absolute floor** and cannot return nothing: the cosine of the best photo is 0.26 to 0.31 for the answerable
+  queries and 0.22 to 0.27 for the unanswerable ones, ranges that overlap, so any single number cuts some real query or lets
+  some junk through. Only the relative rule (within 0.03) and the gap rule apply, and the table's CLIP rows show it: 0.87
+  precision at 0.72 recall for the strong tier, but photos returned for every unanswerable query.
+- Whatever the cut-off decides, **"Show weaker matches"** is there: strong + weaker returns more than the top 10 at lower
+  precision, so a query is never a dead end.
+
+### 8-bit against full precision (CLIP)
+
+CLIP's 8-bit exports are 4x smaller and a little faster (118 against 144 ms an image on one thread), and dynamic quantisation
+moves the vectors: the cosine between an int8 and the fp32 vector of the same photo is 0.957 on average (0.90 at worst) for
+images and 0.919 (0.61 at worst) for text. On the evaluation set the rankings did not move (fp32 / fp32 mAP 0.849, int8 / int8
+0.854), so int8 it stays. fp16 is lossless but ONNX Runtime has no fast fp16 path on CPU (145 ms against 10 ms a query for the
+text tower).
 
 ### Memory, speed and sizes (measured on this host, 4 cores shared with other work)
 
-Model files: OpenAI CLIP ViT-B/32 (MIT), sizes in the table above (vision int8 88.6 MB, text int8 64.1 MB, tokenizer 2.2 MB).
+The host was busy with other builds throughout (load average 10 to 17 on 4 cores), so absolute times are pessimistic and noisy;
+the ratios between rows are the reading. All numbers are release builds (`cargo run --release -p cyanotype-clip --example
+bench -- <model> <threads> <image|text>`), ONNX Runtime linked as in the services, one tower per process.
 
-**Resident memory (1 thread)**
-
-| What | Measured |
-|---|---|
-| Image tower after load | 146 MB |
-| Image tower, batch of 4 | 159 MB |
-| Text tower | about 70 MB |
-| Worker container RSS in Docker | not yet measured in production; see the Datadog `worker.rss_bytes` metric |
-
-**Model-only speed**
-
-| What | Measured |
-|---|---|
-| Image, 1 thread | 126 to 158 ms |
-| Image, 2 threads | 75 ms |
-| Text query | p50 10 ms, p95 14 ms |
-
-**Whole embed job path (debug build)**
-
-| Threads | Throughput | 50k-photo backfill |
+| Model files (`models/*.lock`) | Size | Goes into |
 |---|---|---|
-| 1 | 270 photos/min | about 2 to 3 h |
-| 2 | 370 photos/min | about 1.5 to 2 h |
+| SigLIP 2 `vision_model_q4.onnx` | 63.3 MB | worker image |
+| SigLIP 2 `text_model_int8.onnx` + `tokenizer.json` | 283.4 + 34.4 MB (after `onnx-split`: 86.8 MB + 196.6 MB side file) | assets image |
+| CLIP `text_model_int8.onnx` + `tokenizer.json` | 64.1 + 2.2 MB | assets image, for the transition only (below) |
+| CLIP `vision_model_int8.onnx` | 88.6 MB | nowhere (only for `SEARCH_MODEL=clip-b32`: bake it into the worker) |
 
-Release-build throughput: not yet measured in production; see the Datadog `embed.duration` metric.
+**Image tower, one image at a time (what the worker does)**
 
-**Search latency, 50k synthetic library (warm cache)**
+| | CLIP B/32 int8 | SigLIP 2 B/16 q4 | SigLIP 2 B/16 fp32 | SigLIP 2 B/16 int8 |
+|---|---|---|---|---|
+| Resident after load / after use | 148 / 152 MB | **137 / 154 MB** | 622 / 636 MB | 172 / 186 MB |
+| 1 thread | 139 ms | 562 ms | 564 ms | 516 ms |
+| 2 threads | 116 ms | 433 ms | | |
+| Preprocessing (decode of a 330 px JPEG included) | 2.2 ms | 4.3 ms | | |
 
-| Filter | p50 | p95 |
+(A batch of 4 was no faster per image than 1 for either model, 135 against 139 ms and 627 against 562 ms, so the worker runs
+photos one at a time; see "The parity test that flaked" for why that also matters for determinism.)
+
+**Text tower** (2 threads unless noted)
+
+| | CLIP int8 | SigLIP 2 int8, as downloaded | SigLIP 2 int8, embedding table split off |
+|---|---|---|---|
+| Resident | 116 MB | 523 MB | **335 MB** |
+| Query p50 / p95 | 13.7 / 19.7 ms | 292 / 363 ms | 150 to 300 / 170 to 420 ms (1 to 2 threads) |
+
+The query time of SigLIP 2's text tower is compute, not memory: 64 padded positions through 12 layers of width 768 (CLIP: about
+10 tokens through width 512). On a quiet core it measured 154 / 173 ms on one thread and 127 / 151 ms on two; a query is cached
+after its first use (paging, a changed filter, a retype cost nothing).
+
+**Why the text tower does not fit the old assets limit, and what was done.** 256,000 tokens x 768 = 197 MB of the 283 MB file is
+one embedding table, and a query reads at most 64 of its rows. ONNX Runtime 1.28 (the version `ort` 2.0.0-rc.13 links) keeps 523 MB
+resident for this 283 MB file (the file's bytes and the weights built from them); the assets container had 384 MB. Options considered: raise
+the limit to 640 MB (total over budget), quantise the table ourselves (a model file we cannot pin by an upstream checksum),
+move text encoding elsewhere (a sidecar, against the design), or **move the table into an external data file**, which ONNX
+Runtime reads without the second copy: **335 MB resident (all of it heap: the table is read, not mapped), same vectors**. `onnx-split`
+(`crates/cyanotype-clip/src/split.rs`, compiled with plain `rustc` from `tools/onnx_split.rs` in its own Docker stage) does
+that to the downloaded file at image build time, so no unpinned file is hosted: the lock pins the input, the transformation is
+a deterministic function of it, and a test (`a_split_text_model_gives_the_same_vectors`) checks that the split model gives the
+same vectors. (ONNX Runtime 1.31 in Python maps external data instead of copying it: the same file grew the process by 10 MB there. The
+split file is ready for that; nothing else changes when `ort` moves to a newer runtime.) With 335 MB for the tower plus the service itself the
+**assets limit goes from 384 MB to 512 MB**.
+
+**Memory table (compose limits)**
+
+| Service | Before | Now |
 |---|---|---|
-| none | 42 ms | 64 ms |
-| favorites | 44 ms | 53 ms |
-| one year | 60 ms | 72 ms |
-| a city | 100 ms | 130 ms |
-| album of 40 photos | 8 ms | 9 ms |
-| one camera | 87 ms | 98 ms |
-| has location | 81 ms | 96 ms |
-| JPEG only | 66 ms | 84 ms |
-| HEIC only | 85 ms | 105 ms |
+| postgres | 768m | 768m |
+| worker | 1280m | 1280m (the image tower's resident memory is unchanged, about 150 MB, outside the 640 MB decode budget) |
+| assets | 384m | **512m** (the SigLIP 2 text tower is 335 MB resident; the whole service measured 35 MB idle and 370 MB after its first searches, debug build) |
+| auth | 256m | 256m |
+| gateway | 128m | 128m |
+| backup | 128m | 128m |
+| web | 64m | 64m |
+| **Services** | 3,008m | **3,136m** |
+| Datadog Agent (profile) | 384m | 384m |
+| **With the Agent** | 3,392m = 3.31 GiB | **3,520m = 3.44 GiB** (limit ~3.6 GB) |
 
-The first queries on a cold cache take up to 4.5 s.
+**Whole embed job path (S3 download of the preview, WebP decode, preprocessing, inference, store), release build**
 
-**HNSW recall against exact search:** 0.997 / 0.998 / 0.977 at top 10 / 60 / 300 unfiltered; 1.0 with filters that keep 33 to 50% of the library.
+`cargo test --release -p cyanotype-worker embed_throughput -- --ignored --nocapture` (Postgres and S3 in containers, 120 previews of
+the fixture photos, the model loaded before timing; host load average 7 to 10 on 4 cores while it ran):
 
-**Index sizes at 50k photos:** vectors 56 MB, primary key 4 MB, HNSW 65 MB.
+| Model | Threads | Per photo | Throughput | 10,000 photos | 50,000-photo backfill |
+|---|---|---|---|---|---|
+| CLIP B/32 int8 | 1 | 143 ms | 420 photos/min | 24 min | 2.0 h |
+| CLIP B/32 int8 | 2 | 121 ms | 496 photos/min | 20 min | 1.7 h |
+| **SigLIP 2 B/16 q4** | 1 (the default, `WORKER_EMBED_THREADS`) | 552 ms | **109 photos/min** | 1.5 h | **7.6 h** |
+| **SigLIP 2 B/16 q4** | 2 | 444 ms | 135 photos/min | 1.2 h | 6.2 h |
+
+Resident size of the process at the end: 159 MB (SigLIP 2), 186 to 189 MB (CLIP, the debug-built test harness included).
+SigLIP 2 is 3.9x slower per photo on one thread, and a second thread buys only 23 % (the early layers are memory bound on this
+host), so the backfill after switching a 50,000-photo library takes most of a working day on one thread, **while searches keep
+working with CLIP** (`docs/library.md`, "Changing the search model"); a small library (a few thousand photos) is done in an hour.
+A busy production host (a shared 2 vCPU Linode) will be slower than these numbers. The earlier figure for CLIP (270 photos/min)
+was a debug build.
+
+**Search latency, 50k synthetic library (warm cache)**: unchanged by the model, the index is the same shape (768-d vectors are
+1.5 KB a row against 1 KB, so the index is about half as large again; the measurement of `docs/library.md` was made with the
+512-d CLIP index, not repeated for 768).
+
+### ONNX Runtime and the 8-bit kernels: the parity test that flaked
+
+`image_embeddings_match_the_reference` failed once in CI with cosine 0.9828 against a 0.985 threshold. Findings:
+
+- **Not threads.** Sessions are one thread and, as `embedding_does_not_depend_on_the_thread_count` now shows, 1, 2 and 4 threads
+  give the same vector (cosine > 0.9999) and the same session twice gives bit-identical output.
+- **Not the test's own batching**: it embeds one image per call. But there *was* a determinism bug the test exposed on the
+  way: the 8-bit graphs quantise their activations with one scale per *batch* (`DynamicQuantizeLinear` is per tensor), so a
+  photo's stored vector depended on which photos the worker happened to embed in the same call (cosine 0.99 between a photo
+  alone and in a batch of two). `ImageEncoder::embed` now runs every image on its own, which costs nothing (a batch of 4 was no
+  faster per image).
+- **Most likely the CPU.** The reference vectors were made on one machine (AVX2, no VNNI: an AMD EPYC here), the quantised
+  int8 matrix multiplication of ONNX Runtime (`MatMulInteger`, u8 x s8) uses a saturating 16-bit multiply-add on AVX2 and an
+  exact one on AVX-512 VNNI, and GitHub's runners are a mix of both. The same graph on two CPU types gives vectors that agree to about
+  0.98, about what the failure showed. This could not be reproduced here (one CPU type); CI now prints the runner's CPU model,
+  and the failure message of the test includes it, so a recurrence is read against it.
+- **The fix**: the test no longer pins an int8 result to another machine's. It compares (1) the *preprocessing* as a tensor
+  against Pillow's (plain arithmetic, the same on every CPU, tight tolerance: that is what catches a preprocessing mistake),
+  (2) the quantised embedding against the reference quantised embedding with a tolerance that covers the CPU spread (0.97), and
+  (3) against the **fp32 graph of the same export** (0.88, CPU independent: measured cosines are 0.90 to 0.97), which also
+  fails loudly for a swapped channel order or a wrong mean (cosine below 0.8). The same structure applies to SigLIP 2's 4-bit
+  tower and to both text towers.
 
 ### ONNX Runtime, linking and the base image
 

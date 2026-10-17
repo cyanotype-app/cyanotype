@@ -148,8 +148,8 @@ and 6.
    dimensions, thumbnails and RAW/JPEG pairing come back over the next minutes to hours (about the speed of a fresh
    upload).
    Search comes back last: the worker's embedding sweep (at start, then every 15 minutes) queues every photo that has a
-   preview but no vector, behind all thumbnails, and a library of 50,000 photos takes a couple of hours at the default
-   one thread (`docs/library.md`, "Search"). Until then search says "Still indexing N photos"; filters work at once. A
+   preview but no vector, behind all thumbnails, and a library of 50,000 photos takes about 8 hours at the default
+   one thread (SigLIP 2; 2 hours with CLIP) (`docs/build.md`, "Memory, speed and sizes"). Until then search says "Still indexing N photos"; filters work at once. A
    restored dump that already contains the vectors needs none of this.
 8. **Verify**: log in, check the photo count (`cyanotype status`), open the trash, an album, a recent upload. Run
    `dc run --rm reindex` once more: everything should be "already indexed", 0 orphans, 0 errors.

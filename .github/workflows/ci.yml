@@ -100,17 +100,30 @@ jobs:
         with: { cache: false, rustflags: "" }
       - uses: Swatinem/rust-cache@v2
       - uses: extractions/setup-just@v2
-      # The search model (150 MB, pinned by sha256 in models/clip.lock) for the tokenizer/preprocessing parity and
-      # the search-quality tests: cached by the lock file's hash, and the tests fail (instead of skipping) without it.
-      - name: CLIP model for the search tests
+      # The search models (CLIP 150 MB, SigLIP 2 380 MB, pinned by sha256 in models/*.lock) for the tokenizer/preprocessing
+      # parity and the search-quality tests: cached by the lock files' hash, and the tests fail (instead of skipping) without
+      # them. Runners differ in CPU (the 8-bit kernels are a little different with and without AVX-512 VNNI); the model name
+      # is printed so a parity failure can be read against it (crates/cyanotype-clip/tests/model.rs).
+      - name: Search models for the search tests
         uses: actions/cache@v4
         with:
-          path: models/clip
-          key: clip-model-${{ hashFiles('models/clip.lock') }}
+          path: |
+            models/clip
+            models/siglip2
+          key: search-models-${{ hashFiles('models/clip.lock', 'models/siglip2.lock') }}
       - run: scripts/fetch-models.sh
       - run: |
-          echo "CLIP_MODEL_DIR=$PWD/models/clip" >> "$GITHUB_ENV"
+          echo "SEARCH_MODEL_DIR=$PWD/models" >> "$GITHUB_ENV"
           echo "CYANOTYPE_REQUIRE_MODEL=1" >> "$GITHUB_ENV"
+          grep -m1 'model name' /proc/cpuinfo || true
+      # The Docker build compiles tools/onnx_split.rs with plain rustc (no Cargo) to move the text tower's embedding table into
+      # a side file, then splits the real model with it. The library tests check that the split model gives the same vectors.
+      - name: onnx-split builds with plain rustc and splits the text tower
+        run: |
+          rustc --edition 2024 -O -o "$RUNNER_TEMP/onnx-split" tools/onnx_split.rs
+          cp models/siglip2/text_model_int8.onnx "$RUNNER_TEMP/text.onnx"
+          "$RUNNER_TEMP/onnx-split" "$RUNNER_TEMP/text.onnx"
+          test "$(stat -c %s "$RUNNER_TEMP/text.onnx.data")" -gt 100000000
       - name: Dockerfile builds with the pinned Rust version
         run: scripts/check-rust-pin.sh
       - run: just check
