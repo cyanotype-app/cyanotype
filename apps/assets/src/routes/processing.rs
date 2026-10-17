@@ -59,13 +59,23 @@ pub(super) struct Processing {
 
 #[derive(Serialize, Debug)]
 pub(super) struct Embedding {
-    /// Photos with derived images that have a vector from the current model.
+    /// Photos with derived images that have a vector from the configured model (`SEARCH_MODEL`).
     indexed: i64,
     /// Photos with derived images (what could be indexed).
     total: i64,
     queued: i64,
     running: i64,
     failed: i64,
+    /// The configured model, e.g. "siglip2-b16".
+    model: &'static str,
+    /// Whole percent of the library it has indexed (100 for an empty library).
+    percent: u8,
+    /// The configured model is still being built and an older one answers searches meanwhile ("re-indexing with the
+    /// improved model"). It takes over at `switch_at_percent`.
+    reindexing: bool,
+    switch_at_percent: u8,
+    /// The model that answers searches right now.
+    serving_model: &'static str,
 }
 
 fn truncate(s: &str) -> String {
@@ -125,12 +135,23 @@ pub(super) async fn status(State(s): State<AppState>, user: AuthUser) -> ApiResu
          WHERE a.owner_id = $1 AND a.purging_at IS NULL AND j.kind = 'embed' AND j.version = $2",
     )
     .bind(user.id)
-    .bind(cyanotype_clip::MODEL_VERSION)
+    .bind(s.search.model.version())
     .fetch_one(&s.db)
     .await?;
-    let progress = embeddings::progress(&s.db, user.id, cyanotype_clip::MODEL_ID, cyanotype_clip::MODEL_VERSION)
+    let model = s.search.model;
+    let progress = embeddings::progress(&s.db, user.id, model.id(), model.version())
         .await
         .map_err(cyanotype_service::ApiError::Internal)?;
+    let serving = s
+        .search
+        .serving(&s.db, s.text.as_ref(), user.id)
+        .await
+        .map_err(cyanotype_service::ApiError::Internal)?;
+    let percent = if progress.total <= 0 {
+        100
+    } else {
+        (progress.indexed * 100 / progress.total).clamp(0, 100) as u8
+    };
 
     let (queued, running, failed) = by_kind
         .iter()
@@ -150,6 +171,11 @@ pub(super) async fn status(State(s): State<AppState>, user: AuthUser) -> ApiResu
             queued: e_queued,
             running: e_running,
             failed: e_failed,
+            model: model.name(),
+            percent,
+            reindexing: serving.reindexing.is_some(),
+            switch_at_percent: s.search.switch_percent,
+            serving_model: serving.model.name(),
         },
     }))
 }
@@ -299,7 +325,7 @@ mod tests {
             .execute(&t.pool)
             .await
             .unwrap();
-        let v = cyanotype_clip::MODEL_VERSION;
+        let v = crate::testutil::TEST_MODEL.version();
         for (id, state) in [(a2, "queued"), (a3, "running"), (b1, "queued")] {
             sqlx::query("INSERT INTO jobs (kind, asset_id, version, state) VALUES ('embed', $1, $2, $3)")
                 .bind(id)
@@ -315,13 +341,15 @@ mod tests {
         assert_eq!(body["by_kind"], json!([]));
         assert_eq!(
             body["embedding"],
-            json!({"indexed": 1, "total": 3, "queued": 1, "running": 1, "failed": 0})
+            json!({"indexed": 1, "total": 3, "queued": 1, "running": 1, "failed": 0, "model": "siglip2-b16", "percent": 33,
+                   "reindexing": false, "switch_at_percent": 95, "serving_model": "siglip2-b16"})
         );
         // Bob's counts are his own.
         let (_, body) = send(&app, "GET", "/assets/processing", &bk, None).await;
         assert_eq!(
             body["embedding"],
-            json!({"indexed": 0, "total": 1, "queued": 1, "running": 0, "failed": 0})
+            json!({"indexed": 0, "total": 1, "queued": 1, "running": 0, "failed": 0, "model": "siglip2-b16", "percent": 0,
+                   "reindexing": false, "switch_at_percent": 95, "serving_model": "siglip2-b16"})
         );
         // A failed embed job is a failure like any other (and is retried by "Retry failed").
         sqlx::query("UPDATE jobs SET state = 'failed', last_error = 'preview is not a decodable WebP', finished_at = now() WHERE asset_id = $1").bind(a2).execute(&t.pool).await.unwrap();

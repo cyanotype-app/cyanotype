@@ -59,13 +59,31 @@ pub fn dummy_storage() -> Storage {
     })
 }
 
+/// The model the search tests run with unless they say otherwise (the default).
+pub const TEST_MODEL: cyanotype_clip::Model = cyanotype_clip::DEFAULT_MODEL;
+
+/// The search setup of an app that is not testing search: the test model, no caching.
+pub fn default_search() -> Arc<crate::search::SearchState> {
+    Arc::new(crate::search::SearchState::uncached(TEST_MODEL, 95))
+}
+
 pub fn app(pool: &PgPool) -> Router {
+    app_with(pool, default_search(), Arc::new(FakeText::default()))
+}
+
+/// An app with its own search model setup (which model is configured, when it takes over) and text model.
+pub fn app_with(
+    pool: &PgPool,
+    search: Arc<crate::search::SearchState>,
+    text: Arc<dyn crate::search::TextEmbedder>,
+) -> Router {
     crate::routes::routes().with_state(AppState {
         db: pool.clone(),
         storage: dummy_storage(),
         trash_retention_days: 30,
         purge_wake: Default::default(),
-        text: Arc::new(FakeText),
+        text,
+        search,
     })
 }
 
@@ -103,10 +121,11 @@ pub async fn asset(pool: &PgPool, owner: Uuid, name: &str) -> Uuid {
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO asset_embeddings (asset_id, model, version, embedding) VALUES ($1, $2, $3, array_fill(0.1::real, ARRAY[512])::vector)")
+    sqlx::query("INSERT INTO asset_embeddings (asset_id, model, version, embedding) VALUES ($1, $2, $3, array_fill(0.1::real, ARRAY[$4])::vector::halfvec)")
         .bind(id)
-        .bind(cyanotype_clip::MODEL_ID)
-        .bind(cyanotype_clip::MODEL_VERSION)
+        .bind(TEST_MODEL.id())
+        .bind(TEST_MODEL.version())
+        .bind(TEST_MODEL.dim() as i32)
         .execute(pool)
         .await
         .unwrap();
@@ -167,41 +186,57 @@ impl Objects for FakeObjects {
 /// Words the fake text model knows, one embedding axis each.
 pub const VOCAB: [&str; 6] = ["cat", "dog", "beach", "car", "cake", "night"];
 
-/// A unit vector with weight on the given words' axes (the "image embedding" of a photo of those things).
-pub fn embedding_of(words: &[(&str, f32)]) -> Vec<f32> {
-    let mut v = vec![0.0f32; 512];
+/// A unit vector of `model`'s size with weight on the given words' axes (the "image embedding" of a photo of those things).
+pub fn embedding_for(model: cyanotype_clip::Model, words: &[(&str, f32)]) -> Vec<f32> {
+    let dim = model.dim();
+    let mut v = vec![0.0f32; dim];
     for (w, weight) in words {
         let axis = VOCAB.iter().position(|x| x == w).expect("known word");
         v[axis] += weight;
     }
     // A little constant so no vector is the zero vector (and nothing is exactly orthogonal).
-    v[511] += 0.01;
+    v[dim - 1] += 0.01;
     let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     v.iter().map(|x| x / n).collect()
 }
 
-/// A text model that maps the words of a query onto [`VOCAB`] axes, so ranking tests need no ONNX model.
-pub struct FakeText;
+/// [`embedding_for`] the test model.
+pub fn embedding_of(words: &[(&str, f32)]) -> Vec<f32> {
+    embedding_for(TEST_MODEL, words)
+}
+
+/// A text model that maps the words of a query onto [`VOCAB`] axes, so ranking tests need no ONNX model. `missing` lists
+/// models whose files are "not installed".
+#[derive(Default)]
+pub struct FakeText {
+    pub missing: Vec<cyanotype_clip::Model>,
+}
 
 impl crate::search::TextEmbedder for FakeText {
-    fn embed(&self, query: &str) -> anyhow::Result<Arc<Vec<f32>>> {
+    fn embed(&self, model: cyanotype_clip::Model, query: &str) -> anyhow::Result<Arc<Vec<f32>>> {
+        if !self.available(model) {
+            return Err(crate::search::ModelMissing(model.dir()).into());
+        }
         let words: Vec<(&str, f32)> = query
             .split_whitespace()
             .filter_map(|w| VOCAB.iter().find(|v| **v == w.to_lowercase()).map(|v| (*v, 1.0)))
             .collect();
-        Ok(Arc::new(embedding_of(&words)))
+        Ok(Arc::new(embedding_for(model, &words)))
+    }
+
+    fn available(&self, model: cyanotype_clip::Model) -> bool {
+        !self.missing.contains(&model)
     }
 }
 
-/// Replace a photo's embedding (current model and version) and mark it as having derived images.
+/// Replace a photo's embedding (the test model's current version).
 pub async fn set_embedding(pool: &PgPool, asset: Uuid, words: &[(&str, f32)]) {
-    cyanotype_core::embeddings::store(
-        pool,
-        asset,
-        cyanotype_clip::MODEL_ID,
-        cyanotype_clip::MODEL_VERSION,
-        &embedding_of(words),
-    )
-    .await
-    .unwrap();
+    set_embedding_for(pool, asset, TEST_MODEL, words).await;
+}
+
+/// Give a photo a vector from `model`.
+pub async fn set_embedding_for(pool: &PgPool, asset: Uuid, model: cyanotype_clip::Model, words: &[(&str, f32)]) {
+    cyanotype_core::embeddings::store(pool, asset, model.id(), model.version(), &embedding_for(model, words))
+        .await
+        .unwrap();
 }

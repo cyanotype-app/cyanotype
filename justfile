@@ -43,16 +43,25 @@ migrate:
 import *args:
     cargo run -q --release -p cyanotype-cli -- import {{args}}
 
-# Download the CLIP model for search into models/clip (sha256-verified; the Docker images bake in the same files).
+# Download the search models into models/clip and models/siglip2 (sha256-verified; the Docker images bake in the same files).
+# `MODELS=siglip2 just models` fetches only the default model.
 models:
     scripts/fetch-models.sh
 
+# The 209 photos behind the model comparison (docs/build.md), into models/eval; then `just bakeoff`.
+eval-set:
+    scripts/fetch-eval-set.sh
+
+# Print the model comparison tables (needs `just models` and `just eval-set`).
+bakeoff:
+    SEARCH_MODEL_DIR="$PWD/models" SEARCH_EVAL_DIR="$PWD/models/eval" cargo test --release -p cyanotype-clip --test bakeoff -- --ignored --nocapture
+
 # Dev loop: compose Postgres + SeaweedFS, migrate, run auth/assets/worker from source (Ctrl-C stops; :3001/:3002).
-# Search needs the CLIP model: `just models` once (without it the worker skips embedding and search answers 503).
+# Search needs the search model: `just models` once (without it the worker skips embedding and search answers 503).
 dev:
     docker compose up -d --wait postgres seaweedfs
     docker compose up seaweedfs-init
-    export CLIP_MODEL_DIR="$PWD/models/clip"; \
+    export SEARCH_MODEL_DIR="$PWD/models"; \
     cargo run -q -p cyanotype-cli -- migrate; \
     trap 'kill 0' EXIT INT TERM; \
     cargo run -q -p cyanotype-auth & \
