@@ -3,7 +3,13 @@
 //!
 //! Everything is scoped to the caller's assets (jobs are joined to `assets.owner_id`); photos queued for permanent
 //! deletion are ignored. Trashed photos still count: the worker processes them too.
+//!
+//! Embedding photos for search (`embed` jobs) is background work that can take hours for a big library, so it is
+//! reported on its own (`embedding`) and does not count towards `active`, `queued` or `running` (the library page's
+//! "Processing..." banner is about getting photos on screen). Failed embed jobs do show in `failed` and `failures`, like
+//! any other failure, and "Retry failed" requeues them.
 use axum::{Json, extract::State};
+use cyanotype_core::embeddings;
 use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -47,6 +53,19 @@ pub(super) struct Processing {
     /// Of those, the ones still waiting for their thumbnail (a thumbnail job is queued or running).
     without_thumbnail: i64,
     failures: Vec<Failure>,
+    /// Search indexing: how many of the library's photos search can find, and what is still queued.
+    embedding: Embedding,
+}
+
+#[derive(Serialize, Debug)]
+pub(super) struct Embedding {
+    /// Photos with derived images that have a vector from the current model.
+    indexed: i64,
+    /// Photos with derived images (what could be indexed).
+    total: i64,
+    queued: i64,
+    running: i64,
+    failed: i64,
 }
 
 fn truncate(s: &str) -> String {
@@ -67,6 +86,7 @@ pub(super) async fn status(State(s): State<AppState>, user: AuthUser) -> ApiResu
          FROM jobs j JOIN assets a ON a.id = j.asset_id
          WHERE a.owner_id = $1 AND a.purging_at IS NULL AND j.state <> 'done'
            AND j.kind <> 'share_copy' -- made on demand for share links, not part of importing a photo
+           AND (j.kind <> 'embed' OR j.state = 'failed') -- indexing for search is reported separately
          GROUP BY j.kind ORDER BY j.kind",
     )
     .bind(user.id)
@@ -98,6 +118,20 @@ pub(super) async fn status(State(s): State<AppState>, user: AuthUser) -> ApiResu
         f.last_error = f.last_error.as_deref().map(truncate);
     }
 
+    let (e_queued, e_running, e_failed): (i64, i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE j.state = 'queued'), count(*) FILTER (WHERE j.state = 'running'),
+                count(*) FILTER (WHERE j.state = 'failed')
+         FROM jobs j JOIN assets a ON a.id = j.asset_id
+         WHERE a.owner_id = $1 AND a.purging_at IS NULL AND j.kind = 'embed' AND j.version = $2",
+    )
+    .bind(user.id)
+    .bind(cyanotype_clip::MODEL_VERSION)
+    .fetch_one(&s.db)
+    .await?;
+    let progress = embeddings::progress(&s.db, user.id, cyanotype_clip::MODEL_ID, cyanotype_clip::MODEL_VERSION)
+        .await
+        .map_err(cyanotype_service::ApiError::Internal)?;
+
     let (queued, running, failed) = by_kind
         .iter()
         .fold((0, 0, 0), |(q, r, f), k| (q + k.queued, r + k.running, f + k.failed));
@@ -110,6 +144,13 @@ pub(super) async fn status(State(s): State<AppState>, user: AuthUser) -> ApiResu
         total_photos,
         without_thumbnail,
         failures,
+        embedding: Embedding {
+            indexed: progress.indexed,
+            total: progress.total,
+            queued: e_queued,
+            running: e_running,
+            failed: e_failed,
+        },
     }))
 }
 
@@ -228,6 +269,68 @@ mod tests {
 
         let (st, _) = send(&app, "GET", "/assets/processing", "cyk_nope", None).await;
         assert_eq!(st, StatusCode::UNAUTHORIZED);
+        t.teardown().await;
+    }
+
+    #[tokio::test]
+    async fn search_indexing_is_reported_separately_and_does_not_keep_the_library_busy() {
+        let Some(t) = TestDb::new().await else { return };
+        let app = app(&t.pool);
+        let (alice, ak) = user(&t.pool, "a@example.com").await;
+        let (bob, bk) = user(&t.pool, "b@example.com").await;
+        let a1 = asset(&t.pool, alice, "a1.jpg").await; // has a vector (testutil)
+        let a2 = asset(&t.pool, alice, "a2.jpg").await;
+        let a3 = asset(&t.pool, alice, "a3.jpg").await;
+        let b1 = asset(&t.pool, bob, "b1.jpg").await;
+        for id in [a1, a2, a3, b1] {
+            sqlx::query("UPDATE assets SET thumbhash = '\\x01' WHERE id = $1")
+                .bind(id)
+                .execute(&t.pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM jobs WHERE asset_id = $1")
+                .bind(id)
+                .execute(&t.pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("DELETE FROM asset_embeddings WHERE asset_id = ANY($1)")
+            .bind(vec![a2, a3, b1])
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        let v = cyanotype_clip::MODEL_VERSION;
+        for (id, state) in [(a2, "queued"), (a3, "running"), (b1, "queued")] {
+            sqlx::query("INSERT INTO jobs (kind, asset_id, version, state) VALUES ('embed', $1, $2, $3)")
+                .bind(id)
+                .bind(v)
+                .bind(state)
+                .execute(&t.pool)
+                .await
+                .unwrap();
+        }
+        let (_, body) = send(&app, "GET", "/assets/processing", &ak, None).await;
+        assert_eq!(body["active"], json!(false), "indexing alone is not 'processing'");
+        assert_eq!((body["queued"].clone(), body["running"].clone()), (json!(0), json!(0)));
+        assert_eq!(body["by_kind"], json!([]));
+        assert_eq!(
+            body["embedding"],
+            json!({"indexed": 1, "total": 3, "queued": 1, "running": 1, "failed": 0})
+        );
+        // Bob's counts are his own.
+        let (_, body) = send(&app, "GET", "/assets/processing", &bk, None).await;
+        assert_eq!(
+            body["embedding"],
+            json!({"indexed": 0, "total": 1, "queued": 1, "running": 0, "failed": 0})
+        );
+        // A failed embed job is a failure like any other (and is retried by "Retry failed").
+        sqlx::query("UPDATE jobs SET state = 'failed', last_error = 'preview is not a decodable WebP', finished_at = now() WHERE asset_id = $1").bind(a2).execute(&t.pool).await.unwrap();
+        let (_, body) = send(&app, "GET", "/assets/processing", &ak, None).await;
+        assert_eq!(
+            (body["failed"].clone(), body["embedding"]["failed"].clone()),
+            (json!(1), json!(1))
+        );
+        assert_eq!(body["failures"][0]["kind"], json!("embed"));
         t.teardown().await;
     }
 

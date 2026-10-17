@@ -65,6 +65,7 @@ pub fn app(pool: &PgPool) -> Router {
         storage: dummy_storage(),
         trash_retention_days: 30,
         purge_wake: Default::default(),
+        text: Arc::new(FakeText),
     })
 }
 
@@ -102,8 +103,10 @@ pub async fn asset(pool: &PgPool, owner: Uuid, name: &str) -> Uuid {
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO asset_embeddings (asset_id, model, embedding) VALUES ($1, 'm', array_fill(0.1::real, ARRAY[512])::vector)")
+    sqlx::query("INSERT INTO asset_embeddings (asset_id, model, version, embedding) VALUES ($1, $2, $3, array_fill(0.1::real, ARRAY[512])::vector)")
         .bind(id)
+        .bind(cyanotype_clip::MODEL_ID)
+        .bind(cyanotype_clip::MODEL_VERSION)
         .execute(pool)
         .await
         .unwrap();
@@ -159,4 +162,46 @@ impl Objects for FakeObjects {
             .push((original_key.to_string(), derived_prefix.to_string()));
         Ok(2)
     }
+}
+
+/// Words the fake text model knows, one embedding axis each.
+pub const VOCAB: [&str; 6] = ["cat", "dog", "beach", "car", "cake", "night"];
+
+/// A unit vector with weight on the given words' axes (the "image embedding" of a photo of those things).
+pub fn embedding_of(words: &[(&str, f32)]) -> Vec<f32> {
+    let mut v = vec![0.0f32; 512];
+    for (w, weight) in words {
+        let axis = VOCAB.iter().position(|x| x == w).expect("known word");
+        v[axis] += weight;
+    }
+    // A little constant so no vector is the zero vector (and nothing is exactly orthogonal).
+    v[511] += 0.01;
+    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    v.iter().map(|x| x / n).collect()
+}
+
+/// A text model that maps the words of a query onto [`VOCAB`] axes, so ranking tests need no ONNX model.
+pub struct FakeText;
+
+impl crate::search::TextEmbedder for FakeText {
+    fn embed(&self, query: &str) -> anyhow::Result<Arc<Vec<f32>>> {
+        let words: Vec<(&str, f32)> = query
+            .split_whitespace()
+            .filter_map(|w| VOCAB.iter().find(|v| **v == w.to_lowercase()).map(|v| (*v, 1.0)))
+            .collect();
+        Ok(Arc::new(embedding_of(&words)))
+    }
+}
+
+/// Replace a photo's embedding (current model and version) and mark it as having derived images.
+pub async fn set_embedding(pool: &PgPool, asset: Uuid, words: &[(&str, f32)]) {
+    cyanotype_core::embeddings::store(
+        pool,
+        asset,
+        cyanotype_clip::MODEL_ID,
+        cyanotype_clip::MODEL_VERSION,
+        &embedding_of(words),
+    )
+    .await
+    .unwrap();
 }
