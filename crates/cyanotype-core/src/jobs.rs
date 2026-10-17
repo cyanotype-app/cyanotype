@@ -227,12 +227,6 @@ impl JobWaker {
         }
     }
 
-    /// Wake the waiting worker loop from inside the process (a background loop that finished a job does this so
-    /// the next claim happens at once instead of after the fallback poll).
-    pub fn wake(&self) {
-        self.notify.notify_one();
-    }
-
     /// Completes when a job was queued since the last call (or the listener (re)connected).
     pub async fn woken(&self) {
         self.notify.notified().await;

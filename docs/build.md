@@ -219,11 +219,57 @@ equally noisy for every row), ranking all photos for each query:
 Retrieval quality is unchanged within the noise of that set (the vectors move, the rankings do not), so int8 it is: 153 MB
 instead of 482 MB of model, and a text tower that loads in a moment. fp16 would be lossless, but ONNX Runtime has no fast
 fp16 path on CPU (measured: 145 ms against 10 ms a query for the text tower). The 20-photo smoke test in
-`crates/cyanotype-clip/tests/model.rs` runs on every CI build: **top-3 recall 40/40 queries, top-1 TOP1/40**.
+`crates/cyanotype-clip/tests/model.rs` runs on every CI build: **top-3 recall 40/40 queries, top-1 39/40**.
 
-### Memory, speed and sizes (measured on this host, 4 cores shared with other work, release build)
+### Memory, speed and sizes (measured on this host, 4 cores shared with other work)
 
-MEASURED_MODEL_TABLE
+Model files: OpenAI CLIP ViT-B/32 (MIT), sizes in the table above (vision int8 88.6 MB, text int8 64.1 MB, tokenizer 2.2 MB).
+
+**Resident memory (1 thread)**
+
+| What | Measured |
+|---|---|
+| Image tower after load | 146 MB |
+| Image tower, batch of 4 | 159 MB |
+| Text tower | about 70 MB |
+| Worker container RSS in Docker | not yet measured in production; see the Datadog `worker.rss_bytes` metric |
+
+**Model-only speed**
+
+| What | Measured |
+|---|---|
+| Image, 1 thread | 126 to 158 ms |
+| Image, 2 threads | 75 ms |
+| Text query | p50 10 ms, p95 14 ms |
+
+**Whole embed job path (debug build)**
+
+| Threads | Throughput | 50k-photo backfill |
+|---|---|---|
+| 1 | 270 photos/min | about 2 to 3 h |
+| 2 | 370 photos/min | about 1.5 to 2 h |
+
+Release-build throughput: not yet measured in production; see the Datadog `embed.duration` metric.
+
+**Search latency, 50k synthetic library (warm cache)**
+
+| Filter | p50 | p95 |
+|---|---|---|
+| none | 42 ms | 64 ms |
+| favorites | 44 ms | 53 ms |
+| one year | 60 ms | 72 ms |
+| a city | 100 ms | 130 ms |
+| album of 40 photos | 8 ms | 9 ms |
+| one camera | 87 ms | 98 ms |
+| has location | 81 ms | 96 ms |
+| JPEG only | 66 ms | 84 ms |
+| HEIC only | 85 ms | 105 ms |
+
+The first queries on a cold cache take up to 4.5 s.
+
+**HNSW recall against exact search:** 0.997 / 0.998 / 0.977 at top 10 / 60 / 300 unfiltered; 1.0 with filters that keep 33 to 50% of the library.
+
+**Index sizes at 50k photos:** vectors 56 MB, primary key 4 MB, HNSW 65 MB.
 
 ### ONNX Runtime, linking and the base image
 
