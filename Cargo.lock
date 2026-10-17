@@ -1303,7 +1303,6 @@ dependencies = [
  "ort",
  "serde_json",
  "tokenizers",
- "tracing",
 ]
 
 [[package]]
