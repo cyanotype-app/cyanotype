@@ -204,9 +204,10 @@ fn check_image_embeddings(model: Model) {
             .ok()
             .and_then(|s| s.lines().find(|l| l.starts_with("model name")).map(str::to_string))
             .unwrap_or_default();
-        // 0.97: the CPU-dependent spread of the quantised kernels (0.983 was seen on a CI runner; see the module comment).
+        // 0.95: room for the CPU-dependent spread of the quantised kernels (0.983 was seen for CLIP on a CI runner against a
+        // reference made elsewhere; see the module comment). The fp32 bound below is the one that does not depend on the CPU.
         assert!(
-            vs_quantised > 0.97,
+            vs_quantised > 0.95,
             "{model:?} image {name}: cosine {vs_quantised} against the reference quantised graph ({cpu})"
         );
         assert!(

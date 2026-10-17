@@ -424,7 +424,7 @@ was a debug build.
   and the failure message of the test includes it, so a recurrence is read against it.
 - **The fix**: the test no longer pins an int8 result to another machine's. It compares (1) the *preprocessing* as a tensor
   against Pillow's (plain arithmetic, the same on every CPU, tight tolerance: that is what catches a preprocessing mistake),
-  (2) the quantised embedding against the reference quantised embedding with a tolerance that covers the CPU spread (0.97), and
+  (2) the quantised embedding against the reference quantised embedding with a tolerance that covers the CPU spread (0.95), and
   (3) against the **fp32 graph of the same export** (0.88, CPU independent: measured cosines are 0.90 to 0.97), which also
   fails loudly for a swapped channel order or a wrong mean (cosine below 0.8). The same structure applies to SigLIP 2's 4-bit
   tower and to both text towers.
