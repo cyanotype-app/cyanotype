@@ -10,8 +10,9 @@ chef      rust + cargo-chef + C/C++ toolchain (build-essential, cmake; libwebp a
 planner   cargo chef prepare   -> recipe.json (changes only when manifests / Cargo.lock change)
 builder   cargo chef cook      -> dependencies (cached layer)
           cargo build --release --workspace --locked   -> all four binaries, compiled once
-runtime   debian:bookworm-slim, ca-certificates, non-root user
-auth | assets | worker | cli   runtime + a single binary each (the --target); worker also gets libde265-0, libdav1d6, libjpeg62-turbo, libopenjp2-7
+clip-vision, clip-text   the CLIP model files (scripts/fetch-models.sh, sha256 pinned in models/clip.lock): image tower for the worker, text tower + tokenizer for assets
+runtime   debian:trixie-slim, ca-certificates, non-root user
+auth | assets | worker | cli   runtime + a single binary each (the --target); worker also gets libde265-0, libdav1d7, libjpeg62-turbo, libopenjp2-7 and the image tower; assets gets the text tower
 ```
 
 `docker buildx bake` (group `default` in `docker-bake.hcl`) builds the four targets together; BuildKit
@@ -23,7 +24,7 @@ in parallel, which made a cold build take about 25 minutes.
 
 `rust-toolchain.toml` pins the exact Rust version (rustfmt + clippy, minimal profile) for local builds and CI
 (`actions-rust-lang/setup-rust-toolchain` reads it), so a new Rust release cannot break an unrelated PR with new
-lints. The `Dockerfile` pins the matching `RUST_IMAGE` tag (cargo-chef on bookworm); `.dockerignore` keeps
+lints. The `Dockerfile` pins the matching `RUST_IMAGE` tag (cargo-chef on trixie); `.dockerignore` keeps
 `rust-toolchain.toml` out of the image build context, and CI (`scripts/check-rust-pin.sh`) fails if the two versions
 differ. The workspace `rust-version` (MSRV) is separate and unchanged.
 
@@ -38,12 +39,12 @@ libheif sources vendored in the `libheif-sys` crate are compiled by cmake during
 **statically**. The version is therefore pinned by `Cargo.lock` (`libheif-rs =3.0.0` -> `libheif-sys
 5.3.1+1.23.1` = **libheif 1.23.1**; a unit test asserts it). Why this and not Debian's libheif:
 
-- bookworm ships libheif 1.15.1, older than the `libheif-rs` API we use (1.17+), and the system library
+- Debian ships an older libheif (bookworm 1.15.1, trixie 1.19), older than the `libheif-rs` API we use (1.17+), and the system library
   would put the HEIC decoder behind a moving apt version and separate `libheif-plugin-*` packages.
 - One version everywhere: developer machines, CI and the image build the same libheif.
 - The runtime image needs **no libheif packages and no plugins** (plugin loading is compiled out). It
   only needs the codec libraries libheif links dynamically: `libde265-0` (HEVC, ~0.5 MB) and
-  `libdav1d6` (AV1/AVIF, ~0.7 MB), plus `libjpeg62-turbo` and `libopenjp2-7` (decoders libheif picks up from the builder image). The worker binary grows by about 2 MB for libheif.
+  `libdav1d7` (AV1/AVIF, ~0.7 MB), plus `libjpeg62-turbo` and `libopenjp2-7` (decoders libheif picks up from the builder image). The worker binary grows by about 2 MB for libheif.
 
 Build-time needs: `cmake`, a C++ compiler, `libde265-dev`, `libdav1d-dev` (and `pkg-config`). On Debian or
 Ubuntu: `sudo apt-get install cmake pkg-config libde265-dev libdav1d-dev`. The first libheif build takes a
@@ -79,7 +80,9 @@ the file and the preview is trusted as is.
 
 ### Memory budget
 
-The container limit for the worker is `mem_limit: 1024m` (`docker-compose.prod.yml`). Two mechanisms keep
+The container limit for the worker is `mem_limit: 1280m` (`docker-compose.prod.yml`; 1024m before semantic search, which
+adds the CLIP image tower: about 150 MB resident while its session is loaded, outside the budget below, so the limit rose by
+256 MB, see "Semantic search model"). Two mechanisms keep
 decoding inside it, and a job that cannot fit is **refused with a permanent failure** (`jobs.last_error`
 says why), not attempted:
 
@@ -167,6 +170,70 @@ migration does not match (originals larger than the budget itself, RAW without a
 
 Remaining follow-ups (`docs/PLAN.md`): streamed WebP and interlaced PNG, decoding HEIC alpha grids by tile, a
 reduced-size decode for single-image HEIC (libheif has none), and colour-profile conversion.
+
+## Semantic search model
+
+Search embeds every photo and every query with **OpenAI CLIP ViT-B/32** and compares them by cosine similarity
+(`docs/library.md`, "Search"). The model runs in-process, in Rust, with **ONNX Runtime** through the `ort` crate and the
+`tokenizers` crate, in `crates/cyanotype-clip`: no Python, no sidecar, no network at runtime.
+
+### Which model, and why
+
+| Candidate | Licence | Verdict |
+|---|---|---|
+| **OpenAI CLIP ViT-B/32** (ONNX export by Xenova / transformers.js, int8) | code and weights MIT (github.com/openai/CLIP) | **chosen** |
+| OpenCLIP ViT-B/32 LAION-2B | MIT | about 3 points better zero-shot (66.6 vs 63.3 % ImageNet) but nobody hosts a quantised ONNX export with a stable URL; quantising it ourselves would mean hosting an artifact we cannot pin by an upstream checksum. The swap path is open: change `MODEL_ID`/`MODEL_VERSION` and `models/clip.lock` |
+| SigLIP base/16 | Apache 2.0 | better, but ViT-B/16 at 224 is about 4x the compute of B/32 (196 tokens against 49): the backfill would take hours more on this CPU |
+| MobileCLIP (Apple) | Apple's own model licence, research use | rejected: not a licence a self-hosted product can pass on |
+
+B/32 is the quality-per-MB point for a 2-core shared host: 4.4 GFLOPs an image, 512-d vectors, and a 64 MB text tower.
+Attribution: Radford et al., "Learning Transferable Visual Models From Natural Language Supervision" (2021); weights from
+`openai/clip-vit-base-patch32`; ONNX exports from `Xenova/clip-vit-base-patch32` on Hugging Face, **pinned to commit
+`d15189d7028b43f1d3e65039190477f6af591c2a`**. The export repository does not state a licence of its own; the weights it
+converts are MIT, and we take the export as a conversion of them (not verified with the repository's author).
+
+| File (`models/clip.lock`) | Size | sha256 | Goes into |
+|---|---|---|---|
+| `vision_model_int8.onnx` | 88.6 MB | `0ab0c1b3...6cb9bd93` | worker image |
+| `text_model_int8.onnx` | 64.1 MB | `18845f2c...5efd3a21` | assets image |
+| `tokenizer.json` | 2.2 MB | `f7f3b7af...697a90cd` | assets image |
+
+(Full checksums in `models/clip.lock`, verified by `scripts/fetch-models.sh` for the images and for a checkout alike; a
+mismatch deletes the download and fails the build.)
+
+### 8-bit against full precision
+
+The 8-bit exports are 4x smaller and a little faster (118 against 144 ms an image on one thread), but dynamic
+quantisation moves the vectors: the cosine between an int8 and the fp32 vector of the same photo is **0.957** on average
+(0.90 at worst) for images and **0.919** (0.61 at worst) for text. Whether that matters for *search* was measured on 209
+CC0 photos (Wikimedia Commons, 21 categories, 42 queries, labels from the category the photo was found under, so noisy but
+equally noisy for every row), ranking all photos for each query:
+
+| Image tower / text tower | P@1 | P@5 | mAP |
+|---|---|---|---|
+| fp32 / fp32 (reference) | 0.952 | 0.910 | 0.849 |
+| fp16 / fp16 (176 MB + 127 MB, no loss) | 0.952 | 0.910 | 0.849 |
+| **int8 / int8 (shipped)** | 0.952 | 0.910 | 0.854 |
+| int8 / fp32 | 0.976 | 0.948 | 0.866 |
+
+Retrieval quality is unchanged within the noise of that set (the vectors move, the rankings do not), so int8 it is: 153 MB
+instead of 482 MB of model, and a text tower that loads in a moment. fp16 would be lossless, but ONNX Runtime has no fast
+fp16 path on CPU (measured: 145 ms against 10 ms a query for the text tower). The 20-photo smoke test in
+`crates/cyanotype-clip/tests/model.rs` runs on every CI build: **top-3 recall 40/40 queries, top-1 TOP1/40**.
+
+### Memory, speed and sizes (measured on this host, 4 cores shared with other work, release build)
+
+MEASURED_MODEL_TABLE
+
+### ONNX Runtime, linking and the base image
+
+`ort` 2.0.0-rc.13 (`ort-sys` downloads the prebuilt ONNX Runtime 1.28.0 for the target at build time, verifies its pinned
+sha256 and links it **statically**; feature `api-24`, `tls-rustls`, nothing else) and `tokenizers` 0.23.2 (feature `onig`
+only). Both are pinned with `=` and by `Cargo.lock`. The prebuilt ONNX Runtime is compiled with a newer GCC than Debian
+bookworm has, and the link failed on libstdc++ symbols (`std::basic_string<wchar_t>::_M_replace_cold`), so **the builder and
+every runtime image moved from Debian bookworm to trixie** (`lukemathwalker/cargo-chef:...-rust-1.99.0-trixie`,
+`debian:trixie-slim`; libstdc++6 is part of trixie-slim). The worker's runtime packages are the same libraries with their
+trixie names (`libdav1d7`); the Dockerfile's `ldd` check still fails the build if anything is unresolved.
 
 ## Caching
 

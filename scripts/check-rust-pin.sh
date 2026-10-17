@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 pin=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
-if ! grep -Eq "^ARG RUST_IMAGE=.*-rust-${pin//./\\.}-bookworm\$" Dockerfile; then
+if ! grep -Eq "^ARG RUST_IMAGE=.*-rust-${pin//./\\.}-trixie\$" Dockerfile; then
   echo "::error::Dockerfile RUST_IMAGE does not match rust-toolchain.toml channel $pin" >&2
   exit 1
 fi

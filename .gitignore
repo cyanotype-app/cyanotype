@@ -9,3 +9,5 @@ node_modules/
 certs/
 apps/web/test-results/
 apps/web/playwright-report/
+# CLIP model files (scripts/fetch-models.sh); only models/clip.lock is committed
+/models/clip/

@@ -1,0 +1,22 @@
+[package]
+name = "cyanotype-clip"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLIP image and text towers (ONNX Runtime + tokenizers), shared by the worker (images) and the assets service (text)."
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+fast_image_resize = "6.1.0"
+# ONNX Runtime, linked statically from the prebuilt binaries pyke publishes for each ort-sys release (sha256-verified by
+# ort-sys at build time). api-24 pins the C API level we use; see docs/build.md ("Semantic search model").
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
+# CLIP's BPE tokenizer straight from the model's tokenizer.json; `onig` is the regex engine its pre-tokenizer needs.
+tokenizers = { version = "=0.23.2", default-features = false, features = ["onig"] }
+
+[dev-dependencies]
+anyhow.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+serde_json.workspace = true

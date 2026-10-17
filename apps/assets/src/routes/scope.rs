@@ -3,10 +3,12 @@
 //! photos without the browser ever listing them.
 //!
 //! ```json
-//! {"scope": "library" | "favorites" | "trash" | {"album": "<id>"} | {"trash_batch": "<rfc3339>"}, "except": ["<id>"]}
+//! {"scope": "library" | "favorites" | "trash" | {"album": "<id>"} | {"search": {"from": "2024-01-01", ...}}
+//!           | {"trash_batch": "<rfc3339>"}, "except": ["<id>"]}
 //! ```
 //!
-//! A scope names the same photos the matching list shows: not trashed (or only trashed, for `trash`), hidden RAW
+//! `search` takes the filters of `GET /assets/search` (never `q`: a ranked search selects what it shows, by id) and names the
+//! photos a filter-only search lists. A scope names the same photos the matching list shows: not trashed (or only trashed, for `trash`), hidden RAW
 //! files left out, so a RAW + JPEG pair is one photo and the endpoints' usual pair handling applies. It is resolved
 //! to ids inside the transaction of the operation, always for the caller's own photos. `trash_batch` is what a
 //! scope-based trash returns as `batch`, so Undo restores exactly what that request trashed.
@@ -27,6 +29,8 @@ pub(super) enum Scope {
     Favorites,
     Trash,
     Album(Uuid),
+    /// Boxed: the filters are much bigger than the other scopes.
+    Search(Box<super::search::SearchQuery>),
     TrashBatch(#[serde(with = "time::serde::rfc3339")] OffsetDateTime),
 }
 
@@ -98,6 +102,9 @@ pub(super) async fn resolve(
     scope: &Scope,
     except: &[Uuid],
 ) -> ApiResult<Vec<Uuid>> {
+    if let Scope::Search(q) = scope {
+        return resolve_search(tx, owner, q, except).await;
+    }
     // $1 is the owner and $2 the except list; $3 is the batch time or the album, where a scope has one.
     let (sql, album, at) = match scope {
         Scope::Library => (format!("SELECT id FROM assets WHERE {LIVE}"), None, None),
@@ -108,6 +115,7 @@ pub(super) async fn resolve(
             None,
             Some(*at),
         ),
+        Scope::Search(_) => unreachable!("handled above"),
         Scope::Album(album) => {
             let owned: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM albums WHERE id = $1 AND owner_id = $2")
                 .bind(album)
@@ -132,4 +140,27 @@ pub(super) async fn resolve(
         _ => q,
     };
     Ok(q.fetch_all(&mut *tx).await?)
+}
+
+/// The photos a filter-only search lists (ownership, not trashed, not a hidden RAW, then the filters), as ids.
+async fn resolve_search(
+    tx: &mut sqlx::PgConnection,
+    owner: Uuid,
+    q: &super::search::SearchQuery,
+    except: &[Uuid],
+) -> ApiResult<Vec<Uuid>> {
+    if q.q.as_deref().is_some_and(|t| !t.trim().is_empty()) {
+        return Err(ApiError::BadRequest(
+            "a text search selects the photos it shows: send their ids".into(),
+        ));
+    }
+    let filters = super::search::Filters::parse(q)?;
+    let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT a.id FROM assets a WHERE");
+    filters.push_where(&mut qb, owner);
+    qb.push(" AND a.id <> ALL(").push_bind(except.to_vec()).push(")");
+    Ok(qb
+        .build_query_scalar::<Uuid>()
+        .persistent(false)
+        .fetch_all(&mut *tx)
+        .await?)
 }

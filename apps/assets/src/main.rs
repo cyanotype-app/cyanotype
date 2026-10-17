@@ -2,6 +2,7 @@
 mod janitor;
 mod purge;
 mod routes;
+mod search;
 #[cfg(test)]
 mod testutil;
 
@@ -28,6 +29,8 @@ pub struct AppState {
     pub trash_retention_days: i32,
     /// Wakes the janitor to run queued purges now instead of at its next hourly pass.
     pub purge_wake: Arc<Notify>,
+    /// Query text to vector for semantic search.
+    pub text: Arc<dyn search::TextEmbedder>,
 }
 
 #[tokio::main]
@@ -46,6 +49,12 @@ async fn main() -> Result<()> {
         storage: Storage::new(&s3_cfg),
         trash_retention_days,
         purge_wake: Arc::new(Notify::new()),
+        text: Arc::new(search::ClipText::new(
+            std::env::var("SEARCH_THREADS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2),
+        )),
     };
 
     // Daily per-user recovery manifests for `cyanotype reindex` (docs/recovery.md). The first pass waits so that a

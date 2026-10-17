@@ -13,6 +13,8 @@ docs/
 apps/web/
 infra/
 scripts/
+!scripts/fetch-models.sh
+models/clip/
 *.md
 docker-compose*.yml
 docker-bake.hcl

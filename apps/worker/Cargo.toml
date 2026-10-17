@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 cyanotype-core.workspace = true
+cyanotype-clip.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
