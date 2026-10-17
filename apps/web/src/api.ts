@@ -122,7 +122,21 @@ export interface Processing {
   /** The most recent failures (at most 20); `failed` counts them all. */
   failures: ProcessingFailure[];
   /** Search indexing, reported apart from `active` (it can take hours for a big library). Absent on older servers. */
-  embedding?: { indexed: number; total: number; queued: number; running: number; failed: number };
+  embedding?: {
+    indexed: number;
+    total: number;
+    queued: number;
+    running: number;
+    failed: number;
+    /** The configured model ("siglip2-b16") and how much of the library it has indexed. Absent on older servers. */
+    model?: string;
+    percent?: number;
+    /** An older model still answers searches while the configured one indexes the library ("re-indexing with the improved model"). */
+    reindexing?: boolean;
+    /** The percentage at which the configured model takes over. */
+    switch_at_percent?: number;
+    serving_model?: string;
+  };
 }
 
 /** The structured filters of a search, and the optional natural-language query (`GET /assets/search`). */
@@ -140,11 +154,30 @@ export interface SearchParams {
   /** An album id. */
   album?: string;
   has_location?: boolean;
+  /** Dates and places the server should not read out of `q`: `date`, `place` or `date,place` (what a chip's "x" sets). */
+  skip?: string;
 }
 
 /** A search result: a list item plus the similarity to the query (null for filter-only searches). */
 export interface SearchItem extends AssetListItem {
   score: number | null;
+  /** The model's own estimate that the photo matches (SigLIP 2 only). Small for keyword queries even when right. */
+  probability?: number | null;
+  /** `strong` is what the search shows; `weak` only after "Show weaker matches". */
+  tier?: "strong" | "weak" | null;
+}
+
+/** What the server read out of the query besides the words to search for. */
+export interface ParsedChip {
+  /** The `skip` value that turns it off. */
+  kind: "date" | "place";
+  label: string;
+  /** The words of the query it replaced ("in June 2023"). */
+  matched: string;
+  from?: string;
+  to?: string;
+  value?: string;
+  place_kind?: "city" | "region" | "country";
 }
 
 /** GET /assets/search */
@@ -155,6 +188,15 @@ export interface SearchResult {
   ranked: boolean;
   /** Photos matching the filters; only for the first page of a filter-only search. */
   total?: number | null;
+  /** Ranked: how many strong matches the whole result has. */
+  strong_count?: number | null;
+  /** Ranked, without `weaker`: weaker matches exist behind the strong ones. `cursor` continues right after the last strong match. */
+  weaker?: { count: number; cursor: string | null } | null;
+  /** With a query: what was read out of it (dates, places) and what is left to search for. */
+  parsed?: { text: string; chips: ParsedChip[] } | null;
+  model?: string | null;
+  /** An older model answers while the configured one indexes the library. */
+  reindexing?: { model: string; indexed: number; total: number; percent: number; switch_at_percent: number } | null;
 }
 
 export interface Facet {
@@ -430,10 +472,13 @@ async function bulk(path: string, target: Target, extra: object = {}): Promise<B
 }
 
 /** The query string of `GET /assets/search`: only the fields that are set. */
-export function searchQuery(params: SearchParams, opts: { cursor?: string | null; limit?: number } = {}): string {
+export function searchQuery(
+  params: SearchParams,
+  opts: { cursor?: string | null; limit?: number; weaker?: boolean } = {},
+): string {
   const q = new URLSearchParams();
   // A fixed order, so the same search is always the same URL (cache keys, tests).
-  const keys = ["q", "from", "to", "favorite", "camera", "place", "type", "album", "has_location"] as const;
+  const keys = ["q", "from", "to", "favorite", "camera", "place", "type", "album", "has_location", "skip"] as const;
   for (const k of keys) {
     const v = params[k];
     // `favorite: false` means "no filter"; `has_location: false` is a real filter ("photos without a location").
@@ -442,6 +487,7 @@ export function searchQuery(params: SearchParams, opts: { cursor?: string | null
   }
   if (opts.limit !== undefined) q.set("limit", String(opts.limit));
   if (opts.cursor) q.set("cursor", opts.cursor);
+  if (opts.weaker) q.set("weaker", "true");
   return q.toString();
 }
 
@@ -523,7 +569,7 @@ export const api = {
   /** Separate a RAW + JPEG pair into two photos (either file's id); they are not paired again automatically. */
   unpair: (id: string) => request<void>(`/assets/${encodeURIComponent(id)}/unpair`, { method: "POST" }),
   /** Natural-language and/or filtered search; `cursor` from the previous page's `next_cursor`. */
-  search: (params: SearchParams, opts: { cursor?: string | null; limit?: number } = {}) =>
+  search: (params: SearchParams, opts: { cursor?: string | null; limit?: number; weaker?: boolean } = {}) =>
     request<SearchResult>(`/assets/search?${searchQuery(params, opts)}`),
   searchFacets: () => request<Facets>("/assets/search/facets"),
   processing: () => request<Processing>("/assets/processing"),

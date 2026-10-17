@@ -103,9 +103,11 @@ configuration in Datadog (distributions would need percentile aggregation enable
 | `cyanotype.embed.model_loaded` | gauge | | 1 while the image model is in memory (loaded by the first embed job, dropped after five quiet minutes). |
 | `cyanotype.worker.rss_bytes` | gauge | | Resident set of the worker process, to read against its container limit (`container.memory.usage` is the cgroup's view). |
 | `cyanotype.embed.duration` | histogram (ms) | `model` | Wall time per photo embedded for search (download of the preview, decode, preprocessing, inference, store), averaged over the batch. |
-| `cyanotype.embed.batch_size` | histogram | `model` | Photos in one model run (at most 4). Near 4 while a backlog drains, 1 for a trickle of uploads. |
+| `cyanotype.embed.batch_size` | histogram | `model` | Photos taken together (at most 4; their previews download concurrently, the model runs over them one at a time). Near 4 while a backlog drains, 1 for a trickle of uploads. |
 | `cyanotype.search.queries` | count | `mode` (`text`, `text_filters`, `filters`), `plan` (`exact`, `hnsw`, `timeline`, `none`), `outcome` (`ok`, `bad_request`, `unavailable`, `error`) | Searches served by the assets service. `unavailable` is a deployment without the model files. |
 | `cyanotype.search.latency_ms` | histogram (ms) | same as `search.queries` | Time to answer a search: query embedding, ranking and building the page. |
+| `cyanotype.search.model` | count | `model` (`siglip2-b16`, `clip-b32`) | Ranked searches by the model that answered them: during a model change the old model's count falls as the new one's rises, and the day it reaches zero the previous model's text tower is no longer needed. |
+| `cyanotype.search.no_strong_matches` | count | `weaker` (`yes`: weaker matches exist, `no`) | Ranked searches whose first page had no strong match: the "No close matches" / "Nothing matched" screens. A rising share after a change of the cut-off means it is too strict. |
 | `cyanotype.uploads.completed` / `.bytes` | count | `family` | Uploads completed (browser and CLI) and their bytes. |
 | `cyanotype.uploads.parts` | count | `outcome` (`ok`, `timeout` = HTTP 408, `error`) | Proxied (browser) part uploads. |
 | `cyanotype.uploads.part_latency_ms` | histogram | | Time to receive a part from the browser and relay it to the bucket (successful parts). |

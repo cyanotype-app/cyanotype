@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Processing } from "./api";
 import {
   RECENT_MAX,
+  addSkip,
   chipsOf,
   clearRecent,
   dateRangeLabel,
@@ -11,7 +12,9 @@ import {
   isEmptySearch,
   loadRecent,
   paramsFromUrl,
+  parseSkip,
   pushRecent,
+  reindexNote,
   suggestionsFor,
   urlFromParams,
   yearRange,
@@ -56,6 +59,26 @@ describe("search URL", () => {
     expect(hasFilters({ q: "cat", favorite: true })).toBe(true);
     expect(urlFromParams({ has_location: true })).toBe("has_location=true");
     expect(urlFromParams({})).toBe("");
+  });
+});
+
+describe("what the server may not read out of the query (skip)", () => {
+  it("keeps only date and place, once each, in a fixed order", () => {
+    expect(parseSkip("place,date")).toBe("date,place");
+    expect(parseSkip("DATE, date,nonsense")).toBe("date");
+    expect(parseSkip("nonsense")).toBeUndefined();
+    expect(parseSkip(null)).toBeUndefined();
+    expect(addSkip(undefined, "place")).toBe("place");
+    expect(addSkip("place", "date")).toBe("date,place");
+    expect(addSkip("date", "date")).toBe("date");
+  });
+
+  it("round-trips through the URL and is not a filter", () => {
+    const p = paramsFromUrl(new URLSearchParams("q=dog+in+Nice&skip=place,date,x"));
+    expect(p).toEqual({ q: "dog in Nice", skip: "date,place" });
+    expect(urlFromParams(p)).toBe("q=dog+in+Nice&skip=date%2Cplace");
+    expect(hasFilters(p)).toBe(false);
+    expect(chipsOf(p)).toEqual([]);
   });
 });
 
@@ -109,6 +132,31 @@ describe("indexing note", () => {
     expect(indexingNote(with_({ indexed: 9, total: 10, queued: 1, running: 0, failed: 0 }))).toBe(
       "Still indexing 1 photo: results may be incomplete.",
     );
+  });
+
+  it("says re-indexing, not 'incomplete', while an older model answers searches", () => {
+    const e = {
+      indexed: 400,
+      total: 1000,
+      queued: 600,
+      running: 0,
+      failed: 0,
+      model: "siglip2-b16",
+      percent: 40,
+      reindexing: true,
+      switch_at_percent: 95,
+      serving_model: "clip-b32",
+    };
+    const p = with_(e);
+    expect(indexingNote(p)).toBeNull();
+    expect(reindexNote(p)).toBe("Re-indexing with the improved search model: 40%. Searches use the previous model until 95%.");
+    expect(reindexNote(with_({ ...e, reindexing: false }))).toBeNull();
+    expect(reindexNote(with_({ ...e, percent: undefined, switch_at_percent: undefined }))).toBe(
+      "Re-indexing with the improved search model: 0%. Searches use the previous model until 95%.",
+    );
+    expect(reindexNote(null)).toBeNull();
+    // Once the new model answers, the usual note applies again if photos are still missing.
+    expect(indexingNote(with_({ ...e, reindexing: false, percent: 96 }))).toBe("Still indexing 600 photos: results may be incomplete.");
   });
 
   it("does not claim indexing when nothing is queued: thumbnails come first, else it is not searchable", () => {

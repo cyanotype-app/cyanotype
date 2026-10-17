@@ -566,8 +566,8 @@ password form, unavailable) at 320 to 414 px and 1280 px.
 
 # Search
 
-Natural-language search ("dog on the beach", "red car at night", "birthday cake") over the whole library, plus structured
-filters, with nothing leaving the server: the model runs inside the worker and the assets service, there is no external
+Natural-language search ("dog on the beach", "red car at night", "perro en la playa", "birthday cake", "Maui summer 2022")
+over the whole library, plus structured filters, with nothing leaving the server: the model runs inside the worker and the assets service, there is no external
 API and no sidecar. Design and measurements are here; the model, its licence and sizes are in `docs/build.md` ("Semantic
 search model").
 
@@ -577,15 +577,26 @@ search model").
   that row that expands into a full-width field (the tabs step aside, a back arrow closes it), so the row never holds more
   than three tabs and one icon, and fits 320 px. Recent searches (kept in this browser only) drop down under the field.
 - **Enter** goes to `/search?q=...`: results in the library's own grid (lightbox, favorites, select, add to album, share,
-  trash all work), best match first, "N best matches". A search shows at most the 300 best matches; a text query always
-  has *some* ranking, so the list ends where the matches stop being meaningful, not where they run out.
+  trash all work), best match first, "N matches". A text query always has *some* ranking, so the search **cuts the list where
+  the matches stop**: it shows the **strong matches** (the photos the model is sure about and that are close to the best one),
+  and when there are more, a **"Show weaker matches (N)"** button continues right after them with the next tier, which is
+  looser (at most 300 results altogether). A query nothing in the library answers ("a giraffe") shows "No close matches"
+  with that button, instead of a screenful of the nearest photos ("Changing the search model" below says how the cut-off
+  was tuned, and what it can and cannot do for each model).
+- **Dates and places in the words.** "sunset Maui", "dog in Lisbon", "beach June 2023", "snow last year" become **chips**
+  ("2023 x", "Maui x") above the results, and what is left of the words is what the model searches for; the chips are
+  filters like the ones in the Filters sheet. A wrong guess is one click: the x on a chip searches again with those words left in
+  the query (`skip=date` or `skip=place` in the URL). Only places in the library count ("in Tokyo" is just words if no
+  photo was taken there), and words that are also ordinary words ("nice", "reading", "may", "victoria") are never a place
+  or a date without the right context ("in Nice", "May 2023"). The rules are below.
 - **Filters** (button under the header; a bottom sheet on a phone, a dialog on a wide screen): year or a date range,
   favorites, camera, place (city, region or country), file type (JPEG, HEIC, RAW, other), has a location, album. The
   choices come from what the library has, with counts. Each active filter is a chip with an x; filters work alone (then
   they list photos newest first, with no limit) or together with the text.
-- While the worker is still embedding the library (after the first deploy, or after a model change) search says **"Still
-  indexing 12,345 photos: results may be incomplete"** with a progress bar; photos that are not indexed yet are simply not
-  text results (they still match filters). "Nothing matched" says so too.
+- While the worker is still embedding the library for the first time search says **"Still indexing 12,345 photos: results may
+  be incomplete"** with a progress bar; photos that are not indexed yet are simply not text results (they still match
+  filters). "Nothing matched" says so too. After a **model change** the library keeps answering with the old model until the
+  new one has indexed 95 %, and the page says **"Re-indexing with the improved search model: 40 %"** instead.
 - **Select all** on a filter-only search selects every match (a server-side scope, like the other views). On a text search
   it selects the results that are loaded (at most 300): a ranked list has no stable "everything" for the server to
   re-resolve, so those actions send explicit ids.
@@ -597,39 +608,112 @@ no byte of a photo or a query goes to a third party.
 ## How it works
 
 ```
-upload -> metadata -> thumbnail ──> embed (worker, background) ──> asset_embeddings (halfvec(512), HNSW cosine)
+upload -> metadata -> thumbnail ──> embed (worker, background) ──> asset_embeddings (halfvec, one HNSW index per model)
                        writes preview.webp   reads preview.webp                          ▲
-query text ──> assets service: tokenizers + ONNX text tower ──> 512-d vector ── nearest ──┘ (+ filters on assets)
+query ──> understand dates/places ──> assets service: tokenizers + ONNX text tower ──> vector ── nearest ──┘ (+ filters)
+                                                             └─> strong / weaker tiers cut from the ranked list
 ```
 
 - **Image side (worker).** The thumbnail job enqueues an `embed` job for the photo at priority 0. The embed job reads the
   photo's `preview.webp` (1440 px, already oriented; never the original, so there is no big decode, no RAW development and
-  nothing to refuse for memory), resizes the shorter side to 224 and centre-crops (CLIP's preprocessing), runs the image tower
-  and stores a unit vector with the model id and version. It runs in its own loop, takes up to 4 jobs at a time (their
-  previews download concurrently, the model runs once over the batch) and **only when no thumbnail, metadata, pairing or
+  nothing to refuse for memory), preprocesses it as the model's own processor does (SigLIP 2: the whole image squashed to
+  224 x 224, bilinear, pixels to -1..1; CLIP: shorter side to 224, centre crop; `docs/build.md`), runs the image tower and stores
+  a unit vector with the model id and version. Each photo is its own run of the model (never batched with others: the 8-bit
+  graph's activation scale is per batch, so a vector would depend on the photos embedded with it). It runs in its own loop, takes up to 4 jobs at a time (their
+  previews download concurrently while the model runs) and **only when no thumbnail, metadata, pairing or
   geocode job is runnable**, so an upload's thumbnails are never queued behind the backfill. One ONNX session with
   `WORKER_EMBED_THREADS` (default 1) threads, loaded on the first job and dropped after five quiet minutes. Its resident
-  memory (about 150 MB) is not part of the decode budget; the worker's container limit includes it (`docs/build.md`), and the
+  memory (about 150 MB for either model) is not part of the decode budget; the worker's container limit includes it (`docs/build.md`), and the
   `embed.model_loaded` and `worker.rss_bytes` gauges show it against that limit.
-- **Versioned and idempotent.** `jobs.version` of an embed job is `MODEL_VERSION` and `asset_embeddings` keeps
-  `(model, version)` with every vector. At start and every 15 minutes the worker queues an embed job (priority 10) for every
-  visible photo with a preview that has no vector for the *current* model and version, so changing `MODEL_ID` or
-  `MODEL_VERSION` in `crates/cyanotype-clip` re-embeds the library with no migration; the new vector replaces the old one in
-  one statement (`DELETE ... model <> $new` + upsert), and search ignores vectors of another model or version, so a half-done
-  swap never mixes two vector spaces. The same sweep fills in photos whose job was lost, whose RAW partner was unpaired, or
-  that were embedded after a failure.
+- **Versioned and idempotent.** `jobs.version` of an embed job is the model's `version()` (unique across models, so a new
+  model's jobs do not collide with the old model's finished ones) and `asset_embeddings` keeps `(model, version)` with every
+  vector. At start and every 15 minutes the worker queues an embed job (priority 10) for every visible photo with a preview that
+  has no vector for the *configured* model and version, so changing `SEARCH_MODEL` (or a model's `version()` in
+  `crates/cyanotype-clip`) re-embeds the library with no migration. The sweep also fills in photos whose job was lost, whose
+  RAW partner was unpaired, or that were embedded after a failure. A new vector replaces the same model's old one; **other
+  models' vectors stay** until every photo has one from the configured model, and then the worker deletes them
+  ("Changing the search model" below). Search only reads vectors of the model it is using, so two vector spaces never mix.
 - **Job priority.** `jobs.priority` (smallint, default 0, lower first) orders the claim: `ORDER BY priority, run_after, id`
   with the index `jobs_claim_idx (kind, priority, run_after, id) WHERE state = 'queued'`. Migration 0012 backfills one embed
   job per existing photo at priority 10 (`ON CONFLICT DO NOTHING`, so running it twice adds nothing). LISTEN/NOTIFY is
   unchanged.
-- **Text side (assets service).** `tokenizers` turns the query into CLIP's BPE tokens (77 at most), the ONNX text tower
-  embeds it (about 10 ms), and the vector is compared with the photos'. The tower loads on the first search and stays
-  loaded; a 256-entry LRU keeps recent queries (case and spacing do not matter), so paging, changing a filter or retyping
-  costs nothing. A server without the model files answers searches with `503` and keeps every filter working.
-- **Storage.** `asset_embeddings(asset_id, model, version, embedding halfvec(512))`, primary key `(asset_id, model)`,
-  `ON DELETE CASCADE` (purging a photo takes its vector with it). `halfvec`, not `vector`: half the size (1 KB a row, so a
-  row stays inline in its page instead of being TOASTed, and the index is half as large), and fp16's three digits are far
-  finer than the gaps between CLIP neighbours. HNSW (`m = 16`, `ef_construction = 64`, cosine) on that column.
+- **Text side (assets service).** `tokenizers` turns the query into the model's tokens (SigLIP 2: Gemma's, lower-cased,
+  padded to 64; short queries get "a photo of a" in front, which is what makes the calibrated cut-off work: below), the ONNX
+  text tower embeds it (about 150 ms for SigLIP 2 on this host, 10 ms for CLIP), and the vector is compared with the photos'. The
+  tower loads on the first search and stays loaded (one at a time: during a model swap the service holds the tower of the model
+  that is answering, not both); a 256-entry LRU keeps recent queries (case and spacing do not matter), so paging, changing a
+  filter or retyping costs nothing. A server without the model files answers searches with `503` and keeps every filter
+  working.
+- **Storage.** `asset_embeddings(asset_id, model, version, embedding halfvec)`, primary key `(asset_id, model)`, `ON DELETE
+  CASCADE` (purging a photo takes its vector with it). The column has no fixed dimension (CLIP B/32 is 512, SigLIP 2 base is
+  768); **each model has its own HNSW index**, a partial expression index `((embedding::halfvec(N)) halfvec_cosine_ops)
+  WHERE model = '<id>'` (`m = 16`, `ef_construction = 64`, cosine; migration 0013). An index only ever holds one model's
+  vectors, its size is checked when a row is written (a vector of the wrong size for its model is refused), and a new
+  model is one more `CREATE INDEX ... WHERE model = ...` in a migration. `halfvec`, not `vector`: half the size (1.5 KB a row
+  at 768 dimensions, so a row stays inline in its page instead of being TOASTed, and the index is half as large), and fp16's three
+  digits are far finer than the gaps between neighbours.
+
+### Changing the search model
+
+`SEARCH_MODEL` (`siglip2-b16`, the default, or `clip-b32`) names the model the worker embeds with and searches prefer. Changing
+it, or a deploy that changes the default, needs no migration step and no downtime:
+
+1. The worker's sweep queues an embed job for every photo without a vector from the configured model (priority 10, behind
+   thumbnails and uploads). Photos uploaded meanwhile are embedded first (priority 0).
+2. **Searches keep using the previous model's vectors** for each user until the configured model has indexed at least
+   `SEARCH_SWITCH_PERCENT` (default 95) of that user's photos, and the assets image keeps the previous model's text tower
+   for that (CLIP's is 66 MB; only one tower is in memory at a time). If the previous model's files are not installed, the new
+   model answers at once, with whatever it has indexed so far.
+3. While the old model answers, `GET /assets/search` says so (`reindexing: {model, indexed, total, percent,
+   switch_at_percent}`, and `model` is the one that answered), `GET /assets/processing` has `embedding.reindexing`,
+   `percent` and `serving_model`, and the page shows "Re-indexing with the improved search model: 40 %".
+4. At the threshold the new model takes over (the stragglers are not text results until embedded). When **every** photo has a
+   vector from the configured model, the worker's sweep deletes the vectors of the models it replaced (`prune_superseded`) and
+   the old index empties.
+
+A rollback is the same in reverse: set `SEARCH_MODEL` back; the old vectors are still there until step 4 has happened.
+Embedding job versions are unique across models, so going back and forth never reuses a finished job by mistake.
+
+### Which results are shown: the strong and the weaker tier
+
+A ranked list always has an end only because it is cut. `crates/cyanotype-clip/src/cutoff.rs` cuts two tiers from the 300
+best-first cosines (rules and numbers per model; tuning results in `docs/build.md`, "The cut-off"):
+
+- **strong**, the default: (SigLIP 2) the model's own probability `sigmoid(scale x cos + bias)` (the checkpoint's `logit_scale`
+  and `logit_bias`, 112.67 and -16.77) is at least 0.3 %; **and** the cosine is within 0.06 of the best photo's; **and** the list
+  stops before the largest drop between neighbours if that drop is at least 0.02 (never within the first 3 results).
+  The probability is tiny for keyword queries even when the answer is right (the model was trained on captions), which is why the
+  floor is 0.3 % and not 50 %, and why the query gets "a photo of a" in front. (CLIP) only the relative and gap rules, within 0.03
+  and a 0.015 drop: CLIP's softmax-trained cosines mean different things for different queries (0.30 is a great "dog" and a
+  poor "dog on the beach"), so no absolute number separates a match from a non-match, and a CLIP library answers a query
+  nothing matches with its nearest photos. This is a documented limitation of CLIP, and a reason SigLIP 2 is the default.
+- **weaker**, on request (`weaker=true`): everything else down to a looser floor (SigLIP 2: probability 0.1 % and within 0.12;
+  CLIP: within 0.04).
+
+Pagination is stable across the tiers: the cursor carries the position, the `k` of the HNSW plan and where the tiers end, computed
+once from the whole list on the first page. The response says how many strong matches there are (`strong_count`) and, when
+the weaker ones were not asked for, how many exist (`weaker.count`) and the cursor that continues right after the last strong
+one (`weaker.cursor`, set once a page has reached it; with no strong matches `weaker=true` alone lists the weaker ones).
+`cutoff=false` returns the whole ranked list with every item's tier, for tooling and tests.
+
+### What is read out of the words
+
+`apps/assets/src/query_parse.rs` takes dates and the user's own places out of `q` before it is embedded. Everything
+is UTC and unit tested, including the ambiguous words:
+
+| Words | Becomes |
+|---|---|
+| `2023`, `in 2023`, `from 2023` | that calendar year (1900 up to this year; `2027` stays words) |
+| `June 2023`, `jun 2023`, `June of 2023`, `2023-06` | that month; `5 June 2023`, `June 5th 2023`, `2023-06-05`: that day; `2019-2021`: those years |
+| `summer 2022`, `fall of 2021`, `winter 2022` | the season with its year, **northern hemisphere**: spring Mar-May, summer Jun-Aug, autumn/fall Sep-Nov, winter Dec-Feb, and `winter 2022` starts in December 2022 |
+| `last year`, `this year`, `last month`, `this month`, `last week`, `this week` (Monday to Sunday), `yesterday`, `today`, `last summer`, `this autumn` | the calendar range; `last <season>` is the latest finished one |
+| `in Lisbon`, `at Maui`, `near Paris`, a place at the end (`sunset Maui`) | the place filter, **only if the library has a photo geocoded there** (city, region or country, case-insensitive; country codes never) |
+| `may`, `march`, `june`, `summer`, `fall`, `last`, `this` alone; `nice`, `reading`, `victoria`, `jersey`, `turkey`... without "in" | stay words: a month or season needs its year, and a place that is also a common word needs a preposition (`in Nice`) |
+
+A filter chosen in the Filters sheet wins over words of the same kind (the words stay in the query). If only filler words
+("photos", "pictures", "from", "in") are left, the search is a filter-only search (the timeline of the filter, newest first,
+selectable as a scope). The response's `parsed` has `text` (what was searched for) and `chips` (`kind`, `label`, `matched`,
+`from`/`to` or `value`/`place_kind`).
 
 ### The query
 
@@ -702,41 +786,58 @@ ways that are unknown (real recall with the real model on a real library is not 
 
 | Request | Effect |
 |---|---|
-| `GET /assets/search?q=&from=&to=&favorite=&camera=&place=&type=&album=&has_location=&limit=&cursor=` | Ranked results for `q` (at most 300, best first) or, without `q`, the photos matching the filters, newest first. Every parameter is optional; `from`/`to` are inclusive UTC days (`2024-03-01`), `camera` and `place` are the facet values below (case-insensitive; `place` matches a city, region, country or country code), `type` is `jpeg`, `heic` (also HEIF and AVIF), `raw` or `other`, `limit` defaults to 60 (at most 200). Items have the shape of `GET /assets` plus `score` (cosine similarity, null without `q`); the response has `next_cursor`, `ranked` and, on the first page of a filter-only search, `total`. `400` for a bad date, type, album id, cursor or a `q` over 200 characters; `503` when the model is not installed and `q` is set. |
+| `GET /assets/search?q=&from=&to=&favorite=&camera=&place=&type=&album=&has_location=&limit=&cursor=&weaker=&skip=&cutoff=` | Ranked results for `q` (the strong tier; at most 300 altogether, best first) or, without `q`, the photos matching the filters, newest first. Every parameter is optional; `from`/`to` are inclusive UTC days (`2024-03-01`), `camera` and `place` are the facet values below (case-insensitive; `place` matches a city, region, country or country code), `type` is `jpeg`, `heic` (also HEIF and AVIF), `raw` or `other`, `limit` defaults to 60 (at most 200). `weaker=true` also lists the weaker tier (continue with `weaker.cursor`); `skip=date`, `skip=place` or `skip=date,place` does not read that kind of thing out of `q`; `cutoff=false` returns the whole ranked list. Items have the shape of `GET /assets` plus `score` (cosine similarity, null without `q`), `probability` (the model's calibrated estimate, SigLIP 2 only) and `tier` (`strong`/`weak`). The response has `next_cursor`, `ranked`, `total` (first page of a filter-only search), and with `q`: `strong_count`, `weaker` (`{count, cursor}` or null), `parsed` (`{text, chips}`), `model` (which model answered) and `reindexing` (null, or how far the configured model is while an older one answers). `400` for a bad date, type, album id, cursor or a `q` over 200 characters; `503` when the model is not installed and `q` is set. |
 | `GET /assets/search/facets` | What the filters can be set to, with counts over the whole library: `total`, `favorites`, `with_location`, `types`, `cameras` (top 50), `places` (top 120, each with its `kind`), `years`. |
 | `POST /assets/favorite`, `trash`, `restore`, albums, shares with `{"scope": {"search": {"camera": "...", ...}}, "except": [...]}` | The bulk endpoints accept the filters of a filter-only search as a scope (never `q`). |
-| `GET /assets/processing` | Gains `embedding`: `indexed`, `total` (visible live photos with a preview), `queued`, `running`, `failed`. Indexing does not count towards `active`, `queued` or `running`, so the library page's "Processing..." banner is not on for hours after a model change; failed embed jobs do show in `failed` and `failures` and "Retry failed" requeues them. |
+| `GET /assets/processing` | Gains `embedding`: `indexed`, `total` (visible live photos with a preview), `queued`, `running`, `failed`, and for the configured model `model`, `percent`, `reindexing` (an older model answers meanwhile), `switch_at_percent` and `serving_model`. Indexing does not count towards `active`, `queued` or `running`, so the library page's "Processing..." banner is not on for hours after a model change; failed embed jobs do show in `failed` and `failures` and "Retry failed" requeues them. |
 
 ## Configuration
 
 | Variable | Service | Default | Meaning |
 |---|---|---|---|
-| `CLIP_MODEL_DIR` | worker, assets | `/opt/cyanotype/models/clip` (where the images put it) | Directory with the model files. Without them the worker skips embedding (a warning at start) and the assets service answers searches with 503. |
+| `SEARCH_MODEL` | worker, assets | `siglip2-b16` | The model to embed with and search with (`siglip2-b16` or `clip-b32`); an unknown name stops the service at start instead of silently re-indexing with something else. |
+| `SEARCH_SWITCH_PERCENT` | assets | `95` | While a model change re-indexes, the previous model answers until the new one covers this share of a user's photos. |
+| `SEARCH_MODEL_DIR` | worker, assets | `/opt/cyanotype/models` (where the images put it) | Directory with one sub-directory per model (`siglip2`, `clip`). Without the configured model's files the worker skips embedding (a warning at start) and the assets service answers searches with 503. |
 | `WORKER_EMBED` | worker | `1` | `0` turns embedding off. |
 | `WORKER_EMBED_THREADS` | worker | `1` | Intra-op threads of the image session. 2 roughly doubles the backfill speed and takes the second core of a 2 vCPU host from everything else. |
 | `SEARCH_THREADS` | assets | `2` | Intra-op threads of the text session. |
 
 ## Tests
 
-- `crates/cyanotype-clip/tests/model.rs`: token ids of the Python `tokenizers` reference (including a text over the 77-token
-  context), text and image embeddings against reference vectors made by a one-off script (`tests/fixtures/make_reference.py`:
-  Pillow preprocessing, onnxruntime, `tokenizers`), the query cache, and a **quality smoke test**: 20 CC0 photos from
-  Wikimedia Commons (`tests/fixtures/images/SOURCES.json`) across clear categories, two queries each, the right photo must be
-  in the top 3 of 20 (the recall is printed). They need the model files (`CLIP_MODEL_DIR`); without them they skip, and in CI
-  (`CYANOTYPE_REQUIRE_MODEL=1`) a missing model is a failure.
-- `crates/cyanotype-core/tests/embeddings.rs` (real Postgres with pgvector): schema (halfvec column, HNSW index, pgvector
-  >= 0.8), storing and replacing vectors, the sweep (which photos it queues, idempotent, a version bump or a new model id
-  re-queues everything, failures are left alone), migration 0012's backfill and its idempotency, claim order by priority,
-  embeds waiting for foreground work, progress counts.
+- `crates/cyanotype-clip/tests/model.rs`, for each model: preprocessing compared as a tensor with Pillow's (a 16 x 16 grid per
+  channel; CPU independent), token ids of the Python `tokenizers` reference (CLIP's truncation to 77; SigLIP 2's lower-casing,
+  truncation to 63 + `<eos>` and padding to 64, with Spanish, French and German queries), text and image embeddings against
+  reference vectors made by one-off scripts (`tests/fixtures/make_reference.py`, `make_reference_siglip2.py`) *and* against the
+  fp32 graph of the same export (the CPU-independent anchor), that threads and batching do not change a vector, the query cache,
+  the split text model giving the same vectors, and a **quality smoke test**: 20 CC0 photos from Wikimedia Commons
+  (`tests/fixtures/images/SOURCES.json`), two queries each, the right photo must be in the top 3 of 20 (recall printed), and for
+  SigLIP 2 that absent subjects come back with no strong match. `src/cutoff.rs`, `src/split.rs` and `src/lib.rs` have unit tests
+  (tiers, the gap rule, the splitter, the query template, calibration). They need the model files (`SEARCH_MODEL_DIR`); without
+  them they skip, and in CI (`CYANOTYPE_REQUIRE_MODEL=1`) a missing model is a failure.
+- `crates/cyanotype-clip/tests/bakeoff.rs` (ignored; `just bakeoff`): the model comparison of `docs/build.md` on the 209-photo
+  evaluation set (`scripts/fetch-eval-set.sh`, `tests/eval/`), printed as tables.
+- `crates/cyanotype-core/tests/embeddings.rs` (real Postgres with pgvector): schema (untyped `halfvec`, one partial HNSW index
+  per model, pgvector >= 0.8), two models in the table and each search using its own index, a vector of the wrong size for its
+  model refused, storing and replacing vectors, pruning the replaced model, the sweep (which photos it queues, idempotent, a
+  version bump or a new model id re-queues everything, failures are left alone), migration 0012's backfill and its idempotency,
+  claim order by priority, embeds waiting for foreground work, progress counts, and which model serves while another indexes
+  (`embeddings.rs` unit tests).
 - `apps/worker/src/embed.rs` tests (Postgres + S3 + the model): embed jobs write vectors and a text query's nearest vector is
   the right photo, hidden RAWs / photos being deleted / photos without a preview are skipped, a corrupt preview fails
-  permanently and a missing one retries, an older model's vector is replaced, and a thumbnail job queues its embed job at
-  priority 0 which then reads the preview the thumbnail wrote.
+  permanently and a missing one retries, an older model's vector stays until every photo has the new one and is then removed,
+  and a thumbnail job queues its embed job at priority 0 which then reads the preview the thumbnail wrote.
 - `apps/assets/src/routes/search_tests.rs` (Postgres, fake text model): ranking and scores, every filter alone and combined
   with text, file types incl. RAW pairs, albums, owner isolation on both plans, trash / purging / hidden RAWs excluded,
   unindexed or other-model vectors ignored, keyset pagination without gaps or repeats on both plans (including ties), the
   300 depth limit, plan choice, filter-only totals and the `search` scope, facets, validation and the 503.
   `search_performance_on_50k_photos` (ignored) is the measurement above.
-- Web: `searchText.test.ts`, `SearchBar.test.tsx`, `FilterSheet.test.tsx`, `Search.test.tsx`, and
+- `apps/assets/src/routes/search_v2_tests.rs`: the strong and weaker tiers for both models (probability, no-strong-match
+  queries, the `weaker.cursor` continuing after the last strong match, one-result pages across the tiers), dates and places read
+  out of the query and turned off again, places from the caller's own photos only, the model swap (the old model answers
+  until the new one has 95 %, then the new one; a fresh library; a missing old model), and `apps/assets/src/query_parse.rs`
+  unit tests for the parser (years, months, days, seasons, relative dates, the ambiguous words, multi-word places).
+- Web: `searchText.test.ts`, `SearchBar.test.tsx`, `FilterSheet.test.tsx`, `Search.test.tsx` (the weaker tier button, no close
+  matches, parsed chips and removing one, select-all over a parsed filter-only search, the re-index note), and
   `e2e/mobile-overflow.spec.ts` (bar collapsed and expanded, recent searches, results, selection, the filter sheet with
-  long names, chips, no results, indexing, unavailable, intro) at 320 to 1280 px, light and dark.
+  long names, chips, parsed chips with a very long place, the weaker tier offered and shown, no close matches, no results,
+  indexing, re-indexing, unavailable, intro) at 320 to 1280 px, light and dark.

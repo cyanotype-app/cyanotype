@@ -2414,3 +2414,8 @@ body:has(.selection-bar) .scrubber {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Search: what was read out of the query, and the weaker tier behind the strong matches. */
+.parsed-chips { margin: 0.5rem 0 0; padding: 0 1rem; }
+.weaker-more { display: flex; justify-content: center; padding: 1rem 0 0.5rem; }
+.weaker-btn { max-width: 100%; white-space: normal; text-align: center; }

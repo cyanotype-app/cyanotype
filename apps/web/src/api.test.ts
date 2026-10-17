@@ -337,6 +337,11 @@ describe("timeline, favorites and downloads", () => {
     const f = mockFetchJson({ items: [], next_cursor: null, ranked: true });
     await api.search({ q: "cat", from: "2024-01-01", type: "raw", favorite: true }, { cursor: "c1", limit: 60 });
     expect(f).toHaveBeenLastCalledWith("/assets/search?q=cat&from=2024-01-01&favorite=true&type=raw&limit=60&cursor=c1", expect.anything());
+    // The weaker tier and what not to read out of the query.
+    await api.search({ q: "dog in Nice", skip: "place" }, { cursor: "c2", weaker: true });
+    expect(f).toHaveBeenLastCalledWith("/assets/search?q=dog+in+Nice&skip=place&cursor=c2&weaker=true", expect.anything());
+    await api.search({ q: "dog" }, { weaker: false });
+    expect(f).toHaveBeenLastCalledWith("/assets/search?q=dog", expect.anything());
     await api.searchFacets();
     expect(f).toHaveBeenLastCalledWith("/assets/search/facets", expect.anything());
   });
