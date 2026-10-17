@@ -249,7 +249,13 @@ function Results({ params }: { params: SearchParams }) {
     },
     [params],
   );
-  const { items, setItems, done, started, loading, error, loadMore, sentinel, refreshItem, reset } = useAssetPages(fetchPage);
+  const { items, setItems, done, started, loading, error, loadMore, sentinel, refreshItem, reset: resetPages } = useAssetPages(fetchPage);
+  // Starting over (after a bulk change) starts from the strong matches again.
+  const reset = useCallback(() => {
+    weakerRef.current = { on: false, cursor: null };
+    setWeakerShown(false);
+    resetPages();
+  }, [resetPages]);
   const itemIds = useMemo(() => items.map((i) => i.id), [items]);
   // A filter-only search can select every match (the server resolves them); a ranked one selects what is loaded.
   const sel = useSelection(itemIds, meta.ranked ? undefined : (meta.total ?? undefined));
