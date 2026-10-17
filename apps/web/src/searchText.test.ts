@@ -1,0 +1,156 @@
+import { describe, expect, it } from "vitest";
+import type { Processing } from "./api";
+import {
+  RECENT_MAX,
+  chipsOf,
+  clearRecent,
+  dateRangeLabel,
+  hasFilters,
+  indexingNote,
+  indexingPercent,
+  isEmptySearch,
+  loadRecent,
+  paramsFromUrl,
+  pushRecent,
+  suggestionsFor,
+  urlFromParams,
+  yearRange,
+} from "./searchText";
+
+const memory = () => {
+  const m = new Map<string, string>();
+  return {
+    getItem: (k: string) => m.get(k) ?? null,
+    setItem: (k: string, v: string) => void m.set(k, v),
+    removeItem: (k: string) => void m.delete(k),
+  };
+};
+
+describe("search URL", () => {
+  it("round-trips every filter", () => {
+    const p = {
+      q: "dog on the beach",
+      from: "2024-01-01",
+      to: "2024-12-31",
+      favorite: true,
+      camera: "Canon EOS R5",
+      place: "Lisbon",
+      type: "raw" as const,
+      album: "6f1c2d3e-0000-4000-8000-000000000001",
+      has_location: false,
+    };
+    expect(paramsFromUrl(new URLSearchParams(urlFromParams(p)))).toEqual(p);
+  });
+
+  it("drops what the server would reject instead of sending it", () => {
+    const p = paramsFromUrl(
+      new URLSearchParams("q=%20%20&from=yesterday&to=2024-5-1&type=gif&album=nope&favorite=1&has_location=maybe&camera=%20"),
+    );
+    expect(p).toEqual({});
+    expect(isEmptySearch(p)).toBe(true);
+  });
+
+  it("caps the query and tells a query from a filter", () => {
+    expect(paramsFromUrl(new URLSearchParams({ q: "x".repeat(500) })).q).toHaveLength(200);
+    expect(hasFilters({ q: "cat" })).toBe(false);
+    expect(hasFilters({ q: "cat", favorite: true })).toBe(true);
+    expect(urlFromParams({ has_location: true })).toBe("has_location=true");
+    expect(urlFromParams({})).toBe("");
+  });
+});
+
+describe("filter chips", () => {
+  it("labels a whole year, a day, a span and open ends", () => {
+    expect(dateRangeLabel("2024-01-01", "2024-12-31")).toBe("2024");
+    expect(dateRangeLabel("2024-03-01", "2024-03-01")).toBe("Mar 1, 2024");
+    expect(dateRangeLabel("2024-03-01", "2024-03-09")).toBe("Mar 1, 2024 to Mar 9, 2024");
+    expect(dateRangeLabel("2024-03-01")).toBe("From Mar 1, 2024");
+    expect(dateRangeLabel(undefined, "2024-03-01")).toBe("Until Mar 1, 2024");
+    expect(yearRange("2021")).toEqual({ from: "2021-01-01", to: "2021-12-31" });
+  });
+
+  it("makes one chip per filter and says which parameters it clears", () => {
+    const chips = chipsOf(
+      { from: "2024-01-01", to: "2024-12-31", favorite: true, camera: "Canon EOS R5", place: "Lisbon", type: "heic", has_location: true, album: "a" },
+      "Pets",
+    );
+    expect(chips.map((c) => c.label)).toEqual(["2024", "Favorites", "Canon EOS R5", "Lisbon", "HEIC", "Has location", "Album: Pets"]);
+    expect(chips[0]!.clears).toEqual(["from", "to"]);
+    expect(chipsOf({ has_location: false })[0]!.label).toBe("No location");
+    expect(chipsOf({ album: "a" })[0]!.label).toBe("Album");
+    expect(chipsOf({})).toEqual([]);
+  });
+});
+
+describe("indexing note", () => {
+  const base: Processing = {
+    active: false,
+    queued: 0,
+    running: 0,
+    failed: 0,
+    by_kind: [],
+    total_photos: 10,
+    without_thumbnail: 0,
+    failures: [],
+  };
+  const with_ = (embedding: Processing["embedding"], over: Partial<Processing> = {}): Processing => ({ ...base, ...over, embedding });
+
+  it("says nothing when everything is indexed or the server does not report it", () => {
+    expect(indexingNote(null)).toBeNull();
+    expect(indexingNote(base)).toBeNull();
+    expect(indexingNote(with_({ indexed: 10, total: 10, queued: 0, running: 0, failed: 0 }))).toBeNull();
+    expect(indexingPercent(with_({ indexed: 10, total: 10, queued: 0, running: 0, failed: 0 }))).toBeNull();
+  });
+
+  it("counts what is left while the worker is on it", () => {
+    const p = with_({ indexed: 1000, total: 51234, queued: 50000, running: 1, failed: 0 });
+    expect(indexingNote(p)).toBe("Still indexing 50,234 photos: results may be incomplete.");
+    expect(indexingPercent(p)).toBe(1);
+    expect(indexingNote(with_({ indexed: 9, total: 10, queued: 1, running: 0, failed: 0 }))).toBe(
+      "Still indexing 1 photo: results may be incomplete.",
+    );
+  });
+
+  it("does not claim indexing when nothing is queued: thumbnails come first, else it is not searchable", () => {
+    const e = { indexed: 0, total: 5, queued: 0, running: 0, failed: 0 };
+    expect(indexingNote(with_(e, { without_thumbnail: 5 }))).toBeNull();
+    expect(indexingNote(with_(e))).toBe("5 photos are not searchable yet.");
+  });
+});
+
+describe("recent searches", () => {
+  it("keeps the newest first, once, case-insensitively, up to a limit", () => {
+    const s = memory();
+    pushRecent("dog", s);
+    pushRecent("cat", s);
+    expect(pushRecent("DOG", s)).toEqual(["DOG", "cat"]);
+    for (let i = 0; i < 20; i++) pushRecent(`q${i}`, s);
+    expect(loadRecent(s)).toHaveLength(RECENT_MAX);
+    expect(loadRecent(s)[0]).toBe("q19");
+    expect(pushRecent("   ", s)[0]).toBe("q19");
+    clearRecent(s);
+    expect(loadRecent(s)).toEqual([]);
+  });
+
+  it("survives corrupt or unavailable storage", () => {
+    expect(loadRecent({ getItem: () => "{not json" })).toEqual([]);
+    expect(loadRecent({ getItem: () => '{"a":1}' })).toEqual([]);
+    expect(loadRecent({ getItem: () => '["a",3,"b"]' })).toEqual(["a", "b"]);
+    expect(
+      pushRecent("x", {
+        getItem: () => null,
+        setItem: () => {
+          throw new Error("quota");
+        },
+      }),
+    ).toEqual(["x"]);
+  });
+
+  it("suggests recent searches that continue what is typed", () => {
+    const recent = ["dog on the beach", "dogs", "cat"];
+    expect(suggestionsFor("", recent)).toEqual(recent);
+    expect(suggestionsFor("do", recent)).toEqual(["dog on the beach", "dogs"]);
+    expect(suggestionsFor("DOGS", recent)).toEqual([]);
+    expect(suggestionsFor("zebra", recent)).toEqual([]);
+  });
+});

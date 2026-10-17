@@ -24,6 +24,7 @@ fn app_with(pool: &PgPool, st: ShareState) -> Router {
         storage: dummy_storage(),
         trash_retention_days: 30,
         purge_wake: Default::default(),
+        text: std::sync::Arc::new(crate::testutil::FakeText),
     })
 }
 

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/cyanotype-core",
     "crates/cyanotype-service",
+    "crates/cyanotype-clip",
     "apps/auth",
     "apps/assets",
     "apps/worker",
@@ -18,6 +19,7 @@ rust-version = "1.89"
 
 [workspace.dependencies]
 cyanotype-core = { path = "crates/cyanotype-core" }
+cyanotype-clip = { path = "crates/cyanotype-clip" }
 cyanotype-service = { path = "crates/cyanotype-service" }
 
 anyhow = "1"

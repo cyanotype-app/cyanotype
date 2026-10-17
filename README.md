@@ -22,6 +22,7 @@ apps/cli       cyanotype (cyanotype-cli) `migrate`, `login`, `import`, `status`
 apps/web       cyanotype-web      :8080  React + Vite UI (login, library grid, lightbox), served by Caddy
 crates/cyanotype-core      config, db, storage, job queue, telemetry (logging)
 crates/cyanotype-service   shared HTTP plumbing: AuthUser extractor, ApiError, request id + request logging
+crates/cyanotype-clip      CLIP image and text towers (ONNX Runtime + tokenizers) for semantic search
 infra/caddy    gateway: Caddyfile (local :3000), Caddyfile.prod (real hostname, automatic HTTPS), shared gateway.caddy
 infra/backup   nightly Postgres backup image (pg_dump + rclone -> bucket)
 ```
@@ -113,6 +114,13 @@ for the memory budget is refused with a clear permanent error. Details, the pinn
 measured memory costs are in [`docs/build.md`](docs/build.md). Tunables: `WORKER_HEAVY_CONCURRENCY`
 (default 2), `WORKER_MAX_ORIGINAL_BYTES` (default 200 MiB), `WORKER_MEMORY_BUDGET_MB` (default 640) and
 `WORKER_RAW_DEVELOP` (default 1).
+
+Search: the worker also embeds every photo's preview with CLIP (ONNX Runtime, in-process, in the background and behind
+thumbnails) and the assets service embeds queries, so `GET /assets/search?q=dog on the beach` plus filters (dates,
+favorites, camera, place, file type, location, album) works with no external service; the model files are baked into the
+images (`just models` fetches them for local runs). See [`docs/library.md`](docs/library.md) ("Search") and
+[`docs/build.md`](docs/build.md) ("Semantic search model"). Tunables: `WORKER_EMBED`, `WORKER_EMBED_THREADS`,
+`SEARCH_THREADS`, `CLIP_MODEL_DIR`.
 
 All URLs above are served through the gateway on `:3000`, unchanged by the service split.
 

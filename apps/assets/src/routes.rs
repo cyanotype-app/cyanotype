@@ -34,6 +34,9 @@ mod processing;
 mod scope;
 #[cfg(test)]
 mod scope_tests;
+mod search;
+#[cfg(test)]
+mod search_tests;
 mod share_public;
 #[cfg(test)]
 mod share_tests;
@@ -83,6 +86,8 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets", get(list))
         .route("/assets/count", get(count))
         .route("/assets/timeline", get(timeline::days))
+        .route("/assets/search", get(search::search))
+        .route("/assets/search/facets", get(search::facets))
         .route("/assets/map", get(map::clusters))
         .route("/assets/tiles", get(tiles::installed))
         .route("/assets/tiles/{name}", get(tiles::tile_range))
@@ -1018,6 +1023,7 @@ mod tests {
             storage: dummy_storage(),
             trash_retention_days: 30,
             purge_wake: Default::default(),
+            text: std::sync::Arc::new(crate::testutil::FakeText),
         });
 
         let mut seen = Vec::new();
@@ -1174,6 +1180,7 @@ mod tests {
             storage: dummy_storage(),
             trash_retention_days: 30,
             purge_wake: Default::default(),
+            text: std::sync::Arc::new(crate::testutil::FakeText),
         });
         let url = |n: i32| proxy_part_url(upload_id, n);
 
@@ -1426,6 +1433,7 @@ mod tests {
             storage: dummy_storage(),
             trash_retention_days: 30,
             purge_wake: Default::default(),
+            text: std::sync::Arc::new(crate::testutil::FakeText),
         });
 
         let list = get_json(&app, "/assets", key).await;

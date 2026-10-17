@@ -100,12 +100,23 @@ configuration in Datadog (distributions would need percentile aggregation enable
 | `cyanotype.worker.memory_budget.waits` / `.wait_ms` | count / histogram | | A reservation had to wait for memory held by other jobs, and for how long. |
 | `cyanotype.worker.memory_budget.refusals` | count | `reason` (`over_size_limit`, `over_budget`, `decode_refused`), `family` | Jobs turned away as too big. |
 | `cyanotype.worker.memory_budget.used_bytes` / `.total_bytes` | gauge | | Budget in use and its size (`WORKER_MEMORY_BUDGET_MB`). |
+| `cyanotype.embed.model_loaded` | gauge | | 1 while the image model is in memory (loaded by the first embed job, dropped after five quiet minutes). |
+| `cyanotype.worker.rss_bytes` | gauge | | Resident set of the worker process, to read against its container limit (`container.memory.usage` is the cgroup's view). |
+| `cyanotype.embed.duration` | histogram (ms) | `model` | Wall time per photo embedded for search (download of the preview, decode, preprocessing, inference, store), averaged over the batch. |
+| `cyanotype.embed.batch_size` | histogram | `model` | Photos in one model run (at most 4). Near 4 while a backlog drains, 1 for a trickle of uploads. |
+| `cyanotype.search.queries` | count | `mode` (`text`, `text_filters`, `filters`), `plan` (`exact`, `hnsw`, `timeline`, `none`), `outcome` (`ok`, `bad_request`, `unavailable`, `error`) | Searches served by the assets service. `unavailable` is a deployment without the model files. |
+| `cyanotype.search.latency_ms` | histogram (ms) | same as `search.queries` | Time to answer a search: query embedding, ranking and building the page. |
 | `cyanotype.uploads.completed` / `.bytes` | count | `family` | Uploads completed (browser and CLI) and their bytes. |
 | `cyanotype.uploads.parts` | count | `outcome` (`ok`, `timeout` = HTTP 408, `error`) | Proxied (browser) part uploads. |
 | `cyanotype.uploads.part_latency_ms` | histogram | | Time to receive a part from the browser and relay it to the bucket (successful parts). |
 | `cyanotype.uploads.part_bytes` | count | | Bytes relayed. |
 | `cyanotype.shares.views` | count | `kind` (`album`, `selection`) | Share link opened (the public page's info request, once a password link is unlocked). Logs carry `share_id`, never the token. |
 | `cyanotype.shares.downloads` | count | `kind` | Download redirects issued by a share link. |
+
+Embedding photos for search is background work and reads as such: the `embed` kind has queue gauges and job metrics like any
+other (`kind:embed`), its backlog is hours long after a first deploy or a model swap, and the "oldest queued job" monitor
+leaves `kind:embed` out for that reason. The dashboard's Search section shows the backlog, photos embedded per minute, time
+per photo, query rate and latency by plan, and the assets and worker container memory.
 
 `family` is `jpeg`, `heic`, `raw`, `png` or `other` (`unknown` when the asset row is gone), from the content type and
 file extension (`metrics::family`). The job gauges are sampled every 15 s by the worker, one reading per kind every time

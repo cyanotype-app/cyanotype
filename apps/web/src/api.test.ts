@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, downloadHref, MAX_BULK_IDS } from "./api";
+import { api, ApiError, downloadHref, MAX_BULK_IDS, searchQuery } from "./api";
 
 function mockFetch(res: Response | Error) {
   const fn = vi.fn(async () => {
@@ -327,6 +327,25 @@ describe("timeline, favorites and downloads", () => {
     expect(path).toBe("/assets/favorite");
     expect(JSON.parse(init.body as string)).toMatchObject({ favorite: true, ids: ids.slice(0, 1000) });
     expect(JSON.parse((f.mock.calls[1] as unknown as [string, RequestInit])[1].body as string).ids).toHaveLength(500);
+  });
+
+  it("builds the search query from the fields that are set, and pages with the cursor", async () => {
+    expect(searchQuery({})).toBe("");
+    expect(searchQuery({ q: "dog on the beach", favorite: false, camera: "", has_location: false })).toBe(
+      "q=dog+on+the+beach&has_location=false",
+    );
+    const f = mockFetchJson({ items: [], next_cursor: null, ranked: true });
+    await api.search({ q: "cat", from: "2024-01-01", type: "raw", favorite: true }, { cursor: "c1", limit: 60 });
+    expect(f).toHaveBeenLastCalledWith("/assets/search?q=cat&from=2024-01-01&favorite=true&type=raw&limit=60&cursor=c1", expect.anything());
+    await api.searchFacets();
+    expect(f).toHaveBeenLastCalledWith("/assets/search/facets", expect.anything());
+  });
+
+  it("sends a filter-only select-all as a search scope", async () => {
+    const f = mockFetchJson({ count: 5 });
+    await api.favoriteAssets({ scope: { search: { camera: "Canon EOS R5" } }, except: ["x"] }, true);
+    const [, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ scope: { search: { camera: "Canon EOS R5" } }, except: ["x"], favorite: true });
   });
 
   it("points downloads at the endpoint that redirects to a presigned attachment URL", () => {

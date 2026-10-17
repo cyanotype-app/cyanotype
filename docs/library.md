@@ -563,3 +563,180 @@ position, a camera and an owner behind it that exposes none of them, view counts
 and the WebP-has-no-metadata test. Web (vitest): the share dialog, the links page, the public viewer. Browser:
 `e2e/mobile-overflow.spec.ts` renders the dialog, the links page and the public viewer (grid, viewer with downloads,
 password form, unavailable) at 320 to 414 px and 1280 px.
+
+# Search
+
+Natural-language search ("dog on the beach", "red car at night", "birthday cake") over the whole library, plus structured
+filters, with nothing leaving the server: the model runs inside the worker and the assets service, there is no external
+API and no sidecar. Design and measurements are here; the model, its licence and sizes are in `docs/build.md` ("Semantic
+search model").
+
+## What the user sees
+
+- A **search field** in the library header, next to All photos / Favorites / Map. On a phone it is an icon at the end of
+  that row that expands into a full-width field (the tabs step aside, a back arrow closes it), so the row never holds more
+  than three tabs and one icon, and fits 320 px. Recent searches (kept in this browser only) drop down under the field.
+- **Enter** goes to `/search?q=...`: results in the library's own grid (lightbox, favorites, select, add to album, share,
+  trash all work), best match first, "N best matches". A search shows at most the 300 best matches; a text query always
+  has *some* ranking, so the list ends where the matches stop being meaningful, not where they run out.
+- **Filters** (button under the header; a bottom sheet on a phone, a dialog on a wide screen): year or a date range,
+  favorites, camera, place (city, region or country), file type (JPEG, HEIC, RAW, other), has a location, album. The
+  choices come from what the library has, with counts. Each active filter is a chip with an x; filters work alone (then
+  they list photos newest first, with no limit) or together with the text.
+- While the worker is still embedding the library (after the first deploy, or after a model change) search says **"Still
+  indexing 12,345 photos: results may be incomplete"** with a progress bar; photos that are not indexed yet are simply not
+  text results (they still match filters). "Nothing matched" says so too.
+- **Select all** on a filter-only search selects every match (a server-side scope, like the other views). On a text search
+  it selects the results that are loaded (at most 300): a ranked list has no stable "everything" for the server to
+  re-resolve, so those actions send explicit ids.
+
+Privacy: queries are never logged (the request log has the route template and no query string, the gateway's redacts it,
+the metrics carry only `mode`, `plan` and `outcome` tags), the recent searches live in the browser's `localStorage`, and
+no byte of a photo or a query goes to a third party.
+
+## How it works
+
+```
+upload -> metadata -> thumbnail ──> embed (worker, background) ──> asset_embeddings (halfvec(512), HNSW cosine)
+                       writes preview.webp   reads preview.webp                          ▲
+query text ──> assets service: tokenizers + ONNX text tower ──> 512-d vector ── nearest ──┘ (+ filters on assets)
+```
+
+- **Image side (worker).** The thumbnail job enqueues an `embed` job for the photo at priority 0. The embed job reads the
+  photo's `preview.webp` (1440 px, already oriented; never the original, so there is no big decode, no RAW development and
+  nothing to refuse for memory), resizes the shorter side to 224 and centre-crops (CLIP's preprocessing), runs the image tower
+  and stores a unit vector with the model id and version. It runs in its own loop, takes up to 4 jobs at a time (their
+  previews download concurrently, the model runs once over the batch) and **only when no thumbnail, metadata, pairing or
+  geocode job is runnable**, so an upload's thumbnails are never queued behind the backfill. One ONNX session with
+  `WORKER_EMBED_THREADS` (default 1) threads, loaded on the first job and dropped after five quiet minutes. Its resident
+  memory (about 150 MB) is not part of the decode budget; the worker's container limit includes it (`docs/build.md`), and the
+  `embed.model_loaded` and `worker.rss_bytes` gauges show it against that limit.
+- **Versioned and idempotent.** `jobs.version` of an embed job is `MODEL_VERSION` and `asset_embeddings` keeps
+  `(model, version)` with every vector. At start and every 15 minutes the worker queues an embed job (priority 10) for every
+  visible photo with a preview that has no vector for the *current* model and version, so changing `MODEL_ID` or
+  `MODEL_VERSION` in `crates/cyanotype-clip` re-embeds the library with no migration; the new vector replaces the old one in
+  one statement (`DELETE ... model <> $new` + upsert), and search ignores vectors of another model or version, so a half-done
+  swap never mixes two vector spaces. The same sweep fills in photos whose job was lost, whose RAW partner was unpaired, or
+  that were embedded after a failure.
+- **Job priority.** `jobs.priority` (smallint, default 0, lower first) orders the claim: `ORDER BY priority, run_after, id`
+  with the index `jobs_claim_idx (kind, priority, run_after, id) WHERE state = 'queued'`. Migration 0012 backfills one embed
+  job per existing photo at priority 10 (`ON CONFLICT DO NOTHING`, so running it twice adds nothing). LISTEN/NOTIFY is
+  unchanged.
+- **Text side (assets service).** `tokenizers` turns the query into CLIP's BPE tokens (77 at most), the ONNX text tower
+  embeds it (about 10 ms), and the vector is compared with the photos'. The tower loads on the first search and stays
+  loaded; a 256-entry LRU keeps recent queries (case and spacing do not matter), so paging, changing a filter or retyping
+  costs nothing. A server without the model files answers searches with `503` and keeps every filter working.
+- **Storage.** `asset_embeddings(asset_id, model, version, embedding halfvec(512))`, primary key `(asset_id, model)`,
+  `ON DELETE CASCADE` (purging a photo takes its vector with it). `halfvec`, not `vector`: half the size (1 KB a row, so a
+  row stays inline in its page instead of being TOASTed, and the index is half as large), and fp16's three digits are far
+  finer than the gaps between CLIP neighbours. HNSW (`m = 16`, `ef_construction = 64`, cosine) on that column.
+
+### The query
+
+Both plans compute cosine distance between the query vector and the vectors of the caller's own live, visible photos
+(`owner_id`, `deleted_at IS NULL`, `primary_id IS NULL`: no trash, no hidden RAW halves of pairs), rank the best 300, and
+page them with a keyset cursor over `(distance, id)`, so a page boundary inside a run of ties loses and repeats nothing.
+
+- **At most 8,000 photos pass the filters** (a small library, an album, a month, one camera): *exact* distance to every
+  candidate, from the candidates' primary-key lookups (hash joins are switched off for the statement, because the planner's
+  habit of reading the whole embeddings table for an album of 40 photos is the slow case). Complete and about 50 ms at
+  8,000.
+- **More than that** (a big library, however it is filtered): the nearest *k* vectors straight from the HNSW index
+  (`hnsw.ef_search = 400` and `hnsw.iterative_scan = relaxed_order`, so the index keeps producing past `ef_search` when
+  *k* is larger), then the filters on their photos. *k* starts at 450 without a filter and, with one, at 1.5 x 300 divided by
+  the smallest share of vectors that can pass (more than 8,000 do: 2,800 at 50,000 photos). If the filters still leave fewer
+  than 300 and the index has more, *k* grows fourfold (to at most 20,000) and the step runs again; the cursor carries the final
+  *k*, so every page ranks the same list. Written as two steps because a join with a filter makes the planner *guess* how many
+  rows pass, and a wrong guess silently turns the index scan into a scan of the whole table (measured: 15 ms became 300 ms).
+- The queries are built per request and run as unnamed prepared statements: a cached statement is planned once with
+  placeholders, and that generic plan was 20x slower than the plan for the actual dates.
+- The file-type and camera filters read stored generated columns (`assets.file_ext`, the extension of the original's name, and
+  `assets.camera_label`, the camera as the facets name it, with an index on its lowercase form): computing them per row
+  cost hundreds of milliseconds at 50,000 photos. `raw` means a RAW file *or* a photo with a RAW
+  paired behind it, so one JPEG + RAW pair counts under both `jpeg` and `raw`.
+
+### Measured (50,000 photos, one owner)
+
+`scripts/search-perf-seed.sql` builds a synthetic library (50,000 photos of one owner, 400 topics of clustered 512-d unit
+vectors, 8 years of dates, 3 cameras, 40 places, GPS on half, JPEG/HEIC/RAW, 10 % favorites, an album of 40) and
+`search_performance_on_50k_photos` (ignored; `PERF_DATABASE_URL=... cargo test --release -p cyanotype-assets
+search_performance -- --ignored --nocapture`) times the whole request path of `GET /assets/search` (query vector in, the
+60 items with their thumbnail URLs out; the text model is not in this number, it adds ~10 ms) for 40 queries each, on
+`pgvector/pgvector:pg17` (pgvector 0.8.7) in a container limited to 768 MB with the production flags
+(`shared_buffers=192MB`), after a `VACUUM ANALYZE`, on this 4-core host shared with other work. Query vectors are means of
+40 random photos (a point between photos, as a text query is; a photo's own vector is an easier case for latency and a
+noisy one for recall, because its topic-mates are near-ties).
+
+| Search (ranked, 60 results) | Photos passing | Plan | p50 | p95 |
+|---|---|---|---|---|
+| no filter | 50,000 | HNSW | 42 ms | 64 ms |
+| favorites | 5,000 | exact | 44 ms | 53 ms |
+| one year | ~6,000 | exact | 60 ms | 72 ms |
+| camera + year | ~2,000 | exact | 41 ms | 60 ms |
+| a city | 1,250 | exact | 100 ms | 130 ms |
+| an album of 40 | 40 | exact | 8 ms | 9 ms |
+| favorites + has location | 5,000 | exact | 52 ms | 64 ms |
+| has a location | 25,000 | HNSW | 81 ms | 96 ms |
+| JPEG only | 25,000 | HNSW | 66 ms | 84 ms |
+| HEIC only | 12,500 | HNSW | 85 ms | 105 ms |
+| one camera | 16,700 | HNSW | 87 ms | 98 ms |
+
+Everything is under 130 ms at p95 before the text model, so a text query answers in about 50 to 150 ms (the model adds ~10 ms,
+nothing on a cached query), well inside the 300 ms target. These are warm numbers: with the Postgres cache cold (right after a
+restart, or after the host's page cache was flushed) the first queries read the 65 MB index and 56 MB of vectors from disk
+and took seconds (the first run of this benchmark after a big compile: p95 484 ms, worst 4.5 s), then settled. Sizes at
+50,000 photos: embeddings table 56 MB, primary key 4 MB, HNSW index 65 MB (125 MB together; `assets` itself is 24 MB). Building
+the index by inserting 50,000 vectors one at a time took about 5 minutes on this host (what the worker's backfill does as it
+goes). Iterations that shaped the plan (each measured on this data): a join with a filter let the planner pick a whole-table
+scan (300 ms); a cached generic plan for a date range was 20x slower than the plan for the actual dates; the extension
+regex per row (400 ms) and the camera label per row (200 ms) became stored columns; a second HNSW pass when the first `k`
+was too small cost as much as a generous first `k`.
+
+HNSW recall against the exact ranking (`ef_search = 400`, iterative scan, 40 queries): top 10 **0.997**, top 60 **0.998**,
+top 300 **0.977** without a filter; 1.000 / 1.000 / 1.000 with a 50 % filter and with a 33 % filter.
+(`ef_search` 40, pgvector's default, gave 0.83 / 0.89 / 0.96 on the same data and 0.46 / 0.46 / 0.57 for in-distribution
+queries: the setting matters; 400 costs a few ms more than 100.) The synthetic data is easier or harder than real photos in
+ways that are unknown (real recall with the real model on a real library is not measured here).
+
+## API (assets service, owner-scoped)
+
+| Request | Effect |
+|---|---|
+| `GET /assets/search?q=&from=&to=&favorite=&camera=&place=&type=&album=&has_location=&limit=&cursor=` | Ranked results for `q` (at most 300, best first) or, without `q`, the photos matching the filters, newest first. Every parameter is optional; `from`/`to` are inclusive UTC days (`2024-03-01`), `camera` and `place` are the facet values below (case-insensitive; `place` matches a city, region, country or country code), `type` is `jpeg`, `heic` (also HEIF and AVIF), `raw` or `other`, `limit` defaults to 60 (at most 200). Items have the shape of `GET /assets` plus `score` (cosine similarity, null without `q`); the response has `next_cursor`, `ranked` and, on the first page of a filter-only search, `total`. `400` for a bad date, type, album id, cursor or a `q` over 200 characters; `503` when the model is not installed and `q` is set. |
+| `GET /assets/search/facets` | What the filters can be set to, with counts over the whole library: `total`, `favorites`, `with_location`, `types`, `cameras` (top 50), `places` (top 120, each with its `kind`), `years`. |
+| `POST /assets/favorite`, `trash`, `restore`, albums, shares with `{"scope": {"search": {"camera": "...", ...}}, "except": [...]}` | The bulk endpoints accept the filters of a filter-only search as a scope (never `q`). |
+| `GET /assets/processing` | Gains `embedding`: `indexed`, `total` (visible live photos with a preview), `queued`, `running`, `failed`. Indexing does not count towards `active`, `queued` or `running`, so the library page's "Processing..." banner is not on for hours after a model change; failed embed jobs do show in `failed` and `failures` and "Retry failed" requeues them. |
+
+## Configuration
+
+| Variable | Service | Default | Meaning |
+|---|---|---|---|
+| `CLIP_MODEL_DIR` | worker, assets | `/opt/cyanotype/models/clip` (where the images put it) | Directory with the model files. Without them the worker skips embedding (a warning at start) and the assets service answers searches with 503. |
+| `WORKER_EMBED` | worker | `1` | `0` turns embedding off. |
+| `WORKER_EMBED_THREADS` | worker | `1` | Intra-op threads of the image session. 2 roughly doubles the backfill speed and takes the second core of a 2 vCPU host from everything else. |
+| `SEARCH_THREADS` | assets | `2` | Intra-op threads of the text session. |
+
+## Tests
+
+- `crates/cyanotype-clip/tests/model.rs`: token ids of the Python `tokenizers` reference (including a text over the 77-token
+  context), text and image embeddings against reference vectors made by a one-off script (`tests/fixtures/make_reference.py`:
+  Pillow preprocessing, onnxruntime, `tokenizers`), the query cache, and a **quality smoke test**: 20 CC0 photos from
+  Wikimedia Commons (`tests/fixtures/images/SOURCES.json`) across clear categories, two queries each, the right photo must be
+  in the top 3 of 20 (the recall is printed). They need the model files (`CLIP_MODEL_DIR`); without them they skip, and in CI
+  (`CYANOTYPE_REQUIRE_MODEL=1`) a missing model is a failure.
+- `crates/cyanotype-core/tests/embeddings.rs` (real Postgres with pgvector): schema (halfvec column, HNSW index, pgvector
+  >= 0.8), storing and replacing vectors, the sweep (which photos it queues, idempotent, a version bump or a new model id
+  re-queues everything, failures are left alone), migration 0012's backfill and its idempotency, claim order by priority,
+  embeds waiting for foreground work, progress counts.
+- `apps/worker/src/embed.rs` tests (Postgres + S3 + the model): embed jobs write vectors and a text query's nearest vector is
+  the right photo, hidden RAWs / photos being deleted / photos without a preview are skipped, a corrupt preview fails
+  permanently and a missing one retries, an older model's vector is replaced, and a thumbnail job queues its embed job at
+  priority 0 which then reads the preview the thumbnail wrote.
+- `apps/assets/src/routes/search_tests.rs` (Postgres, fake text model): ranking and scores, every filter alone and combined
+  with text, file types incl. RAW pairs, albums, owner isolation on both plans, trash / purging / hidden RAWs excluded,
+  unindexed or other-model vectors ignored, keyset pagination without gaps or repeats on both plans (including ties), the
+  300 depth limit, plan choice, filter-only totals and the `search` scope, facets, validation and the 503.
+  `search_performance_on_50k_photos` (ignored) is the measurement above.
+- Web: `searchText.test.ts`, `SearchBar.test.tsx`, `FilterSheet.test.tsx`, `Search.test.tsx`, and
+  `e2e/mobile-overflow.spec.ts` (bar collapsed and expanded, recent searches, results, selection, the filter sheet with
+  long names, chips, no results, indexing, unavailable, intro) at 320 to 1280 px, light and dark.

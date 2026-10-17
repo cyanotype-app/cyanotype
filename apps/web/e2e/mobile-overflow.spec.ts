@@ -92,7 +92,27 @@ const BUSY = {
     { job_id: 3, asset_id: "a4", original_name: "IMG_1004.HEIC", kind: "thumbnail", last_error: "sha256 mismatch", attempts: 5 },
   ],
 };
-let processing: typeof IDLE | typeof BUSY = IDLE;
+const INDEXING = { ...IDLE, total_photos: 52000, embedding: { indexed: 12345, total: 52000, queued: 39654, running: 1, failed: 0 } };
+let processing: typeof IDLE | typeof BUSY | typeof INDEXING = IDLE;
+
+// Search: the mock answers by what the query says. "nothing" matches no photo, "unavailable" is a server without the
+// model; anything else ranks the library's photos. Facets carry long names to stress the filter sheet.
+const LONG_CAMERA = "Hasselblad X2D 100C with the XCD 4/45P lens and the optional extension tube set";
+const LONG_PLACE = "Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch";
+const FACETS = {
+  total: 52000,
+  favorites: 412,
+  with_location: 30011,
+  types: [{ value: "jpeg", count: 41000 }, { value: "heic", count: 9000 }, { value: "raw", count: 6000 }],
+  cameras: [{ value: LONG_CAMERA, count: 5230 }, { value: "Canon EOS R5", count: 30100 }, { value: "Apple iPhone 15 Pro Max", count: 16670 }],
+  places: [
+    { value: "United Kingdom", kind: "country", count: 3000 },
+    { value: LONG_PLACE, kind: "city", count: 12 },
+    { value: "Lisbon", kind: "city", count: 4100 },
+  ],
+  years: [{ value: "2024", count: 9000 }, { value: "2023", count: 12000 }],
+};
+const searchHits = (n: number) => assets.slice(0, n).map((a, i) => ({ ...a, score: 0.31 - i * 0.004 }));
 
 async function mock(page: Page) {
   const json = (body: unknown) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
@@ -137,6 +157,15 @@ async function mock(page: Page) {
         return route.fulfill(
           json({ id: "k3", name: "new", prefix: "cy_zzzz", created_at: "2024-06-01T00:00:00Z", key: "cy_" + "0123456789abcdef".repeat(5) }),
         );
+      if (p === "/assets/search/facets" && m === "GET") return route.fulfill(json(FACETS));
+      if (p === "/assets/search" && m === "GET") {
+        const q = u.searchParams.get("q") ?? "";
+        if (q.includes("unavailable"))
+          return route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"search is not available: the model files are not installed"}' });
+        const items = q.includes("nothing") ? [] : searchHits(q ? 24 : 30);
+        const ranked = q !== "";
+        return route.fulfill(json({ items, next_cursor: null, ranked, total: ranked ? null : items.length }));
+      }
       if (p === "/assets/processing" && m === "GET") return route.fulfill(json(processing));
       if (p === "/assets/processing/retry" && m === "POST") {
         processing = { ...IDLE };
@@ -269,6 +298,36 @@ async function mockShares(page: Page) {
   );
 }
 
+/** Assert that nothing sticks out of the viewport (and, with SHOT_DIR, save a screenshot named `<prefix>-<name>.png`). */
+function makeCheck(page: Page, prefix: string, problems: string[]) {
+  return async function check(name: string) {
+    await page.waitForTimeout(150);
+    const r = await page.evaluate(() => {
+      const w = window.innerWidth;
+      const bad: string[] = [];
+      for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
+        const b = el.getBoundingClientRect();
+        // Tiles clip their hover-zoomed image; map markers sit wherever the map puts them and the pane clips them.
+        if (b.width === 0 || el.closest(".tile") || el.closest(".map-canvas")) continue;
+        if (b.right > w + 0.5 || b.left < -0.5) {
+          bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} "${(el.textContent ?? "").trim().slice(0, 24)}" [${Math.round(b.left)}..${Math.round(b.right)}]`);
+        }
+      }
+      // The page can also be pushed wide by something whose own box fits but whose content spills (scrollWidth): name those.
+      if (document.documentElement.scrollWidth > w) {
+        for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
+          if (el.scrollWidth > w + 0.5 && !el.closest(".tile") && !el.closest(".map-canvas")) {
+            bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} scrollWidth ${el.scrollWidth}`);
+          }
+        }
+      }
+      return { scroll: document.documentElement.scrollWidth, w, bad: bad.slice(0, 6) };
+    });
+    if (r.scroll > r.w || r.bad.length) problems.push(`${name}: scrollWidth ${r.scroll} > ${r.w}; offenders: ${r.bad.join("; ")}`);
+    if (SHOT_DIR) await page.screenshot({ path: join(SHOT_DIR, `${prefix}-${name}.png`) });
+  };
+}
+
 for (const { width, scheme } of RUNS) {
   test.describe(`${width}px ${scheme}`, () => {
     test.use({ colorScheme: scheme, viewport: { width, height: width === 1280 ? 800 : 740 }, hasTouch: width < 600 });
@@ -278,24 +337,7 @@ for (const { width, scheme } of RUNS) {
       if (SHOT_DIR) mkdirSync(SHOT_DIR, { recursive: true });
       const problems: string[] = [];
 
-      async function check(name: string) {
-        await page.waitForTimeout(150);
-        const r = await page.evaluate(() => {
-          const w = window.innerWidth;
-          const bad: string[] = [];
-          for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
-            const b = el.getBoundingClientRect();
-            // Tiles clip their hover-zoomed image; map markers sit wherever the map puts them and the pane clips them.
-            if (b.width === 0 || el.closest(".tile") || el.closest(".map-canvas")) continue;
-            if (b.right > w + 0.5 || b.left < -0.5) {
-              bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} "${(el.textContent ?? "").trim().slice(0, 24)}" [${Math.round(b.left)}..${Math.round(b.right)}]`);
-            }
-          }
-          return { scroll: document.documentElement.scrollWidth, w, bad: bad.slice(0, 6) };
-        });
-        if (r.scroll > r.w || r.bad.length) problems.push(`${name}: scrollWidth ${r.scroll} > ${r.w}; offenders: ${r.bad.join("; ")}`);
-        if (SHOT_DIR) await page.screenshot({ path: join(SHOT_DIR, `${width}${scheme === "dark" ? "-dark" : ""}-${name}.png`) });
-      }
+      const check = makeCheck(page, `${width}${scheme === "dark" ? "-dark" : ""}`, problems);
       const open = async (path: string, ready: string | RegExp) => {
         await page.goto(path);
         await (typeof ready === "string" ? page.getByText(ready) : page.getByRole("button", { name: ready })).first().waitFor();
@@ -536,6 +578,87 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: "Create key" }).click();
       await page.getByText("Copy your new key").waitFor();
       await check("api-keys");
+
+      expect(problems, problems.join("\n")).toEqual([]);
+    });
+
+    test(`search: bar, results, filters, chips and states fit`, async ({ page }) => {
+      test.setTimeout(90_000);
+      if (SHOT_DIR) mkdirSync(SHOT_DIR, { recursive: true });
+      const problems: string[] = [];
+      const check = makeCheck(page, `${width}${scheme === "dark" ? "-dark" : ""}-search`, problems);
+      await mock(page);
+      processing = IDLE;
+      const field = page.getByRole("combobox", { name: "Search photos" });
+      // A phone shows an icon that expands; a wide screen shows the field. Either way this leaves the field usable.
+      const openBar = async () => {
+        const icon = page.getByRole("button", { name: "Search photos" });
+        if (await icon.isVisible()) await icon.click();
+        await field.waitFor({ state: "visible" });
+      };
+
+      await page.goto("/library");
+      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
+      await check("bar-collapsed");
+      expect(await page.getByRole("link").filter({ hasText: /^(All photos|Favorites|Map)$/ }).count()).toBe(3);
+      await openBar();
+      await check("bar-expanded");
+      // Recent searches drop down under the field.
+      await page.evaluate(() => localStorage.setItem("cyanotype.recentSearches", JSON.stringify(["dog on the beach", "red car at night", "x".repeat(90)])));
+      await field.fill("");
+      await field.blur(); // (a phone's field is already focused after expanding)
+      await field.focus();
+      await page.getByRole("listbox", { name: "Recent searches" }).waitFor();
+      await check("bar-recent");
+
+      await field.fill("dog on the beach");
+      await field.press("Enter");
+      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
+      await page.getByText(/best matches/).waitFor();
+      await check("results");
+      await page.getByRole("button", { name: "Select", exact: true }).click();
+      await page.getByRole("button", { name: /Select IMG_1000/ }).click();
+      await check("results-select");
+      await page.getByRole("button", { name: "Done" }).click();
+
+      await page.getByRole("button", { name: /^Filters/ }).click();
+      await page.getByRole("dialog", { name: "Filters" }).waitFor();
+      await page.getByRole("option", { name: new RegExp(LONG_CAMERA.slice(0, 20)) }).first().waitFor({ state: "attached" });
+      await check("filters-sheet");
+      const sheet = page.getByRole("dialog", { name: "Filters" });
+      await sheet.getByLabel("Camera", { exact: true }).selectOption(LONG_CAMERA);
+      await sheet.getByLabel("Place", { exact: true }).selectOption(LONG_PLACE);
+      await sheet.getByLabel("Year", { exact: true }).selectOption("2024");
+      await sheet.getByRole("checkbox", { name: /Favorites only/ }).check();
+      await sheet.getByRole("radio", { name: "RAW" }).check({ force: true });
+      await check("filters-sheet-filled");
+      await page.getByRole("button", { name: "Show photos" }).click();
+      await page.getByRole("list", { name: "Active filters" }).getByText("2024").waitFor();
+      await check("results-with-chips");
+
+      await openBar();
+      await field.fill("nothing like it");
+      await field.press("Enter");
+      await page.getByRole("heading", { name: "Nothing matched" }).waitFor();
+      await check("no-results");
+
+      processing = INDEXING;
+      await page.goto("/search?q=dog");
+      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
+      await page.getByText(/Still indexing 39,655 photos/).first().waitFor();
+      await check("indexing");
+      await page.goto("/search?q=nothing");
+      await page.getByText(/still being indexed cannot match/).waitFor();
+      await check("indexing-no-results");
+      processing = IDLE;
+
+      await page.goto("/search?q=unavailable");
+      await page.getByRole("heading", { name: "Search isn’t available" }).waitFor();
+      await check("unavailable");
+
+      await page.goto("/search");
+      await page.getByRole("heading", { name: "Search your photos" }).waitFor();
+      await check("intro");
 
       expect(problems, problems.join("\n")).toEqual([]);
     });

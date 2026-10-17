@@ -9,14 +9,14 @@
 # Targets: auth | assets | worker | cli.   See docs/build.md.
 
 # Keep the Rust version in step with rust-toolchain.toml (CI checks this; docs/build.md).
-ARG RUST_IMAGE=lukemathwalker/cargo-chef:0.1.78-rust-1.99.0-bookworm
+ARG RUST_IMAGE=lukemathwalker/cargo-chef:0.1.78-rust-1.99.0-trixie
 
 # ---- chef: Rust toolchain + cargo-chef + the C toolchain -------------------------------
 # The worker's libwebp (webp / libwebp-sys crates) is compiled from bundled C sources and linked
 # statically, and so is libheif (libheif-rs "embedded-libheif": the libheif 1.23.1 sources vendored in
 # the libheif-sys crate, built with cmake), so build-essential + cmake are needed here and nowhere else.
 # libheif's HEVC (HEIC) and AV1 (AVIF) decoders are separate libraries it links dynamically:
-# libde265-dev and libdav1d-dev here, libde265-0 and libdav1d6 in the worker runtime image.
+# libde265-dev and libdav1d-dev here, libde265-0 and libdav1d7 in the worker runtime image.
 FROM ${RUST_IMAGE} AS chef
 RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential cmake pkg-config libde265-dev libdav1d-dev \
@@ -44,8 +44,26 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
  && for b in auth assets worker; do cp "target/release/cyanotype-$b" /out/; done \
  && cp target/release/cyanotype /out/cyanotype-cli
 
+# ---- CLIP model files, pinned by sha256 in models/clip.lock -------------------------------
+# One stage per consumer, so each image carries only its own tower: the worker the image tower (89 MB), the assets service
+# the text tower and tokenizer (66 MB). The layers depend only on the lock file and the script, never on source code, so
+# they are rebuilt (and pulled to the server) only when the model changes. The same script verifies the checksums for
+# a developer checkout (`just models`).
+FROM debian:trixie-slim AS clip-fetch
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+COPY scripts/fetch-models.sh /usr/local/bin/fetch-models
+COPY models/clip.lock /etc/clip.lock
+
+FROM clip-fetch AS clip-vision
+RUN LOCK=/etc/clip.lock fetch-models /models vision_model_int8.onnx
+
+FROM clip-fetch AS clip-text
+RUN LOCK=/etc/clip.lock fetch-models /models text_model_int8.onnx tokenizer.json
+
 # ---- runtime base: slim, non-root, CA certs for S3/TLS ---------------------------------
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
@@ -57,7 +75,10 @@ FROM runtime AS auth
 COPY --from=builder /out/cyanotype-auth /usr/local/bin/app
 ENTRYPOINT ["/usr/local/bin/app"]
 
+# The assets service embeds search queries with the CLIP text tower (ONNX Runtime is linked statically into the binary; the
+# C++ runtime it needs, libstdc++6, is in the trixie base image). The model is loaded on the first search.
 FROM runtime AS assets
+COPY --from=clip-text /models /opt/cyanotype/models/clip
 COPY --from=builder /out/cyanotype-assets /usr/local/bin/app
 ENTRYPOINT ["/usr/local/bin/app"]
 
@@ -69,8 +90,9 @@ ENTRYPOINT ["/usr/local/bin/app"]
 FROM runtime AS worker
 USER root
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libde265-0 libdav1d6 libjpeg62-turbo libopenjp2-7 \
+ && apt-get install -y --no-install-recommends libde265-0 libdav1d7 libjpeg62-turbo libopenjp2-7 \
  && rm -rf /var/lib/apt/lists/*
+COPY --from=clip-vision /models /opt/cyanotype/models/clip
 COPY --from=builder /out/cyanotype-worker /usr/local/bin/app
 RUN if ldd /usr/local/bin/app | grep "not found"; then echo "worker has unresolved shared libraries (see above): add their packages to this stage" >&2; exit 1; fi
 USER cyanotype
