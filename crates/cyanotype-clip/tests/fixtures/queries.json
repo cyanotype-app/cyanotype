@@ -1,0 +1,22 @@
+{
+  "dog": ["dog", "a small white fluffy dog"],
+  "cat": ["cat", "a cat with blue eyes"],
+  "beach": ["beach", "an empty beach with umbrellas"],
+  "car": ["car", "an old white car"],
+  "pizza": ["pizza", "a pizza in a pan"],
+  "mountain": ["mountain", "green hills and rocky peaks"],
+  "aurora": ["northern lights", "green aurora over the sea"],
+  "city_night": ["city at night", "a city skyline lit up at night"],
+  "birthday_cake": ["birthday cake", "a colourful cake with flowers"],
+  "airplane": ["airplane", "an aeroplane contrail in a blue sky"],
+  "sailboat": ["sailboat", "a sailing boat in a harbour"],
+  "horse": ["horse", "a horse standing in shallow water"],
+  "bird": ["bird", "a kingfisher on a branch"],
+  "forest": ["forest", "tall pine trees in a forest"],
+  "sunset": ["sunset", "a mountain peak at sunset"],
+  "bridge": ["bridge", "a bridge at dusk with lights"],
+  "guitar": ["guitar", "an acoustic guitar"],
+  "coffee": ["cup of coffee", "a coffee cup and coffee beans"],
+  "train": ["train", "a freight train on the tracks"],
+  "fireworks": ["fireworks", "fireworks in the night sky"]
+}

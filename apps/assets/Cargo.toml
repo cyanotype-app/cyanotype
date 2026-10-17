@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 cyanotype-core.workspace = true
+cyanotype-clip.workspace = true
 cyanotype-service.workspace = true
 anyhow.workspace = true
 argon2.workspace = true
@@ -20,6 +21,7 @@ rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
+thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
 tracing.workspace = true

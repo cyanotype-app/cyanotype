@@ -121,6 +121,56 @@ export interface Processing {
   without_thumbnail: number;
   /** The most recent failures (at most 20); `failed` counts them all. */
   failures: ProcessingFailure[];
+  /** Search indexing, reported apart from `active` (it can take hours for a big library). Absent on older servers. */
+  embedding?: { indexed: number; total: number; queued: number; running: number; failed: number };
+}
+
+/** The structured filters of a search, and the optional natural-language query (`GET /assets/search`). */
+export interface SearchParams {
+  q?: string;
+  /** `YYYY-MM-DD` (UTC), inclusive. */
+  from?: string;
+  to?: string;
+  favorite?: boolean;
+  /** A camera as `facets().cameras` lists it. */
+  camera?: string;
+  /** A city, region or country name as `facets().places` lists it. */
+  place?: string;
+  type?: "jpeg" | "heic" | "raw" | "other";
+  /** An album id. */
+  album?: string;
+  has_location?: boolean;
+}
+
+/** A search result: a list item plus the similarity to the query (null for filter-only searches). */
+export interface SearchItem extends AssetListItem {
+  score: number | null;
+}
+
+/** GET /assets/search */
+export interface SearchResult {
+  items: SearchItem[];
+  next_cursor: string | null;
+  /** Ranked by similarity to the query (at most a few hundred, best first), or newest first. */
+  ranked: boolean;
+  /** Photos matching the filters; only for the first page of a filter-only search. */
+  total?: number | null;
+}
+
+export interface Facet {
+  value: string;
+  count: number;
+}
+
+/** GET /assets/search/facets: what the filters can be set to, with counts over the whole library. */
+export interface Facets {
+  total: number;
+  favorites: number;
+  with_location: number;
+  types: Facet[];
+  cameras: Facet[];
+  places: (Facet & { kind: "country" | "region" | "city" })[];
+  years: Facet[];
 }
 
 /** Most ids the server accepts per bulk request; longer lists are sent in several requests. */
@@ -342,7 +392,14 @@ function putPart(
  * What a bulk action applies to: explicit ids, or "everything in this view except ..." resolved by the server, so
  * "Select all" works on photos the browser never loaded. `trash_batch` is what a scope-based trash returns, to undo it.
  */
-export type Scope = "library" | "favorites" | "trash" | { album: string } | { trash_batch: string };
+export type Scope =
+  | "library"
+  | "favorites"
+  | "trash"
+  | { album: string }
+  | { trash_batch: string }
+  /** Every photo a filter-only search lists (no text query: a ranked search selects what it loaded). */
+  | { search: Omit<SearchParams, "q"> };
 export interface ScopeTarget {
   scope: Scope;
   except: readonly string[];
@@ -370,6 +427,22 @@ async function bulk(path: string, target: Target, extra: object = {}): Promise<B
     count += r.count;
   }
   return { count };
+}
+
+/** The query string of `GET /assets/search`: only the fields that are set. */
+export function searchQuery(params: SearchParams, opts: { cursor?: string | null; limit?: number } = {}): string {
+  const q = new URLSearchParams();
+  // A fixed order, so the same search is always the same URL (cache keys, tests).
+  const keys = ["q", "from", "to", "favorite", "camera", "place", "type", "album", "has_location"] as const;
+  for (const k of keys) {
+    const v = params[k];
+    // `favorite: false` means "no filter"; `has_location: false` is a real filter ("photos without a location").
+    if (v === undefined || v === "" || (k === "favorite" && v === false)) continue;
+    q.set(k, String(v));
+  }
+  if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+  if (opts.cursor) q.set("cursor", opts.cursor);
+  return q.toString();
 }
 
 export const api = {
@@ -449,6 +522,10 @@ export const api = {
     bulk(`/assets/albums/${encodeURIComponent(id)}/assets/remove`, target),
   /** Separate a RAW + JPEG pair into two photos (either file's id); they are not paired again automatically. */
   unpair: (id: string) => request<void>(`/assets/${encodeURIComponent(id)}/unpair`, { method: "POST" }),
+  /** Natural-language and/or filtered search; `cursor` from the previous page's `next_cursor`. */
+  search: (params: SearchParams, opts: { cursor?: string | null; limit?: number } = {}) =>
+    request<SearchResult>(`/assets/search?${searchQuery(params, opts)}`),
+  searchFacets: () => request<Facets>("/assets/search/facets"),
   processing: () => request<Processing>("/assets/processing"),
   retryFailedJobs: () => request<{ requeued: number }>("/assets/processing/retry", { method: "POST" }),
   getAsset: (id: string) => request<AssetDetail>(`/assets/${encodeURIComponent(id)}`),

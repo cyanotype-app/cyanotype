@@ -10,6 +10,7 @@ import { Login } from "./pages/Login";
 import { MapPage } from "./pages/MapPage";
 import { Register } from "./pages/Register";
 import { ShareView } from "./pages/ShareView";
+import { SearchPage } from "./pages/Search";
 import { SharedLinks } from "./pages/SharedLinks";
 import { Trash } from "./pages/Trash";
 import { UploadProvider } from "./upload/UploadProvider";
@@ -28,6 +29,7 @@ export function App() {
         <Route path="/library" element={<Library key="all" />} />
         <Route path="/favorites" element={<Library key="favorites" favorites />} />
         <Route path="/map" element={<MapPage />} />
+        <Route path="/search" element={<SearchPage />} />
         <Route path="/albums" element={<Albums />} />
         <Route path="/albums/:id" element={<AlbumPage />} />
         <Route path="/shared" element={<SharedLinks />} />

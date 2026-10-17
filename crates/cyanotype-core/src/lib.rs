@@ -1,5 +1,6 @@
 pub mod config;
 pub mod db;
+pub mod embeddings;
 pub mod jobs;
 pub mod keys;
 pub mod manifest;

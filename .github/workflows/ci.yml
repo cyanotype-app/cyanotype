@@ -33,6 +33,7 @@ jobs:
               - 'crates/**'
               - 'justfile'
               - 'scripts/**'
+              - 'models/**'
               - '.github/workflows/ci.yml'
             images:
               - 'Dockerfile'
@@ -44,6 +45,8 @@ jobs:
               - 'apps/**'
               - 'crates/**'
               - 'infra/backup/**'
+              - 'models/**'
+              - 'scripts/fetch-models.sh'
               - '.github/workflows/ci.yml'
             web:
               - 'apps/web/**'
@@ -97,6 +100,17 @@ jobs:
         with: { cache: false, rustflags: "" }
       - uses: Swatinem/rust-cache@v2
       - uses: extractions/setup-just@v2
+      # The search model (150 MB, pinned by sha256 in models/clip.lock) for the tokenizer/preprocessing parity and
+      # the search-quality tests: cached by the lock file's hash, and the tests fail (instead of skipping) without it.
+      - name: CLIP model for the search tests
+        uses: actions/cache@v4
+        with:
+          path: models/clip
+          key: clip-model-${{ hashFiles('models/clip.lock') }}
+      - run: scripts/fetch-models.sh
+      - run: |
+          echo "CLIP_MODEL_DIR=$PWD/models/clip" >> "$GITHUB_ENV"
+          echo "CYANOTYPE_REQUIRE_MODEL=1" >> "$GITHUB_ENV"
       - name: Dockerfile builds with the pinned Rust version
         run: scripts/check-rust-pin.sh
       - run: just check

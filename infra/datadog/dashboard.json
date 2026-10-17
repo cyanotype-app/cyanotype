@@ -1,6 +1,6 @@
 {
-  "title": "Cyanotype: import and job queue",
-  "description": "Queue depth, throughput, failures, durations, worker memory and upload throughput. Import via Dashboards > New Dashboard > Import dashboard JSON.",
+  "title": "Cyanotype: import, job queue and search",
+  "description": "Queue depth, throughput, failures, durations, worker memory, upload throughput and search (embedding backlog, query latency). Import via Dashboards > New Dashboard > Import dashboard JSON.",
   "layout_type": "ordered",
   "reflow_type": "fixed",
   "template_variables": [
@@ -938,6 +938,335 @@
     },
     {
       "definition": {
+        "type": "note",
+        "content": "## Search\nPhotos are embedded in the background by the worker (`embed` jobs, behind thumbnails; `cyanotype.embed.*`), queries are embedded and ranked by the assets service (`cyanotype.search.*`). The backlog after a model swap or a first deploy drains over hours: that is expected, and `kind:embed` is left out of the \"oldest queued job\" monitor.",
+        "background_color": "white",
+        "font_size": "14",
+        "text_align": "left",
+        "show_tick": false,
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 34,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Embedding backlog (queued and running)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.queue.queued{$env,kind:embed}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "r",
+                "query": "sum:cyanotype.queue.running{$env,kind:embed}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              },
+              {
+                "formula": "r"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 36,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Photos embedded per minute",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.jobs.completed{$env,kind:embed,outcome:done}.as_count().rollup(sum, 60)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 36,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Embed time per photo p50 / p95 (ms)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "p50",
+                "query": "avg:cyanotype.embed.duration.median{$env}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "p95",
+                "query": "max:cyanotype.embed.duration.95percentile{$env}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "p50"
+              },
+              {
+                "formula": "p95"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 39,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Embed batch size (photos per model run)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "avg:cyanotype.embed.batch_size.avg{$env}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 39,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Search queries per minute by mode and plan",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.search.queries{$env} by {mode,plan}.as_count().rollup(sum, 60)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 42,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Search latency p50 / p95 (ms)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "p50",
+                "query": "avg:cyanotype.search.latency_ms.median{$env} by {plan}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "p95",
+                "query": "max:cyanotype.search.latency_ms.95percentile{$env} by {plan}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "p50"
+              },
+              {
+                "formula": "p95"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 42,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Search errors by outcome",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.search.queries{$env,!outcome:ok} by {outcome}.as_count().rollup(sum, 60)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 45,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Assets container memory (bytes)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "avg:container.memory.usage{container_name:cyanotype-assets-*}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 45,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Worker container memory (bytes)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "avg:container.memory.usage{container_name:cyanotype-worker-*}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 45,
+        "width": 4,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
         "type": "log_stream",
         "title": "Worker errors and warnings",
         "logset": "",
@@ -957,7 +1286,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 34,
+        "y": 48,
         "width": 12,
         "height": 5
       }

@@ -516,6 +516,28 @@ and whenever the image carries a newer snapshot. The worker then fills in the pl
 lookup per geotagged photo). Place names come from GeoNames, licensed CC BY 4.0, https://www.geonames.org/ ; the map
 page credits GeoNames, OpenStreetMap contributors (ODbL) and Protomaps. How both work: `docs/library.md`, "Map and places".
 
+## Search (nothing to install)
+
+Photo search runs on the server with no external service and **needs nothing from you on deploy**: the CLIP model files
+(155 MB) are baked into the `worker` and `assets` images (the worker carries the image tower, the assets service the text
+tower), and the compose bundle already has the new memory limits (worker 1280m, assets 384m; the table is in
+`docs/build.md`, "Semantic search model"). Deploying this version:
+
+1. `dc run --rm migrate` applies migrations 0011 (the vector column and HNSW index, job priority, two generated columns
+   on `assets` (file extension, camera name), which rewrite that table once: seconds at 50,000 photos) and 0012 (queues one low-priority embed job
+   per existing photo).
+2. The worker then embeds the library **in the background, behind everything else**: uploads and their thumbnails are never
+   delayed by it, and it uses one CPU thread. At the measured speed that is a couple of hours for 50,000 photos
+   (`docs/build.md`); search works on what is indexed so far and says "Still indexing N photos" until it is done. The
+   Datadog dashboard's Search section shows the backlog draining.
+3. Disk grows by about 125 MB per 50,000 photos (56 MB of vectors, 4 MB of primary key, a 65 MB HNSW index); the nightly dump
+   includes the vectors (about 60 MB more before compression).
+
+Optional: `WORKER_EMBED_THREADS=2` in `.env.prod` roughly halves the backfill time while it runs (at the cost of the second
+core of a 2 vCPU host, so thumbnails of a simultaneous big import slow down); `WORKER_EMBED=0` turns embedding off (search
+then answers 503, filters keep working). The images pull the model as image layers that change only when the model does, so
+later deploys do not download it again.
+
 ## Known limitation: browser direct uploads and Linode CORS
 
 Browsers cannot PUT file parts straight to the bucket without CORS on the bucket. Linode Object Storage in
@@ -538,6 +560,7 @@ Downloads through presigned GET URLs in `<img>` tags are not affected by CORS.
 - [ ] Session cookie has `Secure; HttpOnly; SameSite=Lax` (check in browser devtools or `curl -i`).
 - [ ] Repeated bad logins return 429 (`for i in $(seq 15); do curl -s -o /dev/null -w '%{http_code}\n' -XPOST -H 'content-type: application/json' -d '{"email":"x@x.x","password":"nope"}' https://HOST/auth/login; done`).
 - [ ] `dc ps` shows services healthy; `docker stats` memory is within limits; only 80/443 are published (`ss -ltnp`).
+- [ ] Search: `docker stats` after the first search shows `assets` well under 384m and, while embedding, `worker` under 1280m; the library page's search says "Still indexing" until the backfill finishes.
 - [ ] A backup ran (`backup list` shows a dump) and a restore into a scratch database was rehearsed; a lifecycle rule handles old object versions.
 - [ ] GHCR login is via the deploy workflow (no PAT on the server) or a read-only PAT you can revoke.
 - [ ] Datadog: logs arrive with `env:dev` and the right `service` tags (if enabled).

@@ -43,10 +43,16 @@ migrate:
 import *args:
     cargo run -q --release -p cyanotype-cli -- import {{args}}
 
+# Download the CLIP model for search into models/clip (sha256-verified; the Docker images bake in the same files).
+models:
+    scripts/fetch-models.sh
+
 # Dev loop: compose Postgres + SeaweedFS, migrate, run auth/assets/worker from source (Ctrl-C stops; :3001/:3002).
+# Search needs the CLIP model: `just models` once (without it the worker skips embedding and search answers 503).
 dev:
     docker compose up -d --wait postgres seaweedfs
     docker compose up seaweedfs-init
+    export CLIP_MODEL_DIR="$PWD/models/clip"; \
     cargo run -q -p cyanotype-cli -- migrate; \
     trap 'kill 0' EXIT INT TERM; \
     cargo run -q -p cyanotype-auth & \

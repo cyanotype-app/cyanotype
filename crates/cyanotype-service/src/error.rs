@@ -24,6 +24,9 @@ pub enum ApiError {
     /// An upstream dependency (object storage) failed; the message is client-safe.
     #[error("{0}")]
     BadGateway(String),
+    /// A feature this deployment does not have (the search model is not installed); the message is client-safe.
+    #[error("{0}")]
+    Unavailable(String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -45,6 +48,7 @@ impl IntoResponse for ApiError {
             Self::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             Self::RequestTimeout(_) => StatusCode::REQUEST_TIMEOUT,
             Self::BadGateway(_) => StatusCode::BAD_GATEWAY,
+            Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Internal(e) => {
                 tracing::error!(error = ?e, "internal error");
                 return (

@@ -418,6 +418,11 @@ async fn thumbnail(
             .context("remove derived objects of a deleted asset")?;
         return Ok(Outcome::Skipped("asset deleted while rendering"));
     }
+    // The preview exists now: queue the embedding for search (background priority work, see `embed`). The pipeline
+    // version is the model version, so a model swap re-embeds through the same job.
+    jobs::enqueue(&ctx.db, jobs::KIND_EMBED, job.asset_id, cyanotype_clip::MODEL_VERSION)
+        .await
+        .context("queue embedding")?;
     Ok(Outcome::Done)
 }
 

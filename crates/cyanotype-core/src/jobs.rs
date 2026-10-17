@@ -39,14 +39,30 @@ pub struct Job {
 }
 
 pub async fn enqueue(db: impl PgExecutor<'_>, kind: &str, asset_id: Uuid, version: i32) -> Result<()> {
-    sqlx::query("INSERT INTO jobs (kind, asset_id, version) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
+    enqueue_with_priority(db, kind, asset_id, version, 0).await
+}
+
+/// Lower `priority` is claimed first within a kind (the default is 0). Background work such as the embedding
+/// backfill uses [`PRIORITY_BACKFILL`] so photos uploaded meanwhile are embedded before it.
+pub async fn enqueue_with_priority(
+    db: impl PgExecutor<'_>,
+    kind: &str,
+    asset_id: Uuid,
+    version: i32,
+    priority: i16,
+) -> Result<()> {
+    sqlx::query("INSERT INTO jobs (kind, asset_id, version, priority) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING")
         .bind(kind)
         .bind(asset_id)
         .bind(version)
+        .bind(priority)
         .execute(db)
         .await?;
     Ok(())
 }
+
+/// Priority of backfill jobs (migrations, the model-swap sweep): after everything enqueued by a new upload.
+pub const PRIORITY_BACKFILL: i16 = 10;
 
 /// Mark jobs whose worker died on their final attempt as failed. Without this they would
 /// sit in 'running' forever: `claim` refuses them (attempts exhausted) and nobody calls `fail`.
@@ -68,22 +84,45 @@ async fn reap_exhausted(pool: &PgPool, kind: &str) -> Result<()> {
 /// Claim one job of `kind`, also reclaiming jobs whose worker died mid-run.
 /// A job is claimed at most `MAX_ATTEMPTS` times.
 pub async fn claim(pool: &PgPool, kind: &str) -> Result<Option<Job>> {
+    Ok(claim_batch(pool, kind, 1).await?.pop())
+}
+
+/// Claim up to `limit` jobs of `kind` in one statement, best first: lowest `priority`, then the earliest due, then
+/// oldest. Same rules as [`claim`].
+pub async fn claim_batch(pool: &PgPool, kind: &str, limit: i64) -> Result<Vec<Job>> {
     reap_exhausted(pool, kind).await?;
-    Ok(sqlx::query_as::<_, Job>(
+    let mut jobs = sqlx::query_as::<_, Job>(
         "UPDATE jobs SET state = 'running', locked_at = now(), attempts = attempts + 1
-         WHERE id = (
+         WHERE id IN (
              SELECT id FROM jobs
              WHERE kind = $1 AND attempts < $3 AND run_after <= now()
                AND (state = 'queued' OR (state = 'running' AND locked_at < now() - make_interval(secs => $2)))
-             ORDER BY run_after, id
+             ORDER BY priority, run_after, id
              FOR UPDATE SKIP LOCKED
-             LIMIT 1)
+             LIMIT $4)
          RETURNING id, kind, asset_id, version, attempts",
     )
     .bind(kind)
     .bind(STALE_AFTER_SECS as f64)
     .bind(MAX_ATTEMPTS)
-    .fetch_optional(pool)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    // RETURNING has no order; hand them back in id order so a batch is processed predictably.
+    jobs.sort_by_key(|j| j.id);
+    Ok(jobs)
+}
+
+/// Is any job of `kinds` runnable right now? Background work (embedding) checks this before taking a job, so a
+/// burst of uploads has its thumbnails made before the backfill continues.
+pub async fn runnable_waiting(pool: &PgPool, kinds: &[&str]) -> Result<bool> {
+    let kinds: Vec<String> = kinds.iter().map(|k| (*k).to_string()).collect();
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM jobs WHERE kind = ANY($1) AND state = 'queued' AND attempts < $2 AND run_after <= now())",
+    )
+    .bind(&kinds)
+    .bind(MAX_ATTEMPTS)
+    .fetch_one(pool)
     .await?)
 }
 
@@ -186,6 +225,12 @@ impl JobWaker {
         Self {
             notify: Arc::new(Notify::new()),
         }
+    }
+
+    /// Wake the waiting worker loop from inside the process (a background loop that finished a job does this so
+    /// the next claim happens at once instead of after the fallback poll).
+    pub fn wake(&self) {
+        self.notify.notify_one();
     }
 
     /// Completes when a job was queued since the last call (or the listener (re)connected).
