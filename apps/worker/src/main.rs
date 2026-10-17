@@ -72,12 +72,14 @@ async fn main() -> Result<()> {
     let pool = db::connect(&db_cfg.url).await?;
     let concurrency = env_parse("WORKER_HEAVY_CONCURRENCY", DEFAULT_HEAVY_CONCURRENCY).max(1);
     let decode_budget_mb = env_parse("WORKER_MEMORY_BUDGET_MB", DEFAULT_MEMORY_BUDGET_MB);
+    let search_model = cyanotype_clip::Model::from_env()?;
     let embed_on = env_parse("WORKER_EMBED", 1u8) != 0;
-    let embed_model_present = embed_on && embed::Embedder::model_installed();
+    let embed_model_present = embed_on && embed::Embedder::model_installed(search_model);
     if embed_on && !embed_model_present {
         tracing::warn!(
-            dir = %cyanotype_clip::model_dir().display(),
-            "CLIP model files not found: photos will not be embedded for search (run scripts/fetch-models.sh, or set CLIP_MODEL_DIR)"
+            model = search_model.name(),
+            dir = %search_model.dir().display(),
+            "search model files not found: photos will not be embedded for search (run scripts/fetch-models.sh, or set SEARCH_MODEL_DIR)"
         );
     }
     let ctx = Arc::new(Ctx {
@@ -86,6 +88,7 @@ async fn main() -> Result<()> {
         max_original_bytes: env_parse("WORKER_MAX_ORIGINAL_BYTES", DEFAULT_MAX_ORIGINAL_BYTES),
         budget: MemoryBudget::new(decode_budget_mb << 20),
         raw_develop: env_parse("WORKER_RAW_DEVELOP", 1u8) != 0,
+        search_model,
     });
     // Embedding (own loop, below). The image tower's resident memory (about 150 MB while the session is loaded) is not part
     // of the decode budget: the container limit is the decode budget plus that plus runtime slack (docker-compose.prod.yml,
@@ -93,6 +96,7 @@ async fn main() -> Result<()> {
     let embed_busy = Arc::new(Semaphore::new(1));
     let embed_task = if embed_model_present {
         let embedder = Arc::new(embed::Embedder::new(
+            search_model,
             env_parse("WORKER_EMBED_THREADS", DEFAULT_EMBED_THREADS).max(1),
         ));
         // Its own LISTEN connection: a shared wake-up would be consumed by whichever loop happened to be waiting.

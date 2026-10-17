@@ -3,13 +3,17 @@
 //!
 //! ```text
 //! GET /assets/search?q=dog on the beach&from=2024-01-01&to=2024-12-31&favorite=true&camera=Canon EOS R5
-//!                   &place=Lisbon&type=raw&album=<id>&has_location=true&limit=60&cursor=...
+//!                   &place=Lisbon&type=raw&album=<id>&has_location=true&limit=60&cursor=...&weaker=true&skip=date
 //! ```
 //!
-//! With `q`, results are ranked by CLIP similarity between the query's text embedding and each photo's image embedding
-//! (the worker's `embed` jobs; `docs/library.md`, "Search") and at most [`DEPTH`] are returned, best first, paged by a
-//! keyset cursor over `(distance, id)`. Without `q` the same filters list photos in timeline order (newest first), with no depth
-//! limit. Items have the shape of `GET /assets` (paired RAW, favorite, thumbhash and thumbnail URL) plus `score`.
+//! With `q`, the dates and places in it are first read out as filters (`query_parse.rs`; `skip` turns that off, an explicit
+//! date or place filter wins), and what is left is embedded and compared with the photos' image embeddings (the worker's `embed`
+//! jobs; `docs/library.md`, "Search") by the model that answers for this user (the configured one once it has indexed enough of
+//! the library, until then the model it replaces: `search.rs`). At most [`DEPTH`] are ranked, best first, paged by a keyset
+//! cursor over `(distance, id)`. The list is cut into a strong tier (what is returned) and a weaker one (`weaker=true`) by the
+//! model's rules (`cyanotype-clip`, `cutoff.rs`); the cursor carries where the tiers end. Without `q` the same filters list
+//! photos in timeline order (newest first), with no depth limit. Items have the shape of `GET /assets` (paired RAW, favorite,
+//! thumbhash and thumbnail URL) plus `score`, `probability` and `tier`.
 //!
 //! Always the caller's own photos, never trashed ones, and never the hidden RAW half of a pair.
 //!
@@ -17,7 +21,8 @@
 //! prepared statements (`persistent(false)`): a cached statement is planned once with placeholders, and that generic plan
 //! (a date range or an album of unknown size) was measured 20x slower than the plan chosen for the actual values.
 //!
-//! How a ranked query runs (measured numbers in docs/library.md):
+//! How a ranked query runs (measured numbers in docs/library.md; the SQL repeats the model's partial index expression and
+//! predicate, migration 0013, so each model's search uses its own HNSW index):
 //! - **At most [`EXACT_MAX`] photos pass** the filters (a small library, an album, a month, one camera): compute the
 //!   exact distance to all of them and sort. Fast at that size, complete, and an approximate index is the wrong tool
 //!   for a few rows (it would walk most of the graph to find them).
@@ -27,7 +32,7 @@ use axum::{
     Json,
     extract::{Query, State},
 };
-use cyanotype_clip::{MODEL_ID, MODEL_VERSION};
+use cyanotype_clip::Model;
 use cyanotype_core::{embeddings::pg_literal, keys, metrics, pairing::RAW_EXTS};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Postgres, QueryBuilder};
@@ -35,7 +40,11 @@ use time::{Date, OffsetDateTime, Time};
 use uuid::Uuid;
 
 use super::{ListItem, ListRow, decode_cursor, encode_cursor, list_items};
-use crate::{AppState, search::ModelMissing};
+use crate::{
+    AppState,
+    query_parse::{self, Skip},
+    search::{ModelMissing, Reindexing},
+};
 use cyanotype_service::{ApiError, ApiResult, AuthUser};
 
 /// Most results a text query returns (best first). A semantic query has no natural cut-off; beyond a few hundred the
@@ -97,6 +106,14 @@ pub(super) struct SearchQuery {
     pub has_location: Option<bool>,
     pub limit: Option<i64>,
     pub cursor: Option<String>,
+    /// Also list the weaker matches after the strong ones (`weaker.cursor` of a response continues where the strong ones
+    /// ended).
+    pub weaker: Option<bool>,
+    /// `false`: no cut-off, the whole ranked list (up to 300) with every result's tier shown. For tooling and tests; the
+    /// app uses the default.
+    pub cutoff: Option<bool>,
+    /// Do not read this kind of thing out of `q`: `date`, `place`, or both (`date,place`). What the chips' "x" sends.
+    pub skip: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -260,14 +277,60 @@ pub(super) struct SearchRow {
     nn_n: Option<i64>,
     #[sqlx(default)]
     ranked_n: Option<i64>,
+    /// First page only, on the first row: the distances of the whole ranked list, best first (the tiers are cut from it).
+    #[sqlx(default)]
+    all_dists: Option<Vec<f64>>,
 }
 
 #[derive(Serialize)]
 pub(super) struct SearchItem {
     #[serde(flatten)]
     item: ListItem,
-    /// Cosine similarity of the photo to the query (about 0.15 to 0.35 for CLIP; higher is closer). Null without `q`.
+    /// Cosine similarity of the photo to the query (higher is closer; about 0.1 to 0.2 for a good SigLIP 2 match, 0.25 to
+    /// 0.35 for CLIP). Null without `q`.
     score: Option<f32>,
+    /// The model's own estimate that the photo matches the query, `sigmoid(scale * score + bias)`: SigLIP 2 only (CLIP's
+    /// scores have no such reading). It is small for a keyword query even for a right answer (0.5 % to 15 %): compare it
+    /// with other results, not with 50 %.
+    probability: Option<f32>,
+    /// `strong` or `weak` for a ranked search (see `cyanotype-clip`, `cutoff.rs`); null without `q`.
+    tier: Option<&'static str>,
+}
+
+/// What the query was understood to say besides the words to search for.
+#[derive(Serialize)]
+pub(super) struct ParsedQuery {
+    /// What was searched for: `q` without the words that became filters (empty: a filter-only search).
+    text: String,
+    chips: Vec<Chip>,
+}
+
+#[derive(Serialize)]
+pub(super) struct Chip {
+    /// `date` or `place`; the `skip` value that turns it off.
+    kind: &'static str,
+    /// What the chip says: "June 2023", "Maui".
+    label: String,
+    /// The words of the query it replaced ("in June 2023").
+    matched: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to: Option<String>,
+    /// For a place: the library's own spelling, and whether it is a city, region or country.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    place_kind: Option<query_parse::PlaceKind>,
+}
+
+/// The weaker matches that exist beyond the strong ones, when they were not asked for.
+#[derive(Serialize)]
+pub(super) struct Weaker {
+    count: i64,
+    /// Pass this as `cursor` with `weaker=true` to continue right after the last strong match. Null while there are more
+    /// strong pages, and when there are no strong matches at all (then `weaker=true` alone lists them).
+    cursor: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -279,15 +342,43 @@ pub(super) struct SearchResponse {
     /// How many photos match the filters, for the first page of a filter-only search (what "Select all" selects).
     /// Null for a ranked search (its depth is capped, so the page count is what there is) and for later pages.
     total: Option<i64>,
+    /// Ranked search: how many strong matches the whole result has.
+    strong_count: Option<i64>,
+    /// Ranked search without `weaker=true`: the weaker matches behind the strong ones, if there are any.
+    weaker: Option<Weaker>,
+    /// With `q`: what was read out of it.
+    parsed: Option<ParsedQuery>,
+    /// Which model answered, for a ranked search: `siglip2-b16`, `clip-b32`.
+    model: Option<&'static str>,
+    /// While the configured model is still indexing the library and an older one answers: how far along it is.
+    reindexing: Option<Reindexing>,
 }
 
-/// Cursor of a ranked page: the last row's `(distance, id)` and the `k` the list was built from.
-fn encode_rank_cursor(dist: f64, id: Uuid, k: i64) -> String {
-    keys::hex(format!("r|{:016x}|{id}|{k}", dist.to_bits()).as_bytes())
+/// Cursor of a ranked page: the last row's `(distance, id)`, the `k` the list was built from, how many results came
+/// before the next page, and where the strong and weaker tiers end in the whole list (counted from the first result).
+fn encode_rank_cursor(dist: f64, id: Uuid, k: i64, tiers: &Position) -> String {
+    keys::hex(
+        format!(
+            "r|{:016x}|{id}|{k}|{}|{}|{}",
+            dist.to_bits(),
+            tiers.offset,
+            tiers.strong,
+            tiers.weak
+        )
+        .as_bytes(),
+    )
 }
 
-fn decode_rank_cursor(c: &str) -> Option<After> {
-    if !c.len().is_multiple_of(2) || !c.is_ascii() || c.len() > 200 {
+/// How far into the ranked list a page starts and where its tiers end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Position {
+    offset: usize,
+    strong: usize,
+    weak: usize,
+}
+
+fn decode_rank_cursor(c: &str) -> Option<(After, Position)> {
+    if !c.len().is_multiple_of(2) || !c.is_ascii() || c.len() > 300 {
         return None;
     }
     let bytes: Option<Vec<u8>> = c
@@ -296,7 +387,7 @@ fn decode_rank_cursor(c: &str) -> Option<After> {
         .map(|p| u8::from_str_radix(std::str::from_utf8(p).ok()?, 16).ok())
         .collect();
     let text = String::from_utf8(bytes?).ok()?;
-    let mut parts = text.splitn(4, '|');
+    let mut parts = text.splitn(7, '|');
     (parts.next()? == "r").then_some(())?;
     let bits = u64::from_str_radix(parts.next()?, 16).ok()?;
     let dist = f64::from_bits(bits);
@@ -304,7 +395,11 @@ fn decode_rank_cursor(c: &str) -> Option<After> {
     let id = Uuid::parse_str(parts.next()?).ok()?;
     let k: i64 = parts.next()?.parse().ok()?;
     (0..=i64::from(MAX_SCAN_TUPLES)).contains(&k).then_some(())?;
-    Some(After { dist, id, k })
+    let offset: usize = parts.next()?.parse().ok()?;
+    let strong: usize = parts.next()?.parse().ok()?;
+    let weak: usize = parts.next()?.parse().ok()?;
+    (strong <= weak && weak <= DEPTH as usize && offset <= DEPTH as usize).then_some(())?;
+    Some((After { dist, id, k }, Position { offset, strong, weak }))
 }
 
 /// Which way a query ran, for the metrics (and the tests).
@@ -349,11 +444,78 @@ pub(super) async fn search(
     let tags = [("mode", mode), ("plan", plan), ("outcome", outcome)];
     m.count("search.queries", 1, &tags);
     m.histogram("search.latency_ms", started.elapsed().as_secs_f64() * 1000.0, &tags);
+    if let Ok((r, _)) = &result {
+        if let Some(model) = r.model {
+            m.count("search.model", 1, &[("model", model)]);
+        }
+        if r.ranked && r.items.is_empty() {
+            m.count(
+                "search.no_strong_matches",
+                1,
+                &[("weaker", if r.weaker.is_some() { "yes" } else { "no" })],
+            );
+        }
+    }
     result.map(|(r, _)| Json(r))
 }
 
-pub(super) async fn run(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(SearchResponse, Plan)> {
-    let filters = Filters::parse(q)?;
+/// Read the dates and places out of `q` (unless the request already filters on them or turned them off), and return the
+/// request as it is to be run, with what was understood.
+async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(SearchQuery, Option<ParsedQuery>)> {
+    let Some(text) = clean(&q.q) else {
+        return Ok((q.clone(), None));
+    };
+    let mut skip = Skip::parse(q.skip.as_deref());
+    // A date or place chosen in the filters wins: the words stay in the query.
+    skip.date |= clean(&q.from).is_some() || clean(&q.to).is_some();
+    skip.place |= clean(&q.place).is_some();
+    let places = if skip.place {
+        Default::default()
+    } else {
+        s.search.places(&s.db, owner).await.map_err(ApiError::Internal)?
+    };
+    let parsed = query_parse::parse(&text, query_parse::today(), &places, skip);
+    let mut eff = q.clone();
+    let mut chips = Vec::new();
+    if let Some(d) = &parsed.date {
+        let day = |d: time::Date| d.to_string();
+        eff.from = Some(day(d.from));
+        eff.to = Some(day(d.to));
+        chips.push(Chip {
+            kind: "date",
+            label: d.label.clone(),
+            matched: d.matched.clone(),
+            from: Some(day(d.from)),
+            to: Some(day(d.to)),
+            value: None,
+            place_kind: None,
+        });
+    }
+    if let Some(p) = &parsed.place {
+        eff.place = Some(p.value.clone());
+        chips.push(Chip {
+            kind: "place",
+            label: p.value.clone(),
+            matched: p.matched.clone(),
+            from: None,
+            to: None,
+            value: Some(p.value.clone()),
+            place_kind: Some(p.kind),
+        });
+    }
+    eff.q = (!parsed.text.is_empty()).then(|| parsed.text.clone());
+    Ok((
+        eff,
+        Some(ParsedQuery {
+            text: parsed.text,
+            chips,
+        }),
+    ))
+}
+
+pub(super) async fn run(s: &AppState, owner: Uuid, request: &SearchQuery) -> ApiResult<(SearchResponse, Plan)> {
+    let (q, parsed) = understand(s, owner, request).await?;
+    let filters = Filters::parse(&q)?;
     let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let text = clean(&q.q);
     if let Some(t) = &text
@@ -364,15 +526,27 @@ pub(super) async fn run(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult
         )));
     }
     let cursor = q.cursor.as_deref().filter(|c| !c.is_empty());
+    let weaker_requested = q.weaker.unwrap_or(false);
+    let cutoff = q.cutoff.unwrap_or(true);
 
-    let (rows, plan, ranked, k): (Vec<SearchRow>, Plan, bool, i64) = match text {
+    struct Ranking {
+        model: Model,
+        reindexing: Option<Reindexing>,
+        position: Position,
+    }
+    let (mut rows, plan, ranked, k, ranking): (Vec<SearchRow>, Plan, bool, i64, Option<Ranking>) = match text {
         Some(t) => {
             let after = match cursor {
                 Some(c) => Some(decode_rank_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
                 None => None,
             };
-            let embedder = s.text.clone();
-            let vector = tokio::task::spawn_blocking(move || embedder.embed(&t))
+            let serving = s
+                .search
+                .serving(&s.db, s.text.as_ref(), owner)
+                .await
+                .map_err(ApiError::Internal)?;
+            let (model, embedder) = (serving.model, s.text.clone());
+            let vector = tokio::task::spawn_blocking(move || embedder.embed(model, &t))
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?
                 .map_err(|e| match e.downcast::<ModelMissing>() {
@@ -382,8 +556,36 @@ pub(super) async fn run(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult
                     }
                     Err(e) => ApiError::Internal(e),
                 })?;
-            let r = ranked_rows(&s.db, owner, &filters, &vector, limit, after).await?;
-            (r.rows, r.plan, true, r.k)
+            let r = ranked_rows(&s.db, owner, &filters, model, &vector, limit, after.map(|a| a.0)).await?;
+            // The tiers are cut from the whole list on the first page and carried in the cursor after that.
+            let position = match after {
+                Some((_, position)) => position,
+                None => {
+                    let cos: Vec<f32> = r
+                        .rows
+                        .first()
+                        .and_then(|row| row.all_dists.as_ref())
+                        .map(|d| d.iter().map(|d| (1.0 - d) as f32).collect())
+                        .unwrap_or_default();
+                    let t = cyanotype_clip::tiers(model, &cos);
+                    Position {
+                        offset: 0,
+                        strong: t.strong,
+                        weak: t.weak,
+                    }
+                }
+            };
+            (
+                r.rows,
+                r.plan,
+                true,
+                r.k,
+                Some(Ranking {
+                    model,
+                    reindexing: serving.reindexing,
+                    position,
+                }),
+            )
         }
         None => {
             let after = match cursor {
@@ -395,17 +597,66 @@ pub(super) async fn run(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult
                 Plan::Timeline,
                 false,
                 0,
+                None,
             )
         }
     };
 
-    let next_cursor = (rows.len() as i64 == limit)
-        .then(|| rows.last())
-        .flatten()
-        .map(|r| match r.dist {
-            Some(d) if ranked => encode_rank_cursor(d, r.row.summary.id, k),
-            _ => encode_cursor(r.row.summary.sort_time, r.row.summary.id),
-        });
+    // Ranked: show the strong tier, or strong and weaker when asked, and stop there.
+    let mut next_cursor = None;
+    let mut weaker = None;
+    let mut strong_count = None;
+    let mut tier_of: Vec<Option<&'static str>> = vec![None; rows.len()];
+    if let Some(r) = &ranking {
+        let pos = r.position;
+        let boundary = if !cutoff {
+            usize::MAX
+        } else if weaker_requested {
+            pos.weak
+        } else {
+            pos.strong
+        };
+        let keep = boundary.saturating_sub(pos.offset).min(rows.len());
+        rows.truncate(keep);
+        tier_of = (0..rows.len())
+            .map(|i| Some(if pos.offset + i < pos.strong { "strong" } else { "weak" }))
+            .collect();
+        let end = pos.offset + rows.len();
+        let cursor_after = |row: &SearchRow, at: usize| {
+            row.dist.map(|d| {
+                encode_rank_cursor(
+                    d,
+                    row.row.summary.id,
+                    k,
+                    &Position {
+                        offset: at,
+                        strong: pos.strong,
+                        weak: pos.weak,
+                    },
+                )
+            })
+        };
+        if end < boundary && rows.len() as i64 == limit {
+            next_cursor = rows.last().and_then(|row| cursor_after(row, end));
+        }
+        strong_count = Some(pos.strong as i64);
+        if cutoff && !weaker_requested && pos.weak > pos.strong {
+            // The cursor that continues after the last strong match exists once a page has reached it.
+            let last_strong = (end == pos.strong && !rows.is_empty())
+                .then(|| rows.last().and_then(|row| cursor_after(row, end)))
+                .flatten();
+            weaker = Some(Weaker {
+                count: (pos.weak - pos.strong) as i64,
+                cursor: last_strong,
+            });
+        }
+    } else {
+        next_cursor = (rows.len() as i64 == limit)
+            .then(|| rows.last())
+            .flatten()
+            .map(|r| encode_cursor(r.row.summary.sort_time, r.row.summary.id));
+    }
+    let model_calibration = ranking.as_ref().and_then(|r| r.model.calibration());
     let scores: Vec<Option<f32>> = rows.iter().map(|r| r.dist.map(|d| (1.0 - d) as f32)).collect();
     let total = if ranked || cursor.is_some() {
         None
@@ -425,11 +676,22 @@ pub(super) async fn run(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult
             items: items
                 .into_iter()
                 .zip(scores)
-                .map(|(item, score)| SearchItem { item, score })
+                .zip(tier_of)
+                .map(|((item, score), tier)| SearchItem {
+                    item,
+                    score,
+                    probability: score.zip(model_calibration).map(|(s, c)| c.probability(s)),
+                    tier,
+                })
                 .collect(),
             next_cursor,
             ranked,
             total,
+            strong_count,
+            weaker,
+            parsed,
+            model: ranking.as_ref().map(|r| r.model.name()),
+            reindexing: ranking.and_then(|r| r.reindexing),
         },
         plan,
     ))
@@ -483,10 +745,12 @@ fn first_k(filtered: bool, embedded: i64) -> i64 {
     ((DEPTH as f64 * 1.5 / share).ceil() as i64).clamp(DEPTH * 3, i64::from(MAX_SCAN_TUPLES))
 }
 
-/// Vectors in the table, as the planner estimates it (free, and exact enough to size a scan).
-async fn embedded_estimate(tx: &mut sqlx::PgConnection) -> ApiResult<i64> {
-    let n: Option<f32> = sqlx::query_scalar("SELECT reltuples FROM pg_class WHERE oid = 'asset_embeddings'::regclass")
-        .fetch_one(tx)
+/// Vectors of `model` in the table, as the planner estimates it (free, and exact enough to size a scan): the number of
+/// entries of that model's partial index.
+async fn embedded_estimate(tx: &mut sqlx::PgConnection, model: Model) -> ApiResult<i64> {
+    let n: Option<f32> = sqlx::query_scalar("SELECT reltuples FROM pg_class WHERE relname = $1")
+        .bind(model.index_name())
+        .fetch_optional(tx)
         .await?;
     Ok(n.map_or(0, |n| n.max(0.0) as i64))
 }
@@ -514,23 +778,34 @@ pub(super) async fn ranked_rows(
     db: &sqlx::PgPool,
     owner: Uuid,
     f: &Filters,
+    model: Model,
     vector: &[f32],
     limit: i64,
     after: Option<After>,
 ) -> ApiResult<Ranked> {
-    ranked_rows_planned(db, owner, f, vector, limit, after, None).await
+    ranked_rows_planned(db, owner, f, model, vector, limit, after, None).await
 }
 
 /// [`ranked_rows`] with the plan optionally forced (the tests compare the two plans' answers).
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn ranked_rows_planned(
     db: &sqlx::PgPool,
     owner: Uuid,
     f: &Filters,
+    model: Model,
     vector: &[f32],
     limit: i64,
     after: Option<After>,
     force: Option<Plan>,
 ) -> ApiResult<Ranked> {
+    if vector.len() != model.dim() {
+        return Err(ApiError::Internal(anyhow::anyhow!(
+            "query vector has {} dimensions, {} has {}",
+            vector.len(),
+            model.name(),
+            model.dim()
+        )));
+    }
     let mut tx = db.begin().await?;
     let lit = pg_literal(vector);
     // Few enough photos to rank exactly? Counted only up to one past the threshold, so a big library is told so after
@@ -540,12 +815,31 @@ pub(super) async fn ranked_rows_planned(
         None => candidates(&mut tx, owner, f, exact_max() + 1).await? <= exact_max(),
     };
     let ranked = if exact {
-        exact_rows(&mut tx, owner, f, &lit, limit, after).await?
+        exact_rows(&mut tx, owner, f, model, &lit, limit, after).await?
     } else {
-        hnsw_rows(&mut tx, owner, f, &lit, limit, after).await?
+        hnsw_rows(&mut tx, owner, f, model, &lit, limit, after).await?
     };
     tx.commit().await?;
     Ok(ranked)
+}
+
+/// The vector column as the model's index sees it, and the query vector at the same size. The model id and version are
+/// constants from code (never request input), written into the SQL so that the planner can match the partial index
+/// `WHERE model = '<id>'` of migration 0013.
+struct ModelSql {
+    column: String,
+    query_cast: String,
+    predicate: String,
+}
+
+impl ModelSql {
+    fn of(model: Model) -> Self {
+        ModelSql {
+            column: format!("(e.embedding::halfvec({}))", model.dim()),
+            query_cast: format!("::text::halfvec({})", model.dim()),
+            predicate: format!("e.model = '{}' AND e.version = {}", model.id(), model.version()),
+        }
+    }
 }
 
 /// Appends the page of a `ranked` CTE: the rows after the cursor, in `(dist, id)` order.
@@ -560,11 +854,16 @@ fn push_page(qb: &mut QueryBuilder<'_, Postgres>, after: Option<After>, limit: i
     qb.push(" ORDER BY dist, id LIMIT ").push_bind(limit);
 }
 
+/// The first row of a first page also carries the distances of the whole list.
+const ALL_DISTS: &str = "CASE WHEN row_number() OVER (ORDER BY dist, id) = 1
+         THEN (SELECT array_agg(dist ORDER BY dist, id) FROM ranked) END AS all_dists";
+
 /// Exact distance to every photo that passes the filters.
 async fn exact_rows(
     tx: &mut sqlx::PgConnection,
     owner: Uuid,
     f: &Filters,
+    model: Model,
     lit: &str,
     limit: i64,
     after: Option<After>,
@@ -574,23 +873,27 @@ async fn exact_rows(
     sqlx::query("SELECT set_config('enable_hashjoin', 'off', true), set_config('enable_mergejoin', 'off', true)")
         .execute(&mut *tx)
         .await?;
+    let m = ModelSql::of(model);
     let mut qb = QueryBuilder::<Postgres>::new(format!(
-        "WITH ranked AS MATERIALIZED (SELECT {LIST_COLS}, (e.embedding <=> "
+        "WITH ranked AS MATERIALIZED (SELECT {LIST_COLS}, ({} <=> ",
+        m.column
     ));
-    qb.push_bind(lit.to_string())
-        .push("::text::halfvec) AS dist FROM asset_embeddings e JOIN assets a ON a.id = e.asset_id WHERE e.model = ");
-    qb.push_bind(MODEL_ID)
-        .push(" AND e.version = ")
-        .push_bind(MODEL_VERSION)
-        .push(" AND");
+    qb.push_bind(lit.to_string()).push(format!(
+        "{}) AS dist FROM asset_embeddings e JOIN assets a ON a.id = e.asset_id WHERE {} AND",
+        m.query_cast, m.predicate
+    ));
     f.push_where(&mut qb, owner);
     // `+ 0` makes the sort key something other than the index's operator expression: without it the planner may walk the
     // HNSW index for the first key and finish with an incremental sort on `id`, which returns only the index's
     // `ef_search` nearest rows, mostly filtered out.
-    qb.push(" ORDER BY (e.embedding <=> ")
+    qb.push(format!(" ORDER BY ({} <=> ", m.column))
         .push_bind(lit.to_string())
-        .push("::text::halfvec) + 0, a.id");
-    qb.push(" LIMIT ").push_bind(DEPTH).push(") SELECT * FROM ranked");
+        .push(format!("{}) + 0, a.id", m.query_cast));
+    qb.push(" LIMIT ").push_bind(DEPTH).push(") SELECT ranked.*");
+    if after.is_none() {
+        qb.push(format!(", {ALL_DISTS}"));
+    }
+    qb.push(" FROM ranked");
     push_page(&mut qb, after, limit);
     let rows = qb
         .build_query_as::<SearchRow>()
@@ -614,6 +917,7 @@ async fn hnsw_rows(
     tx: &mut sqlx::PgConnection,
     owner: Uuid,
     f: &Filters,
+    model: Model,
     lit: &str,
     limit: i64,
     after: Option<After>,
@@ -627,30 +931,35 @@ async fn hnsw_rows(
     .execute(&mut *tx)
     .await?;
     let first = if f.any() {
-        first_k(true, embedded_estimate(&mut *tx).await?)
+        first_k(true, embedded_estimate(&mut *tx, model).await?)
     } else {
         first_k(false, 0)
     };
     let mut k = after.map_or(first, |a| a.k.max(first));
+    let m = ModelSql::of(model);
     loop {
-        let mut qb = QueryBuilder::<Postgres>::new("WITH nn AS MATERIALIZED (SELECT e.asset_id, (e.embedding <=> ");
-        qb.push_bind(lit.to_string())
-            .push("::text::halfvec) AS dist FROM asset_embeddings e WHERE e.model = ");
-        qb.push_bind(MODEL_ID)
-            .push(" AND e.version = ")
-            .push_bind(MODEL_VERSION);
-        qb.push(" ORDER BY e.embedding <=> ")
+        let mut qb = QueryBuilder::<Postgres>::new(format!(
+            "WITH nn AS MATERIALIZED (SELECT e.asset_id, ({} <=> ",
+            m.column
+        ));
+        qb.push_bind(lit.to_string()).push(format!(
+            "{}) AS dist FROM asset_embeddings e WHERE {}",
+            m.query_cast, m.predicate
+        ));
+        qb.push(format!(" ORDER BY {} <=> ", m.column))
             .push_bind(lit.to_string())
-            .push("::text::halfvec LIMIT ")
+            .push(format!("{} LIMIT ", m.query_cast))
             .push_bind(k);
         qb.push(format!(
             "), ranked AS MATERIALIZED (SELECT {LIST_COLS}, nn.dist FROM nn JOIN assets a ON a.id = nn.asset_id WHERE"
         ));
         f.push_where(&mut qb, owner);
         qb.push(" ORDER BY nn.dist, a.id LIMIT ").push_bind(DEPTH).push(")");
-        qb.push(
-            " SELECT ranked.*, (SELECT count(*) FROM nn) AS nn_n, (SELECT count(*) FROM ranked) AS ranked_n FROM ranked",
-        );
+        qb.push(" SELECT ranked.*, (SELECT count(*) FROM nn) AS nn_n, (SELECT count(*) FROM ranked) AS ranked_n");
+        if after.is_none() {
+            qb.push(format!(", {ALL_DISTS}"));
+        }
+        qb.push(" FROM ranked");
         push_page(&mut qb, after, limit);
         let rows = qb
             .build_query_as::<SearchRow>()
