@@ -9,7 +9,9 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Lightbox } from "../components/Lightbox";
 import { LibraryTabs } from "../components/LibraryTabs";
 import { SelectionBar } from "../components/SelectionBar";
+import { EditDialog, type EditKind } from "../components/EditDialog";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
+import { MAX_BULK_IDS } from "../api";
 import { TimelineGrid } from "../components/TimelineGrid";
 import { useToast } from "../components/Toast";
 import { similarUrl } from "../searchText";
@@ -47,6 +49,9 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
   const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
   const [albumsVersion, setAlbumsVersion] = useState(0);
   const { toast, show } = useToast();
+  // "Edit" of the selection: choose what, then the editor (a date shift, one location, one caption for all).
+  const [editMenu, setEditMenu] = useState(false);
+  const [editKind, setEditKind] = useState<EditKind | null>(null);
 
   const selectedRef = useRef<ReadonlySet<string>>(new Set());
   const tl = useTimeline({ favorite: favorites, keep: () => selectedRef.current });
@@ -440,6 +445,15 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
           >
             Share
           </button>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            disabled={sel.count === 0 || bulkBusy || sel.count > MAX_BULK_IDS}
+            title={sel.count > MAX_BULK_IDS ? `Edit at most ${MAX_BULK_IDS} photos at a time` : undefined}
+            onClick={() => setEditMenu(true)}
+          >
+            Edit
+          </button>
           <button type="button" className="btn btn-primary" disabled={sel.count === 0 || bulkBusy} onClick={onTrashClick}>
             Move to trash
           </button>
@@ -486,6 +500,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
           onSimilar={(it) => navigate(similarUrl(it.id))}
           onFavorite={(it, value) => void setFavorite([it], value)}
           refreshKey={albumsVersion}
+          onEdited={() => void refresh()}
         />
       )}
       {confirmTrash && (
@@ -512,6 +527,47 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
             sel.setSelecting(false);
             setAlbumsVersion((v) => v + 1);
             show({ message: addedMessage(r, requested) });
+          }}
+        />
+      )}
+      {editMenu && (
+        <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && setEditMenu(false)}>
+          <div className="modal card" role="dialog" aria-modal="true" aria-label="Edit photos">
+            <h2>Edit {photos(sel.count)}</h2>
+            <div className="edit-menu">
+              {([["date", "Adjust date and time"], ["location", "Set location"], ["caption", "Add a caption"]] as const).map(([k, l]) => (
+                <button
+                  key={k}
+                  type="button"
+                  className="btn btn-quiet"
+                  onClick={() => {
+                    setEditMenu(false);
+                    setEditKind(k);
+                  }}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-quiet" onClick={() => setEditMenu(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {editKind !== null && (
+        <EditDialog
+          kind={editKind}
+          target={sel.target(scope)}
+          count={sel.count}
+          onClose={() => setEditKind(null)}
+          onDone={(r) => {
+            setEditKind(null);
+            sel.setSelecting(false);
+            void refresh();
+            show({ message: `${r.updated.toLocaleString("en-US")} ${r.updated === 1 ? "photo" : "photos"} updated` });
           }}
         />
       )}

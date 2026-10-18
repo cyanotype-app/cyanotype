@@ -1102,3 +1102,82 @@ formats it on the server (`apps/assets/src/details.rs`, pure functions with unit
   album names, a RAW pair, a burst) and with none but the file, scrolled to its end, closed again with Escape and `i`, at 320 to
   1280 px, light and dark. `e2e/timeline.spec.ts`: a real touch swipe up (Chromium touch events) and the Info button open the panel,
   Back closes only the panel, and the date link scrolls a 400-photo library to the day it names.
+
+# Editing a photo
+
+Fix a wrong date, set or correct a location, add a caption: for one photo from its details panel, for a selection from the
+library's selection bar (*Edit*: move all dates by an offset, one location for all, one caption for all). **The original in the
+bucket is never touched** and a download is byte-identical to what was uploaded; share links' JPEG copies carry no caption.
+
+## What the user sees
+
+- **Panel (one photo):** *Adjust date and time* (a date-time field and a time zone: UTC-12:00 to UTC+14:00 in half hours, or
+  "Unknown"), *Edit location* / *Add location* (tap the map or drag the pin, pick one of **your own places** from a search box,
+  or type coordinates) and *Add a caption* / *Edit caption*. An edited value is marked "Edited", and each editor says what the
+  file itself says and has **Revert to original**. A caption also shows under the photo in the viewer.
+- **Selection (many photos, up to 1000):** *Edit* opens a choice of the three. A date change is a **shift** ("1 day 2 hours
+  earlier"): every photo moves by the same amount and keeps its own time zone, so a camera whose clock was wrong is fixed for a
+  whole trip at once. Revert works on all of them too.
+- The effective values are what everything uses: the timeline (the photo moves to its new day; the library refreshes), the map,
+  date filters, the place line (the place is forgotten and looked up again for new coordinates), bursts, and the day the date
+  link jumps to. Text search finds a photo by the words of its caption (below).
+
+## How it works
+
+- **Where the edit lives.** `assets.taken_at`, `latitude` and `longitude` stay the *effective* columns, so nothing that reads them
+  changed. An edit overwrites them and keeps what the file said in `taken_at_exif`, `latitude_exif`, `longitude_exif` (set when
+  the photo is first edited, cleared on revert); `date_edited` / `location_edited` say which parts are edited,
+  `taken_offset_edit` the zone chosen for an edited time, `caption` the caption and `edited_at` when it last changed (migration
+  0015; new columns with constant defaults, so no rows are rewritten). The worker's metadata job writes the file's values to
+  `*_exif` instead of over the effective ones while a part is edited, so a re-run (a migration, a `reindex`) never undoes a
+  correction.
+- **Where the edit survives: the bucket.** Before the database changes, the service writes the photo's whole edit state to
+  `edits/{user}/{hash[0:2]}/{hash}.json` (named like the original: by owner and content hash, which a rebuilt database keeps,
+  unlike asset ids): `{v, updated_at, taken_at?, taken_offset?, latitude?, longitude?, caption?}`; a part that is not edited is
+  absent. A photo whose edits are all reverted keeps an empty object (a tombstone). `cyanotype reindex` reads `edits/` and applies
+  every object to the photo with that owner and hash when the row has no edits or older ones (`edited_at`), see
+  `docs/recovery.md`. I chose a per-photo object over adding the edits to the daily manifests because the manifests are up to a
+  day old (an edit made after the last one, then a lost database, would be gone), while an object is as new as the edit. The cost
+  is one small PUT per edited photo (a bulk edit is up to 1000, written 8 at a time; `failed` lists the ids to retry).
+  Permanently deleting a photo deletes its edits object with all its versions: a caption does not outlive its photo.
+- **Side effects.** A new location clears the place and queues the `geocode` job again. A new time marks the photo and the rest of
+  its old burst "to be computed" and queues a regroup at the photo (its new neighbourhood) and at another member of the old
+  burst; the sweep covers a lost job.
+- **Rules as everywhere:** only your own photos that are not in the trash and not the hidden RAW of a pair (any other id counts as
+  `missing`); idempotent (the same request again is `unchanged` and writes nothing).
+- **Captions in search.** With a text query, photos whose caption contains **every** word of it (case-insensitive, as part of a
+  word; words under three letters and a few stop words are ignored; at most 8 words) come **first**, newest first, at most 50,
+  each its own strong result with no score, then the model's ranking follows (a photo that is both is shown once, in front).
+  They are *in front of* the ranking, not blended into it: the model's cut-off is relative to its own best match, so mixing
+  caption hits in as "perfect scores" would push every real semantic match into the weaker tier. The request's filters apply to
+  them; a caption match needs no embedding, so it works while the library is still indexing. It is a substring match, not a
+  stemmed or typo-tolerant one (modest on purpose).
+- **Not done:** clearing a location (hide it without replacing it), captions in the grid, bulk edit from the search, album and map
+  pages (the selection bar of the library has it; the viewer's panel edits one photo anywhere), editing the hidden RAW of a pair
+  (it keeps its own EXIF), a caption in share links.
+
+## API (assets service, owner-scoped)
+
+| Request | Effect |
+|---|---|
+| `POST /assets/edits {ids \| scope+except, date?, location?, caption?}` | `date`: `{local: "2023-07-04T13:05:09", offset: "+02:00" \| null}` (set; no offset = zone unknown, read as UTC), `{shift_seconds}` (move each photo) or `{revert: true}`; `location`: `{latitude, longitude}` or `{revert: true}`; `caption`: `{text}` (empty clears) or `{revert: true}`. At most 1000 photos (a scope that resolves to more: `400`). Response `{updated, unchanged, missing, failed: [ids]}`. `400` for nothing to change, a bad date, zone, coordinate or a caption over 2000 characters. |
+| `GET /assets/places?q=` | The places of your own photos (city, region, country, mean `latitude`/`longitude`, `count`), most photographed first, at most 20; `q` matches the start of a word of the city, region or country. |
+| `GET /assets/{id}/details` | Gains `caption` and `edits: {date_edited, location_edited, original_date, original_location}` (what the file says, for Revert); `date` carries the zone of an edited time. `GET /assets/{id}` gains `caption`. |
+
+## Tests
+
+- `crates/cyanotype-core/src/edits.rs` unit tests (the object's shape and round trip, validation, newer layouts and garbage refused),
+  `keys.rs` (the edits key), `tests/reindex.rs` (a rebuilt database: orphans recreated, then their edits restored, the dry run, objects
+  that are not valid or have no photo, idempotence).
+- `apps/worker` (`handlers.rs`): the metadata job keeps an edited date and location and records the file's own next to them, and an unedited
+  photo takes the file's values.
+- `apps/assets/src/routes/edits_tests.rs` (Postgres + an S3 API): override, revert part by part, the object in the bucket, zone-less
+  edits, bulk shift (zones kept, fallback times, shifting back restores), one location and caption for all, owner isolation (another
+  user's, trashed, hidden RAW and scopes write nothing), validation, bursts and geocoding re-queued, caption search (every word, others'
+  captions and the trash excluded, filters, paging through the caption matches), places, **reindex restoring edits onto a database from
+  before them** (also reverts, and an idempotent second run), and the purge deleting the object and its versions. `routes/edits.rs` unit
+  tests (local time parsing, the request forms, bad requests).
+- Web: `editText.test.ts`, `EditDialog.test.tsx` (date and zone, an unknown zone, a shift, revert, location from the map, a place or typed
+  coordinates, caption, errors and retrying only the failed photos), `LightboxEdit.test.tsx` (the editors from the panel, refresh after a
+  save, the caption under the photo, Escape order), and the edit states of `e2e/mobile-overflow.spec.ts` (the three editors in the viewer,
+  the selection bar's Edit, its menu and the shift dialog) at 320 to 1280 px, light and dark.

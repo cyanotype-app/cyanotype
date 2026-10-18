@@ -4,6 +4,7 @@ import { api, type PhotoDetails, type TilesInstalled } from "../api";
 import { burstText, coordinatesText, dayHref, mapHref, resolutionText, searchHref, whenText } from "../detailsText";
 import { placeLine } from "../map/geo";
 import { fileSize } from "../pairText";
+import type { EditKind } from "./EditDialog";
 import { useVerticalSwipe } from "../useInfoPanel";
 
 // maplibre-gl is big: the small map loads only when a photo with a location is looked at.
@@ -26,6 +27,8 @@ interface Props {
   onLeave: () => Promise<void>;
   /** A link inside the panel was followed: the lightbox closes with it. */
   onNavigate: () => void;
+  /** Open the editor for the photo's date, location or caption. Without it the panel only shows. */
+  onEdit?: (kind: EditKind) => void;
 }
 
 type Follow = (e: MouseEvent<HTMLAnchorElement>, to: string) => void;
@@ -53,7 +56,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
  * files, albums and burst. A row appears only when the photo has the information. The camera, lens, place and date
  * are links to the search or the timeline for the same thing.
  */
-export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate }: Props) {
+export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, onEdit }: Props) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const navigate = useNavigate();
   const follow: Follow = (e, to) => {
@@ -95,13 +98,21 @@ export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavi
             </button>
           </p>
         )}
-        {state.status === "ready" && <Body d={state.details} follow={follow} />}
+        {state.status === "ready" && <Body d={state.details} follow={follow} onEdit={onEdit} />}
       </div>
     </aside>
   );
 }
 
-function Body({ d, follow }: { d: PhotoDetails; follow: Follow }) {
+function EditButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button type="button" className="btn btn-glass details-edit" aria-label={label} onClick={onClick}>
+      {label.startsWith("Add") || label.startsWith("Edit") ? label.split(" ")[0] : "Adjust"}
+    </button>
+  );
+}
+
+function Body({ d, follow, onEdit }: { d: PhotoDetails; follow: Follow; onEdit?: (kind: EditKind) => void }) {
   const when = whenText(d.date);
   const loc = d.location;
   const place = loc?.place ? placeLine(loc.place) : "";
@@ -121,6 +132,8 @@ function Body({ d, follow }: { d: PhotoDetails; follow: Follow }) {
           <span className={d.date.zone_known ? undefined : "details-unknown"}>{when.zone}</span>
         </span>
         {when.note && <span className="details-sub">{when.note}</span>}
+        {d.edits?.date_edited && <span className="details-sub details-edited">Edited</span>}
+        {onEdit && <EditButton label="Adjust date and time" onClick={() => onEdit("date")} />}
       </Row>
 
       {loc && (
@@ -133,7 +146,20 @@ function Body({ d, follow }: { d: PhotoDetails; follow: Follow }) {
           <span className="details-sub">{coordinatesText(loc.latitude, loc.longitude)}</span>
           {loc.altitude && <span className="details-sub">Altitude {loc.altitude}</span>}
           {loc.direction && <span className="details-sub">Facing {loc.direction}</span>}
+          {d.edits?.location_edited && <span className="details-sub details-edited">Edited</span>}
+          {onEdit && <EditButton label="Edit location" onClick={() => onEdit("location")} />}
           <MiniMap lat={loc.latitude} lon={loc.longitude} follow={follow} />
+        </Row>
+      )}
+      {!loc && onEdit && (
+        <Row label="Location">
+          <EditButton label="Add location" onClick={() => onEdit("location")} />
+        </Row>
+      )}
+      {(d.caption || onEdit) && (
+        <Row label="Caption">
+          {d.caption && <span className="details-caption">{d.caption}</span>}
+          {onEdit && <EditButton label={d.caption ? "Edit caption" : "Add a caption"} onClick={() => onEdit("caption")} />}
         </Row>
       )}
 

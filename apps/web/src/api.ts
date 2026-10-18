@@ -276,6 +276,8 @@ export interface AlbumPatch {
 export interface AssetDetail extends AssetSummary {
   /** The albums this photo is in. Absent on older servers. */
   albums?: AlbumRef[];
+  /** The photo's caption, if it has one. */
+  caption?: string | null;
   /** The RAW stacked behind this photo. Absent on older servers. */
   paired?: PairedFile[];
   thumbhash: string | null;
@@ -350,6 +352,44 @@ export interface PhotoDetails {
   files: { id: string; name: string; format: string; raw: boolean; size_bytes: number }[];
   albums: AlbumRef[];
   burst: { position: number; size: number } | null;
+  /** The photo's caption. Absent on older servers. */
+  caption?: string | null;
+  /** What was edited and what the file itself says (for "Revert to original"). Absent on older servers. */
+  edits?: {
+    date_edited: boolean;
+    location_edited: boolean;
+    original_date: PhotoDetails["date"] | null;
+    original_location: { latitude: number; longitude: number } | null;
+  };
+}
+
+/** How `POST /assets/edits` changes the date: set it (zone `+02:00`, or null when unknown), move it, or put the file's back. */
+export type DateEdit = { local: string; offset: string | null } | { shift_seconds: number } | { revert: true };
+export type LocationEdit = { latitude: number; longitude: number } | { revert: true };
+export type CaptionEdit = { text: string } | { revert: true };
+export interface EditRequest {
+  date?: DateEdit;
+  location?: LocationEdit;
+  caption?: CaptionEdit;
+}
+
+/** POST /assets/edits. `failed` are the ids that could not be written (retry only those: a shift would move the others twice). */
+export interface EditResult {
+  updated: number;
+  unchanged: number;
+  missing: number;
+  failed: string[];
+}
+
+/** An entry of GET /assets/places: a place the user's own photos are in, with a point to put a photo on. */
+export interface PlaceHit {
+  city: string;
+  region: string | null;
+  country: string;
+  country_code: string | null;
+  latitude: number;
+  longitude: number;
+  count: number;
 }
 
 /** One marker of GET /assets/map: a photo (count 1) or a cluster of photos in one grid cell. */
@@ -661,6 +701,15 @@ export const api = {
   processing: () => request<Processing>("/assets/processing"),
   retryFailedJobs: () => request<{ requeued: number }>("/assets/processing/retry", { method: "POST" }),
   getAsset: (id: string) => request<AssetDetail>(`/assets/${encodeURIComponent(id)}`),
+  /** Edit the date, location or caption of photos (at most 1000; a scope that resolves to more is refused). */
+  editAssets: (target: Target, edit: EditRequest) =>
+    request<EditResult>(
+      "/assets/edits",
+      json(isScope(target) ? { scope: target.scope, except: target.except, ...edit } : { ids: target, ...edit }),
+    ),
+  /** The places the user's own photos are in (`q`: the start of a word of the city, region or country). */
+  places: (q = "", signal?: AbortSignal) =>
+    request<PlaceHit[]>(`/assets/places${q ? `?${new URLSearchParams({ q })}` : ""}`, { signal }),
   /** What the details panel shows: date, place, camera, exposure, files, albums, burst. */
   getDetails: (id: string) => request<PhotoDetails>(`/assets/${encodeURIComponent(id)}/details`),
   /** Dedupe + part URLs. Defaults to the proxy transport, the only one a browser can use. */

@@ -181,6 +181,8 @@ const fullDetails = (id: string) => ({
     { id: "l3", title: albums[2]!.title },
   ],
   burst: { position: 3, size: 12 },
+  caption: "A caption that goes on for a good while, with a_very_long_unbroken_word_" + "x".repeat(80) + " and then some more words after it.",
+  edits: { date_edited: true, location_edited: true, original_date: { ...{ instant: "2023-07-04T11:05:09Z", local: "2023-07-04T13:05:09", offset: "+02:00", zone_known: true, weekday: "Tuesday", basis: "taken", timeline_day: "2023-07-04" } }, original_location: { latitude: 38.7, longitude: -9.1 } },
 });
 const bareDetails = (id: string) => ({
   ...fullDetails(id),
@@ -192,6 +194,8 @@ const bareDetails = (id: string) => ({
   files: [{ id, name: "scan.png", format: "PNG", raw: false, size_bytes: 1000 }],
   albums: [],
   burst: null,
+  caption: null,
+  edits: { date_edited: false, location_edited: false, original_date: null, original_location: null },
 });
 
 async function mock(page: Page) {
@@ -238,6 +242,14 @@ async function mock(page: Page) {
           json({ id: "k3", name: "new", prefix: "cy_zzzz", created_at: "2024-06-01T00:00:00Z", key: "cy_" + "0123456789abcdef".repeat(5) }),
         );
       if (p === "/assets/search/facets" && m === "GET") return route.fulfill(json(FACETS));
+      if (p === "/assets/places" && m === "GET")
+        return route.fulfill(
+          json([
+            { city: LONG_PLACE, region: "Wales", country: "United Kingdom", country_code: "GB", latitude: 53.2, longitude: -4.2, count: 12 },
+            { city: "Lisbon", region: "Lisbon", country: "Portugal", country_code: "PT", latitude: 38.7, longitude: -9.1, count: 4100 },
+          ]),
+        );
+      if (p === "/assets/edits" && m === "POST") return route.fulfill(json({ updated: 1, unchanged: 0, missing: 0, failed: [] }));
       if (p === "/assets/search" && m === "GET") {
         const q = u.searchParams.get("q") ?? "";
         if (q.includes("burst"))
@@ -478,6 +490,15 @@ for (const { width, scheme } of RUNS) {
       await check("library-select");
       await page.getByRole("button", { name: "Select all" }).click();
       await check("library-select-all");
+      // Edit the selection: choose what, then a shift of the dates, one location, one caption
+      await page.getByRole("button", { name: "Edit", exact: true }).click();
+      await page.getByRole("dialog", { name: "Edit photos" }).waitFor();
+      await check("dialog-edit-menu");
+      await page.getByRole("button", { name: "Adjust date and time" }).click();
+      await page.getByRole("dialog", { name: /Adjust date and time, \d+ photos/ }).waitFor();
+      await check("dialog-edit-shift");
+      await page.keyboard.press("Escape");
+      await page.getByRole("dialog").waitFor({ state: "detached" });
       await page.getByRole("button", { name: "Add to album" }).click();
       await page.getByRole("dialog").waitFor();
       await check("dialog-add-to-album");
@@ -563,6 +584,22 @@ for (const { width, scheme } of RUNS) {
       await page.locator(".place-map canvas").first().waitFor({ timeout: 20_000 });
       await page.waitForTimeout(1200); // basemap tiles draw
       await check("lightbox-info");
+      // The editors: location (map, your places, coordinates), date and time, caption
+      await panel.getByRole("button", { name: "Edit location" }).click();
+      await page.getByRole("dialog", { name: "Set location" }).waitFor();
+      await page.getByRole("listitem").first().waitFor();
+      await page.waitForTimeout(800);
+      await check("edit-location");
+      await page.keyboard.press("Escape");
+      await panel.getByRole("button", { name: "Adjust date and time" }).click();
+      await page.getByRole("dialog", { name: "Adjust date and time" }).waitFor();
+      await check("edit-date");
+      await page.keyboard.press("Escape");
+      await panel.getByRole("button", { name: "Edit caption" }).click();
+      await page.getByRole("dialog", { name: "Edit caption" }).waitFor();
+      await check("edit-caption");
+      await page.keyboard.press("Escape");
+      await page.getByRole("dialog", { name: "Edit caption" }).waitFor({ state: "detached" });
       // The panel's own scroll reaches its last row, and the sheet never grows past the screen.
       await panel.evaluate((el) => el.scrollTo(0, el.scrollHeight));
       await panel.getByText("3 of 12 in a burst").waitFor();
