@@ -34,7 +34,7 @@ use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::{
-    jobs, keys,
+    edits, jobs, keys,
     manifest::{self, UserManifest},
     objmeta,
     scan::{Head, Listed, MAX_COPY_BYTES},
@@ -128,6 +128,16 @@ pub struct Report {
     pub pairs_restored: u64,
     pub favorites_restored: u64,
     pub trashed_restored: u64,
+    /// Objects under `edits/` (a photo's corrected date, location and caption).
+    pub edits_objects: u64,
+    /// Applied to a row that had none or older ones (or would be, in a dry run).
+    pub edits_restored: u64,
+    /// Already what the row says.
+    pub edits_current: u64,
+    /// For a photo that has no row (in a dry run, an orphan that `--apply` would recreate first), or a user that does not exist.
+    pub edits_without_photo: u64,
+    /// Not valid objects (left alone).
+    pub edits_bad: u64,
     /// Requests or writes that failed; the run continued. Non-zero means re-run.
     pub errors: u64,
     pub users: BTreeMap<Uuid, UserReport>,
@@ -221,6 +231,19 @@ impl Report {
             s,
             "    trash state / favorites          {} / {}",
             self.trashed_restored, self.favorites_restored
+        );
+        let _ = writeln!(
+            s,
+            "  edits: objects / {} / current     {} / {} / {}",
+            w("restored", "would restore"),
+            self.edits_objects,
+            self.edits_restored,
+            self.edits_current
+        );
+        let _ = writeln!(
+            s,
+            "    no photo for them / not valid    {} / {}",
+            self.edits_without_photo, self.edits_bad
         );
         let _ = writeln!(s, "  errors                             {}", self.errors);
         let _ = writeln!(s, "per user:");
@@ -347,6 +370,7 @@ pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Repor
     let seen = scan_originals(&mut cx).await?;
     check_rows(&mut cx, &seen, &derived).await?;
     restore_state(&mut cx).await?;
+    restore_edits(&mut cx).await?;
 
     tracing::info!(
         orphans = cx.report.orphans,
@@ -925,6 +949,88 @@ async fn restore_state(cx: &mut Ctx<'_>) -> Result<()> {
             tracing::warn!(user_id = %user, error = ?e, "could not restore albums/pairs from the manifest");
         }
     }
+    Ok(())
+}
+
+/// Photo edits from `edits/`: for every object whose photo has a row, apply it when the row has no edits or older ones
+/// (`edited_at`). This is the one place reindex rewrites a row that already exists, on purpose: an edit is what the user
+/// asked for, and the bucket's copy is written before the database changes, so it is never older than the truth. A photo
+/// whose edits were reverted keeps an empty object, which puts a restored dump's older edit back to the file's values.
+/// Edits of an orphan are applied after the orphan was recreated above; in a dry run they count as "no photo yet".
+async fn restore_edits(cx: &mut Ctx<'_>) -> Result<()> {
+    let mut token = None;
+    loop {
+        let page = cx
+            .storage
+            .list_page(keys::EDITS_PREFIX, token)
+            .await
+            .context("list edits/")?;
+        for o in &page.objects {
+            if let Err(e) = restore_edit(cx, &o.key).await {
+                cx.report.errors += 1;
+                tracing::warn!(key = %o.key, error = ?e, "could not restore a photo's edits");
+            }
+        }
+        match page.next {
+            Some(t) => token = Some(t),
+            None => return Ok(()),
+        }
+    }
+}
+
+async fn restore_edit(cx: &mut Ctx<'_>, key: &str) -> Result<()> {
+    cx.report.edits_objects += 1;
+    let Some((key_owner, sha)) = keys::parse_edits(key) else {
+        cx.report.edits_bad += 1;
+        cx.report.sample("edits keys not recognised", key);
+        return Ok(());
+    };
+    known_users(cx, &[key_owner]).await?;
+    // Photos of a user that no longer exists were given to `--assign-to`, whose rows keep the old owner in the key's path.
+    let owner = match (
+        cx.known_users.get(&key_owner).copied().unwrap_or(false),
+        cx.opts.assign_to,
+    ) {
+        (true, _) => key_owner,
+        (false, Some(to)) => to,
+        (false, None) => {
+            cx.report.edits_without_photo += 1;
+            return Ok(());
+        }
+    };
+    let row: Option<(Uuid, Option<OffsetDateTime>)> =
+        sqlx::query_as("SELECT id, edited_at FROM assets WHERE owner_id = $1 AND sha256 = $2 AND purging_at IS NULL")
+            .bind(owner)
+            .bind(&sha[..])
+            .fetch_optional(cx.db)
+            .await?;
+    let Some((id, edited_at)) = row else {
+        cx.report.edits_without_photo += 1;
+        return Ok(());
+    };
+    let bytes = cx.storage.get_bytes_limited(key, 64 * 1024).await?;
+    let edits = match edits::parse(&bytes) {
+        Ok(e) => e,
+        Err(e) => {
+            cx.report.edits_bad += 1;
+            cx.report.sample("edits not valid", key);
+            tracing::warn!(key, error = ?e, "an edits object is not valid; left alone");
+            return Ok(());
+        }
+    };
+    let current = match edited_at {
+        Some(at) => at >= edits.updated_at,
+        // Never edited: nothing to put back for "no edits".
+        None => edits.is_empty(),
+    };
+    if current {
+        cx.report.edits_current += 1;
+        return Ok(());
+    }
+    if cx.opts.apply {
+        edits::apply(cx.db, owner, id, &edits).await?;
+    }
+    cx.report.edits_restored += 1;
     Ok(())
 }
 

@@ -87,6 +87,22 @@ pub fn app_with(
     })
 }
 
+/// The app over a real S3 API (the `S3_*` variables: a bucket that exists), for what writes objects (photo edits); None when
+/// they are not set, and the test then has nothing to run against.
+pub fn app_with_s3(pool: &PgPool) -> Option<(Router, Storage)> {
+    std::env::var("S3_ENDPOINT").ok().filter(|v| !v.is_empty())?;
+    let storage = Storage::new(&cyanotype_core::config::S3Config::from_env().expect("S3_* env"));
+    let app = crate::routes::routes().with_state(AppState {
+        db: pool.clone(),
+        storage: storage.clone(),
+        trash_retention_days: 30,
+        purge_wake: Default::default(),
+        text: Arc::new(FakeText::default()),
+        search: default_search(),
+    });
+    Some((app, storage))
+}
+
 /// A user with an API key; returns `(user id, bearer key)`.
 pub async fn user(pool: &PgPool, email: &str) -> (Uuid, String) {
     let (uid,): (Uuid,) = sqlx::query_as("INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id")

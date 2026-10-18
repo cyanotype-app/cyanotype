@@ -296,10 +296,19 @@ async fn metadata(ctx: &Arc<Ctx>, job: &jobs::Job, asset: &AssetRow, kind: Kind,
         })?;
 
     let e = &m.exif;
-    sqlx::query(
-        "UPDATE assets SET width = $2, height = $3, taken_at = $4, latitude = $5, longitude = $6,
+    // What the file says. While the photo's date or location is edited (`cyanotype_core::edits`) the file's value goes
+    // next to the edit (`*_exif`) instead of over it, so a re-run of this job never undoes a correction.
+    let (effective_lat, effective_lon): (Option<f64>, Option<f64>) = sqlx::query_as(
+        "UPDATE assets SET width = $2, height = $3,
+             taken_at = CASE WHEN date_edited THEN taken_at ELSE $4 END,
+             taken_at_exif = CASE WHEN date_edited THEN $4 ELSE NULL END,
+             latitude = CASE WHEN location_edited THEN latitude ELSE $5 END,
+             longitude = CASE WHEN location_edited THEN longitude ELSE $6 END,
+             latitude_exif = CASE WHEN location_edited THEN $5 ELSE NULL END,
+             longitude_exif = CASE WHEN location_edited THEN $6 ELSE NULL END,
              camera_make = $7, camera_model = $8, lens_model = $9, exif = $10
-         WHERE id = $1",
+         WHERE id = $1
+         RETURNING latitude, longitude",
     )
     .bind(job.asset_id)
     .bind(m.width as i32)
@@ -311,11 +320,11 @@ async fn metadata(ctx: &Arc<Ctx>, job: &jobs::Job, asset: &AssetRow, kind: Kind,
     .bind(&e.camera_model)
     .bind(&e.lens_model)
     .bind(e.json.as_ref().map(sqlx::types::Json))
-    .execute(&ctx.db)
+    .fetch_one(&ctx.db)
     .await
     .context("update asset metadata")?;
     // The coordinates may be new or changed (a re-run after an EXIF fix): look the place up again, or forget it.
-    if e.latitude.is_some() && e.longitude.is_some() {
+    if effective_lat.is_some() && effective_lon.is_some() {
         places::requeue(&ctx.db, job.asset_id).await.context("queue geocode")?;
     } else {
         places::geocode_asset(&ctx.db, job.asset_id)
@@ -472,6 +481,115 @@ mod tests {
         let sha = Sha256::digest(&b);
         let m = compute_metadata(Kind::Png, &Arc::new(b), &sha, ROOMY).unwrap();
         assert_eq!((m.width, m.height), (20, 10));
+    }
+
+    /// The metadata job never undoes a corrected date or location (`cyanotype_core::edits`): the file's values go next to
+    /// the edit, and a photo that is not edited still takes them. Needs Postgres and the S3 variables.
+    #[tokio::test]
+    async fn the_metadata_job_keeps_edited_dates_and_locations_and_still_records_the_files_own() {
+        use crate::exif::testutil::{ascii, exif_app1, rationals, with_app1};
+        let Ok(admin_url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        if std::env::var("S3_ENDPOINT").ok().filter(|v| !v.is_empty()).is_none() {
+            return;
+        }
+        let name = format!("cyanotype_test_{}", Uuid::new_v4().simple());
+        let mut admin = PgConnection::connect(&admin_url).await.unwrap();
+        admin.execute(format!("CREATE DATABASE {name}").as_str()).await.unwrap();
+        let (base, _) = admin_url.rsplit_once('/').unwrap();
+        let pool = db::connect(&format!("{base}/{name}")).await.unwrap();
+        db::migrate(&pool).await.unwrap();
+        let (owner,): (Uuid,) =
+            sqlx::query_as("INSERT INTO users (email, password_hash) VALUES ('w@example.com','x') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let storage = Storage::new(&S3Config::from_env().expect("S3_* env"));
+        let ctx = Arc::new(Ctx {
+            db: pool.clone(),
+            storage: storage.clone(),
+            max_original_bytes: 1 << 24,
+            budget: MemoryBudget::new(512 << 20),
+            raw_develop: false,
+            search_model: cyanotype_clip::DEFAULT_MODEL,
+        });
+        // A JPEG taken 2021-12-31 23:59:58 UTC at 33.85 S, 151.21 W... (the file's own values).
+        let sub = vec![(0x9003, 2, ascii("2021:12:31 23:59:58"))];
+        let gps = vec![
+            (0x0001, 2, ascii("S")),
+            (0x0002, 5, rationals(&[(33, 1), (51, 1), (0, 1)])),
+            (0x0003, 2, ascii("W")),
+            (0x0004, 5, rationals(&[(151, 1), (12, 1), (36, 1)])),
+        ];
+        let jpeg = with_app1(
+            &crate::exif::tests_support_jpeg(),
+            &exif_app1(&[(0x010F, 2, ascii("ACME"))], &sub, &gps),
+        );
+        let sha: [u8; 32] = Sha256::digest(&jpeg).into();
+        let key = keys::original(owner, &sha, "jpg");
+        ctx.storage.put_bytes(&key, jpeg.clone(), "image/jpeg").await.unwrap();
+        let (id,): (Uuid,) = sqlx::query_as(
+            "INSERT INTO assets (owner_id, sha256, original_key, original_name, content_type, size_bytes,
+                                 date_edited, taken_at, location_edited, latitude, longitude)
+             VALUES ($1, $2, $3, 'a.jpg', 'image/jpeg', $4, true, '2000-01-01T00:00:00Z', true, 48.0, 2.0) RETURNING id",
+        )
+        .bind(owner)
+        .bind(&sha[..])
+        .bind(&key)
+        .bind(jpeg.len() as i64)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let job = jobs::Job {
+            id: 1,
+            kind: jobs::KIND_METADATA.into(),
+            asset_id: id,
+            version: 1,
+            attempts: 1,
+        };
+        assert!(matches!(run(&ctx, &job, &JobInfo::default()).await, Ok(Outcome::Done)));
+        let (taken, exif_taken, lat, lat_exif, camera): (String, Option<String>, f64, Option<f64>, Option<String>) = sqlx::query_as(
+            "SELECT taken_at::text, taken_at_exif::text, latitude, latitude_exif, camera_make FROM assets WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(taken, "2000-01-01 00:00:00+00", "the edited date stays");
+        assert_eq!(
+            exif_taken.as_deref(),
+            Some("2021-12-31 23:59:58+00"),
+            "the file's own is kept next to it"
+        );
+        assert_eq!(lat, 48.0, "the edited location stays");
+        assert!((lat_exif.unwrap() + 33.85).abs() < 1e-9);
+        assert_eq!(camera.as_deref(), Some("ACME"), "everything else is still recorded");
+        // The geocode job is for the coordinates that are in effect.
+        // Revert (as `edits::apply` does) and run again: the file's values are the effective ones.
+        sqlx::query("UPDATE assets SET date_edited = false, location_edited = false WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(matches!(run(&ctx, &job, &JobInfo::default()).await, Ok(Outcome::Done)));
+        let (taken, exif_taken, lat): (String, Option<String>, f64) =
+            sqlx::query_as("SELECT taken_at::text, taken_at_exif::text, latitude FROM assets WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            (taken.as_str(), exif_taken, lat < 0.0),
+            ("2021-12-31 23:59:58+00", None, true)
+        );
+
+        pool.close().await;
+        let mut admin = PgConnection::connect(&admin_url).await.unwrap();
+        admin
+            .execute(format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)").as_str())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

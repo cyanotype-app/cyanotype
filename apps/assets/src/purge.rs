@@ -29,7 +29,10 @@ pub trait Objects: Clone + Send + Sync + 'static {
 
 impl Objects for Storage {
     async fn delete_asset_objects(&self, original_key: &str, derived_prefix: &str) -> anyhow::Result<usize> {
-        let a = self.delete_all_versions(&[original_key.to_string()]).await?;
+        // The photo's edits (`cyanotype_core::edits`) go with it: a caption or a corrected location does not outlive the photo.
+        let mut doomed = vec![original_key.to_string()];
+        doomed.extend(keys::parse_original(original_key).map(|p| keys::edits(p.user, &p.sha256)));
+        let a = self.delete_all_versions(&doomed).await?;
         let b = self.delete_prefix_all_versions(derived_prefix).await?;
         Ok(a + b)
     }

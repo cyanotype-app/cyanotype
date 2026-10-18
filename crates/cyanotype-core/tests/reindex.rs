@@ -786,3 +786,91 @@ async fn upload_metadata_survives_a_multipart_round_trip_for_odd_names() {
     }
     fx.teardown().await;
 }
+
+#[tokio::test]
+async fn edits_come_back_with_a_rebuilt_database() {
+    use cyanotype_core::edits;
+    let Some(fx) = Fx::new().await else { return };
+    let (_, sha) = fx
+        .put_original(fx.user, "edited.jpg", b"edited", Some(fx.meta("edited.jpg")))
+        .await;
+    let (_, _) = fx
+        .put_original(fx.user, "plain.jpg", b"plain", Some(fx.meta("plain.jpg")))
+        .await;
+    let mut e = edits::Edits::none(edits::now());
+    e.taken_at = Some(datetime!(2001-02-03 04:05:06 UTC));
+    e.taken_offset = Some(3600);
+    e.latitude = Some(48.85);
+    e.longitude = Some(2.35);
+    e.caption = Some("kept in the bucket".into());
+    edits::put(&fx.storage, fx.user, &sha, &e).await.unwrap();
+    // Objects reindex must leave alone: a user that does not exist, a key it does not know, and garbage.
+    let ghost = Uuid::new_v4();
+    edits::put(&fx.storage, ghost, &[9; 32], &e).await.unwrap();
+    fx.storage
+        .put_bytes("edits/junk.json", b"{}".to_vec(), "application/json")
+        .await
+        .unwrap();
+    fx.storage
+        .put_bytes(
+            &keys::edits(fx.user, &[5; 32]),
+            b"not json".to_vec(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+
+    // Dry run: the photo has no row yet, so its edits are waiting for it; nothing is written.
+    let dry = fx.run(|_| {}).await;
+    assert_eq!(
+        (dry.orphans, dry.edits_objects, dry.edits_restored),
+        (2, 4, 0),
+        "{}",
+        dry.text()
+    );
+    assert_eq!(fx.count("assets").await, 0);
+
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!(
+        (r.orphans_recreated, r.edits_objects, r.edits_restored, r.errors),
+        (2, 4, 1, 0),
+        "{}",
+        r.text()
+    );
+    assert_eq!(
+        (r.edits_without_photo, r.edits_bad),
+        (2, 1),
+        "no photo: the ghost's and the garbage one; not valid: the unknown key"
+    );
+    let (taken, off, lat, edited, caption, exif_lat): (
+        OffsetDateTime,
+        Option<i32>,
+        f64,
+        bool,
+        Option<String>,
+        Option<f64>,
+    ) = sqlx::query_as(
+        "SELECT taken_at, taken_offset_edit, latitude, date_edited AND location_edited, caption, latitude_exif
+         FROM assets WHERE sha256 = $1",
+    )
+    .bind(&sha[..])
+    .fetch_one(&fx.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (taken, off, lat, edited),
+        (datetime!(2001-02-03 04:05:06 UTC), Some(3600), 48.85, true)
+    );
+    assert_eq!((caption.as_deref(), exif_lat), (Some("kept in the bucket"), None));
+    // The place is looked up again for the restored coordinates.
+    let geocode: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind = 'geocode'")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert_eq!(geocode, 1);
+
+    // The metadata job that now runs for the recreated row keeps them (the worker's test), and a second reindex has nothing to do.
+    let again = fx.run(|o| o.apply = true).await;
+    assert_eq!((again.edits_restored, again.edits_current), (0, 1));
+    fx.teardown().await;
+}

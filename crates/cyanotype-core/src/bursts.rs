@@ -265,6 +265,43 @@ pub async fn enqueue(db: &PgPool, asset_id: Uuid, priority: i16) -> Result<bool>
         > 0)
 }
 
+/// A photo's capture time was changed by an edit (`edits.rs`): the burst it was in loses it and the neighbourhood it moved
+/// into may gain it, and a regroup around a photo reads that photo's *current* time. So mark the photo and the rest of
+/// its old burst as "to be computed" and queue one job at the photo (its new neighbourhood) and one at another member of the
+/// old burst (its old neighbourhood, without the photo); the sweep covers anything a lost job leaves.
+pub async fn requeue_after_time_change(db: &PgPool, asset_id: Uuid, old_burst: Option<Uuid>) -> Result<()> {
+    let owner: Option<Uuid> = sqlx::query_scalar("SELECT owner_id FROM assets WHERE id = $1")
+        .bind(asset_id)
+        .fetch_optional(db)
+        .await?;
+    let Some(owner) = owner else { return Ok(()) };
+    sqlx::query(
+        "UPDATE assets SET burst_version = NULL
+         WHERE id = $1 OR (owner_id = $2 AND burst_id IS NOT NULL AND burst_id = $3)",
+    )
+    .bind(asset_id)
+    .bind(owner)
+    .bind(old_burst)
+    .execute(db)
+    .await?;
+    enqueue(db, asset_id, PRIORITY_EVENT).await?;
+    if let Some(b) = old_burst {
+        let other: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM assets WHERE owner_id = $1 AND burst_id = $2 AND id <> $3 AND deleted_at IS NULL
+             ORDER BY id LIMIT 1",
+        )
+        .bind(owner)
+        .bind(b)
+        .bind(asset_id)
+        .fetch_optional(db)
+        .await?;
+        if let Some(o) = other {
+            enqueue(db, o, PRIORITY_EVENT).await?;
+        }
+    }
+    Ok(())
+}
+
 /// A photo just got a vector (its first, or the configured model's after a swap): its neighbourhood can be judged now, so
 /// mark it to be computed and queue the regroup. Does nothing for photos that can never be in a burst.
 pub async fn requeue_after_embed(db: &PgPool, asset_id: Uuid) -> Result<()> {

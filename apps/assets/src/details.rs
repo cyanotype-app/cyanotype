@@ -487,16 +487,29 @@ pub fn date_info(
     created_at: OffsetDateTime,
     dump: Option<&Value>,
 ) -> DateInfo {
+    date_info_in(taken_at, file_modified_at, created_at, dump, None)
+}
+
+/// [`date_info`] for a photo whose time may have been edited: `edited_zone` is the zone the edit chose (`Some(None)`: an
+/// edited time whose zone is unknown; `Some(Some(secs))`: east of UTC by `secs`), None for a time nobody edited, which
+/// reads its zone from the EXIF dump.
+pub fn date_info_in(
+    taken_at: Option<OffsetDateTime>,
+    file_modified_at: Option<OffsetDateTime>,
+    created_at: OffsetDateTime,
+    dump: Option<&Value>,
+    edited_zone: Option<Option<i32>>,
+) -> DateInfo {
     let (instant, basis) = match (taken_at, file_modified_at) {
         (Some(t), _) => (t, "taken"),
         (None, Some(f)) => (f, "file"),
         (None, None) => (created_at, "added"),
     };
     let instant = instant.to_offset(UtcOffset::UTC);
-    let offset = if basis == "taken" {
-        recorded_offset(dump, taken_at)
-    } else {
-        None
+    let offset = match edited_zone {
+        Some(zone) => zone.and_then(|s| UtcOffset::from_whole_seconds(s).ok()),
+        None if basis == "taken" => recorded_offset(dump, taken_at),
+        None => None,
     };
     let local = instant.to_offset(offset.unwrap_or(UtcOffset::UTC));
     let fmt = time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]");
@@ -743,6 +756,26 @@ mod tests {
         assert_eq!(i.weekday, "Tuesday");
         assert_eq!(i.offset.as_deref(), Some("-07:00"));
         assert_eq!(i.timeline_day, "2023-07-05");
+    }
+
+    #[test]
+    fn an_edited_time_has_the_zone_the_edit_chose() {
+        let d = json!({"DateTimeOriginal": "2023:07:04 13:05:09", "OffsetTimeOriginal": "+02:00"});
+        let moved = datetime!(2023-07-05 02:30:00 UTC);
+        let created = datetime!(2024-01-01 0:00 UTC);
+        // The edit says UTC-07:00: the EXIF zone does not apply to the edited instant.
+        let i = date_info_in(Some(moved), None, created, Some(&d), Some(Some(-7 * 3600)));
+        assert_eq!(
+            (i.local.as_str(), i.offset.as_deref(), i.zone_known),
+            ("2023-07-04T19:30:00", Some("-07:00"), true)
+        );
+        assert_eq!(i.weekday, "Tuesday");
+        // An edit that left the zone unknown reads as UTC, whatever the EXIF said.
+        let i = date_info_in(Some(moved), None, created, Some(&d), Some(None));
+        assert_eq!(
+            (i.local.as_str(), i.offset, i.zone_known),
+            ("2023-07-05T02:30:00", None, false)
+        );
     }
 
     #[test]
