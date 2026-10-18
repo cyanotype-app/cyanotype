@@ -834,6 +834,14 @@ scan (300 ms); a cached generic plan for a date range was 20x slower than the pl
 regex per row (400 ms) and the camera label per row (200 ms) became stored columns; a second HNSW pass when the first `k`
 was too small cost as much as a generous first `k`.
 
+**More like this** (`similar_performance_on_50k_photos`, ignored; same data and command pattern, 40 random photos as the source, 60
+results, the whole request path including the uncached model-coverage count that production caches for 30 s): no filter (HNSW)
+p50 138 ms / p95 166 ms, favorites (exact) 153 / 173, one camera (HNSW, filtered) 192 / 208, one year (exact) 152 / 197. These were
+run on a busy shared host with an unconstrained Postgres container, where the text search above measured 221 / 250 ms for "no
+filter": slower than the table, because of the host, and in the same range as a text query (no text model, and one primary-key
+lookup of the source's vector more). The ranking query is the same, so the plans, recall and index sizes above apply.
+Memory: nothing new is resident (no model is loaded for it, no new index; one 3 KB vector is read per request).
+
 HNSW recall against the exact ranking (`ef_search = 400`, iterative scan, 40 queries): top 10 **0.997**, top 60 **0.998**,
 top 300 **0.977** without a filter; 1.000 / 1.000 / 1.000 with a 50 % filter and with a 33 % filter.
 (`ef_search` 40, pgvector's default, gave 0.83 / 0.89 / 0.96 on the same data and 0.46 / 0.46 / 0.57 for in-distribution
