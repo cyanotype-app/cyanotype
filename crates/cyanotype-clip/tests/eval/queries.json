@@ -1,0 +1,186 @@
+{
+ "positive": [
+  {
+   "category": "airplane",
+   "query": "airplane"
+  },
+  {
+   "category": "airplane",
+   "query": "a photo of a airplane"
+  },
+  {
+   "category": "beach",
+   "query": "beach"
+  },
+  {
+   "category": "beach",
+   "query": "a photo of a beach"
+  },
+  {
+   "category": "bird",
+   "query": "bird"
+  },
+  {
+   "category": "bird",
+   "query": "a photo of a bird"
+  },
+  {
+   "category": "birthday_cake",
+   "query": "birthday cake"
+  },
+  {
+   "category": "birthday_cake",
+   "query": "a photo of a birthday cake"
+  },
+  {
+   "category": "bridge",
+   "query": "bridge"
+  },
+  {
+   "category": "bridge",
+   "query": "a photo of a bridge"
+  },
+  {
+   "category": "car",
+   "query": "car"
+  },
+  {
+   "category": "car",
+   "query": "a photo of a car"
+  },
+  {
+   "category": "cat",
+   "query": "cat"
+  },
+  {
+   "category": "cat",
+   "query": "a photo of a cat"
+  },
+  {
+   "category": "church",
+   "query": "church"
+  },
+  {
+   "category": "church",
+   "query": "a photo of a church"
+  },
+  {
+   "category": "city_night",
+   "query": "city at night"
+  },
+  {
+   "category": "city_night",
+   "query": "a photo of a city at night"
+  },
+  {
+   "category": "coffee",
+   "query": "cup of coffee"
+  },
+  {
+   "category": "coffee",
+   "query": "a photo of a cup of coffee"
+  },
+  {
+   "category": "cow",
+   "query": "cow"
+  },
+  {
+   "category": "cow",
+   "query": "a photo of a cow"
+  },
+  {
+   "category": "dog",
+   "query": "dog"
+  },
+  {
+   "category": "dog",
+   "query": "a photo of a dog"
+  },
+  {
+   "category": "fireworks",
+   "query": "fireworks"
+  },
+  {
+   "category": "fireworks",
+   "query": "a photo of a fireworks"
+  },
+  {
+   "category": "forest",
+   "query": "forest"
+  },
+  {
+   "category": "forest",
+   "query": "a photo of a forest"
+  },
+  {
+   "category": "guitar",
+   "query": "guitar"
+  },
+  {
+   "category": "guitar",
+   "query": "a photo of a guitar"
+  },
+  {
+   "category": "horse",
+   "query": "horse"
+  },
+  {
+   "category": "horse",
+   "query": "a photo of a horse"
+  },
+  {
+   "category": "mountain",
+   "query": "mountain"
+  },
+  {
+   "category": "mountain",
+   "query": "a photo of a mountain"
+  },
+  {
+   "category": "pizza",
+   "query": "pizza"
+  },
+  {
+   "category": "pizza",
+   "query": "a photo of a pizza"
+  },
+  {
+   "category": "sailboat",
+   "query": "sailboat"
+  },
+  {
+   "category": "sailboat",
+   "query": "a photo of a sailboat"
+  },
+  {
+   "category": "sunset",
+   "query": "sunset"
+  },
+  {
+   "category": "sunset",
+   "query": "a photo of a sunset"
+  },
+  {
+   "category": "train",
+   "query": "train"
+  },
+  {
+   "category": "train",
+   "query": "a photo of a train"
+  }
+ ],
+ "negative": [
+  "a giraffe",
+  "a submarine",
+  "an astronaut",
+  "a bowl of soup",
+  "a tennis match",
+  "a library bookshelf",
+  "a dinosaur skeleton",
+  "a medieval castle",
+  "an elephant",
+  "a snowman",
+  "a wedding dress",
+  "a chess board"
+ ]
+}

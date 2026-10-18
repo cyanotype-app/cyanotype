@@ -1,0 +1,13 @@
+# The SigLIP 2 model the worker (image tower) and the assets service (text tower) run by default (SEARCH_MODEL=siglip2-b16):
+# Google SigLIP 2 base, patch 16 at 224 px (Apache 2.0, https://huggingface.co/google/siglip2-base-patch16-224), as the ONNX
+# export published by Hugging Face's transformers.js team in https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX,
+# pinned to one commit (2025-02-21). `cyanotype-clip` expects exactly these files (crates/cyanotype-clip/src/lib.rs,
+# Model::Siglip2B16). Changing a line here is a model change: bump Model::version() in the same commit so photos are re-embedded.
+#
+# The image tower is the export's 4-bit weight-only quantisation (MatMulNBits), the text tower its 8-bit one: the export's
+# 8-bit image tower loses too much (docs/build.md, "Which model, and why").
+#
+# sha256                                                            file                      url
+03e61be280fb24114facd87a1e1e6b2b654aad49845686da2f930c72740914aa  vision_model_q4.onnx      https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4/onnx/vision_model_q4.onnx
+3a0603d3a00c05a80a6ded4743c16aaac7b1e62cdcc7e362e7ce418659b96400  text_model_int8.onnx      https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4/onnx/text_model_int8.onnx
+cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322  tokenizer.json            https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/ba1f3b0843f24bc5417d38e19c37b287d719b2f4/tokenizer.json

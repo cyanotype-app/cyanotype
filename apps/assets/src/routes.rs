@@ -37,6 +37,8 @@ mod scope_tests;
 mod search;
 #[cfg(test)]
 mod search_tests;
+#[cfg(test)]
+mod search_v2_tests;
 mod share_public;
 #[cfg(test)]
 mod share_tests;
@@ -1023,7 +1025,8 @@ mod tests {
             storage: dummy_storage(),
             trash_retention_days: 30,
             purge_wake: Default::default(),
-            text: std::sync::Arc::new(crate::testutil::FakeText),
+            text: std::sync::Arc::new(crate::testutil::FakeText::default()),
+            search: crate::testutil::default_search(),
         });
 
         let mut seen = Vec::new();
@@ -1180,7 +1183,8 @@ mod tests {
             storage: dummy_storage(),
             trash_retention_days: 30,
             purge_wake: Default::default(),
-            text: std::sync::Arc::new(crate::testutil::FakeText),
+            text: std::sync::Arc::new(crate::testutil::FakeText::default()),
+            search: crate::testutil::default_search(),
         });
         let url = |n: i32| proxy_part_url(upload_id, n);
 
@@ -1433,7 +1437,8 @@ mod tests {
             storage: dummy_storage(),
             trash_retention_days: 30,
             purge_wake: Default::default(),
-            text: std::sync::Arc::new(crate::testutil::FakeText),
+            text: std::sync::Arc::new(crate::testutil::FakeText::default()),
+            search: crate::testutil::default_search(),
         });
 
         let list = get_json(&app, "/assets", key).await;

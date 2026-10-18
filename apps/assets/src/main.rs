@@ -1,6 +1,7 @@
 //! Assets service: presigned multipart upload flow and asset reads. Routes live under `/assets/*`.
 mod janitor;
 mod purge;
+mod query_parse;
 mod routes;
 mod search;
 #[cfg(test)]
@@ -31,6 +32,8 @@ pub struct AppState {
     pub purge_wake: Arc<Notify>,
     /// Query text to vector for semantic search.
     pub text: Arc<dyn search::TextEmbedder>,
+    /// The search model, which model answers while a swap re-indexes, and what the query parser knows.
+    pub search: Arc<search::SearchState>,
 }
 
 #[tokio::main]
@@ -55,7 +58,13 @@ async fn main() -> Result<()> {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(2),
         )),
+        search: Arc::new(search::SearchState::from_env()?),
     };
+    tracing::info!(
+        model = state.search.model.name(),
+        switch_percent = state.search.switch_percent,
+        "search model"
+    );
 
     // Daily per-user recovery manifests for `cyanotype reindex` (docs/recovery.md). The first pass waits so that a
     // freshly restored database can be reconciled before anything is written from it.

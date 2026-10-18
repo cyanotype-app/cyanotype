@@ -33,8 +33,20 @@ export function paramsFromUrl(search: URLSearchParams): SearchParams {
   const loc = search.get("has_location");
   if (loc === "true") out.has_location = true;
   if (loc === "false") out.has_location = false;
+  const skip = parseSkip(search.get("skip"));
+  if (skip) out.skip = skip;
   return out;
 }
+
+/** `skip=place,date,x` to the canonical `date,place` (only the two kinds the server knows, each once), or undefined. */
+export function parseSkip(v: string | null): string | undefined {
+  const kinds = new Set((v ?? "").split(",").map((k) => k.trim().toLowerCase()));
+  const out = (["date", "place"] as const).filter((k) => kinds.has(k));
+  return out.length ? out.join(",") : undefined;
+}
+
+/** `skip` with one more kind turned off. */
+export const addSkip = (skip: string | undefined, kind: "date" | "place") => parseSkip(`${skip ?? ""},${kind}`);
 
 /** Params to the `/search` URL's query string (the same names as the API). */
 export function urlFromParams(p: SearchParams): string {
@@ -48,6 +60,7 @@ export function urlFromParams(p: SearchParams): string {
   if (p.type) q.set("type", p.type);
   if (p.album) q.set("album", p.album);
   if (p.has_location !== undefined) q.set("has_location", String(p.has_location));
+  if (p.skip) q.set("skip", p.skip);
   return q.toString();
 }
 
@@ -55,7 +68,7 @@ export function urlFromParams(p: SearchParams): string {
 export const isEmptySearch = (p: SearchParams) => Object.keys(p).length === 0;
 
 /** Does the search have a filter (a query alone is not one)? */
-export const hasFilters = (p: SearchParams) => Object.keys(p).some((k) => k !== "q");
+export const hasFilters = (p: SearchParams) => Object.keys(p).some((k) => k !== "q" && k !== "skip");
 
 export interface Chip {
   /** Which parameters clearing the chip removes. */
@@ -110,13 +123,25 @@ const n = (v: number) => v.toLocaleString("en-US");
  */
 export function indexingNote(p: Processing | null): string | null {
   const e = p?.embedding;
-  if (!e || e.total <= e.indexed) return null;
+  // While an older model answers searches (see `reindexNote`) its results are complete: not "may be incomplete".
+  if (!e || e.reindexing || e.total <= e.indexed) return null;
   const left = e.total - e.indexed;
   if (e.queued + e.running === 0) {
     // Nothing queued yet photos lack a vector: thumbnails come first, or the model is not installed.
     return p!.without_thumbnail > 0 ? null : `${n(left)} ${left === 1 ? "photo is" : "photos are"} not searchable yet.`;
   }
   return `Still indexing ${n(left)} ${left === 1 ? "photo" : "photos"}: results may be incomplete.`;
+}
+
+/**
+ * "Re-indexing with the improved model: 40%" while the configured model is still being built and an older one answers
+ * searches (the search keeps working, with the older model's results); null otherwise.
+ */
+export function reindexNote(p: Processing | null): string | null {
+  const e = p?.embedding;
+  if (!e?.reindexing) return null;
+  const percent = Math.max(0, Math.min(99, e.percent ?? 0));
+  return `Re-indexing with the improved search model: ${percent}%. Searches use the previous model until ${e.switch_at_percent ?? 95}%.`;
 }
 
 /** 0..100 of the library that search covers, or null when everything is indexed or nothing is known. */

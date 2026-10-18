@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "CLIP image and text towers (ONNX Runtime + tokenizers), shared by the worker (images) and the assets service (text)."
+description = "SigLIP 2 and CLIP image and text towers (ONNX Runtime + tokenizers), shared by the worker (images) and the assets service (text)."
 
 [dependencies]
 anyhow.workspace = true

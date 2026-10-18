@@ -51,6 +51,8 @@ pub struct Ctx {
     pub budget: MemoryBudget,
     /// Allow the heavy, pixel-capped full RAW develop when a RAW has no embedded preview.
     pub raw_develop: bool,
+    /// The model photos are embedded with (`SEARCH_MODEL`); its version is the `embed` job's pipeline version.
+    pub search_model: cyanotype_clip::Model,
 }
 
 impl Ctx {
@@ -420,7 +422,7 @@ async fn thumbnail(
     }
     // The preview exists now: queue the embedding for search (background priority work, see `embed`). The pipeline
     // version is the model version, so a model swap re-embeds through the same job.
-    jobs::enqueue(&ctx.db, jobs::KIND_EMBED, job.asset_id, cyanotype_clip::MODEL_VERSION)
+    jobs::enqueue(&ctx.db, jobs::KIND_EMBED, job.asset_id, ctx.search_model.version())
         .await
         .context("queue embedding")?;
     Ok(Outcome::Done)
@@ -512,6 +514,7 @@ mod tests {
             max_original_bytes: 1 << 20,
             budget: MemoryBudget::new(256 << 20),
             raw_develop: false,
+            search_model: cyanotype_clip::DEFAULT_MODEL,
         });
         let job = |asset_id| jobs::Job {
             id: 1,

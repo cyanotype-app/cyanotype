@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { api, ApiError, isScope, type AssetListItem, type SearchParams, type Target } from "../api";
+import { api, ApiError, isScope, type AssetListItem, type ParsedChip, type SearchItem, type SearchParams, type SearchResult, type Target } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -13,6 +13,7 @@ import { SelectionBar } from "../components/SelectionBar";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
 import { useToast } from "../components/Toast";
 import {
+  addSkip,
   chipsOf,
   hasFilters,
   indexingNote,
@@ -20,6 +21,7 @@ import {
   isEmptySearch,
   loadRecent,
   paramsFromUrl,
+  reindexNote,
   urlFromParams,
 } from "../searchText";
 import { useSelection } from "../selection";
@@ -38,11 +40,25 @@ export function SearchPage() {
   return <SearchView key={key} params={params} />;
 }
 
-const withoutQuery = (p: SearchParams): Omit<SearchParams, "q"> => {
+const withoutQuery = (p: SearchParams): Omit<SearchParams, "q" | "skip"> => {
   const rest = { ...p };
   delete rest.q;
+  delete rest.skip;
   return rest;
 };
+
+/** The filters a parsed query adds to the explicit ones (a date chip's range, a place chip's name). */
+function withParsed(filters: Omit<SearchParams, "q" | "skip">, chips: ParsedChip[] | undefined): Omit<SearchParams, "q" | "skip"> {
+  const out = { ...filters };
+  for (const c of chips ?? []) {
+    if (c.kind === "date" && c.from && c.to) {
+      out.from = c.from;
+      out.to = c.to;
+    }
+    if (c.kind === "place" && c.value) out.place = c.value;
+  }
+  return out;
+}
 
 function SearchView({ params }: { params: SearchParams }) {
   const navigate = useNavigate();
@@ -65,7 +81,7 @@ function SearchView({ params }: { params: SearchParams }) {
 
   const apply = (next: Omit<SearchParams, "q">) => {
     setFiltersOpen(false);
-    const qs = urlFromParams({ ...next, q });
+    const qs = urlFromParams({ ...next, q, skip: params.skip });
     navigate(qs ? `/search?${qs}` : "/search");
   };
   const clear = (keys: (keyof SearchParams)[]) => {
@@ -105,7 +121,7 @@ function SearchView({ params }: { params: SearchParams }) {
           ))}
         </ul>
         {hasFilters(params) && (
-          <button type="button" className="btn btn-quiet small" onClick={() => clear(Object.keys(filters) as (keyof SearchParams)[])}>
+          <button type="button" className="btn btn-quiet small" onClick={() => clear(Object.keys(filters).filter((k) => k !== "skip") as (keyof SearchParams)[])}>
             Clear filters
           </button>
         )}
@@ -121,7 +137,7 @@ function Intro() {
   const navigate = useNavigate();
   const recent = useMemo(() => loadRecent(), []);
   const { status } = useProcessing();
-  const note = indexingNote(status);
+  const note = reindexNote(status) ?? indexingNote(status);
   const go = (q: string) => navigate(`/search?${urlFromParams({ q })}`);
   return (
     <div className="empty search-intro">
@@ -159,16 +175,17 @@ function Intro() {
 }
 
 function IndexingNote({ status }: { status: ReturnType<typeof useProcessing>["status"] }) {
-  const note = indexingNote(status);
-  const percent = indexingPercent(status);
+  const reindex = reindexNote(status);
+  const note = reindex ?? indexingNote(status);
+  const percent = reindex ? (status?.embedding?.percent ?? null) : indexingPercent(status);
   if (!note) return null;
   return (
-    <section className="indexing" aria-label="Search indexing">
+    <section className="indexing" aria-label={reindex ? "Search re-indexing" : "Search indexing"}>
       <p className="indexing-label small" role="status">
         {note}
       </p>
       {percent !== null && (
-        <div className="processing-bar" role="progressbar" aria-label="Search indexing progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
+        <div className="processing-bar" role="progressbar" aria-label={reindex ? "Search re-indexing progress" : "Search indexing progress"} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
           <span style={{ width: `${percent}%` }} />
         </div>
       )}
@@ -176,10 +193,30 @@ function IndexingNote({ status }: { status: ReturnType<typeof useProcessing>["st
   );
 }
 
+type Meta = {
+  ranked: boolean;
+  total: number | null;
+  parsed: SearchResult["parsed"];
+  weaker: SearchResult["weaker"];
+  strongCount: number | null;
+  reindexing: SearchResult["reindexing"];
+};
+
 function Results({ params }: { params: SearchParams }) {
+  const navigate = useNavigate();
   const { setAnonymous } = useAuth();
   const [open, setOpen] = useState<number | null>(null);
-  const [meta, setMeta] = useState<{ ranked: boolean; total: number | null }>({ ranked: Boolean(params.q), total: null });
+  const [meta, setMeta] = useState<Meta>({
+    ranked: Boolean(params.q),
+    total: null,
+    parsed: null,
+    weaker: null,
+    strongCount: null,
+    reindexing: null,
+  });
+  // "Show weaker matches": the next page continues right after the last strong match, with the weaker tier included.
+  const [weakerShown, setWeakerShown] = useState(false);
+  const weakerRef = useRef<{ on: boolean; cursor: string | null }>({ on: false, cursor: null });
   const [confirmed, setConfirmed] = useState(false);
   const [addIds, setAddIds] = useState<{ target: Target; count: number } | null>(null);
   const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
@@ -189,17 +226,53 @@ function Results({ params }: { params: SearchParams }) {
 
   const fetchPage = useCallback(
     async (cursor: string | null) => {
-      const r = await api.search(params, { cursor, limit: PAGE });
-      if (!cursor) setMeta({ ranked: r.ranked, total: r.total ?? null });
+      const weaker = weakerRef.current;
+      const first = !cursor && !weaker.on;
+      const r = await api.search(params, {
+        cursor: cursor ?? (weaker.on ? weaker.cursor : null),
+        limit: PAGE,
+        weaker: weaker.on,
+      });
+      if (first) {
+        setMeta({
+          ranked: r.ranked,
+          total: r.total ?? null,
+          parsed: r.parsed ?? null,
+          weaker: r.weaker ?? null,
+          strongCount: r.strong_count ?? null,
+          reindexing: r.reindexing ?? null,
+        });
+      }
+      // The strong pages end where the weaker ones begin: remember where to continue from.
+      if (!weaker.on && r.weaker) weakerRef.current = { on: false, cursor: r.weaker.cursor };
       return { items: r.items, next_cursor: r.next_cursor, next_before: null };
     },
     [params],
   );
-  const { items, setItems, done, started, loading, error, loadMore, sentinel, refreshItem, reset } = useAssetPages(fetchPage);
+  const { items, setItems, done, started, loading, error, loadMore, sentinel, refreshItem, reset: resetPages } = useAssetPages(fetchPage);
+  // Starting over (after a bulk change) starts from the strong matches again.
+  const reset = useCallback(() => {
+    weakerRef.current = { on: false, cursor: null };
+    setWeakerShown(false);
+    resetPages();
+  }, [resetPages]);
   const itemIds = useMemo(() => items.map((i) => i.id), [items]);
   // A filter-only search can select every match (the server resolves them); a ranked one selects what is loaded.
   const sel = useSelection(itemIds, meta.ranked ? undefined : (meta.total ?? undefined));
-  const scope = useMemo(() => ({ search: withoutQuery(params) }) as const, [params]);
+  // What "select all" selects for a filter-only search: the explicit filters and what was read out of the query.
+  const scope = useMemo(
+    () => ({ search: withParsed(withoutQuery(params), meta.parsed?.chips) }) as const,
+    [params, meta.parsed],
+  );
+  const showWeaker = () => {
+    weakerRef.current = { on: true, cursor: weakerRef.current.cursor };
+    setWeakerShown(true);
+    void loadMore();
+  };
+  const removeChip = (c: ParsedChip) => {
+    const qs = urlFromParams({ ...params, skip: addSkip(params.skip, c.kind) });
+    navigate(`/search?${qs}`);
+  };
 
   const failure = useCallback(
     (e: unknown, what: string) => {
@@ -334,26 +407,58 @@ function Results({ params }: { params: SearchParams }) {
   );
 
   const indexing = params.q ? indexingNote(status) : null;
+  // An older model answers while the configured one indexes the library: say so (the response knows first).
+  const reindexing = params.q && (meta.reindexing || status?.embedding?.reindexing);
   const total = meta.total ?? items.length;
+  // (the pages are search results: they carry a tier)
+  const strongLoaded = items.filter((i) => (i as SearchItem).tier !== "weak").length;
+  const weakLoaded = items.length - strongLoaded;
+  const matches = `${strongLoaded.toLocaleString("en-US")} match${strongLoaded === 1 ? "" : "es"}`;
   const shown = meta.ranked
-    ? `${items.length.toLocaleString("en-US")} best match${items.length === 1 ? "" : "es"}${done ? "" : " so far"}`
+    ? `${matches}${weakLoaded > 0 ? `, ${weakLoaded.toLocaleString("en-US")} weaker` : ""}${done ? "" : " so far"}`
     : photos(meta.total ?? items.length);
   const noResults = started && items.length === 0 && !error;
   const noModel = error !== null && /not available|not installed/i.test(error);
+  const weakerCount = meta.weaker?.count ?? 0;
+  const weakerButton = (
+    <button type="button" className="btn btn-quiet weaker-btn" onClick={showWeaker}>
+      Show weaker matches ({weakerCount.toLocaleString("en-US")})
+    </button>
+  );
+  const chips = meta.parsed?.chips ?? [];
 
   if (!started) return <p className="center muted" role="status">Searching…</p>;
 
   return (
     <>
-      {indexing && <IndexingNote status={status} />}
+      {(indexing || reindexing) && <IndexingNote status={status} />}
+      {chips.length > 0 && (
+        <ul className="chips parsed-chips" aria-label="Understood from your search">
+          {chips.map((c) => (
+            <li key={c.kind}>
+              <span className="chip" title={`Read “${c.matched}” as a ${c.kind}`}>
+                <span className="chip-label">{c.label}</span>
+                <button type="button" className="chip-x" aria-label={`Remove ${c.kind} ${c.label}`} onClick={() => removeChip(c)}>
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+                    <path d="m6 6 12 12M18 6 6 18" />
+                  </svg>
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
       {noResults && (
         <div className="empty" role="status">
-          <h2>Nothing matched</h2>
+          <h2>{weakerCount > 0 && !weakerShown ? "No close matches" : "Nothing matched"}</h2>
           <p>
-            {params.q
-              ? "Try describing the scene with other words, or remove a filter."
-              : "No photo has all of these. Remove a filter to widen the search."}
+            {weakerCount > 0 && !weakerShown
+              ? "Nothing in your library matches this closely. There are weaker matches."
+              : params.q
+                ? "Try describing the scene with other words, or remove a filter."
+                : "No photo has all of these. Remove a filter to widen the search."}
           </p>
+          {weakerCount > 0 && !weakerShown && weakerButton}
           {indexing && <p className="muted small">Photos that are still being indexed cannot match a description yet.</p>}
         </div>
       )}
@@ -440,6 +545,9 @@ function Results({ params }: { params: SearchParams }) {
             onFavorite={(id, favorite) => void setFavorite([id], favorite)}
           />
         </>
+      )}
+      {done && items.length > 0 && weakerCount > 0 && !weakerShown && !error && (
+        <div className="weaker-more">{weakerButton}</div>
       )}
       <div ref={sentinel} className="sentinel" aria-hidden="true" />
       {loading && items.length > 0 && <p className="center muted small" role="status">Loading more…</p>}

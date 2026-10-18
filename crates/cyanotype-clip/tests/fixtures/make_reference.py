@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """One-off generator for reference.json: embeddings from the reference stack (Pillow preprocessing exactly as
 transformers' CLIPImageProcessor, tokenizers' Python bindings, onnxruntime) for the shipped int8 models, which the Rust
-tests compare against. Not run by CI.
+tests compare against. Not run by CI. Per image: the preprocessed tensor subsampled to a 16 x 16 grid per channel (the
+preprocessing check, which does not depend on the CPU), the int8 embedding, and the fp32 embedding of the same export
+(vision_model.onnx; the quantised kernels' results depend a little on the CPU, the fp32 ones give the tests a bound that
+does not).
 
   python3 -m venv /tmp/v && /tmp/v/bin/pip install onnxruntime numpy pillow tokenizers
   /tmp/v/bin/python make_reference.py /path/to/model/dir > reference.json
@@ -43,10 +46,18 @@ def ids(t):
 
 
 vis = ort.InferenceSession(M + "vision_model_int8.onnx", providers=["CPUExecutionProvider"])
+visf = ort.InferenceSession(M + "vision_model.onnx", providers=["CPUExecutionProvider"])
 txt = ort.InferenceSession(M + "text_model_int8.onnx", providers=["CPUExecutionProvider"])
-r = lambda v: [round(float(x), 5) for x in v]
+r = lambda v, n=5: [round(float(x), n) for x in v]
 out = {
-    "images": {n: r(norm(vis.run(None, {"pixel_values": prep(f"images/{n}.jpg")})[0])) for n in IMAGES},
+    "images": {
+        n: {
+            "tensor_sample": r(prep(f"images/{n}.jpg")[0][:, 7::14, 7::14][:, :16, :16].reshape(-1), 4),
+            "embedding": r(norm(vis.run(None, {"pixel_values": prep(f"images/{n}.jpg")})[0])),
+            "embedding_fp32": r(norm(visf.run(None, {"pixel_values": prep(f"images/{n}.jpg")})[0])),
+        }
+        for n in IMAGES
+    },
     "texts": {t: {"ids": ids(t), "embedding": r(norm(txt.run(None, {"input_ids": np.array([ids(t)], dtype=np.int64)})[0]))} for t in TEXTS},
     "long_text_ids": ids(LONG),
 }

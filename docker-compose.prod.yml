@@ -9,10 +9,10 @@
 # Linode Object Storage via env); Postgres is not published; the gateway serves CYANOTYPE_HOSTNAME with
 # HTTPS on 80/443 only (Let's Encrypt, or a Cloudflare Origin CA cert: CADDY_TLS_MODE); restart policies, healthchecks and memory limits. DD_ENV defaults to
 # dev (the dev-tier instance); set DD_ENV=prod in .env.prod for a production instance.
-# Memory budget (limits, not reservations): postgres 768m + worker 1280m + assets 384m + auth 256m +
-# gateway 128m + backup 128m + web 64m = ~3.0 GB, +384m with the Datadog Agent, leaving headroom on a 4 GB box.
-# (Semantic search added 256m to the worker, for the CLIP image tower, and 128m to assets, for the text tower; measured
-# resident sizes are in docs/build.md, "Semantic search".)
+# Memory budget (limits, not reservations): postgres 768m + worker 1280m + assets 512m + auth 256m +
+# gateway 128m + backup 128m + web 64m = 3,136m, +384m with the Datadog Agent = 3,520m, leaving headroom on a 4 GB box.
+# (Semantic search added 256m to the worker, for the image tower, and 128m to assets; SigLIP 2's text tower is bigger than
+# CLIP's and took assets from 384m to 512m. Measured resident sizes are in docs/build.md, "Semantic search model".)
 # DogStatsD: the worker and assets service inherit DOGSTATSD_URL=udp://datadog-agent:8125 from the base file; it only
 # reaches an Agent when the datadog profile runs (the Agent listens with DD_DOGSTATSD_NON_LOCAL_TRAFFIC=true).
 # Reset/override tags (!reset, !override) need Docker Compose >= 2.24.
@@ -93,11 +93,15 @@ services:
     build: !reset null
     pull_policy: missing
     restart: unless-stopped
-    # 256m before search: the text tower (loaded on the first query) is about 70 MB resident, ONNX Runtime's own
-    # structures and a query's tokens/activations a little more.
-    mem_limit: 384m
+    # 256m before search, 384m with CLIP's text tower (70 MB resident): SigLIP 2's text tower (loaded on the first query) is
+    # 335 MB resident with its embedding table in a side file (523 MB without), plus the service and a query's activations.
+    mem_limit: 512m
     environment:
       <<: [*prod-env, *prod-s3]
+      # The model searches use (siglip2-b16 or clip-b32). A change re-indexes the library in the background while the previous
+      # model keeps answering until SEARCH_SWITCH_PERCENT of the photos are done (docs/library.md, "Changing the search model").
+      SEARCH_MODEL: ${SEARCH_MODEL:-siglip2-b16}
+      SEARCH_SWITCH_PERCENT: ${SEARCH_SWITCH_PERCENT:-95}
       TRASH_RETENTION_DAYS: ${TRASH_RETENTION_DAYS:-30}
       COOKIE_SECURE: "true"
     depends_on: !override
@@ -113,7 +117,7 @@ services:
     pull_policy: missing
     restart: unless-stopped
     # Decoding large originals dominates memory; WORKER_HEAVY_CONCURRENCY bounds parallel decodes. 1280m = the 640 MB
-    # decode budget below + the CLIP image tower (about 150 MB resident while its session is loaded, outside the budget)
+    # decode budget below + the image tower (about 150 MB resident while its session is loaded, outside the budget)
     # + runtime, libheif and allocator slack. It was 1024m before search.
     mem_limit: 1280m
     environment:
@@ -125,6 +129,8 @@ services:
       # Background embedding of photos for search: threads of its ONNX session (1 leaves the other core of a 2 vCPU host
       # to thumbnails and Postgres; 2 roughly doubles the backfill speed), WORKER_EMBED=0 turns it off.
       WORKER_EMBED_THREADS: ${WORKER_EMBED_THREADS:-1}
+      # Must be the same as the assets service's.
+      SEARCH_MODEL: ${SEARCH_MODEL:-siglip2-b16}
     depends_on: !override
       migrate: { condition: service_completed_successfully }
 
