@@ -1339,6 +1339,86 @@
     },
     {
       "definition": {
+        "type": "timeseries",
+        "title": "Burst grouping: queued and running",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "queued",
+                "query": "sum:cyanotype.queue.queued{$env,kind:burst}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "running",
+                "query": "sum:cyanotype.queue.running{$env,kind:burst}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "queued"
+              },
+              {
+                "formula": "running"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 51,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Burst regroup time p50 / p95 (ms)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "p50",
+                "query": "avg:cyanotype.bursts.regroup_ms.median{$env}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "p95",
+                "query": "max:cyanotype.bursts.regroup_ms.95percentile{$env}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "p50"
+              },
+              {
+                "formula": "p95"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 51,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
         "type": "log_stream",
         "title": "Worker errors and warnings",
         "logset": "",
@@ -1358,7 +1438,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 51,
+        "y": 54,
         "width": 12,
         "height": 5
       }

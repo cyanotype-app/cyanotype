@@ -108,6 +108,9 @@ configuration in Datadog (distributions would need percentile aggregation enable
 | `cyanotype.search.latency_ms` | histogram (ms) | same as `search.queries` | Time to answer a search: query embedding, ranking and building the page (for `mode:similar` there is no query embedding). |
 | `cyanotype.search.model` | count | `model` (`siglip2-b16`, `clip-b32`) | Ranked searches by the model that answered them: during a model change the old model's count falls as the new one's rises, and the day it reaches zero the previous model's text tower is no longer needed. |
 | `cyanotype.search.no_strong_matches` | count | `weaker` (`yes`: weaker matches exist, `no`) | Ranked searches whose first page had no strong match: the "No close matches" / "Nothing matched" screens. A rising share after a change of the cut-off means it is too strict. |
+| `cyanotype.bursts.regroup_ms` | histogram (ms) | | Wall time of one `burst` job (the regroup of a photo's neighbourhood). |
+| `cyanotype.bursts.window_photos` | histogram | | Photos of the camera in the window a regroup looked at: usually a handful, large for a library with thousands of photos a minute. |
+| `cyanotype.bursts.photos_changed` | count | | Photos whose burst or computed mark a regroup wrote (a backfill shows as a long run of this; a steady state is near the upload rate). |
 | `cyanotype.uploads.completed` / `.bytes` | count | `family` | Uploads completed (browser and CLI) and their bytes. |
 | `cyanotype.uploads.parts` | count | `outcome` (`ok`, `timeout` = HTTP 408, `error`) | Proxied (browser) part uploads. |
 | `cyanotype.uploads.part_latency_ms` | histogram | | Time to receive a part from the browser and relay it to the bucket (successful parts). |
@@ -117,7 +120,9 @@ configuration in Datadog (distributions would need percentile aggregation enable
 
 Embedding photos for search is background work and reads as such: the `embed` kind has queue gauges and job metrics like any
 other (`kind:embed`), its backlog is hours long after a first deploy or a model swap, and the "oldest queued job" monitor
-leaves `kind:embed` out for that reason. The dashboard's Search section shows the backlog, photos embedded per minute, time
+leaves `kind:embed` out for that reason. Grouping photos into bursts (`kind:burst`, database only, after a photo is embedded and when one is
+trashed, restored or paired) is the same kind of background work and is left out of that monitor too; the dashboard shows its queue and
+regroup time. The dashboard's Search section shows the backlog, photos embedded per minute, time
 per photo, query rate and latency by plan, and the assets and worker container memory.
 
 `family` is `jpeg`, `heic`, `raw`, `png` or `other` (`unknown` when the asset row is gone), from the content type and

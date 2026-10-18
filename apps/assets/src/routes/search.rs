@@ -39,7 +39,7 @@ use sqlx::{FromRow, Postgres, QueryBuilder};
 use time::{Date, OffsetDateTime, Time};
 use uuid::Uuid;
 
-use super::{ListItem, ListRow, decode_cursor, encode_cursor, list_items};
+use super::{ListItem, ListRow, decode_cursor, encode_cursor, group, list_items};
 use crate::{
     AppState,
     query_parse::{self, Skip},
@@ -78,7 +78,7 @@ const MAX_SCAN_TUPLES: i32 = 20_000;
 
 const SORT_TIME: &str = "coalesce(a.taken_at, a.file_modified_at, a.created_at)";
 const LIST_COLS: &str = "a.id, a.original_name, a.content_type, a.size_bytes, a.width, a.height,
-        coalesce(a.taken_at, a.file_modified_at, a.created_at) AS sort_time, a.favorite, a.thumbhash";
+        coalesce(a.taken_at, a.file_modified_at, a.created_at) AS sort_time, a.favorite, a.thumbhash, a.burst_id";
 /// The camera as the facets list it ("Canon EOS R5", "Apple iPhone 15"): a stored generated column (migration 0011).
 const CAMERA_LABEL: &str = "a.camera_label";
 /// Lowercase extension of the original's file name (a stored generated column, migration 0011).
@@ -135,8 +135,9 @@ pub(super) struct Filters {
     kind: Option<FileType>,
     album: Option<Uuid>,
     has_location: Option<bool>,
-    /// "More like this": never the source photo itself.
+    /// "More like this": never the source photo itself, nor the other photos of its burst.
     exclude: Option<Uuid>,
+    exclude_burst: Option<Uuid>,
 }
 
 pub(super) fn clean(s: &Option<String>) -> Option<String> {
@@ -181,12 +182,14 @@ impl Filters {
             album: q.album,
             has_location: q.has_location,
             exclude: None,
+            exclude_burst: None,
         })
     }
 
-    /// The same filters, leaving one photo out (the source of a "More like this").
-    pub(super) fn excluding(mut self, id: Uuid) -> Self {
+    /// The same filters, leaving one photo out (the source of a "More like this") and the rest of its burst, if it is in one.
+    pub(super) fn excluding(mut self, id: Uuid, burst: Option<Uuid>) -> Self {
         self.exclude = Some(id);
+        self.exclude_burst = burst;
         self
     }
 
@@ -210,6 +213,11 @@ impl Filters {
         qb.push(" AND a.deleted_at IS NULL AND a.primary_id IS NULL");
         if let Some(id) = self.exclude {
             qb.push(" AND a.id <> ").push_bind(id);
+        }
+        if let Some(b) = self.exclude_burst {
+            qb.push(" AND (a.burst_id IS NULL OR a.burst_id <> ")
+                .push_bind(b)
+                .push(")");
         }
         if let Some(t) = self.from {
             qb.push(format!(" AND {SORT_TIME} >= ")).push_bind(t);
@@ -289,9 +297,9 @@ pub(super) struct SearchRow {
     nn_n: Option<i64>,
     #[sqlx(default)]
     ranked_n: Option<i64>,
-    /// First page only, on the first row: the distances of the whole ranked list, best first (the tiers are cut from it).
+    /// The burst the photo is in (`bursts.rs`), if any.
     #[sqlx(default)]
-    pub(super) all_dists: Option<Vec<f64>>,
+    pub(super) burst_id: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -307,6 +315,26 @@ pub(super) struct SearchItem {
     probability: Option<f32>,
     /// `strong` or `weak` for a ranked search (see `cyanotype-clip`, `cutoff.rs`); null without `q`.
     tier: Option<&'static str>,
+    /// A burst of near-identical shots collapsed into this result (this photo is its cover). Absent for a photo on its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    burst: Option<Burst>,
+}
+
+/// The photos of a burst that are in the results, collapsed behind the cover: `size` counts the cover too. A burst ranks by
+/// its best photo (the cover is that one, or a favorite of the burst), and its tier is the best photo's; the members are
+/// listed whatever their own scores (`docs/library.md`, "Bursts").
+#[derive(Serialize)]
+pub(super) struct Burst {
+    size: usize,
+    /// The other photos, best first.
+    members: Vec<BurstMember>,
+}
+
+#[derive(Serialize)]
+pub(super) struct BurstMember {
+    #[serde(flatten)]
+    item: ListItem,
+    score: Option<f32>,
 }
 
 /// What the query was understood to say besides the words to search for.
@@ -369,22 +397,13 @@ pub(super) struct SearchResponse {
     similar_to: Option<Uuid>,
 }
 
-/// Cursor of a ranked page: the last row's `(distance, id)`, the `k` the list was built from, how many results came
-/// before the next page, and where the strong and weaker tiers end in the whole list (counted from the first result).
-fn encode_rank_cursor(dist: f64, id: Uuid, k: i64, tiers: &Position) -> String {
-    keys::hex(
-        format!(
-            "r|{:016x}|{id}|{k}|{}|{}|{}",
-            dist.to_bits(),
-            tiers.offset,
-            tiers.strong,
-            tiers.weak
-        )
-        .as_bytes(),
-    )
+/// Cursor of a ranked page: the `k` the list was built from (so every page ranks the same list), how many groups came before
+/// the next page, and where the strong and weaker tiers end in the grouped list.
+fn encode_rank_cursor(k: i64, tiers: &Position) -> String {
+    keys::hex(format!("g|{k}|{}|{}|{}", tiers.offset, tiers.strong, tiers.weak).as_bytes())
 }
 
-/// How far into the ranked list a page starts and where its tiers end.
+/// How far into the grouped list a page starts and where its tiers end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Position {
     pub(super) offset: usize,
@@ -392,7 +411,13 @@ pub(super) struct Position {
     pub(super) weak: usize,
 }
 
-pub(super) fn decode_rank_cursor(c: &str) -> Option<(After, Position)> {
+/// A decoded rank cursor.
+pub(super) struct RankCursor {
+    pub(super) k: i64,
+    pub(super) position: Position,
+}
+
+pub(super) fn decode_rank_cursor(c: &str) -> Option<RankCursor> {
     if !c.len().is_multiple_of(2) || !c.is_ascii() || c.len() > 300 {
         return None;
     }
@@ -402,19 +427,18 @@ pub(super) fn decode_rank_cursor(c: &str) -> Option<(After, Position)> {
         .map(|p| u8::from_str_radix(std::str::from_utf8(p).ok()?, 16).ok())
         .collect();
     let text = String::from_utf8(bytes?).ok()?;
-    let mut parts = text.splitn(7, '|');
-    (parts.next()? == "r").then_some(())?;
-    let bits = u64::from_str_radix(parts.next()?, 16).ok()?;
-    let dist = f64::from_bits(bits);
-    dist.is_finite().then_some(())?;
-    let id = Uuid::parse_str(parts.next()?).ok()?;
+    let mut parts = text.splitn(5, '|');
+    (parts.next()? == "g").then_some(())?;
     let k: i64 = parts.next()?.parse().ok()?;
     (0..=i64::from(MAX_SCAN_TUPLES)).contains(&k).then_some(())?;
     let offset: usize = parts.next()?.parse().ok()?;
     let strong: usize = parts.next()?.parse().ok()?;
     let weak: usize = parts.next()?.parse().ok()?;
     (strong <= weak && weak <= DEPTH as usize && offset <= DEPTH as usize).then_some(())?;
-    Some((After { dist, id, k }, Position { offset, strong, weak }))
+    Some(RankCursor {
+        k,
+        position: Position { offset, strong, weak },
+    })
 }
 
 /// Which way a query ran, for the metrics (and the tests).
@@ -541,92 +565,75 @@ pub(super) async fn run(s: &AppState, owner: Uuid, request: &SearchQuery) -> Api
         )));
     }
     let cursor = q.cursor.as_deref().filter(|c| !c.is_empty());
-    let weaker_requested = q.weaker.unwrap_or(false);
-    let cutoff = q.cutoff.unwrap_or(true);
-
-    let (rows, plan, ranked, k, ranking): (Vec<SearchRow>, Plan, bool, i64, Option<Ranking>) = match text {
-        Some(t) => {
-            let after = match cursor {
-                Some(c) => Some(decode_rank_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
-                None => None,
-            };
-            let serving = s
-                .search
-                .serving(&s.db, s.text.as_ref(), owner)
-                .await
-                .map_err(ApiError::Internal)?;
-            let (model, embedder) = (serving.model, s.text.clone());
-            let vector = tokio::task::spawn_blocking(move || embedder.embed(model, &t))
-                .await
-                .map_err(|e| ApiError::Internal(e.into()))?
-                .map_err(|e| match e.downcast::<ModelMissing>() {
-                    Ok(missing) => {
-                        tracing::warn!(error = %missing, "search model is not installed");
-                        ApiError::Unavailable("search is not available: the model files are not installed".into())
-                    }
-                    Err(e) => ApiError::Internal(e),
-                })?;
-            let r = ranked_rows(&s.db, owner, &filters, model, &vector, limit, after.map(|a| a.0)).await?;
-            // The tiers are cut from the whole list on the first page and carried in the cursor after that.
-            let position = match after {
-                Some((_, position)) => position,
-                None => {
-                    let cos: Vec<f32> = r
-                        .rows
-                        .first()
-                        .and_then(|row| row.all_dists.as_ref())
-                        .map(|d| d.iter().map(|d| (1.0 - d) as f32).collect())
-                        .unwrap_or_default();
-                    let t = cyanotype_clip::tiers(model, &cos);
-                    Position {
-                        offset: 0,
-                        strong: t.strong,
-                        weak: t.weak,
-                    }
-                }
-            };
-            (
-                r.rows,
-                r.plan,
-                true,
-                r.k,
-                Some(Ranking {
-                    model,
-                    reindexing: serving.reindexing,
-                    position,
-                }),
-            )
-        }
-        None => {
-            let after = match cursor {
-                Some(c) => Some(decode_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
-                None => None,
-            };
-            (
-                timeline_rows(&s.db, owner, &filters, limit, after).await?,
-                Plan::Timeline,
-                false,
-                0,
-                None,
-            )
-        }
-    };
-
     let page = Page {
         filters: &filters,
         limit,
         cursor,
-        weaker_requested,
-        cutoff,
+        weaker_requested: q.weaker.unwrap_or(false),
+        cutoff: q.cutoff.unwrap_or(true),
     };
-    respond(s, owner, &page, rows, plan, ranked, k, ranking, parsed, None).await
+
+    let Some(t) = text else {
+        // Filters alone: photos newest first, no ranking and no bursts (the timeline's order is the library's own).
+        let after = match cursor {
+            Some(c) => Some(decode_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
+            None => None,
+        };
+        let rows = timeline_rows(&s.db, owner, &filters, limit, after).await?;
+        return respond_timeline(s, owner, &page, rows, parsed).await;
+    };
+    let after = match cursor {
+        Some(c) => Some(decode_rank_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
+        None => None,
+    };
+    let serving = s
+        .search
+        .serving(&s.db, s.text.as_ref(), owner)
+        .await
+        .map_err(ApiError::Internal)?;
+    let (model, embedder) = (serving.model, s.text.clone());
+    let vector = tokio::task::spawn_blocking(move || embedder.embed(model, &t))
+        .await
+        .map_err(|e| ApiError::Internal(e.into()))?
+        .map_err(|e| match e.downcast::<ModelMissing>() {
+            Ok(missing) => {
+                tracing::warn!(error = %missing, "search model is not installed");
+                ApiError::Unavailable("search is not available: the model files are not installed".into())
+            }
+            Err(e) => ApiError::Internal(e),
+        })?;
+    // The whole ranked list (at most DEPTH photos) every page: bursts are collapsed in it before the tiers are cut and the
+    // page is taken (`group.rs`), and the cursor says where in the grouped list the next page starts.
+    let r = ranked_rows(
+        &s.db,
+        owner,
+        &filters,
+        model,
+        &vector,
+        DEPTH,
+        Some(After::whole(after.as_ref().map(|c| c.k))),
+    )
+    .await?;
+    let ranking = Ranking {
+        model,
+        reindexing: serving.reindexing,
+        kind: RankKind::Text,
+    };
+    respond_ranked(s, owner, &page, r, after.map(|c| c.position), ranking, parsed, None).await
 }
 
-/// The model that ranked a list, and where the list's tiers end.
+/// Which cut-off rules a ranked list gets: a text query's, or "More like this"'s (`cyanotype-clip`, `cutoff.rs`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RankKind {
+    Text,
+    Similar,
+}
+
+/// The model that ranked a list.
 pub(super) struct Ranking {
     pub(super) model: Model,
     pub(super) reindexing: Option<Reindexing>,
-    pub(super) position: Position,
+    pub(super) kind: RankKind,
 }
 
 /// What a request asked of its page.
@@ -638,89 +645,137 @@ pub(super) struct Page<'a> {
     pub(super) cutoff: bool,
 }
 
-/// A ranked (or timeline) page of rows to the response: cut at the tier the request asked for, with the cursors, the
-/// scores, and the items' thumbnails. Shared by the text search and "More like this" (`similar.rs`).
+/// A ranked list to the response: bursts collapsed, the tiers cut from the groups, the page the request asked for, with the
+/// cursors, the scores and the thumbnails of covers and members. Shared by the text search and "More like this".
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn respond(
+pub(super) async fn respond_ranked(
     s: &AppState,
     owner: Uuid,
     page: &Page<'_>,
-    mut rows: Vec<SearchRow>,
-    plan: Plan,
-    ranked: bool,
-    k: i64,
-    ranking: Option<Ranking>,
+    ranked: Ranked,
+    cursor_position: Option<Position>,
+    ranking: Ranking,
     parsed: Option<ParsedQuery>,
     similar_to: Option<Uuid>,
 ) -> ApiResult<(SearchResponse, Plan)> {
     let Page {
-        filters,
         limit,
-        cursor,
         weaker_requested,
         cutoff,
+        ..
     } = *page;
-    // Ranked: show the strong tier, or strong and weaker when asked, and stop there.
-    let mut next_cursor = None;
-    let mut weaker = None;
-    let mut strong_count = None;
-    let mut tier_of: Vec<Option<&'static str>> = vec![None; rows.len()];
-    if let Some(r) = &ranking {
-        let pos = r.position;
-        let boundary = if !cutoff {
-            usize::MAX
-        } else if weaker_requested {
-            pos.weak
-        } else {
-            pos.strong
-        };
-        let keep = boundary.saturating_sub(pos.offset).min(rows.len());
-        rows.truncate(keep);
-        tier_of = (0..rows.len())
-            .map(|i| Some(if pos.offset + i < pos.strong { "strong" } else { "weak" }))
+    let Ranked { rows, plan, k } = ranked;
+    let groups = group::collapse(&rows);
+    // The tiers are cut from the groups' best photos on the first page and carried in the cursor after that.
+    let pos = cursor_position.unwrap_or_else(|| {
+        let cos: Vec<f32> = groups
+            .iter()
+            .map(|g| (1.0 - rows[g.cover_best].dist.unwrap_or(1.0)) as f32)
             .collect();
-        let end = pos.offset + rows.len();
-        let cursor_after = |row: &SearchRow, at: usize| {
-            row.dist.map(|d| {
-                encode_rank_cursor(
-                    d,
-                    row.row.summary.id,
-                    k,
-                    &Position {
-                        offset: at,
-                        strong: pos.strong,
-                        weak: pos.weak,
-                    },
-                )
-            })
+        let t = match ranking.kind {
+            RankKind::Text => cyanotype_clip::tiers(ranking.model, &cos),
+            RankKind::Similar => cyanotype_clip::image_tiers(ranking.model, &cos),
         };
-        if end < boundary && rows.len() as i64 == limit {
-            next_cursor = rows.last().and_then(|row| cursor_after(row, end));
+        Position {
+            offset: 0,
+            strong: t.strong,
+            weak: t.weak,
         }
-        strong_count = Some(pos.strong as i64);
-        if cutoff && !weaker_requested && pos.weak > pos.strong {
-            // The cursor that continues after the last strong match exists once a page has reached it.
-            let last_strong = (end == pos.strong && !rows.is_empty())
-                .then(|| rows.last().and_then(|row| cursor_after(row, end)))
-                .flatten();
-            weaker = Some(Weaker {
-                count: (pos.weak - pos.strong) as i64,
-                cursor: last_strong,
-            });
-        }
+    });
+    // Show the strong tier, or strong and weaker when asked, and stop there.
+    let boundary = if !cutoff {
+        usize::MAX
+    } else if weaker_requested {
+        pos.weak
     } else {
-        next_cursor = (rows.len() as i64 == limit)
-            .then(|| rows.last())
-            .flatten()
-            .map(|r| encode_cursor(r.row.summary.sort_time, r.row.summary.id));
+        pos.strong
     }
-    // ("More like this" compares two images: the sigmoid head's reading of an image-text cosine does not apply.)
-    let model_calibration = ranking
-        .as_ref()
-        .filter(|_| similar_to.is_none())
-        .and_then(|r| r.model.calibration());
-    let scores: Vec<Option<f32>> = rows.iter().map(|r| r.dist.map(|d| (1.0 - d) as f32)).collect();
-    let total = if ranked || cursor.is_some() {
+    .min(groups.len());
+    let start = pos.offset.min(boundary);
+    let end = (start + limit as usize).min(boundary);
+    let cursor_at = |at: usize| encode_rank_cursor(k, &Position { offset: at, ..pos });
+    let next_cursor = (end < boundary).then(|| cursor_at(end));
+    let weaker = (cutoff && !weaker_requested && pos.weak > pos.strong).then(|| Weaker {
+        count: (pos.weak - pos.strong) as i64,
+        // The cursor that continues after the last strong match exists once a page has reached it.
+        cursor: (end == pos.strong && end > start).then(|| cursor_at(end)),
+    });
+
+    // Items: each shown group's cover, and behind it the other members of its burst.
+    let model_calibration = (ranking.kind == RankKind::Text)
+        .then(|| ranking.model.calibration())
+        .flatten();
+    let mut rows: Vec<Option<SearchRow>> = rows.into_iter().map(Some).collect();
+    let mut order: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut list: Vec<ListRow> = Vec::new();
+    let mut meta: Vec<(Option<f32>, Option<&'static str>)> = Vec::new();
+    for (gi, g) in groups.iter().enumerate().take(end).skip(start) {
+        let tier = if gi < pos.strong { "strong" } else { "weak" };
+        let mut members = Vec::new();
+        for &ri in std::iter::once(&g.cover).chain(g.others.iter()) {
+            let row = rows[ri].take().expect("a row is in one group");
+            meta.push((row.dist.map(|d| (1.0 - d) as f32), Some(tier)));
+            list.push(row.row);
+            members.push(list.len() - 1);
+        }
+        order.push((members[0], members[1..].to_vec()));
+    }
+    let mut items: Vec<Option<ListItem>> = list_items(s, owner, list).await?.into_iter().map(Some).collect();
+    let items: Vec<SearchItem> = order
+        .into_iter()
+        .map(|(cover, others)| {
+            let (score, tier) = meta[cover];
+            SearchItem {
+                item: items[cover].take().expect("an item is on one tile"),
+                score,
+                probability: score.zip(model_calibration).map(|(s, c)| c.probability(s)),
+                tier,
+                burst: (!others.is_empty()).then(|| Burst {
+                    size: others.len() + 1,
+                    members: others
+                        .into_iter()
+                        .map(|i| BurstMember {
+                            item: items[i].take().expect("an item is on one tile"),
+                            score: meta[i].0,
+                        })
+                        .collect(),
+                }),
+            }
+        })
+        .collect();
+    Ok((
+        SearchResponse {
+            items,
+            next_cursor,
+            ranked: true,
+            total: None,
+            strong_count: Some(pos.strong as i64),
+            weaker,
+            parsed,
+            model: Some(ranking.model.name()),
+            reindexing: ranking.reindexing,
+            similar_to,
+        },
+        plan,
+    ))
+}
+
+/// A page of a filter-only search (newest first): the items, a cursor, and on the first page how many photos match.
+async fn respond_timeline(
+    s: &AppState,
+    owner: Uuid,
+    page: &Page<'_>,
+    rows: Vec<SearchRow>,
+    parsed: Option<ParsedQuery>,
+) -> ApiResult<(SearchResponse, Plan)> {
+    let Page {
+        filters, limit, cursor, ..
+    } = *page;
+    let next_cursor = (rows.len() as i64 == limit)
+        .then(|| rows.last())
+        .flatten()
+        .map(|r| encode_cursor(r.row.summary.sort_time, r.row.summary.id));
+    let total = if cursor.is_some() {
         None
     } else {
         let mut qb = QueryBuilder::<Postgres>::new("SELECT count(*) FROM assets a WHERE");
@@ -737,26 +792,25 @@ pub(super) async fn respond(
         SearchResponse {
             items: items
                 .into_iter()
-                .zip(scores)
-                .zip(tier_of)
-                .map(|((item, score), tier)| SearchItem {
+                .map(|item| SearchItem {
                     item,
-                    score,
-                    probability: score.zip(model_calibration).map(|(s, c)| c.probability(s)),
-                    tier,
+                    score: None,
+                    probability: None,
+                    tier: None,
+                    burst: None,
                 })
                 .collect(),
             next_cursor,
-            ranked,
+            ranked: false,
             total,
-            strong_count,
-            weaker,
+            strong_count: None,
+            weaker: None,
             parsed,
-            model: ranking.as_ref().map(|r| r.model.name()),
-            reindexing: ranking.and_then(|r| r.reindexing),
-            similar_to,
+            model: None,
+            reindexing: None,
+            similar_to: None,
         },
-        plan,
+        Plan::Timeline,
     ))
 }
 
@@ -835,6 +889,20 @@ pub(super) struct After {
     pub(super) dist: f64,
     pub(super) id: Uuid,
     pub(super) k: i64,
+    /// Not a position: the list from its start, only carrying the `k` of an earlier page (what the grouped pages use).
+    pub(super) start: bool,
+}
+
+impl After {
+    /// The whole list from its first photo, built from at least the `k` of the cursor that continues it.
+    pub(super) fn whole(k: Option<i64>) -> Self {
+        After {
+            dist: 0.0,
+            id: Uuid::nil(),
+            k: k.unwrap_or(0),
+            start: true,
+        }
+    }
 }
 
 pub(super) async fn ranked_rows(
@@ -907,7 +975,7 @@ impl ModelSql {
 
 /// Appends the page of a `ranked` CTE: the rows after the cursor, in `(dist, id)` order.
 fn push_page(qb: &mut QueryBuilder<'_, Postgres>, after: Option<After>, limit: i64) {
-    if let Some(a) = after {
+    if let Some(a) = after.filter(|a| !a.start) {
         qb.push(" WHERE (dist, id) > (")
             .push_bind(a.dist)
             .push(", ")
@@ -916,10 +984,6 @@ fn push_page(qb: &mut QueryBuilder<'_, Postgres>, after: Option<After>, limit: i
     }
     qb.push(" ORDER BY dist, id LIMIT ").push_bind(limit);
 }
-
-/// The first row of a first page also carries the distances of the whole list.
-const ALL_DISTS: &str = "CASE WHEN row_number() OVER (ORDER BY dist, id) = 1
-         THEN (SELECT array_agg(dist ORDER BY dist, id) FROM ranked) END AS all_dists";
 
 /// Exact distance to every photo that passes the filters.
 async fn exact_rows(
@@ -953,9 +1017,6 @@ async fn exact_rows(
         .push_bind(lit.to_string())
         .push(format!("{}) + 0, a.id", m.query_cast));
     qb.push(" LIMIT ").push_bind(DEPTH).push(") SELECT ranked.*");
-    if after.is_none() {
-        qb.push(format!(", {ALL_DISTS}"));
-    }
     qb.push(" FROM ranked");
     push_page(&mut qb, after, limit);
     let rows = qb
@@ -1019,9 +1080,6 @@ async fn hnsw_rows(
         f.push_where(&mut qb, owner);
         qb.push(" ORDER BY nn.dist, a.id LIMIT ").push_bind(DEPTH).push(")");
         qb.push(" SELECT ranked.*, (SELECT count(*) FROM nn) AS nn_n, (SELECT count(*) FROM ranked) AS ranked_n");
-        if after.is_none() {
-            qb.push(format!(", {ALL_DISTS}"));
-        }
         qb.push(" FROM ranked");
         push_page(&mut qb, after, limit);
         let rows = qb
@@ -1033,7 +1091,7 @@ async fn hnsw_rows(
         let thinned = match rows.first().map(|r| (r.nn_n, r.ranked_n)) {
             Some((Some(nn), Some(ranked))) => ranked < DEPTH && nn >= k,
             Some(_) => false,
-            None => after.is_none(),
+            None => after.is_none_or(|a| a.start),
         };
         if thinned && k < i64::from(MAX_SCAN_TUPLES) {
             k = (k * K_GROWTH).min(i64::from(MAX_SCAN_TUPLES));

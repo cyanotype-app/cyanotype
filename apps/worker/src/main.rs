@@ -1,4 +1,5 @@
 mod budget;
+mod burst;
 mod embed;
 mod exif;
 mod finish;
@@ -47,10 +48,12 @@ const GAUGE_EVERY: Duration = Duration::from_secs(15);
 
 /// Every kind the main loop claims, in claim order. Embedding has its own, lower-priority loop (`embed`).
 fn handled_kinds() -> impl Iterator<Item = &'static str> {
-    jobs::DEFAULT_PIPELINE
-        .iter()
-        .copied()
-        .chain([jobs::KIND_PAIR, jobs::KIND_GEOCODE, jobs::KIND_SHARE_COPY])
+    jobs::DEFAULT_PIPELINE.iter().copied().chain([
+        jobs::KIND_PAIR,
+        jobs::KIND_GEOCODE,
+        jobs::KIND_SHARE_COPY,
+        jobs::KIND_BURST,
+    ])
 }
 
 /// Every kind that has queue gauges.

@@ -21,6 +21,11 @@ export interface TileProps {
   /** Shows the heart: on hover (desktop) and always while favorited. Omit where favorites do not apply. */
   onFavorite?: (id: string, favorite: boolean) => void;
   caption?: string | null;
+  /** This photo is the cover of a burst (rapid-fire shots of one moment): `more` photos are behind it. The "+N" badge shows
+   * or hides them; while it is collapsed a click in selection mode selects the whole burst. */
+  burst?: { more: number; expanded: boolean; onToggle: () => void } | null;
+  /** This photo is shown because its burst is expanded. */
+  inBurst?: boolean;
 }
 
 export function HeartIcon({ filled }: { filled: boolean }) {
@@ -49,6 +54,8 @@ export const Tile = memo(function Tile({
   onLongPress,
   onFavorite,
   caption = null,
+  burst = null,
+  inBurst = false,
 }: TileProps) {
   const [loaded, setLoaded] = useState(false);
   const [retried, setRetried] = useState(false);
@@ -64,7 +71,7 @@ export const Tile = memo(function Tile({
   const canLongPress = !selecting && onLongPress !== undefined;
 
   return (
-    <div className={`tile-cell${favorite ? " is-favorite" : ""}`}>
+    <div className={`tile-cell${favorite ? " is-favorite" : ""}${inBurst ? " in-burst" : ""}${burst ? " burst-cover" : ""}`}>
       <button
         type="button"
         className={`tile${selected ? " selected" : ""}`}
@@ -103,7 +110,13 @@ export const Tile = memo(function Tile({
           // Touch long-press would open the browser's image menu instead of selecting.
           if (canLongPress || selecting) e.preventDefault();
         }}
-        aria-label={selecting ? `Select ${item.original_name}` : `Open ${item.original_name}`}
+        aria-label={
+          selecting
+            ? burst && !burst.expanded
+              ? `Select ${item.original_name} and ${burst.more} more from its burst`
+              : `Select ${item.original_name}`
+            : `Open ${item.original_name}`
+        }
         aria-pressed={selecting ? selected : undefined}
       >
         {item.thumb_url ? (
@@ -137,6 +150,21 @@ export const Tile = memo(function Tile({
         )}
         {caption && <span className="tile-caption">{caption}</span>}
       </button>
+      {burst && (
+        <button
+          type="button"
+          className={`tile-burst${burst.expanded ? " open" : ""}`}
+          aria-expanded={burst.expanded}
+          aria-label={
+            burst.expanded
+              ? `Hide the other ${burst.more} photos of this burst`
+              : `Show ${burst.more} more photos from this burst`
+          }
+          onClick={burst.onToggle}
+        >
+          {burst.expanded ? "−" : `+${burst.more}`}
+        </button>
+      )}
       {onFavorite &&
         (selecting ? (
           favorite && (

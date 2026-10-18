@@ -268,4 +268,55 @@ describe("Search page", () => {
       expect(screen.queryByText("Couldn’t search")).not.toBeInTheDocument();
     });
   });
+  describe("bursts", () => {
+    const withBurst = () => [
+      hit(1),
+      { ...hit(2), burst: { size: 3, members: [{ ...item(3), score: 0.5 }, { ...item(4), score: 0.4 }] } },
+    ];
+
+    it("shows a burst as one tile with a +N badge that opens its photos inline", async () => {
+      vi.spyOn(api, "search").mockResolvedValue(result(withBurst()));
+      renderAt("/search?q=cat");
+      await screen.findByRole("button", { name: "Open photo-2.jpg" });
+      expect(screen.queryByRole("button", { name: "Open photo-3.jpg" })).not.toBeInTheDocument();
+      expect(screen.getByText("2 matches")).toBeInTheDocument(); // results, not photos
+      const badge = screen.getByRole("button", { name: "Show 2 more photos from this burst" });
+      expect(badge).toHaveTextContent("+2");
+      await userEvent.click(badge);
+      expect(screen.getByRole("button", { name: "Open photo-3.jpg" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Open photo-4.jpg" })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Hide the other 2 photos of this burst" }));
+      expect(screen.queryByRole("button", { name: "Open photo-3.jpg" })).not.toBeInTheDocument();
+    });
+
+    it("selects every photo of a collapsed burst with one tap, and says so", async () => {
+      vi.spyOn(api, "search").mockResolvedValue(result(withBurst()));
+      const fav = vi.spyOn(api, "favoriteAssets").mockResolvedValue({ count: 3 });
+      renderAt("/search?q=cat");
+      await screen.findByRole("button", { name: "Open photo-2.jpg" });
+      await userEvent.click(screen.getByRole("button", { name: "Select" }));
+      expect(screen.getByRole("button", { name: "Select photo-2.jpg and 2 more from its burst" })).toBeInTheDocument();
+      expect(screen.getByText(/2 more in 1 burst/)).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Select photo-2.jpg and 2 more from its burst" }));
+      expect(screen.getByText("3 selected")).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Favorite" }));
+      await waitFor(() => expect(fav).toHaveBeenCalledWith(["id-2", "id-3", "id-4"], true));
+    });
+
+    it("selects one photo at a time once the burst is open, and Select all takes every photo of the results", async () => {
+      vi.spyOn(api, "search").mockResolvedValue(result(withBurst()));
+      const trash = vi.spyOn(api, "trashAssets").mockResolvedValue({ count: 4 });
+      renderAt("/search?q=cat");
+      await screen.findByRole("button", { name: "Open photo-2.jpg" });
+      await userEvent.click(screen.getByRole("button", { name: "Show 2 more photos from this burst" }));
+      await userEvent.click(screen.getByRole("button", { name: "Select" }));
+      await userEvent.click(screen.getByRole("button", { name: "Select photo-3.jpg" }));
+      expect(screen.getByText("1 selected")).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Hide the other 2 photos of this burst" }));
+      await userEvent.click(screen.getByRole("button", { name: /Select all/ }));
+      expect(screen.getByText("4 selected")).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Move to trash" }));
+      await waitFor(() => expect(trash).toHaveBeenCalledWith(["id-1", "id-2", "id-3", "id-4"]));
+    });
+  });
 });

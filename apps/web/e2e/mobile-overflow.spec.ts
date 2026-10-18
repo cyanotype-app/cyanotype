@@ -123,6 +123,14 @@ const FACETS = {
 };
 const searchHits = (n: number, weak = 0) =>
   assets.slice(0, n + weak).map((a, i) => ({ ...a, score: 0.31 - i * 0.004, probability: 0.1, tier: i < n ? "strong" : "weak" }));
+// Results with bursts: the 2nd and the 5th result are covers of bursts of 4 and 12 photos (members are photos the list
+// does not show otherwise), so the badge, the open burst and the selection note have their widest content.
+const burstHits = () =>
+  searchHits(10).map((h, i) =>
+    i === 1 || i === 4
+      ? { ...h, burst: { size: i === 1 ? 4 : 12, members: assets.slice(12, 12 + (i === 1 ? 3 : 11)).map((a) => ({ ...a, score: 0.2 })) } }
+      : h,
+  );
 // What the server reads out of a query: a long place and a date, so the chips are as wide as they get.
 const PARSED = {
   text: "dog",
@@ -178,6 +186,8 @@ async function mock(page: Page) {
       if (p === "/assets/search/facets" && m === "GET") return route.fulfill(json(FACETS));
       if (p === "/assets/search" && m === "GET") {
         const q = u.searchParams.get("q") ?? "";
+        if (q.includes("burst"))
+          return route.fulfill(json({ items: burstHits(), next_cursor: null, ranked: true, total: null, strong_count: 10, weaker: null, parsed: { text: q, chips: [] } }));
         if (q.includes("unavailable"))
           return route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"search is not available: the model files are not installed"}' });
         const weaker = u.searchParams.get("weaker") === "true";
@@ -743,6 +753,20 @@ for (const { width, scheme } of RUNS) {
       await page.goto("/search");
       await page.getByRole("heading", { name: "Search your photos" }).waitFor();
       await check("intro");
+
+      // Bursts: collapsed with their badges, one opened inline, and selecting a collapsed burst (the bar says what it includes).
+      await page.goto("/search?q=burst");
+      await page.getByRole("button", { name: "Show 3 more photos from this burst" }).waitFor();
+      await check("bursts");
+      await page.getByRole("button", { name: "Show 3 more photos from this burst" }).click();
+      await page.getByRole("button", { name: "Hide the other 3 photos of this burst" }).waitFor();
+      await check("burst-open");
+      await page.getByRole("button", { name: "Hide the other 3 photos of this burst" }).click();
+      await page.getByRole("button", { name: "Select", exact: true }).click();
+      await page.getByRole("button", { name: /Select IMG_1001.* and 3 more from its burst/ }).click();
+      await page.getByText("4 selected").waitFor();
+      await check("burst-selected");
+      await page.getByRole("button", { name: "Done" }).click();
 
       // "More like this": the source chip with its thumbnail, the filters beside it, weaker matches, the lightbox button
       // that starts it, and a photo that is not indexed yet.
