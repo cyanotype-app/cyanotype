@@ -2699,3 +2699,110 @@ body:has(.selection-bar) .scrubber {
     white-space: nowrap;
   }
 }
+
+/* Editing a photo's date, location and caption (from the details panel, or the selection bar). */
+.details-edit {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+  min-height: 2.25rem;
+}
+.details-edited {
+  font-style: italic;
+}
+.details-caption {
+  white-space: pre-wrap;
+}
+.lightbox-words {
+  margin: 0;
+  padding: 0.5rem 1rem 0;
+  text-align: center;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.95rem;
+}
+.edit-dialog {
+  width: min(32rem, 100%);
+}
+.edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.6rem 0;
+  min-width: 0;
+}
+.edit-field label {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.edit-shift {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  align-items: end;
+}
+.edit-shift > select {
+  grid-column: 1 / -1;
+}
+.edit-places {
+  list-style: none;
+  margin: 0.25rem 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.edit-places .btn {
+  width: 100%;
+  justify-content: space-between;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.location-picker {
+  position: relative;
+  height: 14rem;
+  margin: 0.5rem 0;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.edit-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.5rem 0;
+}
+.edit-menu .btn {
+  justify-content: flex-start;
+}
+.edit-dialog .modal-actions {
+  flex-wrap: wrap;
+}
+@media (max-width: 600px) {
+  /* Five actions (with Edit) do not fit one row: they wrap into two, and what sits clear of the bar makes room. */
+  .selection-primary {
+    flex-wrap: wrap;
+  }
+  .selection-primary .btn {
+    flex: 1 1 28%;
+  }
+  body:has(.selection-bar) .timeline {
+    padding-bottom: calc(12rem + env(safe-area-inset-bottom));
+  }
+  body:has(.selection-bar) .scrubber {
+    --bottom: 12rem;
+  }
+  body:has(.selection-bar):has(.tray) .scrubber {
+    --bottom: 17.5rem;
+  }
+}
+/* A dialog opened from the (always dark) lightbox keeps the light card's own colours. */
+.modal {
+  color: var(--text);
+}
+.lightbox .modal .muted {
+  color: var(--muted);
+}
+.edit-shift {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}

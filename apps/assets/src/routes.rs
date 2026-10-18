@@ -29,6 +29,9 @@ mod details;
 #[cfg(test)]
 mod details_tests;
 mod download;
+mod edits;
+#[cfg(test)]
+mod edits_tests;
 mod favorites;
 mod group;
 mod map;
@@ -103,6 +106,8 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/tiles", get(tiles::installed))
         .route("/assets/tiles/{name}", get(tiles::tile_range))
         .route("/assets/favorite", post(favorites::set))
+        .route("/assets/edits", post(edits::edit))
+        .route("/assets/places", get(edits::places))
         .route("/assets/processing", get(processing::status))
         .route("/assets/processing/retry", post(processing::retry))
         .route("/assets/trash", get(trash::list).post(trash::trash))
@@ -870,6 +875,11 @@ async fn get_one(
     v["paired"] = serde_json::to_value(paired_files(&s.db, &[id]).await?.remove(&id).unwrap_or_default())
         .map_err(anyhow::Error::from)?;
     v["place"] = place_of(&s.db, id).await?;
+    let caption: Option<String> = sqlx::query_scalar("SELECT caption FROM assets WHERE id = $1")
+        .bind(id)
+        .fetch_one(&s.db)
+        .await?;
+    v["caption"] = caption.into();
     v["original_url"] = s.storage.presign_get(&key).await?.into();
     // The worker sets `thumbhash` only after both derived objects are uploaded, so it doubles
     // as the "derived images exist" flag. Until then the URLs are null rather than 404s.

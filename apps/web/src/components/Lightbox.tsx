@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { downloadHref, type AssetDetail, type AssetListItem, type PhotoDetails } from "../api";
 import { useInfoHistory, useVerticalSwipe } from "../useInfoPanel";
 import { DetailsPanel, type DetailsState } from "./DetailsPanel";
+import { EditDialog, type EditKind } from "./EditDialog";
 import { placeLine } from "../map/geo";
 import { fileSize, pairLabel, primaryFormat } from "../pairText";
 import { placeholderUrl } from "../thumbhash";
@@ -32,6 +33,8 @@ interface Props {
    * loaded around the current photo (the counter and the end stops use them). */
   offset?: number;
   total?: number;
+  /** The photo's date, location or caption was edited (the page refreshes what depends on them: the timeline order...). */
+  onEdited?: (item: AssetListItem) => void;
   /** Bump after the photo's albums changed so its details (the "In albums" line) are fetched again. */
   refreshKey?: number;
 }
@@ -43,6 +46,7 @@ export function Lightbox({
   onClose,
   loadDetail,
   loadDetails,
+  onEdited,
   onTrash,
   onAddToAlbum,
   onShare,
@@ -84,6 +88,9 @@ export function Lightbox({
   }, [info.open, loadDetails, currentId, infoRetry]);
   const swipe = useVerticalSwipe({ onUp: info.show, enabled: !!loadDetails && !info.open });
   const closeInfo = info.hide;
+  // The editor (date, location, caption) of the open photo, from the panel.
+  const [editing, setEditing] = useState<EditKind | null>(null);
+  const [editVersion, setEditVersion] = useState(0);
   // Closing (or leaving) with the panel open also pops its history entry.
   const { leave } = info;
   const close = useCallback(() => void leave().then(onClose), [leave, onClose]);
@@ -110,10 +117,11 @@ export function Lightbox({
   }, [index, items, loadDetail]);
 
   // Albums changed: re-read the current photo's details (fresh URLs and album list), keeping the old ones meanwhile.
-  const lastRefresh = useRef(refreshKey);
+  const refreshTotal = refreshKey + editVersion;
+  const lastRefresh = useRef(refreshTotal);
   useEffect(() => {
-    if (lastRefresh.current === refreshKey) return;
-    lastRefresh.current = refreshKey;
+    if (lastRefresh.current === refreshTotal) return;
+    lastRefresh.current = refreshTotal;
     const id = items[index]?.id;
     if (!id) return;
     loadDetail(id)
@@ -125,7 +133,7 @@ export function Lightbox({
         .then((d) => setInfoById((m) => ({ ...m, [id]: d })))
         .catch(() => undefined);
     }
-  }, [refreshKey, items, index, loadDetail, loadDetails]);
+  }, [refreshTotal, items, index, loadDetail, loadDetails]);
 
   const go = useCallback(
     (delta: number) => {
@@ -341,6 +349,7 @@ export function Lightbox({
           ›
         </button>
       </div>
+      {detail?.caption && <p className="lightbox-words">{detail.caption}</p>}
       <p className="lightbox-caption">
         <strong>{item.original_name}</strong>
         <span className="muted">
@@ -388,12 +397,35 @@ export function Lightbox({
           panelId="details-panel"
           state={infoState}
           onRetry={retryInfo}
+          onEdit={setEditing}
           onClose={closeInfo}
           onLeave={leave}
           onNavigate={onClose}
         />
       )}
       </div>
+      {editing && infoById[item.id] && (
+        <EditDialog
+          key={`${item.id}-${editing}`}
+          kind={editing}
+          target={[item.id]}
+          count={1}
+          current={{
+            date: infoById[item.id]!.date,
+            caption: infoById[item.id]!.caption,
+            edits: infoById[item.id]!.edits,
+            location: infoById[item.id]!.location
+              ? { latitude: infoById[item.id]!.location!.latitude, longitude: infoById[item.id]!.location!.longitude }
+              : null,
+          }}
+          onClose={() => setEditing(null)}
+          onDone={() => {
+            setEditing(null);
+            setEditVersion((v) => v + 1);
+            onEdited?.(item);
+          }}
+        />
+      )}
     </div>
   );
 }

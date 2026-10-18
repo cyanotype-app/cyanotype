@@ -308,6 +308,12 @@ pub(crate) mod testutil {
     }
 }
 
+/// A small JPEG without EXIF, for other modules' tests.
+#[cfg(test)]
+pub(crate) fn tests_support_jpeg() -> Vec<u8> {
+    tests::tiny_jpeg()
+}
+
 #[cfg(test)]
 mod tests {
     use super::testutil::*;

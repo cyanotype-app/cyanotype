@@ -43,6 +43,13 @@ struct Row {
     place_country: Option<String>,
     place_country_code: Option<String>,
     burst_id: Option<Uuid>,
+    caption: Option<String>,
+    date_edited: bool,
+    taken_at_exif: Option<OffsetDateTime>,
+    taken_offset_edit: Option<i32>,
+    location_edited: bool,
+    latitude_exif: Option<f64>,
+    longitude_exif: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -58,6 +65,26 @@ pub(super) struct Details {
     files: Vec<FileEntry>,
     albums: serde_json::Value,
     burst: Option<BurstPosition>,
+    /// The photo's caption, if it has one.
+    caption: Option<String>,
+    /// What was edited, and what the file itself says (for "Revert to original").
+    edits: EditState,
+}
+
+#[derive(Serialize)]
+struct EditState {
+    date_edited: bool,
+    location_edited: bool,
+    /// The date line of what the file says (when the date was edited).
+    original_date: Option<DateInfo>,
+    /// The coordinates the file says (when the location was edited); null when it had none.
+    original_location: Option<Coordinates>,
+}
+
+#[derive(Serialize)]
+struct Coordinates {
+    latitude: f64,
+    longitude: f64,
 }
 
 #[derive(Serialize)]
@@ -124,7 +151,8 @@ pub(super) async fn get(State(s): State<AppState>, user: AuthUser, Path(id): Pat
     let r: Row = sqlx::query_as(
         "SELECT original_name, content_type, size_bytes, width, height, taken_at, file_modified_at, created_at,
                 latitude, longitude, camera_make, camera_model, camera_label, lens_model, exif, file_ext,
-                place_city, place_region, place_country, place_country_code, burst_id
+                place_city, place_region, place_country, place_country_code, burst_id,
+                caption, date_edited, taken_at_exif, taken_offset_edit, location_edited, latitude_exif, longitude_exif
          FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL",
     )
     .bind(id)
@@ -201,7 +229,27 @@ pub(super) async fn get(State(s): State<AppState>, user: AuthUser, Path(id): Pat
 
     Ok(Json(Details {
         id,
-        date: details::date_info(r.taken_at, r.file_modified_at, r.created_at, dump),
+        date: details::date_info_in(
+            r.taken_at,
+            r.file_modified_at,
+            r.created_at,
+            dump,
+            r.date_edited.then_some(r.taken_offset_edit),
+        ),
+        caption: r.caption,
+        edits: EditState {
+            date_edited: r.date_edited,
+            location_edited: r.location_edited,
+            // What the file says: its own zone (from the dump), and the fallbacks when it had no capture time.
+            original_date: r
+                .date_edited
+                .then(|| details::date_info(r.taken_at_exif, r.file_modified_at, r.created_at, dump)),
+            original_location: r
+                .location_edited
+                .then_some(r.latitude_exif.zip(r.longitude_exif))
+                .flatten()
+                .map(|(latitude, longitude)| Coordinates { latitude, longitude }),
+        },
         location,
         camera,
         exposure: (!extra.exposure.is_empty()).then_some(extra.exposure),

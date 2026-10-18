@@ -1,6 +1,7 @@
 pub mod bursts;
 pub mod config;
 pub mod db;
+pub mod edits;
 pub mod embeddings;
 pub mod jobs;
 pub mod keys;

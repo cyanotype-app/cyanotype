@@ -85,6 +85,30 @@ pub fn manifest(user: Uuid, yyyymmdd: &str) -> String {
     format!("{}originals-{yyyymmdd}.jsonl", manifest_prefix(user))
 }
 
+/// Everything under this prefix is a photo's edits (`edits` module): state a user wrote, kept in the bucket so that
+/// `cyanotype reindex` can restore it. Unlike `derived/` it cannot be regenerated.
+pub const EDITS_PREFIX: &str = "edits/";
+
+/// The edits of one photo, named like its original (owner and content hash, not the asset id, which a rebuilt database
+/// would give a new one): `edits/{user}/{hash[0:2]}/{hash}.json`.
+pub fn edits(user: Uuid, sha256: &[u8; 32]) -> String {
+    let h = hex(sha256);
+    format!("{EDITS_PREFIX}{user}/{}/{h}.json", &h[..2])
+}
+
+/// Inverse of [`edits`]: `(owner, content hash)`; anything this code could not have produced is None.
+pub fn parse_edits(key: &str) -> Option<(Uuid, [u8; 32])> {
+    let rest = key.strip_prefix(EDITS_PREFIX)?;
+    let mut parts = rest.split('/');
+    let (user, shard, file) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() {
+        return None;
+    }
+    let uid = Uuid::parse_str(user).ok()?;
+    let hash = parse_sha256(file.strip_suffix(".json")?)?;
+    (uid.hyphenated().to_string() == user && shard == &hex(&hash)[..2]).then_some((uid, hash))
+}
+
 /// The asset id of a `derived/{user}/{asset}/thumb.webp` or `preview.webp` key, with the file name.
 pub fn parse_derived(key: &str) -> Option<(Uuid, Uuid, &str)> {
     let rest = key.strip_prefix(DERIVED_PREFIX)?;
@@ -119,6 +143,23 @@ pub fn derived_prefix(user: Uuid, asset: Uuid) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edits_keys_roundtrip_and_are_strict() {
+        let user = Uuid::new_v4();
+        let sha = [0xabu8; 32];
+        let key = edits(user, &sha);
+        assert_eq!(key, format!("edits/{user}/ab/{}.json", "ab".repeat(32)));
+        assert_eq!(parse_edits(&key), Some((user, sha)));
+        assert!(
+            parse_edits(&key.replace("/ab/", "/cd/")).is_none(),
+            "shard must be the hash's first two characters"
+        );
+        assert!(parse_edits(&key.replace(".json", ".txt")).is_none());
+        assert!(parse_edits(&format!("{key}/x")).is_none());
+        assert!(parse_edits("edits/not-a-uuid/ab/abab.json").is_none());
+        assert!(parse_edits(&original(user, &sha, "jpg")).is_none());
+    }
 
     #[test]
     fn sha_roundtrip() {

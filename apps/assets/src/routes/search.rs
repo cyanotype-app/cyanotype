@@ -602,6 +602,7 @@ pub(super) async fn run(s: &AppState, owner: Uuid, request: &SearchQuery) -> Api
         .await
         .map_err(ApiError::Internal)?;
     let (model, embedder) = (serving.model, s.text.clone());
+    let query_text = t.clone();
     let vector = tokio::task::spawn_blocking(move || embedder.embed(model, &t))
         .await
         .map_err(|e| ApiError::Internal(e.into()))?
@@ -629,7 +630,70 @@ pub(super) async fn run(s: &AppState, owner: Uuid, request: &SearchQuery) -> Api
         reindexing: serving.reindexing,
         kind: RankKind::Text,
     };
-    respond_ranked(s, owner, &page, r, after.map(|c| c.position), ranking, parsed, None).await
+    // Photos whose caption has the words come first (see `caption_matches`).
+    let lead = caption_matches(&s.db, owner, &filters, &query_text).await?;
+    respond_ranked(
+        s,
+        owner,
+        &page,
+        r,
+        after.map(|c| c.position),
+        ranking,
+        parsed,
+        None,
+        lead,
+    )
+    .await
+}
+
+/// Words too common to ask a caption for.
+const CAPTION_STOP_WORDS: &[&str] = &[
+    "the", "and", "with", "for", "from", "that", "this", "are", "was", "our", "his", "her", "its", "you", "your",
+    "into", "onto", "over", "under", "near",
+];
+/// Most photos a caption match puts in front of the ranked ones.
+const CAPTION_MAX: i64 = 50;
+
+/// The words of a query that a caption is asked for: lower case, at least three letters, not a stop word, at most eight.
+pub(super) fn caption_words(q: &str) -> Vec<String> {
+    let mut words: Vec<String> = Vec::new();
+    for w in q.split(|c: char| !c.is_alphanumeric()) {
+        let w = w.to_lowercase();
+        if w.chars().count() >= 3 && !CAPTION_STOP_WORDS.contains(&w.as_str()) && !words.contains(&w) {
+            words.push(w);
+        }
+    }
+    words.truncate(8);
+    words
+}
+
+/// Photos whose caption contains **every** word of the query (case-insensitive, as part of a word), newest first, at most
+/// [`CAPTION_MAX`], with the request's filters applied. A caption is what the owner wrote about the photo, so such a photo is
+/// as good a match as there can be: these go **in front of** the model's ranking and are not part of it (no score, and they
+/// leave the model's cut-off, which is relative to its own best match, alone). A photo that is both a caption match and
+/// ranked is shown once, in front.
+async fn caption_matches(db: &sqlx::PgPool, owner: Uuid, f: &Filters, q: &str) -> ApiResult<Vec<SearchRow>> {
+    let words = caption_words(q);
+    if words.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut qb = QueryBuilder::<Postgres>::new(format!("SELECT {LIST_COLS}, NULL::float8 AS dist FROM assets a WHERE"));
+    f.push_where(&mut qb, owner);
+    qb.push(" AND a.caption IS NOT NULL");
+    for w in &words {
+        // LIKE's own characters are escaped (backslash is its default escape).
+        let escaped: String = w
+            .chars()
+            .flat_map(|c| match c {
+                '%' | '_' | '\\' => vec!['\\', c],
+                c => vec![c],
+            })
+            .collect();
+        qb.push(" AND a.caption ILIKE ").push_bind(format!("%{escaped}%"));
+    }
+    qb.push(format!(" ORDER BY {SORT_TIME} DESC, a.id DESC LIMIT "))
+        .push_bind(CAPTION_MAX);
+    Ok(qb.build_query_as::<SearchRow>().persistent(false).fetch_all(db).await?)
 }
 
 /// Which cut-off rules a ranked list gets: a text query's, or "More like this"'s (`cyanotype-clip`, `cutoff.rs`).
@@ -667,6 +731,7 @@ pub(super) async fn respond_ranked(
     ranking: Ranking,
     parsed: Option<ParsedQuery>,
     similar_to: Option<Uuid>,
+    lead: Vec<SearchRow>,
 ) -> ApiResult<(SearchResponse, Plan)> {
     let Page {
         limit,
@@ -674,8 +739,15 @@ pub(super) async fn respond_ranked(
         cutoff,
         ..
     } = *page;
-    let Ranked { rows, plan, k } = ranked;
-    let groups = group::collapse(&rows);
+    let Ranked { mut rows, plan, k } = ranked;
+    // Caption matches (text search only) come first, each a result of its own in the strong tier; the model's ranking and its
+    // tiers are computed without them.
+    let lead_n = lead.len();
+    if lead_n > 0 {
+        let ids: std::collections::HashSet<Uuid> = lead.iter().map(|r| r.row.summary.id).collect();
+        rows.retain(|r| !ids.contains(&r.row.summary.id));
+    }
+    let mut groups = group::collapse(&rows);
     // The tiers are cut from the groups' best photos on the first page and carried in the cursor after that.
     let pos = cursor_position.unwrap_or_else(|| {
         let cos: Vec<f32> = groups
@@ -688,10 +760,28 @@ pub(super) async fn respond_ranked(
         };
         Position {
             offset: 0,
-            strong: t.strong,
-            weak: t.weak,
+            strong: t.strong + lead_n,
+            weak: t.weak + lead_n,
         }
     });
+    if lead_n > 0 {
+        let mut all = lead;
+        all.append(&mut rows);
+        rows = all;
+        let mut shifted: Vec<group::Group> = (0..lead_n)
+            .map(|i| group::Group {
+                cover: i,
+                cover_best: i,
+                others: Vec::new(),
+            })
+            .collect();
+        shifted.extend(groups.drain(..).map(|g| group::Group {
+            cover: g.cover + lead_n,
+            cover_best: g.cover_best + lead_n,
+            others: g.others.into_iter().map(|o| o + lead_n).collect(),
+        }));
+        groups = shifted;
+    }
     // Show the strong tier, or strong and weaker when asked, and stop there.
     let boundary = if !cutoff {
         usize::MAX

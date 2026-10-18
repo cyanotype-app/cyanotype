@@ -177,5 +177,16 @@ pub(super) async fn run(s: &AppState, owner: Uuid, id: Uuid, q: &SimilarQuery) -
         reindexing: serving.reindexing,
         kind: RankKind::Similar,
     };
-    respond_ranked(s, owner, &page, r, after.map(|c| c.position), ranking, None, Some(id)).await
+    respond_ranked(
+        s,
+        owner,
+        &page,
+        r,
+        after.map(|c| c.position),
+        ranking,
+        None,
+        Some(id),
+        Vec::new(),
+    )
+    .await
 }
