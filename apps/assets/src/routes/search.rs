@@ -67,8 +67,8 @@ fn exact_max() -> i64 {
     }
     EXACT_MAX
 }
-const DEFAULT_LIMIT: i64 = 60;
-const MAX_LIMIT: i64 = 200;
+pub(super) const DEFAULT_LIMIT: i64 = 60;
+pub(super) const MAX_LIMIT: i64 = 200;
 const MAX_QUERY_CHARS: usize = 200;
 /// HNSW candidates examined per query before the iterative scan widens (pgvector's default is 40). The ranked list is
 /// [`DEPTH`] deep, and recall at that depth needs `ef_search` near it (measured in docs/library.md).
@@ -135,9 +135,11 @@ pub(super) struct Filters {
     kind: Option<FileType>,
     album: Option<Uuid>,
     has_location: Option<bool>,
+    /// "More like this": never the source photo itself.
+    exclude: Option<Uuid>,
 }
 
-fn clean(s: &Option<String>) -> Option<String> {
+pub(super) fn clean(s: &Option<String>) -> Option<String> {
     s.as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -178,7 +180,14 @@ impl Filters {
             kind,
             album: q.album,
             has_location: q.has_location,
+            exclude: None,
         })
+    }
+
+    /// The same filters, leaving one photo out (the source of a "More like this").
+    pub(super) fn excluding(mut self, id: Uuid) -> Self {
+        self.exclude = Some(id);
+        self
     }
 
     /// Anything beyond "the owner's visible live photos".
@@ -199,6 +208,9 @@ impl Filters {
         // (`purging_at` is never set on a photo that is not trashed: a constraint says so. Leaving it out lets ownership,
         // the trash and the hidden-RAW rule be answered from `assets_timeline_idx` alone, without reading rows.)
         qb.push(" AND a.deleted_at IS NULL AND a.primary_id IS NULL");
+        if let Some(id) = self.exclude {
+            qb.push(" AND a.id <> ").push_bind(id);
+        }
         if let Some(t) = self.from {
             qb.push(format!(" AND {SORT_TIME} >= ")).push_bind(t);
         }
@@ -279,7 +291,7 @@ pub(super) struct SearchRow {
     ranked_n: Option<i64>,
     /// First page only, on the first row: the distances of the whole ranked list, best first (the tiers are cut from it).
     #[sqlx(default)]
-    all_dists: Option<Vec<f64>>,
+    pub(super) all_dists: Option<Vec<f64>>,
 }
 
 #[derive(Serialize)]
@@ -338,7 +350,7 @@ pub(super) struct SearchResponse {
     pub(super) items: Vec<SearchItem>,
     next_cursor: Option<String>,
     /// Ranked by similarity to `q` (true) or listed newest first (false).
-    ranked: bool,
+    pub(super) ranked: bool,
     /// How many photos match the filters, for the first page of a filter-only search (what "Select all" selects).
     /// Null for a ranked search (its depth is capped, so the page count is what there is) and for later pages.
     total: Option<i64>,
@@ -349,9 +361,12 @@ pub(super) struct SearchResponse {
     /// With `q`: what was read out of it.
     parsed: Option<ParsedQuery>,
     /// Which model answered, for a ranked search: `siglip2-b16`, `clip-b32`.
-    model: Option<&'static str>,
+    pub(super) model: Option<&'static str>,
     /// While the configured model is still indexing the library and an older one answers: how far along it is.
     reindexing: Option<Reindexing>,
+    /// "More like this": the photo the list is similar to (`GET /assets/{id}/similar`). Absent for a search.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    similar_to: Option<Uuid>,
 }
 
 /// Cursor of a ranked page: the last row's `(distance, id)`, the `k` the list was built from, how many results came
@@ -372,12 +387,12 @@ fn encode_rank_cursor(dist: f64, id: Uuid, k: i64, tiers: &Position) -> String {
 /// How far into the ranked list a page starts and where its tiers end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Position {
-    offset: usize,
-    strong: usize,
-    weak: usize,
+    pub(super) offset: usize,
+    pub(super) strong: usize,
+    pub(super) weak: usize,
 }
 
-fn decode_rank_cursor(c: &str) -> Option<(After, Position)> {
+pub(super) fn decode_rank_cursor(c: &str) -> Option<(After, Position)> {
     if !c.len().is_multiple_of(2) || !c.is_ascii() || c.len() > 300 {
         return None;
     }
@@ -411,7 +426,7 @@ pub(super) enum Plan {
 }
 
 impl Plan {
-    fn name(self) -> &'static str {
+    pub(super) fn name(self) -> &'static str {
         match self {
             Plan::Timeline => "timeline",
             Plan::Exact => "exact",
@@ -529,12 +544,7 @@ pub(super) async fn run(s: &AppState, owner: Uuid, request: &SearchQuery) -> Api
     let weaker_requested = q.weaker.unwrap_or(false);
     let cutoff = q.cutoff.unwrap_or(true);
 
-    struct Ranking {
-        model: Model,
-        reindexing: Option<Reindexing>,
-        position: Position,
-    }
-    let (mut rows, plan, ranked, k, ranking): (Vec<SearchRow>, Plan, bool, i64, Option<Ranking>) = match text {
+    let (rows, plan, ranked, k, ranking): (Vec<SearchRow>, Plan, bool, i64, Option<Ranking>) = match text {
         Some(t) => {
             let after = match cursor {
                 Some(c) => Some(decode_rank_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
@@ -602,6 +612,54 @@ pub(super) async fn run(s: &AppState, owner: Uuid, request: &SearchQuery) -> Api
         }
     };
 
+    let page = Page {
+        filters: &filters,
+        limit,
+        cursor,
+        weaker_requested,
+        cutoff,
+    };
+    respond(s, owner, &page, rows, plan, ranked, k, ranking, parsed, None).await
+}
+
+/// The model that ranked a list, and where the list's tiers end.
+pub(super) struct Ranking {
+    pub(super) model: Model,
+    pub(super) reindexing: Option<Reindexing>,
+    pub(super) position: Position,
+}
+
+/// What a request asked of its page.
+pub(super) struct Page<'a> {
+    pub(super) filters: &'a Filters,
+    pub(super) limit: i64,
+    pub(super) cursor: Option<&'a str>,
+    pub(super) weaker_requested: bool,
+    pub(super) cutoff: bool,
+}
+
+/// A ranked (or timeline) page of rows to the response: cut at the tier the request asked for, with the cursors, the
+/// scores, and the items' thumbnails. Shared by the text search and "More like this" (`similar.rs`).
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn respond(
+    s: &AppState,
+    owner: Uuid,
+    page: &Page<'_>,
+    mut rows: Vec<SearchRow>,
+    plan: Plan,
+    ranked: bool,
+    k: i64,
+    ranking: Option<Ranking>,
+    parsed: Option<ParsedQuery>,
+    similar_to: Option<Uuid>,
+) -> ApiResult<(SearchResponse, Plan)> {
+    let Page {
+        filters,
+        limit,
+        cursor,
+        weaker_requested,
+        cutoff,
+    } = *page;
     // Ranked: show the strong tier, or strong and weaker when asked, and stop there.
     let mut next_cursor = None;
     let mut weaker = None;
@@ -656,7 +714,11 @@ pub(super) async fn run(s: &AppState, owner: Uuid, request: &SearchQuery) -> Api
             .flatten()
             .map(|r| encode_cursor(r.row.summary.sort_time, r.row.summary.id));
     }
-    let model_calibration = ranking.as_ref().and_then(|r| r.model.calibration());
+    // ("More like this" compares two images: the sigmoid head's reading of an image-text cosine does not apply.)
+    let model_calibration = ranking
+        .as_ref()
+        .filter(|_| similar_to.is_none())
+        .and_then(|r| r.model.calibration());
     let scores: Vec<Option<f32>> = rows.iter().map(|r| r.dist.map(|d| (1.0 - d) as f32)).collect();
     let total = if ranked || cursor.is_some() {
         None
@@ -692,6 +754,7 @@ pub(super) async fn run(s: &AppState, owner: Uuid, request: &SearchQuery) -> Api
             parsed,
             model: ranking.as_ref().map(|r| r.model.name()),
             reindexing: ranking.and_then(|r| r.reindexing),
+            similar_to,
         },
         plan,
     ))
