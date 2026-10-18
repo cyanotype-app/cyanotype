@@ -72,8 +72,17 @@ async fn queued_embeds(pool: &PgPool) -> Vec<(Uuid, i32, i16)> {
     .unwrap()
 }
 
+const CLIP: &str = "clip-vit-b32-openai-int8";
+const SIGLIP: &str = "siglip2-base-patch16-224-q4";
+
+fn vector(dim: usize, seed: usize) -> Vec<f32> {
+    let v: Vec<f32> = (0..dim).map(|i| ((i * 31 + seed * 17) % 97) as f32 - 48.0).collect();
+    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    v.into_iter().map(|x| x / n).collect()
+}
+
 #[tokio::test]
-async fn schema_has_a_half_precision_column_and_an_hnsw_index() {
+async fn schema_holds_any_dimension_with_one_hnsw_index_per_model() {
     let Some(t) = TestDb::new().await else { return };
     let (ty,): (String,) = sqlx::query_as(
         "SELECT format_type(atttypid, atttypmod) FROM pg_attribute
@@ -82,13 +91,23 @@ async fn schema_has_a_half_precision_column_and_an_hnsw_index() {
     .fetch_one(&t.pool)
     .await
     .unwrap();
-    assert_eq!(ty, "halfvec(512)");
-    let (def,): (String,) =
-        sqlx::query_as("SELECT indexdef FROM pg_indexes WHERE indexname = 'asset_embeddings_hnsw_idx'")
-            .fetch_one(&t.pool)
-            .await
-            .unwrap();
-    assert!(def.contains("hnsw") && def.contains("halfvec_cosine_ops"), "{def}");
+    assert_eq!(ty, "halfvec", "no fixed dimension: each model's index fixes its own");
+    let defs: Vec<(String, String)> = sqlx::query_as(
+        "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'asset_embeddings' AND indexdef LIKE '%hnsw%' ORDER BY 1",
+    )
+    .fetch_all(&t.pool)
+    .await
+    .unwrap();
+    assert_eq!(defs.len(), 2, "{defs:?}");
+    for (name, def, dim, model) in [
+        ("asset_embeddings_clip_b32_hnsw", &defs[0], 512, CLIP),
+        ("asset_embeddings_siglip2_b16_hnsw", &defs[1], 768, SIGLIP),
+    ] {
+        assert_eq!(def.0, name);
+        assert!(def.1.contains("halfvec_cosine_ops"), "{}", def.1);
+        assert!(def.1.contains(&format!("halfvec({dim})")), "{}", def.1);
+        assert!(def.1.contains(&format!("model = '{model}'")), "{}", def.1);
+    }
     // pgvector 0.8 is what has iterative index scans, which filtered searches rely on.
     let (v,): (String,) = sqlx::query_as("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
         .fetch_one(&t.pool)
@@ -100,7 +119,82 @@ async fn schema_has_a_half_precision_column_and_an_hnsw_index() {
 }
 
 #[tokio::test]
-async fn store_writes_the_vector_and_a_new_model_replaces_the_old_one() {
+async fn two_models_share_the_table_and_each_nearest_neighbour_search_uses_its_own_index() {
+    let Some(t) = TestDb::new().await else { return };
+    let owner = user(&t.pool).await;
+    let a = asset(&t.pool, owner, "a", true).await;
+    let b = asset(&t.pool, owner, "b", true).await;
+    // The same photos, embedded by both models.
+    for (i, id) in [a, b].into_iter().enumerate() {
+        embeddings::store(&t.pool, id, CLIP, 1, &vector(512, i)).await.unwrap();
+        embeddings::store(&t.pool, id, SIGLIP, 2, &vector(768, i))
+            .await
+            .unwrap();
+    }
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM asset_embeddings")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 4, "a new model's vector does not replace the old one");
+
+    // A vector of the wrong size for its model is refused by the model's index, not stored.
+    let wrong = embeddings::store(&t.pool, a, SIGLIP, 2, &vector(512, 3)).await;
+    assert!(wrong.is_err(), "512 dimensions under the 768-dimension model");
+    let wrong = embeddings::store(&t.pool, a, CLIP, 1, &vector(768, 3)).await;
+    assert!(wrong.is_err(), "768 dimensions under the 512-dimension model");
+
+    // Each model's search reads only its own vectors, through its own index.
+    let mut conn = t.pool.acquire().await.unwrap();
+    sqlx::query("SET enable_seqscan = off")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    for (model, dim, index) in [
+        (CLIP, 512, "asset_embeddings_clip_b32_hnsw"),
+        (SIGLIP, 768, "asset_embeddings_siglip2_b16_hnsw"),
+    ] {
+        let q = embeddings::pg_literal(&vector(dim, 0));
+        let plan: Vec<(String,)> = sqlx::query_as(&format!(
+            "EXPLAIN SELECT asset_id FROM asset_embeddings e WHERE e.model = '{model}'
+             ORDER BY (e.embedding::halfvec({dim})) <=> '{q}'::text::halfvec({dim}) LIMIT 5"
+        ))
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap();
+        let text = plan.into_iter().map(|r| r.0).collect::<Vec<_>>().join("\n");
+        assert!(text.contains(index), "{model}: {text}");
+        let nearest: Vec<(Uuid, f64)> = sqlx::query_as(&format!(
+            "SELECT asset_id, (e.embedding::halfvec({dim}) <=> '{q}'::text::halfvec({dim}))::float8
+             FROM asset_embeddings e WHERE e.model = '{model}' ORDER BY 2 LIMIT 5"
+        ))
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap();
+        assert_eq!(nearest.len(), 2);
+        assert_eq!(nearest[0].0, a);
+        assert!(nearest[0].1 < 1e-3, "{nearest:?}");
+    }
+    drop(conn);
+
+    // Once every photo has the new model's vector, the replaced model's rows go (and nothing else does).
+    assert_eq!(embeddings::missing_count(&t.pool, SIGLIP, 2).await.unwrap(), 0);
+    assert_eq!(embeddings::missing_count(&t.pool, "other", 1).await.unwrap(), 2);
+    assert_eq!(embeddings::prune_superseded(&t.pool, SIGLIP, 2).await.unwrap(), 2);
+    let left: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT model FROM asset_embeddings")
+        .fetch_all(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(left, [(SIGLIP.to_string(),)]);
+    assert_eq!(
+        embeddings::prune_superseded(&t.pool, SIGLIP, 2).await.unwrap(),
+        0,
+        "idempotent"
+    );
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn store_replaces_the_same_models_vector_and_keeps_other_models() {
     let Some(t) = TestDb::new().await else { return };
     let owner = user(&t.pool).await;
     let a = asset(&t.pool, owner, "a", true).await;
@@ -123,16 +217,17 @@ async fn store_writes_the_vector_and_a_new_model_replaces_the_old_one() {
         rows[0].2
     );
 
-    // A different model: the old generation goes in the same statement.
+    // A different model: both stay (the old one answers searches until the new one has covered the library).
     embeddings::store(&t.pool, a, "other-model", 1, &unit(3)).await.unwrap();
-    let models: Vec<(String,)> = sqlx::query_as("SELECT model FROM asset_embeddings WHERE asset_id = $1")
-        .bind(a)
-        .fetch_all(&t.pool)
-        .await
-        .unwrap();
-    assert_eq!(models, [("other-model".to_string(),)]);
+    let models: Vec<(String,)> =
+        sqlx::query_as("SELECT model FROM asset_embeddings WHERE asset_id = $1 ORDER BY model")
+            .bind(a)
+            .fetch_all(&t.pool)
+            .await
+            .unwrap();
+    assert_eq!(models, [("other-model".to_string(),), (MODEL.to_string(),)]);
 
-    // Deleting the photo takes its vector with it.
+    // Deleting the photo takes its vectors with it.
     sqlx::query("DELETE FROM assets WHERE id = $1")
         .bind(a)
         .execute(&t.pool)
@@ -364,4 +459,94 @@ async fn progress_counts_visible_live_photos_with_previews() {
     // Vectors from another model or version do not count as indexed for this one.
     assert_eq!(embeddings::progress(&t.pool, owner, MODEL, 2).await.unwrap().indexed, 0);
     t.teardown().await;
+}
+
+/// What a deploy does to a library that already has CLIP vectors: migrations up to 0012 were applied (the one-model schema),
+/// photos have their vectors, then 0013 runs. The vectors must still be there and findable through the rebuilt index, and a
+/// second model's vectors must be accepted next to them.
+#[tokio::test]
+async fn migration_0013_keeps_the_vectors_of_a_library_that_already_has_clip() {
+    let Some(admin_url) = std::env::var("DATABASE_URL").ok().filter(|v| !v.is_empty()) else {
+        return;
+    };
+    let name = format!("cyanotype_test_{}", Uuid::new_v4().simple());
+    let mut admin = PgConnection::connect(&admin_url).await.unwrap();
+    admin.execute(format!("CREATE DATABASE {name}").as_str()).await.unwrap();
+    let (base, _) = admin_url.rsplit_once('/').unwrap();
+    let pool = db::connect(&format!("{base}/{name}")).await.unwrap();
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "sql"))
+        .collect();
+    files.sort();
+    let (before, after): (Vec<_>, Vec<_>) = files
+        .iter()
+        .partition(|p| p.file_name().unwrap().to_str().unwrap() < "0013");
+    assert_eq!(after.len(), 1, "0013 is the last migration this test knows about");
+    for f in before {
+        sqlx::raw_sql(&std::fs::read_to_string(f).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    // The one-model schema: halfvec(512) and one index.
+    let owner = user(&pool).await;
+    let ids: Vec<Uuid> = {
+        let mut v = Vec::new();
+        for i in 0..30 {
+            let id = asset(&pool, owner, &format!("p{i}"), true).await;
+            embeddings::store(&pool, id, CLIP, 1, &vector(512, i)).await.unwrap();
+            v.push(id);
+        }
+        v
+    };
+    sqlx::raw_sql(&std::fs::read_to_string(after[0]).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM asset_embeddings WHERE model = $1 AND version = 1")
+        .bind(CLIP)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 30, "no vector was lost");
+    let q = embeddings::pg_literal(&vector(512, 7));
+    let mut conn = pool.acquire().await.unwrap();
+    sqlx::query("SET enable_seqscan = off")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let nearest: Uuid = sqlx::query_scalar(&format!(
+        "SELECT asset_id FROM asset_embeddings e WHERE e.model = '{CLIP}'
+         ORDER BY (e.embedding::halfvec(512)) <=> '{q}'::text::halfvec(512) LIMIT 1"
+    ))
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(nearest, ids[7], "the rebuilt CLIP index finds the old vectors");
+    drop(conn);
+    // The new model's vectors go next to them, and the sweep for it queues every photo.
+    embeddings::store(&pool, ids[0], SIGLIP, 2, &vector(768, 0))
+        .await
+        .unwrap();
+    assert_eq!(embeddings::missing_count(&pool, SIGLIP, 2).await.unwrap(), 29);
+    assert_eq!(embeddings::enqueue_missing(&pool, SIGLIP, 2).await.unwrap(), 29);
+    let (versions,): (Vec<i32>,) =
+        sqlx::query_as("SELECT array_agg(DISTINCT version ORDER BY version) FROM jobs WHERE kind = 'embed'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(versions.contains(&2), "{versions:?}");
+
+    pool.close().await;
+    let mut admin = PgConnection::connect(&admin_url).await.unwrap();
+    admin
+        .execute(format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)").as_str())
+        .await
+        .unwrap();
 }

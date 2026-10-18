@@ -1,4 +1,4 @@
-//! The `embed` job: a CLIP image embedding of each photo, computed from the photo's `preview.webp` (never the original,
+//! The `embed` job: an image embedding (with the model `SEARCH_MODEL` names) of each photo, computed from the photo's `preview.webp` (never the original,
 //! so there is no big decode and nothing to refuse for memory), stored in `asset_embeddings`.
 //!
 //! Embedding is background work. It runs in its own loop, apart from the thumbnail/metadata loop, and takes a batch
@@ -13,7 +13,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use cyanotype_clip::{ImageEncoder, MODEL_ID, MODEL_VERSION, model_dir, preprocess_rgb8};
+use cyanotype_clip::{ImageEncoder, Model, preprocess_rgb8};
 use cyanotype_core::{embeddings, jobs, keys, metrics};
 use tokio::{sync::Semaphore, task::JoinSet};
 use tracing::Instrument;
@@ -43,14 +43,16 @@ const FOREGROUND_RECHECK: Duration = Duration::from_secs(1);
 
 /// The (lazily loaded) image tower.
 pub struct Embedder {
+    model: Model,
     threads: usize,
     session: Mutex<Option<(Arc<ImageEncoder>, Instant)>>,
 }
 
 impl Embedder {
     /// The session loads on first use.
-    pub fn new(threads: usize) -> Self {
+    pub fn new(model: Model, threads: usize) -> Self {
         Self {
+            model,
             threads,
             session: Mutex::new(None),
         }
@@ -58,8 +60,8 @@ impl Embedder {
 
     /// Are the model files installed? A dev checkout that skipped `scripts/fetch-models.sh` runs without embedding, and
     /// its embed jobs stay queued.
-    pub fn model_installed() -> bool {
-        model_dir().join(cyanotype_clip::VISION_FILE).exists()
+    pub fn model_installed(model: Model) -> bool {
+        model.dir().join(model.vision_file()).exists()
     }
 
     async fn encoder(&self) -> Result<Arc<ImageEncoder>> {
@@ -67,13 +69,13 @@ impl Embedder {
             *used = Instant::now();
             return Ok(enc.clone());
         }
-        let threads = self.threads;
+        let (model, threads) = (self.model, self.threads);
         let started = Instant::now();
-        let enc = tokio::task::spawn_blocking(move || ImageEncoder::load(&model_dir(), threads))
+        let enc = tokio::task::spawn_blocking(move || ImageEncoder::load(model, &model.dir(), threads))
             .await
             .context("model load task panicked")??;
         tracing::info!(
-            model = MODEL_ID,
+            model = model.id(),
             threads,
             load_ms = started.elapsed().as_millis() as u64,
             "image model loaded"
@@ -107,22 +109,14 @@ fn foreground_kinds() -> impl Iterator<Item = &'static str> {
 
 /// The embed loop. `busy` is held for the length of each batch, so shutdown can wait for it.
 pub async fn run_loop(ctx: Arc<Ctx>, embedder: Arc<Embedder>, waker: jobs::JobWaker, busy: Arc<Semaphore>) {
+    let model = embedder.model;
     let foreground: Vec<&str> = foreground_kinds().collect();
     let mut last_sweep: Option<Instant> = None;
     loop {
         metrics::global().gauge("embed.model_loaded", if embedder.loaded() { 1.0 } else { 0.0 }, &[]);
         if last_sweep.is_none_or(|t| t.elapsed() >= SWEEP_EVERY) {
             last_sweep = Some(Instant::now());
-            match embeddings::enqueue_missing(&ctx.db, MODEL_ID, MODEL_VERSION).await {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(
-                    queued = n,
-                    model = MODEL_ID,
-                    version = MODEL_VERSION,
-                    "queued photos missing an embedding"
-                ),
-                Err(e) => tracing::warn!(error = %format!("{e:#}"), "embedding sweep failed"),
-            }
+            sweep(&ctx, model).await;
         }
         match jobs::runnable_waiting(&ctx.db, &foreground).await {
             Ok(true) => {
@@ -157,6 +151,26 @@ pub async fn run_loop(ctx: Arc<Ctx>, embedder: Arc<Embedder>, waker: jobs::JobWa
         }
         process(&ctx, &embedder, batch).await;
         drop(permit);
+    }
+}
+
+/// Queue what is missing for `model`; once nothing is, drop the vectors of the models it replaced (search kept answering
+/// from them until now, `docs/library.md`, "Changing the search model").
+async fn sweep(ctx: &Ctx, model: Model) {
+    let (id, version) = (model.id(), model.version());
+    match embeddings::enqueue_missing(&ctx.db, id, version).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(queued = n, model = id, version, "queued photos missing an embedding"),
+        Err(e) => tracing::warn!(error = %format!("{e:#}"), "embedding sweep failed"),
+    }
+    match embeddings::missing_count(&ctx.db, id, version).await {
+        Ok(0) => match embeddings::prune_superseded(&ctx.db, id, version).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(removed = n, model = id, "removed vectors of replaced models"),
+            Err(e) => tracing::warn!(error = %format!("{e:#}"), "pruning replaced embeddings failed"),
+        },
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %format!("{e:#}"), "counting missing embeddings failed"),
     }
 }
 
@@ -253,20 +267,20 @@ async fn process(ctx: &Arc<Ctx>, embedder: &Arc<Embedder>, batch: Vec<jobs::Job>
     let per_image_ms = started.elapsed().as_secs_f64() * 1000.0 / wanted.max(1) as f64;
     let m = metrics::global();
     if wanted > 0 {
-        m.histogram("embed.batch_size", wanted as f64, &[("model", MODEL_ID)]);
+        m.histogram("embed.batch_size", wanted as f64, &[("model", embedder.model.id())]);
     }
     for (i, job) in batch.iter().enumerate() {
         let result: Result<Outcome> = match results[i].take() {
             Some(Prepared::Skip(reason)) => Ok(Outcome::Skipped(reason)),
             Some(Prepared::Failed(e)) => Err(e),
             None => match vectors.remove(&i) {
-                Some(Ok(v)) => store(ctx, job, &v).await,
+                Some(Ok(v)) => store(ctx, embedder.model, job, &v).await,
                 Some(Err(e)) => Err(e),
                 None => Err(anyhow::anyhow!("no embedding was produced")),
             },
         };
         if result.is_ok() && matches!(result, Ok(Outcome::Done)) {
-            m.histogram("embed.duration", per_image_ms, &[("model", MODEL_ID)]);
+            m.histogram("embed.duration", per_image_ms, &[("model", embedder.model.id())]);
         }
         finish_job(ctx, job, result, started).await;
     }
@@ -285,8 +299,8 @@ async fn finish_job(ctx: &Arc<Ctx>, job: &jobs::Job, result: Result<Outcome>, st
         .await;
 }
 
-async fn store(ctx: &Arc<Ctx>, job: &jobs::Job, v: &[f32]) -> Result<Outcome> {
-    embeddings::store(&ctx.db, job.asset_id, MODEL_ID, MODEL_VERSION, v)
+async fn store(ctx: &Arc<Ctx>, model: Model, job: &jobs::Job, v: &[f32]) -> Result<Outcome> {
+    embeddings::store(&ctx.db, job.asset_id, model.id(), model.version(), v)
         .await
         .context("store embedding")?;
     Ok(Outcome::Done)
@@ -301,11 +315,12 @@ async fn embed_previews(
 ) -> Result<Vec<(usize, Result<Vec<f32>>)>> {
     let _held = ctx.budget.reserve(PER_IMAGE_BYTES * previews.len() as u64).await?;
     let encoder = embedder.encoder().await?;
+    let model = embedder.model;
     tokio::task::spawn_blocking(move || {
         let mut out: Vec<(usize, Result<Vec<f32>>)> = Vec::new();
         let mut ready: Vec<(usize, Vec<f32>)> = Vec::new();
         for (i, bytes) in previews {
-            match decode_and_preprocess(&bytes) {
+            match decode_and_preprocess(model, &bytes) {
                 Ok(t) => ready.push((i, t)),
                 Err(e) => out.push((i, Err(anyhow::Error::from(Permanent(format!("{e:#}")))))),
             }
@@ -322,7 +337,7 @@ async fn embed_previews(
 }
 
 /// preview.webp bytes to the model's input tensor.
-pub fn decode_and_preprocess(webp: &[u8]) -> Result<Vec<f32>> {
+pub fn decode_and_preprocess(model: Model, webp: &[u8]) -> Result<Vec<f32>> {
     let img = webp::Decoder::new(webp)
         .decode()
         .context("preview is not a decodable WebP")?;
@@ -343,7 +358,7 @@ pub fn decode_and_preprocess(webp: &[u8]) -> Result<Vec<f32>> {
     } else {
         std::borrow::Cow::Borrowed(px)
     };
-    preprocess_rgb8(w, h, &rgb)
+    preprocess_rgb8(model, w, h, &rgb)
 }
 
 #[cfg(test)]
@@ -363,36 +378,36 @@ mod tests {
         // A 64x48 fully transparent WebP with a black RGB underneath: a naive drop of the alpha channel would be all black.
         let rgba = vec![0u8; 64 * 48 * 4];
         let webp = webp::Encoder::from_rgba(&rgba, 64, 48).encode_lossless().to_vec();
-        let got = decode_and_preprocess(&webp).unwrap();
-        let white = preprocess_rgb8(64, 48, &vec![255u8; 64 * 48 * 3]).unwrap();
-        assert_eq!(got.len(), white.len());
-        let worst = got
-            .iter()
-            .zip(&white)
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0f32, f32::max);
-        assert!(worst < 0.05, "{worst}");
+        for model in Model::ALL {
+            let got = decode_and_preprocess(model, &webp).unwrap();
+            let white = preprocess_rgb8(model, 64, 48, &vec![255u8; 64 * 48 * 3]).unwrap();
+            assert_eq!(got.len(), white.len());
+            let worst = got
+                .iter()
+                .zip(&white)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
+            assert!(worst < 0.05, "{model:?}: {worst}");
+        }
     }
 
     #[test]
     fn a_preview_that_is_not_a_webp_is_an_error() {
-        assert!(decode_and_preprocess(b"GIF89a....").is_err());
+        assert!(decode_and_preprocess(Model::ClipB32, b"GIF89a....").is_err());
     }
 
     fn fixtures() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/cyanotype-clip/tests/fixtures/images")
     }
 
-    fn model_dir() -> Option<PathBuf> {
-        let dir = std::env::var_os("CLIP_MODEL_DIR").map(PathBuf::from)?;
-        [
-            cyanotype_clip::VISION_FILE,
-            cyanotype_clip::TEXT_FILE,
-            cyanotype_clip::TOKENIZER_FILE,
-        ]
-        .iter()
-        .all(|f| dir.join(f).exists())
-        .then_some(dir)
+    /// The model the tests run: `SEARCH_MODEL` (else the default), with its files in `SEARCH_MODEL_DIR`.
+    fn model_dir() -> Option<(Model, PathBuf)> {
+        let model = Model::from_env().ok()?;
+        let dir = model.dir();
+        [model.vision_file(), model.text_file(), model.tokenizer_file()]
+            .iter()
+            .all(|f| dir.join(f).exists())
+            .then_some((model, dir))
     }
 
     /// A migrated scratch database, a real bucket (the S3_* variables CI sets) and the model: or None, and the test skips.
@@ -401,6 +416,7 @@ mod tests {
         ctx: Arc<Ctx>,
         admin_url: String,
         name: String,
+        model: Model,
         dir: PathBuf,
     }
 
@@ -408,10 +424,10 @@ mod tests {
         async fn new() -> Option<Self> {
             let admin_url = std::env::var("DATABASE_URL").ok().filter(|v| !v.is_empty())?;
             std::env::var("S3_ENDPOINT").ok().filter(|v| !v.is_empty())?;
-            let Some(dir) = model_dir() else {
+            let Some((model, dir)) = model_dir() else {
                 assert!(
                     std::env::var_os("CYANOTYPE_REQUIRE_MODEL").is_none(),
-                    "CYANOTYPE_REQUIRE_MODEL is set but CLIP_MODEL_DIR has no model files"
+                    "CYANOTYPE_REQUIRE_MODEL is set but SEARCH_MODEL_DIR has no files for the search model"
                 );
                 return None;
             };
@@ -427,18 +443,20 @@ mod tests {
                 max_original_bytes: 64 << 20,
                 budget: MemoryBudget::new(512 << 20),
                 raw_develop: false,
+                search_model: model,
             });
             Some(Self {
                 pool,
                 ctx,
                 admin_url,
                 name,
+                model,
                 dir,
             })
         }
 
         async fn embedder(&self, threads: usize) -> Arc<Embedder> {
-            Arc::new(Embedder::new(threads))
+            Arc::new(Embedder::new(self.model, threads))
         }
 
         async fn teardown(self) {
@@ -478,7 +496,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        jobs::enqueue(&env.pool, jobs::KIND_EMBED, id, MODEL_VERSION)
+        jobs::enqueue(&env.pool, jobs::KIND_EMBED, id, env.model.version())
             .await
             .unwrap();
         id
@@ -521,7 +539,10 @@ mod tests {
                 .fetch_all(&env.pool)
                 .await
                 .unwrap();
-        assert_eq!(rows, [(MODEL_ID.to_string(), MODEL_VERSION, names.len() as i64)]);
+        assert_eq!(
+            rows,
+            [(env.model.id().to_string(), env.model.version(), names.len() as i64)]
+        );
         let states: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT state FROM jobs")
             .fetch_all(&env.pool)
             .await
@@ -529,7 +550,7 @@ mod tests {
         assert_eq!(states, [("done".to_string(),)]);
 
         // End to end: a text query's nearest stored vector is the right photo.
-        let text = TextEncoder::load(&env.dir, 1).unwrap();
+        let text = TextEncoder::load(env.model, &env.dir, 1).unwrap();
         for (n, id) in names.iter().zip(&ids) {
             let q = text.embed(&format!("a photo of a {n}")).unwrap();
             let nearest: Uuid = sqlx::query_scalar(
@@ -605,22 +626,56 @@ mod tests {
         env.teardown().await;
     }
 
+    /// A swap re-indexes in the background: the older model's vector stays while the photo gets its new one (search keeps
+    /// answering from it), and goes once the sweep finds every photo covered.
     #[tokio::test]
-    async fn embed_jobs_replace_an_older_models_vector() {
+    async fn an_older_models_vector_stays_until_every_photo_has_the_new_one() {
         let Some(env) = Env::new().await else { return };
         let owner = owner(&env.pool).await;
-        let id = asset_with_preview(&env, owner, "dog", Some(preview_of("dog"))).await;
-        embeddings::store(&env.pool, id, "an-older-model", 1, &vec![0.04; 512])
+        let a = asset_with_preview(&env, owner, "dog", Some(preview_of("dog"))).await;
+        let b = asset_with_preview(&env, owner, "cat", Some(preview_of("cat"))).await;
+        for id in [a, b] {
+            embeddings::store(&env.pool, id, "an-older-model", 1, &vec![0.04; 512])
+                .await
+                .unwrap();
+        }
+        // Only `a` is embedded so far.
+        sqlx::query("UPDATE jobs SET run_after = now() + interval '1 hour' WHERE asset_id = $1")
+            .bind(b)
+            .execute(&env.pool)
             .await
             .unwrap();
         let embedder = env.embedder(1).await;
         run_all(&env, &embedder).await;
-        let models: Vec<(String,)> = sqlx::query_as("SELECT model FROM asset_embeddings WHERE asset_id = $1")
-            .bind(id)
-            .fetch_all(&env.pool)
+        let models_of = |id: Uuid| {
+            let pool = env.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>("SELECT model FROM asset_embeddings WHERE asset_id = $1 ORDER BY model")
+                    .bind(id)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(models_of(a).await, ["an-older-model", env.model.id()]);
+        sweep(&env.ctx, env.model).await;
+        assert_eq!(
+            models_of(a).await.len(),
+            2,
+            "b still has no vector from the new model: nothing is pruned yet"
+        );
+        assert_eq!(models_of(b).await, ["an-older-model"]);
+
+        sqlx::query("UPDATE jobs SET run_after = now() WHERE asset_id = $1")
+            .bind(b)
+            .execute(&env.pool)
             .await
             .unwrap();
-        assert_eq!(models, [(MODEL_ID.to_string(),)]);
+        run_all(&env, &embedder).await;
+        sweep(&env.ctx, env.model).await;
+        for id in [a, b] {
+            assert_eq!(models_of(id).await, [env.model.id()]);
+        }
         env.teardown().await;
     }
 
@@ -663,22 +718,33 @@ mod tests {
                 .unwrap();
         assert_eq!(
             queued,
-            [(MODEL_VERSION, 0)],
+            [(env.model.version(), 0)],
             "an upload's embedding is first in line, ahead of any backfill"
         );
 
         let embedder = env.embedder(1).await;
         assert_eq!(run_all(&env, &embedder).await, 1);
-        let text = TextEncoder::load(&env.dir, 1).unwrap();
-        let q = text.embed("birthday cake").unwrap();
-        let (sim,): (f64,) =
-            sqlx::query_as("SELECT 1 - (embedding <=> $1::text::halfvec) FROM asset_embeddings WHERE asset_id = $2")
+        let text = TextEncoder::load(env.model, &env.dir, 1).unwrap();
+        let sim_to = |q: &str| {
+            let q = text.embed_query(q).unwrap();
+            let pool = env.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, f64>(
+                    "SELECT 1 - (embedding <=> $1::text::halfvec) FROM asset_embeddings WHERE asset_id = $2",
+                )
                 .bind(embeddings::pg_literal(&q))
                 .bind(id)
-                .fetch_one(&env.pool)
+                .fetch_one(&pool)
                 .await
-                .unwrap();
-        assert!(sim > 0.2, "similarity of the cake photo to 'birthday cake': {sim}");
+                .unwrap()
+            }
+        };
+        // The scale of a cosine differs per model (about 0.12 for SigLIP 2, 0.25 for CLIP), so compare with what is not there.
+        let (cake, other) = (sim_to("birthday cake").await, sim_to("an excavator").await);
+        assert!(
+            cake > 0.08 && cake > other + 0.04,
+            "similarity of the cake photo to 'birthday cake' {cake}, to 'an excavator' {other}"
+        );
         env.teardown().await;
     }
 

@@ -61,8 +61,8 @@ describe("Search page", () => {
     renderAt("/search?q=dog%20on%20the%20beach");
     expect(await screen.findByRole("list", { name: "Photos" })).toBeInTheDocument();
     expect(screen.getAllByRole("listitem").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText("2 best matches")).toBeInTheDocument();
-    expect(search).toHaveBeenCalledWith({ q: "dog on the beach" }, { cursor: null, limit: 60 });
+    expect(screen.getByText("2 matches")).toBeInTheDocument();
+    expect(search).toHaveBeenCalledWith({ q: "dog on the beach" }, { cursor: null, limit: 60, weaker: false });
   });
 
   it("pages with the cursor when scrolled, and never repeats a photo", async () => {
@@ -82,10 +82,10 @@ describe("Search page", () => {
       .mockResolvedValueOnce(result([hit(1), hit(2)], { next_cursor: "c1" }))
       .mockResolvedValueOnce(result([hit(2), hit(3)]));
     renderAt("/search?q=cat");
-    await screen.findByText(/best matches so far/);
+    await screen.findByText(/matches so far/);
     await act(async () => io([{ isIntersecting: true }]));
-    await screen.findByText("3 best matches");
-    expect(search).toHaveBeenLastCalledWith({ q: "cat" }, { cursor: "c1", limit: 60 });
+    await screen.findByText("3 matches");
+    expect(search).toHaveBeenLastCalledWith({ q: "cat" }, { cursor: "c1", limit: 60, weaker: false });
     vi.unstubAllGlobals();
   });
 
@@ -100,7 +100,9 @@ describe("Search page", () => {
     await userEvent.click(screen.getByRole("button", { name: "Remove filter Favorites" }));
     await waitFor(() => expect(screen.getByTestId("where")).not.toHaveTextContent("favorite"));
     expect(screen.getByTestId("where")).toHaveTextContent("type=raw");
-    await waitFor(() => expect(search).toHaveBeenLastCalledWith({ type: "raw", from: "2024-01-01", to: "2024-12-31" }, { cursor: null, limit: 60 }));
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith({ type: "raw", from: "2024-01-01", to: "2024-12-31" }, { cursor: null, limit: 60, weaker: false }),
+    );
   });
 
   it("says nothing matched, and that unindexed photos cannot match yet while indexing", async () => {
@@ -115,6 +117,87 @@ describe("Search page", () => {
     expect(await screen.findAllByText("Still indexing 40 photos: results may be incomplete.")).not.toHaveLength(0);
     expect(screen.getByText(/still being indexed cannot match a description yet/)).toBeInTheDocument();
     expect(screen.getByRole("progressbar", { name: "Search indexing progress" })).toHaveAttribute("aria-valuenow", "20");
+  });
+
+  it("offers the weaker matches behind the strong ones and continues where the strong ones ended", async () => {
+    const strong = (n: number): SearchItem => ({ ...hit(n), tier: "strong" });
+    const weak = (n: number): SearchItem => ({ ...hit(n, 0.1), tier: "weak" });
+    const search = vi
+      .spyOn(api, "search")
+      .mockResolvedValueOnce(result([strong(1), strong(2)], { strong_count: 2, weaker: { count: 2, cursor: "after-strong" } }))
+      .mockResolvedValueOnce(result([weak(3), weak(4)]));
+    renderAt("/search?q=cat");
+    expect(await screen.findByText("2 matches")).toBeInTheDocument();
+    const more = screen.getByRole("button", { name: "Show weaker matches (2)" });
+    await userEvent.click(more);
+    await screen.findByText("2 matches, 2 weaker");
+    expect(search).toHaveBeenLastCalledWith({ q: "cat" }, { cursor: "after-strong", limit: 60, weaker: true });
+    expect(screen.queryByRole("button", { name: /Show weaker matches/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("listitem").length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("with no strong matches says so, and the weaker ones are one click away", async () => {
+    const search = vi
+      .spyOn(api, "search")
+      .mockResolvedValueOnce(result([], { strong_count: 0, weaker: { count: 5, cursor: null } }))
+      .mockResolvedValueOnce(result([{ ...hit(7, 0.09), tier: "weak" }, { ...hit(8, 0.09), tier: "weak" }]));
+    renderAt("/search?q=giraffe");
+    expect(await screen.findByRole("heading", { name: "No close matches" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Show weaker matches (5)" }));
+    await screen.findByText("0 matches, 2 weaker");
+    expect(search).toHaveBeenLastCalledWith({ q: "giraffe" }, { cursor: null, limit: 60, weaker: true });
+    expect(screen.queryByRole("heading", { name: "No close matches" })).not.toBeInTheDocument();
+  });
+
+  it("shows what was read out of the query as chips, and removing one searches again with it left in the text", async () => {
+    const parsed = {
+      text: "dog",
+      chips: [
+        { kind: "date" as const, label: "June 2023", matched: "in june 2023", from: "2023-06-01", to: "2023-06-30" },
+        { kind: "place" as const, label: "Maui", matched: "Maui", value: "Maui", place_kind: "city" as const },
+      ],
+    };
+    const search = vi.spyOn(api, "search").mockResolvedValue(result([hit(1)], { parsed, strong_count: 1 }));
+    renderAt("/search?q=dog%20Maui%20in%20june%202023");
+    const chips = await screen.findByRole("list", { name: "Understood from your search" });
+    expect(within(chips).getByText("June 2023")).toBeInTheDocument();
+    expect(within(chips).getByText("Maui")).toBeInTheDocument();
+    await userEvent.click(within(chips).getByRole("button", { name: "Remove date June 2023" }));
+    await waitFor(() => expect(screen.getByTestId("where")).toHaveTextContent("skip=date"));
+    expect(screen.getByTestId("where")).toHaveTextContent("q=dog+Maui+in+june+2023");
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith({ q: "dog Maui in june 2023", skip: "date" }, { cursor: null, limit: 60, weaker: false }),
+    );
+  });
+
+  it("selecting all of a filter-only search that was read out of the query keeps the dates and places it was read as", async () => {
+    const parsed = { text: "", chips: [{ kind: "date" as const, label: "2023", matched: "from 2023", from: "2023-01-01", to: "2023-12-31" }] };
+    vi.spyOn(api, "search").mockResolvedValue(result([hit(1, null), hit(2, null)], { ranked: false, total: 900, parsed }));
+    const fav = vi.spyOn(api, "favoriteAssets").mockResolvedValue({ count: 900 });
+    renderAt("/search?q=photos%20from%202023");
+    await screen.findByRole("list", { name: "Photos" });
+    await userEvent.click(screen.getByRole("button", { name: "Select" }));
+    await userEvent.click(screen.getByRole("button", { name: "Select all" }));
+    await userEvent.click(screen.getByRole("button", { name: "Favorite" }));
+    await waitFor(() => expect(fav).toHaveBeenCalled());
+    expect(fav).toHaveBeenCalledWith({ scope: { search: { from: "2023-01-01", to: "2023-12-31" } }, except: [] }, true);
+  });
+
+  it("says a re-index is under way while an older model answers, instead of 'results may be incomplete'", async () => {
+    vi.spyOn(api, "search").mockResolvedValue(
+      result([hit(1)], { reindexing: { model: "siglip2-b16", indexed: 400, total: 1000, percent: 40, switch_at_percent: 95 } }),
+    );
+    vi.spyOn(api, "processing").mockResolvedValue({
+      ...idle,
+      embedding: {
+        indexed: 400, total: 1000, queued: 600, running: 0, failed: 0,
+        model: "siglip2-b16", percent: 40, reindexing: true, switch_at_percent: 95, serving_model: "clip-b32",
+      },
+    });
+    renderAt("/search?q=cat");
+    expect(await screen.findAllByText(/Re-indexing with the improved search model: 40%/)).not.toHaveLength(0);
+    expect(screen.queryByText(/results may be incomplete/)).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Search re-indexing progress" })).toHaveAttribute("aria-valuenow", "40");
   });
 
   it("explains a server without the search model, and keeps filters usable", async () => {

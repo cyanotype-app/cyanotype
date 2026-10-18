@@ -93,7 +93,16 @@ const BUSY = {
   ],
 };
 const INDEXING = { ...IDLE, total_photos: 52000, embedding: { indexed: 12345, total: 52000, queued: 39654, running: 1, failed: 0 } };
-let processing: typeof IDLE | typeof BUSY | typeof INDEXING = IDLE;
+// An older model answers while the improved one indexes the library.
+const REINDEXING = {
+  ...IDLE,
+  total_photos: 52000,
+  embedding: {
+    indexed: 20800, total: 52000, queued: 31199, running: 1, failed: 0,
+    model: "siglip2-b16", percent: 40, reindexing: true, switch_at_percent: 95, serving_model: "clip-b32",
+  },
+};
+let processing: typeof IDLE | typeof BUSY | typeof INDEXING | typeof REINDEXING = IDLE;
 
 // Search: the mock answers by what the query says. "nothing" matches no photo, "unavailable" is a server without the
 // model; anything else ranks the library's photos. Facets carry long names to stress the filter sheet.
@@ -112,7 +121,16 @@ const FACETS = {
   ],
   years: [{ value: "2024", count: 9000 }, { value: "2023", count: 12000 }],
 };
-const searchHits = (n: number) => assets.slice(0, n).map((a, i) => ({ ...a, score: 0.31 - i * 0.004 }));
+const searchHits = (n: number, weak = 0) =>
+  assets.slice(0, n + weak).map((a, i) => ({ ...a, score: 0.31 - i * 0.004, probability: 0.1, tier: i < n ? "strong" : "weak" }));
+// What the server reads out of a query: a long place and a date, so the chips are as wide as they get.
+const PARSED = {
+  text: "dog",
+  chips: [
+    { kind: "date", label: "Summer 2022", matched: "in summer 2022", from: "2022-06-01", to: "2022-08-31" },
+    { kind: "place", label: LONG_PLACE, matched: "in " + LONG_PLACE, value: LONG_PLACE, place_kind: "city" },
+  ],
+};
 
 async function mock(page: Page) {
   const json = (body: unknown) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
@@ -162,9 +180,25 @@ async function mock(page: Page) {
         const q = u.searchParams.get("q") ?? "";
         if (q.includes("unavailable"))
           return route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"search is not available: the model files are not installed"}' });
-        const items = q.includes("nothing") ? [] : searchHits(q ? 24 : 30);
+        const weaker = u.searchParams.get("weaker") === "true";
+        // "nothing": no strong match and some weaker ones; "empty": nothing at all; "weak": a few strong and many weaker.
+        const items = q.includes("empty")
+          ? []
+          : q.includes("nothing")
+            ? weaker ? searchHits(0, 6) : []
+            : q.includes("weak")
+              ? weaker ? searchHits(8, 12) : searchHits(8)
+              : searchHits(q ? 24 : 30);
         const ranked = q !== "";
-        return route.fulfill(json({ items, next_cursor: null, ranked, total: ranked ? null : items.length }));
+        const extra = !ranked
+          ? {}
+          : {
+              strong_count: q.includes("nothing") ? 0 : items.length,
+              weaker: !weaker && (q.includes("nothing") || q.includes("weak")) ? { count: q.includes("weak") ? 12 : 6, cursor: q.includes("weak") ? "after-strong" : null } : null,
+              parsed: q.includes("summer") ? PARSED : { text: q, chips: [] },
+              reindexing: processing === REINDEXING ? { model: "siglip2-b16", indexed: 20800, total: 52000, percent: 40, switch_at_percent: 95 } : null,
+            };
+        return route.fulfill(json({ items, next_cursor: null, ranked, total: ranked ? null : items.length, ...extra }));
       }
       if (p === "/assets/processing" && m === "GET") return route.fulfill(json(processing));
       if (p === "/assets/processing/retry" && m === "POST") {
@@ -614,7 +648,7 @@ for (const { width, scheme } of RUNS) {
       await field.fill("dog on the beach");
       await field.press("Enter");
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
-      await page.getByText(/best matches/).waitFor();
+      await page.getByText(/^\d+ matches$/).waitFor();
       await check("results");
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_1000/ }).click();
@@ -637,10 +671,47 @@ for (const { width, scheme } of RUNS) {
       await check("results-with-chips");
 
       await openBar();
-      await field.fill("nothing like it");
+      await field.fill("empty like it");
       await field.press("Enter");
       await page.getByRole("heading", { name: "Nothing matched" }).waitFor();
       await check("no-results");
+
+      // The query read as a date and a place: two chips (the place as long as a place name can be), and taking one off.
+      await page.goto("/search?q=dog%20in%20summer%202022");
+      await page.getByRole("list", { name: "Understood from your search" }).waitFor();
+      await check("parsed-chips");
+      await page.getByRole("button", { name: "Remove date Summer 2022" }).click();
+      await page.waitForURL(/skip=date/);
+      await check("parsed-chip-removed");
+
+      // Strong matches with weaker ones behind them, and the weaker ones shown.
+      await page.goto("/search?q=weak");
+      await page.getByRole("button", { name: /Show weaker matches \(12\)/ }).waitFor();
+      await check("weaker-offered");
+      await page.getByRole("button", { name: /Show weaker matches/ }).click();
+      await page.getByText("8 matches, 12 weaker").waitFor();
+      await check("weaker-shown");
+      // Nothing close, but weaker matches exist; and nothing at all.
+      await page.goto("/search?q=nothing%20close");
+      await page.getByRole("heading", { name: "No close matches" }).waitFor();
+      await check("no-close-matches");
+      await page.getByRole("button", { name: /Show weaker matches \(6\)/ }).click();
+      await page.getByText("0 matches, 6 weaker").waitFor();
+      await check("no-close-matches-weaker-shown");
+      await page.goto("/search?q=empty");
+      await page.getByRole("heading", { name: "Nothing matched" }).waitFor();
+      await check("nothing-at-all");
+
+      // An older model answers while the improved one indexes the library: said once, with progress.
+      processing = REINDEXING;
+      await page.goto("/search?q=dog");
+      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
+      await page.getByText(/Re-indexing with the improved search model: 40%/).first().waitFor();
+      await check("reindexing");
+      await page.goto("/search");
+      await page.getByRole("heading", { name: "Search your photos" }).waitFor();
+      await page.getByText(/Re-indexing with the improved search model: 40%/).waitFor();
+      await check("reindexing-intro");
 
       processing = INDEXING;
       await page.goto("/search?q=dog");

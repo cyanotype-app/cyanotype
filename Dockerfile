@@ -44,23 +44,39 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
  && for b in auth assets worker; do cp "target/release/cyanotype-$b" /out/; done \
  && cp target/release/cyanotype /out/cyanotype-cli
 
-# ---- CLIP model files, pinned by sha256 in models/clip.lock -------------------------------
-# One stage per consumer, so each image carries only its own tower: the worker the image tower (89 MB), the assets service
-# the text tower and tokenizer (66 MB). The layers depend only on the lock file and the script, never on source code, so
-# they are rebuilt (and pulled to the server) only when the model changes. The same script verifies the checksums for
-# a developer checkout (`just models`).
-FROM debian:trixie-slim AS clip-fetch
+# ---- search model files, pinned by sha256 in models/*.lock --------------------------------
+# One stage per consumer, so each image carries only its own tower: the worker the image tower, the assets service the text
+# tower and tokenizer. The layers depend only on the lock files and the scripts, never on source code, so they are rebuilt
+# (and pulled to the server) only when a model changes. The same script verifies the checksums for a developer checkout
+# (`just models`). Only the default model (SigLIP 2) goes into the worker. The assets image also carries CLIP's small text
+# tower (66 MB), for one release: while a library is re-indexed with SigLIP 2, searches are answered with the CLIP vectors it
+# already has (docs/library.md, "Changing the search model"). Drop the `clip-text` lines once nobody is upgrading from CLIP.
+FROM debian:trixie-slim AS model-fetch
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
 COPY scripts/fetch-models.sh /usr/local/bin/fetch-models
-COPY models/clip.lock /etc/clip.lock
+COPY models/clip.lock models/siglip2.lock /etc/models/
 
-FROM clip-fetch AS clip-vision
-RUN LOCK=/etc/clip.lock fetch-models /models vision_model_int8.onnx
+# The SigLIP 2 text tower is 283 MB, 197 MB of it one embedding table of which a query reads a few rows. With the table
+# moved to a side file ONNX Runtime maps it instead of copying it onto the heap (524 MB resident against about 120 MB);
+# `onnx-split` does that to the downloaded file (crates/cyanotype-clip/src/split.rs, docs/build.md). It is one std-only
+# Rust file, compiled here on its own so this layer does not depend on the workspace.
+FROM chef AS onnx-split
+COPY tools/onnx_split.rs /src/tools/onnx_split.rs
+COPY crates/cyanotype-clip/src/split.rs /src/crates/cyanotype-clip/src/split.rs
+RUN rustc --edition 2024 -O -o /onnx-split tools/onnx_split.rs
 
-FROM clip-fetch AS clip-text
-RUN LOCK=/etc/clip.lock fetch-models /models text_model_int8.onnx tokenizer.json
+FROM model-fetch AS siglip2-vision
+RUN LOCK=/etc/models/siglip2.lock fetch-models /models vision_model_q4.onnx
+
+FROM model-fetch AS siglip2-text
+COPY --from=onnx-split /onnx-split /usr/local/bin/onnx-split
+RUN LOCK=/etc/models/siglip2.lock fetch-models /models text_model_int8.onnx tokenizer.json \
+ && onnx-split /models/text_model_int8.onnx
+
+FROM model-fetch AS clip-text
+RUN LOCK=/etc/models/clip.lock fetch-models /models text_model_int8.onnx tokenizer.json
 
 # ---- runtime base: slim, non-root, CA certs for S3/TLS ---------------------------------
 FROM debian:trixie-slim AS runtime
@@ -75,9 +91,10 @@ FROM runtime AS auth
 COPY --from=builder /out/cyanotype-auth /usr/local/bin/app
 ENTRYPOINT ["/usr/local/bin/app"]
 
-# The assets service embeds search queries with the CLIP text tower (ONNX Runtime is linked statically into the binary; the
+# The assets service embeds search queries with the text tower (ONNX Runtime is linked statically into the binary; the
 # C++ runtime it needs, libstdc++6, is in the trixie base image). The model is loaded on the first search.
 FROM runtime AS assets
+COPY --from=siglip2-text /models /opt/cyanotype/models/siglip2
 COPY --from=clip-text /models /opt/cyanotype/models/clip
 COPY --from=builder /out/cyanotype-assets /usr/local/bin/app
 ENTRYPOINT ["/usr/local/bin/app"]
@@ -92,7 +109,7 @@ USER root
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libde265-0 libdav1d7 libjpeg62-turbo libopenjp2-7 \
  && rm -rf /var/lib/apt/lists/*
-COPY --from=clip-vision /models /opt/cyanotype/models/clip
+COPY --from=siglip2-vision /models /opt/cyanotype/models/siglip2
 COPY --from=builder /out/cyanotype-worker /usr/local/bin/app
 RUN if ldd /usr/local/bin/app | grep "not found"; then echo "worker has unresolved shared libraries (see above): add their packages to this stage" >&2; exit 1; fi
 USER cyanotype

@@ -9,7 +9,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::search::{After, DEPTH, EXACT_MAX_OVERRIDE, Filters, Plan, SearchQuery, ranked_rows, ranked_rows_planned};
-use crate::testutil::{TestDb, app, asset, embedding_of, send, set_embedding, user};
+use crate::testutil::{TEST_MODEL, TestDb, app, asset, embedding_of, send, set_embedding, user};
 
 /// A visible photo whose image embedding leans toward the given words.
 async fn photo(pool: &PgPool, owner: Uuid, name: &str, words: &[(&str, f32)]) -> Uuid {
@@ -26,8 +26,10 @@ async fn set(pool: &PgPool, id: Uuid, column_sql: &str) {
         .unwrap();
 }
 
+/// The search as the tests above ask it: the whole ranked list, without the cut-off (`cutoff=false`), so that a test of
+/// ranking, filters or pagination sees every result. The cut-off has its own tests (`search_v2_tests.rs`).
 async fn get(app: &axum::Router, key: &str, query: &str) -> (StatusCode, Value) {
-    send(app, "GET", &format!("/assets/search?{query}"), key, None).await
+    send(app, "GET", &format!("/assets/search?{query}&cutoff=false"), key, None).await
 }
 
 fn ids(body: &Value) -> Vec<Uuid> {
@@ -383,8 +385,8 @@ async fn ranked_results_stop_at_the_depth_limit() {
         "INSERT INTO asset_embeddings (asset_id, model, version, embedding)
          SELECT id, $1, $2, $3::text::halfvec FROM assets",
     )
-    .bind(cyanotype_clip::MODEL_ID)
-    .bind(cyanotype_clip::MODEL_VERSION)
+    .bind(TEST_MODEL.id())
+    .bind(TEST_MODEL.version())
     .bind(lit)
     .execute(&t.pool)
     .await
@@ -395,7 +397,7 @@ async fn ranked_results_stop_at_the_depth_limit() {
         let mut after = None;
         let mut n = 0;
         loop {
-            let page = ranked_rows_planned(&t.pool, alice, &f, &q, 100, after, Some(plan))
+            let page = ranked_rows_planned(&t.pool, alice, &f, TEST_MODEL, &q, 100, after, Some(plan))
                 .await
                 .unwrap();
             n += page.rows.len();
@@ -421,8 +423,12 @@ async fn the_hnsw_plan_looks_further_when_other_photos_crowd_the_nearest_vectors
     let (alice, ak) = user(&t.pool, "a@example.com").await;
     let (bob, _) = user(&t.pool, "b@example.com").await;
     let app = app(&t.pool);
-    // Bob has 1,000 photos that are all nearer to "cat" than any of Alice's: the first 900 neighbours are all his.
-    let near = cyanotype_core::embeddings::pg_literal(&embedding_of(&[("cat", 1.0)]));
+    // Bob has 1,000 photos that are all nearer to "cat" than any of Alice's: the first 900 neighbours are all his. (Each a
+    // little different from the others: a thousand identical vectors would leave Alice's unreachable in the HNSW graph,
+    // a property of the index that real photos do not test.)
+    let near: Vec<String> = (0..1000)
+        .map(|g| cyanotype_core::embeddings::pg_literal(&embedding_of(&[("cat", 1.0), ("night", g as f32 * 0.0007)])))
+        .collect();
     sqlx::query(
         "INSERT INTO assets (owner_id, sha256, original_key, original_name, content_type, size_bytes, thumbhash)
          SELECT $1, sha256(g::text::bytea), 'k' || g, 'b' || g || '.jpg', 'image/jpeg', 1, '\\x01' FROM generate_series(1, 1000) g",
@@ -431,13 +437,18 @@ async fn the_hnsw_plan_looks_further_when_other_photos_crowd_the_nearest_vectors
     .execute(&t.pool)
     .await
     .unwrap();
-    sqlx::query("INSERT INTO asset_embeddings (asset_id, model, version, embedding) SELECT id, $1, $2, $3::text::halfvec FROM assets")
-        .bind(cyanotype_clip::MODEL_ID)
-        .bind(cyanotype_clip::MODEL_VERSION)
-        .bind(near)
-        .execute(&t.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO asset_embeddings (asset_id, model, version, embedding)
+         SELECT a.id, $1, $2, u.v::halfvec
+         FROM (SELECT id, row_number() OVER (ORDER BY id) AS rn FROM assets) a
+         JOIN unnest($3::text[]) WITH ORDINALITY u(v, rn) ON u.rn = a.rn",
+    )
+    .bind(TEST_MODEL.id())
+    .bind(TEST_MODEL.version())
+    .bind(near)
+    .execute(&t.pool)
+    .await
+    .unwrap();
     let mine: Vec<Uuid> = {
         let mut v = Vec::new();
         for i in 0..5 {
@@ -494,25 +505,36 @@ async fn small_searches_are_exact_and_big_ones_use_the_hnsw_index() {
     .unwrap();
     // Few photos pass: exact, filtered or not.
     assert_eq!(
-        ranked_rows(&t.pool, alice, &plain, &q, 10, None).await.unwrap().plan,
+        ranked_rows(&t.pool, alice, &plain, TEST_MODEL, &q, 10, None)
+            .await
+            .unwrap()
+            .plan,
         Plan::Exact
     );
     assert_eq!(
-        ranked_rows(&t.pool, alice, &favs, &q, 10, None).await.unwrap().plan,
+        ranked_rows(&t.pool, alice, &favs, TEST_MODEL, &q, 10, None)
+            .await
+            .unwrap()
+            .plan,
         Plan::Exact
     );
     // Once more pass than the threshold: HNSW, and it answers the same as the exact plan.
     EXACT_MAX_OVERRIDE.with(|c| c.set(Some(3)));
-    let hnsw = ranked_rows(&t.pool, alice, &plain, &q, 10, None).await.unwrap();
+    let hnsw = ranked_rows(&t.pool, alice, &plain, TEST_MODEL, &q, 10, None)
+        .await
+        .unwrap();
     assert_eq!(hnsw.plan, Plan::Hnsw);
-    let exact = ranked_rows_planned(&t.pool, alice, &plain, &q, 10, None, Some(Plan::Exact))
+    let exact = ranked_rows_planned(&t.pool, alice, &plain, TEST_MODEL, &q, 10, None, Some(Plan::Exact))
         .await
         .unwrap();
     let ids = |rows: &[super::search::SearchRow]| rows.iter().map(|r| r.row.summary.id).collect::<Vec<_>>();
     assert_eq!(ids(&hnsw.rows), ids(&exact.rows));
     assert_eq!(hnsw.rows.len(), 6);
     assert_eq!(
-        ranked_rows(&t.pool, alice, &favs, &q, 10, None).await.unwrap().plan,
+        ranked_rows(&t.pool, alice, &favs, TEST_MODEL, &q, 10, None)
+            .await
+            .unwrap()
+            .plan,
         Plan::Exact,
         "no favorites pass: still few"
     );
@@ -684,19 +706,13 @@ async fn bad_requests_are_rejected_and_a_missing_model_is_a_503() {
     let (st, body) = get(&app, &key, "q=%20%20").await;
     assert_eq!((st, body["ranked"].clone()), (StatusCode::OK, json!(false)));
 
-    struct Missing;
-    impl crate::search::TextEmbedder for Missing {
-        fn embed(&self, _: &str) -> anyhow::Result<Arc<Vec<f32>>> {
-            Err(crate::search::ModelMissing("/nope".into()).into())
-        }
-    }
-    let no_model = crate::routes::routes().with_state(crate::AppState {
-        db: t.pool.clone(),
-        storage: crate::testutil::dummy_storage(),
-        trash_retention_days: 30,
-        purge_wake: Default::default(),
-        text: Arc::new(Missing),
-    });
+    let no_model = crate::testutil::app_with(
+        &t.pool,
+        crate::testutil::default_search(),
+        Arc::new(crate::testutil::FakeText {
+            missing: cyanotype_clip::Model::ALL.to_vec(),
+        }),
+    );
     let (st, _) = get(&no_model, &key, "q=cat").await;
     assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
     let (st, _) = get(&no_model, &key, "favorite=false").await;
@@ -720,10 +736,15 @@ async fn search_performance_on_50k_photos() {
     let pool = cyanotype_core::db::connect(&url).await.unwrap();
     let owner: Uuid = "00000000-0000-0000-0000-0000000000a1".parse().unwrap();
 
+    // The seed script writes CLIP's 512-d vectors.
+    let model = cyanotype_clip::Model::ClipB32;
     struct Fixed(Mutex<Vec<f32>>);
     impl crate::search::TextEmbedder for Fixed {
-        fn embed(&self, _: &str) -> anyhow::Result<Arc<Vec<f32>>> {
+        fn embed(&self, _: cyanotype_clip::Model, _: &str) -> anyhow::Result<Arc<Vec<f32>>> {
             Ok(Arc::new(self.0.lock().unwrap().clone()))
+        }
+        fn available(&self, _: cyanotype_clip::Model) -> bool {
+            true
         }
     }
     let fixed = Arc::new(Fixed(Mutex::new(vec![0.0; 512])));
@@ -733,6 +754,7 @@ async fn search_performance_on_50k_photos() {
         trash_retention_days: 30,
         purge_wake: Default::default(),
         text: fixed.clone(),
+        search: Arc::new(crate::search::SearchState::uncached(model, 95)),
     };
     let mut texts: Vec<String> = Vec::new();
     for _ in 0..40 {
@@ -784,7 +806,7 @@ async fn search_performance_on_50k_photos() {
         if !name.contains(&only) {
             continue;
         }
-        let q: SearchQuery = serde_urlencoded_like(&format!("q=x{extra}"));
+        let q: SearchQuery = serde_urlencoded_like(&format!("q=x{extra}&cutoff=false"));
         let mut lat = Vec::new();
         let mut plan = Plan::Timeline;
         for v in &queries {
@@ -824,7 +846,7 @@ async fn search_performance_on_50k_photos() {
                     let mut got = Vec::new();
                     let mut after = None;
                     loop {
-                        let page = ranked_rows_planned(&pool, owner, &f, &v, 100, after, Some(plan))
+                        let page = ranked_rows_planned(&pool, owner, &f, model, &v, 100, after, Some(plan))
                             .await
                             .unwrap();
                         got.extend(page.rows.iter().map(|r| r.row.summary.id));

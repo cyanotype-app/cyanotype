@@ -24,7 +24,8 @@ async fn both_upload_transports_store_name_owner_time_and_mtime_on_the_original(
         storage: storage.clone(),
         trash_retention_days: 30,
         purge_wake: Default::default(),
-        text: std::sync::Arc::new(crate::testutil::FakeText),
+        text: std::sync::Arc::new(crate::testutil::FakeText::default()),
+        search: crate::testutil::default_search(),
     });
     let (uid, key) = user(&t.pool, "meta@example.com").await;
 

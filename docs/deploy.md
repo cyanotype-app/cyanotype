@@ -518,25 +518,35 @@ page credits GeoNames, OpenStreetMap contributors (ODbL) and Protomaps. How both
 
 ## Search (nothing to install)
 
-Photo search runs on the server with no external service and **needs nothing from you on deploy**: the CLIP model files
-(155 MB) are baked into the `worker` and `assets` images (the worker carries the image tower, the assets service the text
-tower), and the compose bundle already has the new memory limits (worker 1280m, assets 384m; the table is in
-`docs/build.md`, "Semantic search model"). Deploying this version:
+Photo search runs on the server with no external service and **needs nothing from you on deploy**: the model files are baked
+into the `worker` and `assets` images (the worker carries SigLIP 2's image tower, 63 MB; the assets service its text tower, 283 MB,
+and CLIP's text tower, 66 MB, for the transition below), and the compose bundle already has the memory limits (worker 1280m,
+**assets 512m** since SigLIP 2's text tower is bigger than CLIP's; the table is in `docs/build.md`, "Semantic search model").
 
-1. `dc run --rm migrate` applies migrations 0011 (the vector column and HNSW index, job priority, two generated columns
-   on `assets` (file extension, camera name), which rewrite that table once: seconds at 50,000 photos) and 0012 (queues one low-priority embed job
-   per existing photo).
-2. The worker then embeds the library **in the background, behind everything else**: uploads and their thumbnails are never
-   delayed by it, and it uses one CPU thread. At the measured speed that is a couple of hours for 50,000 photos
-   (`docs/build.md`); search works on what is indexed so far and says "Still indexing N photos" until it is done. The
-   Datadog dashboard's Search section shows the backlog draining.
-3. Disk grows by about 125 MB per 50,000 photos (56 MB of vectors, 4 MB of primary key, a 65 MB HNSW index); the nightly dump
-   includes the vectors (about 60 MB more before compression).
+**Deploying the version that switches search from CLIP to SigLIP 2** (an upgrade of a library that already has CLIP vectors):
 
-Optional: `WORKER_EMBED_THREADS=2` in `.env.prod` roughly halves the backfill time while it runs (at the cost of the second
-core of a 2 vCPU host, so thumbnails of a simultaneous big import slow down); `WORKER_EMBED=0` turns embedding off (search
-then answers 503, filters keep working). The images pull the model as image layers that change only when the model does, so
-later deploys do not download it again.
+1. `dc run --rm migrate` applies migration 0013: the vector column takes any dimension, and each model gets its own HNSW index (the
+   CLIP index is rebuilt: seconds at 50,000 photos; the SigLIP 2 one starts empty). Nothing is deleted.
+2. **Search keeps working, with CLIP, while the library is re-indexed.** The worker's sweep (at start, then every 15 minutes) queues
+   every photo for SigLIP 2, behind everything else: uploads and their thumbnails are never delayed (a new upload is embedded
+   first), and it uses one CPU thread. SigLIP 2's image tower takes about four times as long per photo as CLIP's (measured: about 7.6 hours for 50,000
+   photos on one thread, about 1.5 hours for 10,000; `docs/build.md`). Searches are answered from the CLIP vectors until SigLIP 2 has
+   covered **95 %** of a user's photos (`SEARCH_SWITCH_PERCENT`), and the search page says "Re-indexing with the improved search
+   model: NN %" with a progress bar meanwhile (`docker compose logs worker | grep "queued photos missing"` shows the sweep,
+   `cyanotype.search.model` the share of searches each model answered). The Datadog dashboard's Search section shows the backlog draining.
+3. At 95 % SigLIP 2 answers (results get the strong/weaker cut-off, other languages work, "Maui summer 2022" becomes chips); the
+   last 5 % are not text results until embedded. When every photo has a SigLIP 2 vector the worker deletes the CLIP vectors (the
+   table shrinks again) and the CLIP text tower in the assets image is never loaded again; remove it from the Dockerfile in a later release.
+4. Disk: 768-dimension half-precision vectors are 1.5 KB a photo (about 190 MB per 50,000 photos with the index, on top of the CLIP
+   vectors until step 3), the nightly dump includes them. Memory: nothing to do, the limits above hold.
+
+**To stay on CLIP** set `SEARCH_MODEL=clip-b32` in `.env.prod` before deploying (and use a worker image that has CLIP's image tower:
+`models/clip.lock`); nothing is re-indexed. **To go back** after a deploy, set it back: the CLIP vectors are still there until step 3.
+
+Optional: `WORKER_EMBED_THREADS=2` in `.env.prod` makes the backfill roughly a quarter faster (at the cost of the second
+core of a 2 vCPU host, so thumbnails of a simultaneous big import slow down; measured in `docs/build.md`); `WORKER_EMBED=0` turns embedding
+off (search then answers 503 for a library without vectors, filters keep working). The images pull the model as layers that
+change only when the model does, so later deploys do not download it again.
 
 ## Known limitation: browser direct uploads and Linode CORS
 
@@ -560,7 +570,7 @@ Downloads through presigned GET URLs in `<img>` tags are not affected by CORS.
 - [ ] Session cookie has `Secure; HttpOnly; SameSite=Lax` (check in browser devtools or `curl -i`).
 - [ ] Repeated bad logins return 429 (`for i in $(seq 15); do curl -s -o /dev/null -w '%{http_code}\n' -XPOST -H 'content-type: application/json' -d '{"email":"x@x.x","password":"nope"}' https://HOST/auth/login; done`).
 - [ ] `dc ps` shows services healthy; `docker stats` memory is within limits; only 80/443 are published (`ss -ltnp`).
-- [ ] Search: `docker stats` after the first search shows `assets` well under 384m and, while embedding, `worker` under 1280m; the library page's search says "Still indexing" until the backfill finishes.
+- [ ] Search: `docker stats` after the first search shows `assets` under 512m (about 370 MB resident once the SigLIP 2 text tower has loaded on the first search; the first query after a start takes several seconds while it loads) and, while embedding, `worker` under 1280m; the library page's search says "Re-indexing with the improved search model" (after a model change) or "Still indexing" (first time) until the backfill finishes.
 - [ ] A backup ran (`backup list` shows a dump) and a restore into a scratch database was rehearsed; a lifecycle rule handles old object versions.
 - [ ] GHCR login is via the deploy workflow (no PAT on the server) or a read-only PAT you can revoke.
 - [ ] Datadog: logs arrive with `env:dev` and the right `service` tags (if enabled).
