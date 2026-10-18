@@ -11,9 +11,11 @@ interface Props {
   /** Shown above the form (e.g. "registration is closed"). */
   notice?: ReactNode;
   hint?: string;
+  /** More fields, after the password (e.g. the invite code). */
+  extra?: ReactNode;
 }
 
-export function AuthForm({ title, submitLabel, passwordAutocomplete, onSubmit, footer, notice, hint }: Props) {
+export function AuthForm({ title, submitLabel, passwordAutocomplete, onSubmit, footer, notice, hint, extra }: Props) {
   const id = useId();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -69,6 +71,7 @@ export function AuthForm({ title, submitLabel, passwordAutocomplete, onSubmit, f
               {hint}
             </p>
           )}
+          {extra}
           <div role="alert" className="form-error">
             {error}
           </div>

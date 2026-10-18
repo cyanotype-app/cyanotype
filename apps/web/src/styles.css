@@ -2806,3 +2806,153 @@ body:has(.selection-bar) .scrubber {
 .edit-shift {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+
+/* Admin area (docs/admin.md). Fields are 16px and 44px tall on phones; everything wraps instead of overflowing. */
+.admin {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem;
+}
+.admin h1 {
+  font-size: 1.4rem;
+}
+.admin h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.15rem;
+}
+.admin-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 0.75rem 0 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.admin-nav a {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-weight: 600;
+  text-decoration: none;
+}
+.admin-nav a.active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+.admin label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.admin input,
+.admin select {
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.invite-form {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: end;
+  margin-top: 1rem;
+}
+.invite-form > * {
+  min-width: 0;
+}
+.invite-form .field-wide {
+  grid-column: 1 / -1;
+}
+.invite-limits summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.invite-limit-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.invite-list {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+}
+.invite-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.invite-main {
+  flex: 1 1 16rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.invite-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.invite-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.badge {
+  display: inline-block;
+  padding: 0.05rem 0.55rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.badge-pending {
+  background: color-mix(in srgb, var(--pb-500) 22%, var(--surface));
+}
+.badge-used {
+  background: color-mix(in srgb, #2e9e5b 24%, var(--surface));
+}
+.badge-revoked,
+.badge-expired {
+  background: color-mix(in srgb, var(--danger) 16%, var(--surface));
+}
+.notice-ok {
+  background: color-mix(in srgb, #2e9e5b 18%, var(--surface));
+}
+.auth-card .notice {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .admin {
+    padding-inline: max(1rem, env(safe-area-inset-left));
+  }
+  .admin input,
+  .admin select {
+    min-height: 2.75rem;
+  }
+  .invite-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .invite-limit-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .invite-actions {
+    flex: 1 1 100%;
+  }
+  .invite-actions .btn {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}

@@ -13,6 +13,9 @@ pub enum RegistrationMode {
     Open,
     /// Registration works only while the users table is empty (the owner claims the instance).
     FirstUser,
+    /// The first account registers freely (it becomes the admin); every later one needs a valid, unused invite token
+    /// made by an admin. The default.
+    Invite,
     /// `POST /auth/register` always returns 403.
     Closed,
 }
@@ -23,8 +26,9 @@ impl FromStr for RegistrationMode {
         match s.trim().to_ascii_lowercase().as_str() {
             "open" => Ok(Self::Open),
             "first_user" => Ok(Self::FirstUser),
+            "invite" => Ok(Self::Invite),
             "closed" => Ok(Self::Closed),
-            other => bail!("REGISTRATION_MODE must be open, first_user or closed (got {other:?})"),
+            other => bail!("REGISTRATION_MODE must be open, first_user, invite or closed (got {other:?})"),
         }
     }
 }
@@ -64,7 +68,7 @@ impl AuthConfig {
             bail!("AUTH_RATE_LIMIT_* values must be greater than zero");
         }
         Ok(Self {
-            registration: get("REGISTRATION_MODE").map_or(Ok(RegistrationMode::FirstUser), |v| v.parse())?,
+            registration: get("REGISTRATION_MODE").map_or(Ok(RegistrationMode::Invite), |v| v.parse())?,
             cookie_secure: get("COOKIE_SECURE").map_or(Ok(true), |v| parse_bool("COOKIE_SECURE", &v))?,
             rate_limit,
             trusted_proxies: parse_proxies(get("TRUSTED_PROXIES").as_deref())?,
@@ -100,7 +104,7 @@ mod tests {
     #[test]
     fn defaults_are_the_safe_ones() {
         let c = cfg(&[]).unwrap();
-        assert_eq!(c.registration, RegistrationMode::FirstUser);
+        assert_eq!(c.registration, RegistrationMode::Invite);
         assert!(c.cookie_secure);
         assert!(!c.trusted_proxies.is_empty());
     }
@@ -122,6 +126,15 @@ mod tests {
             cfg(&[("REGISTRATION_MODE", "open")]).unwrap().registration,
             RegistrationMode::Open
         );
+        // Every value an existing deployment may already set keeps its meaning.
+        for (v, m) in [
+            ("first_user", RegistrationMode::FirstUser),
+            ("invite", RegistrationMode::Invite),
+            (" INVITE ", RegistrationMode::Invite),
+            ("closed", RegistrationMode::Closed),
+        ] {
+            assert_eq!(cfg(&[("REGISTRATION_MODE", v)]).unwrap().registration, m);
+        }
     }
 
     #[test]

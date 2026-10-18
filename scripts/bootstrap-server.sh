@@ -216,9 +216,9 @@ CADDY_TLS_MODE=auto
 POSTGRES_PASSWORD=change-me
 
 # ---- Auth ----------------------------------------------------------------------------------
-# first_user (default): the first account can register, then sign-up closes.
-# open: anyone can register. closed: nobody can.
-REGISTRATION_MODE=first_user
+# invite (default): the first account registers freely and becomes the admin; everyone after needs an invite link
+# made on the Admin page. first_user: only the first account, then sign-up closes. open: anyone. closed: nobody.
+REGISTRATION_MODE=invite
 
 # ---- Object storage: Linode Object Storage (us-ord-10) --------------------------------------
 S3_ENDPOINT=https://us-ord-10.linodeobjects.com

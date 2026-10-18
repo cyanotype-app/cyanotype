@@ -128,7 +128,7 @@ All URLs above are served through the gateway on `:3000`, unchanged by the servi
 
 Auth: `POST /auth/register` / `POST /auth/login` set a session cookie; CLIs send
 `Authorization: Bearer <api key>` instead. Security knobs (all in [`docs/deploy.md`](docs/deploy.md)):
-`REGISTRATION_MODE=open|first_user|closed` (default `first_user`: only the first account can register),
+`REGISTRATION_MODE=open|first_user|invite|closed` (default `invite`: the first account becomes the admin, everyone else needs an invite link from the admin page, [`docs/admin.md`](docs/admin.md)),
 `COOKIE_SECURE` (default true; local compose sets false), and a per-IP rate limit on login/register (429).
 
 ## Importing a library (CLI)

@@ -88,3 +88,40 @@ where
         id.map(|(id,)| SessionUser { id }).ok_or(ApiError::Unauthorized)
     }
 }
+
+/// An administrator, by login session only (never an API key: a leaked CLI key must not reach the admin portal).
+/// The role is read from `users` on every request, so a demotion takes effect at once. Members get 403.
+pub struct AdminUser {
+    pub id: Uuid,
+}
+
+impl<S> FromRequestParts<S> for AdminUser
+where
+    S: Send + Sync,
+    PgPool: FromRef<S>,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, ApiError> {
+        if parts.headers.contains_key(header::AUTHORIZATION) {
+            return Err(ApiError::Forbidden(
+                "this endpoint needs a login session, not an API key".into(),
+            ));
+        }
+        let db = PgPool::from_ref(state);
+        let jar = CookieJar::from_headers(&parts.headers);
+        let token = jar.get(SESSION_COOKIE).ok_or(ApiError::Unauthorized)?;
+        let row: Option<(Uuid, String)> = sqlx::query_as(
+            "SELECT u.id, u.role FROM sessions s JOIN users u ON u.id = s.user_id \
+             WHERE s.token_hash = $1 AND s.expires_at > now()",
+        )
+        .bind(sha256(token.value().as_bytes()))
+        .fetch_optional(&db)
+        .await?;
+        match row {
+            None => Err(ApiError::Unauthorized),
+            Some((id, role)) if role == "admin" => Ok(AdminUser { id }),
+            Some(_) => Err(ApiError::Forbidden("administrators only".into())),
+        }
+    }
+}
