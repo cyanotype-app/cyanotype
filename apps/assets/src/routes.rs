@@ -23,8 +23,11 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 mod albums;
+#[cfg(test)]
+mod burst_tests;
 mod download;
 mod favorites;
+mod group;
 mod map;
 #[cfg(test)]
 mod map_tests;

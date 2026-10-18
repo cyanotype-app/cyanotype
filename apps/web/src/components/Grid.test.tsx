@@ -36,3 +36,43 @@ describe("Grid favorites", () => {
     expect(document.querySelectorAll(".tile-heart.on")).toHaveLength(1);
   });
 });
+
+describe("Grid bursts", () => {
+  it("puts a +N badge on a cover that toggles its burst without opening the photo, and marks the open burst's photos", () => {
+    const onToggle = vi.fn();
+    const onOpen = vi.fn();
+    const items = [item(1), item(2), item(3)];
+    render(
+      <Grid
+        items={items}
+        onOpen={onOpen}
+        onThumbError={() => {}}
+        burst={(it) => (it.id === "id-1" ? { more: 4, expanded: false, onToggle } : null)}
+        inBurst={(it) => it.id === "id-3"}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show 4 more photos from this burst" }));
+    expect(onToggle).toHaveBeenCalledOnce();
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(screen.getAllByText("+4")).toHaveLength(1);
+    expect(document.querySelectorAll(".tile-cell.in-burst")).toHaveLength(1);
+    expect(document.querySelectorAll(".tile-cell.burst-cover")).toHaveLength(1);
+  });
+
+  it("names what a tap selects while selecting: the whole burst while it is collapsed", () => {
+    const onSelect = vi.fn();
+    render(
+      <Grid
+        items={[item(1), item(2)]}
+        onOpen={() => {}}
+        onThumbError={() => {}}
+        selecting
+        onSelect={onSelect}
+        burst={(it) => (it.id === "id-1" ? { more: 2, expanded: false, onToggle: () => {} } : null)}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Select photo-1.jpg and 2 more from its burst" }));
+    expect(onSelect).toHaveBeenCalledWith("id-1", false);
+    expect(screen.getByRole("button", { name: "Select photo-2.jpg" })).toBeInTheDocument();
+  });
+});

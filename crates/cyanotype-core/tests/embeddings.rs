@@ -482,10 +482,11 @@ async fn migration_0013_keeps_the_vectors_of_a_library_that_already_has_clip() {
         .filter(|p| p.extension().is_some_and(|e| e == "sql"))
         .collect();
     files.sort();
-    let (before, after): (Vec<_>, Vec<_>) = files
-        .iter()
-        .partition(|p| p.file_name().unwrap().to_str().unwrap() < "0013");
-    assert_eq!(after.len(), 1, "0013 is the last migration this test knows about");
+    let file_name = |p: &&std::path::PathBuf| p.file_name().unwrap().to_str().unwrap().to_string();
+    let (before, rest): (Vec<_>, Vec<_>) = files.iter().partition(|p| file_name(p).as_str() < "0013");
+    // Only 0013 is under test; later migrations (0014 adds the burst columns) are not applied here.
+    let after: Vec<_> = rest.into_iter().filter(|p| file_name(p).starts_with("0013")).collect();
+    assert_eq!(after.len(), 1, "0013 is the migration this test applies");
     for f in before {
         sqlx::raw_sql(&std::fs::read_to_string(f).unwrap())
             .execute(&pool)

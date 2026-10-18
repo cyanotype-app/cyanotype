@@ -520,3 +520,132 @@ fn similar_bakeoff() {
         }
     }
 }
+
+/// A tiny deterministic generator (the calibration must print the same numbers every run).
+struct Lcg(u64);
+impl Lcg {
+    /// Uniform in -1..1.
+    fn next(&mut self) -> f32 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((self.0 >> 33) as f32 / (1u64 << 31) as f32) * 2.0 - 1.0
+    }
+}
+
+/// One more frame of the same scene: the camera moved a little (shift and scale), the exposure drifted, as between two
+/// shots of a burst. `amount` is the largest shift as a share of the side, the largest zoom, and (x 2) the largest
+/// brightness change as a share of full scale.
+fn burst_frame(src: &image::RgbImage, amount: f32, rng: &mut Lcg) -> image::RgbImage {
+    use image::imageops::{FilterType, brighten, crop_imm, resize};
+    let (w, h) = (src.width(), src.height());
+    let zoom = 1.0 - amount * rng.next().abs();
+    let (cw, ch) = (((w as f32 * zoom) as u32).max(8), ((h as f32 * zoom) as u32).max(8));
+    let max_dx = (w - cw) as f32 + amount * w as f32;
+    let max_dy = (h - ch) as f32 + amount * h as f32;
+    let dx = (((w - cw) as f32 / 2.0 + rng.next() * max_dx).clamp(0.0, (w - cw) as f32)) as u32;
+    let dy = (((h - ch) as f32 / 2.0 + rng.next() * max_dy).clamp(0.0, (h - ch) as f32)) as u32;
+    let cropped = crop_imm(src, dx, dy, cw, ch).to_image();
+    let resized = resize(&cropped, w, h, FilterType::Triangle);
+    brighten(&resized, (rng.next() * amount * 2.0 * 255.0) as i32)
+}
+
+/// The calibration of burst grouping (`crates/cyanotype-core/src/bursts.rs`): how close two consecutive frames of one scene
+/// are by embedding cosine against how close two different photos are. There is no real burst data in the evaluation set
+/// (209 unrelated photos), so a burst is simulated: every third photo (70) gets 5 more frames with a small, a medium and a large camera
+/// move and exposure drift. Prints the distributions and what the shipped threshold keeps and merges wrongly.
+#[test]
+#[ignore = "the burst calibration: needs the evaluation set and the models, prints tables"]
+fn burst_bakeoff() {
+    let Some(dir) = eval_dir() else {
+        panic!("evaluation set not found: scripts/fetch-eval-set.sh, then SEARCH_EVAL_DIR=models/eval");
+    };
+    let photos = photos(&dir);
+    let levels = [("small", 0.02f32), ("medium", 0.05), ("large", 0.10)];
+    for v in variants().into_iter().filter(|v| v.name.contains("shipped")) {
+        let images = embed_photos(&v, &photos);
+        let encoder = ImageEncoder::load_file(v.model, &v.vision, 4).unwrap();
+        // Different photos: every pair of the 209 (21,736 pairs).
+        let mut distinct: Vec<f32> = Vec::new();
+        for i in 0..images.len() {
+            for j in i + 1..images.len() {
+                distinct.push(cosine(&images[i], &images[j]));
+            }
+        }
+        distinct.sort_by(f32::total_cmp);
+        let at = |v: &[f32], p: f64| v[((v.len() - 1) as f64 * p) as usize];
+        println!("\n== {} ==", v.name);
+        println!(
+            "different photos ({} pairs): median {:.3}, 99 % {:.3}, 99.9 % {:.3}, max {:.3}",
+            distinct.len(),
+            at(&distinct, 0.5),
+            at(&distinct, 0.99),
+            at(&distinct, 0.999),
+            distinct[distinct.len() - 1]
+        );
+        let rules = v.model.burst_rules();
+        let wrong = distinct.iter().filter(|c| **c >= rules.min_cosine).count();
+        println!(
+            "shipped min_cosine {:.3}: {wrong} of {} different pairs would merge ({:.4} %)",
+            rules.min_cosine,
+            distinct.len(),
+            wrong as f64 * 100.0 / distinct.len() as f64
+        );
+        let mut per_level: Vec<(&str, Vec<f32>)> = Vec::new();
+        for (name, amount) in levels {
+            let mut rng = Lcg(7);
+            // Consecutive frames of a burst of 6 (the original and 5 more, each moved independently from the original).
+            let mut adjacent: Vec<f32> = Vec::new();
+            let mut to_first: Vec<f32> = Vec::new();
+            for p in photos.iter().step_by(3) {
+                let mut frames = vec![p.pixels.clone()];
+                frames.extend((0..5).map(|_| burst_frame(&p.pixels, amount, &mut rng)));
+                let vecs: Vec<Vec<f32>> = frames
+                    .iter()
+                    .map(|f| {
+                        let pre = preprocess_rgb8(v.model, f.width(), f.height(), f.as_raw()).unwrap();
+                        encoder.embed(&[pre]).unwrap().remove(0)
+                    })
+                    .collect();
+                adjacent.extend(vecs.windows(2).map(|w| cosine(&w[0], &w[1])));
+                to_first.extend(vecs[1..].iter().map(|x| cosine(&vecs[0], x)));
+            }
+            adjacent.sort_by(f32::total_cmp);
+            to_first.sort_by(f32::total_cmp);
+            let kept = adjacent.iter().filter(|c| **c >= rules.min_cosine).count();
+            per_level.push((name, adjacent.clone()));
+            println!(
+                "{name:<6} move ({:>4.0} % shift): adjacent frames min {:.3}, 1 % {:.3}, 5 % {:.3}, median {:.3}; kept at the shipped threshold {:.1} % (to the first frame: median {:.3})",
+                amount * 100.0,
+                adjacent[0],
+                at(&adjacent, 0.01),
+                at(&adjacent, 0.05),
+                at(&adjacent, 0.5),
+                kept as f64 * 100.0 / adjacent.len() as f64,
+                at(&to_first, 0.5)
+            );
+        }
+        println!(
+            "\nthreshold sweep: different photos merged / consecutive burst frames kept (small, medium, large move)"
+        );
+        for t in [0.80f32, 0.83, 0.85, 0.87, 0.89, 0.91, 0.93] {
+            let merged = distinct.iter().filter(|c| **c >= t).count();
+            let kept: Vec<String> = per_level
+                .iter()
+                .map(|(_, a)| {
+                    format!(
+                        "{:.1} %",
+                        a.iter().filter(|c| **c >= t).count() as f64 * 100.0 / a.len() as f64
+                    )
+                })
+                .collect();
+            println!(
+                "  min cosine {t:.2}: {merged:>5} of {} pairs merged ({:.2} %); kept {}",
+                distinct.len(),
+                merged as f64 * 100.0 / distinct.len() as f64,
+                kept.join(" / ")
+            );
+        }
+    }
+}

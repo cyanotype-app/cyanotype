@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use cyanotype_clip::{ImageEncoder, Model, preprocess_rgb8};
-use cyanotype_core::{embeddings, jobs, keys, metrics};
+use cyanotype_core::{bursts, embeddings, jobs, keys, metrics};
 use tokio::{sync::Semaphore, task::JoinSet};
 use tracing::Instrument;
 use uuid::Uuid;
@@ -157,6 +157,7 @@ pub async fn run_loop(ctx: Arc<Ctx>, embedder: Arc<Embedder>, waker: jobs::JobWa
 /// Queue what is missing for `model`; once nothing is, drop the vectors of the models it replaced (search kept answering
 /// from them until now, `docs/library.md`, "Changing the search model").
 async fn sweep(ctx: &Ctx, model: Model) {
+    burst_sweep(ctx).await;
     let (id, version) = (model.id(), model.version());
     match embeddings::enqueue_missing(&ctx.db, id, version).await {
         Ok(0) => {}
@@ -171,6 +172,19 @@ async fn sweep(ctx: &Ctx, model: Model) {
         },
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %format!("{e:#}"), "counting missing embeddings failed"),
+    }
+}
+
+/// The burst sweep: photos never grouped, or grouped under older rules, and the finished jobs of the last days. Runs with
+/// the embedding sweep (a model change re-embeds the library, and every vector queues its own regroup besides).
+async fn burst_sweep(ctx: &Ctx) {
+    match bursts::enqueue_missing(&ctx.db).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(queued = n, "queued photos to be grouped into bursts"),
+        Err(e) => tracing::warn!(error = %format!("{e:#}"), "burst sweep failed"),
+    }
+    if let Err(e) = bursts::prune_jobs(&ctx.db).await {
+        tracing::warn!(error = %format!("{e:#}"), "pruning burst jobs failed");
     }
 }
 
@@ -303,6 +317,10 @@ async fn store(ctx: &Arc<Ctx>, model: Model, job: &jobs::Job, v: &[f32]) -> Resu
     embeddings::store(&ctx.db, job.asset_id, model.id(), model.version(), v)
         .await
         .context("store embedding")?;
+    // The photo can be compared with its neighbours now: regroup its burst (a failure here is not the embedding's).
+    if let Err(e) = bursts::requeue_after_embed(&ctx.db, job.asset_id).await {
+        tracing::warn!(error = %format!("{e:#}"), "could not queue the burst regroup");
+    }
     Ok(Outcome::Done)
 }
 

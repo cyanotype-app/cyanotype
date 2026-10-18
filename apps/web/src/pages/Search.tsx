@@ -25,6 +25,7 @@ import {
   similarUrl,
   urlFromParams,
 } from "../searchText";
+import { allPhotos, collapsedStats, indexResults, patchPhoto, removePhotos, selectionIds, visiblePhotos } from "../burst";
 import { useSelection } from "../selection";
 import { useAssetPages } from "../useAssetPages";
 
@@ -246,6 +247,8 @@ function Results({ params }: { params: SearchParams }) {
   // "Show weaker matches": the next page continues right after the last strong match, with the weaker tier included.
   const [weakerShown, setWeakerShown] = useState(false);
   const weakerRef = useRef<{ on: boolean; cursor: string | null }>({ on: false, cursor: null });
+  // Bursts open inline (by their cover's id); a collapsed one is a single tile that selects all of its photos.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [confirmed, setConfirmed] = useState(false);
   const [addIds, setAddIds] = useState<{ target: Target; count: number } | null>(null);
   const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
@@ -278,14 +281,35 @@ function Results({ params }: { params: SearchParams }) {
     },
     [params],
   );
-  const { items, setItems, done, started, loading, error, loadMore, sentinel, refreshItem, reset: resetPages } = useAssetPages(fetchPage);
+  const { items, setItems, done, started, loading, error, loadMore, sentinel, reset: resetPages } = useAssetPages(fetchPage);
+  // Photos change inside bursts too (a favorite, a fresh thumbnail URL).
+  const refreshItem = useCallback(
+    (id: string, patch: Partial<AssetListItem>) => setItems((cur) => patchPhoto(cur as SearchItem[], id, patch)),
+    [setItems],
+  );
   // Starting over (after a bulk change) starts from the strong matches again.
   const reset = useCallback(() => {
     weakerRef.current = { on: false, cursor: null };
     setWeakerShown(false);
+    setExpanded(new Set());
     resetPages();
   }, [resetPages]);
-  const itemIds = useMemo(() => items.map((i) => i.id), [items]);
+  // Every photo of the results, those hidden in collapsed bursts included: what selecting and "select all" work on.
+  const everyPhoto = useMemo(() => allPhotos(items as SearchItem[]), [items]);
+  const itemIds = useMemo(() => everyPhoto.map((i) => i.id), [everyPhoto]);
+  // What the grid and the lightbox show.
+  const tiles = useMemo(() => visiblePhotos(items as SearchItem[], expanded), [items, expanded]);
+  const byId = useMemo(() => indexResults(items as SearchItem[]), [items]);
+  const hidden = useMemo(() => collapsedStats(items as SearchItem[], expanded), [items, expanded]);
+  const toggleBurst = useCallback(
+    (id: string) =>
+      setExpanded((cur) => {
+        const next = new Set(cur);
+        if (!next.delete(id)) next.add(id);
+        return next;
+      }),
+    [],
+  );
   // A filter-only search can select every match (the server resolves them); a ranked one selects what is loaded.
   const sel = useSelection(itemIds, meta.ranked ? undefined : (meta.total ?? undefined));
   // What "select all" selects for a filter-only search: the explicit filters and what was read out of the query.
@@ -326,7 +350,7 @@ function Results({ params }: { params: SearchParams }) {
 
   const favoriteSelected = useCallback(async () => {
     const target = sel.target(scope);
-    const ids = items.filter((i) => sel.selected.has(i.id));
+    const ids = everyPhoto.filter((i) => sel.selected.has(i.id));
     const value = sel.all ? true : !ids.every((i) => i.favorite === true);
     sel.setSelecting(false);
     if (isScope(target)) {
@@ -344,7 +368,7 @@ function Results({ params }: { params: SearchParams }) {
       await setFavorite(target as string[], value);
       show({ message: `${target.length} ${value ? "added to" : "removed from"} favorites` });
     }
-  }, [sel, scope, items, setFavorite, reset, show, failure]);
+  }, [sel, scope, everyPhoto, setFavorite, reset, show, failure]);
 
   const undoTrash = useCallback(
     async (target: Target, count: number) => {
@@ -367,7 +391,7 @@ function Results({ params }: { params: SearchParams }) {
       if (isScope(target)) reset();
       else {
         const gone = new Set(target);
-        setItems((cur) => cur.filter((i) => !gone.has(i.id)));
+        setItems((cur) => removePhotos(cur as SearchItem[], gone));
       }
       setOpen(null);
       const back: Target = isScope(target) ? (r.batch ? { scope: { trash_batch: r.batch }, except: [] } : []) : target;
@@ -384,8 +408,9 @@ function Results({ params }: { params: SearchParams }) {
 
   const trashOne = useCallback(
     async (it: AssetListItem) => {
-      const left = items.length - 1;
-      setItems((cur) => cur.filter((i) => i.id !== it.id));
+      const gone = new Set([it.id]);
+      const left = visiblePhotos(removePhotos(items as SearchItem[], gone), expanded).length;
+      setItems((cur) => removePhotos(cur as SearchItem[], gone));
       setOpen((o) => (o === null || left <= 0 ? null : Math.min(o, left - 1)));
       try {
         await api.trashAssets([it.id]);
@@ -396,7 +421,7 @@ function Results({ params }: { params: SearchParams }) {
       }
       show({ message: "1 moved to trash", action: { label: "Undo", onClick: () => void undoTrash([it.id], 1) } });
     },
-    [items.length, setItems, reset, show, failure, undoTrash],
+    [items, expanded, setItems, reset, show, failure, undoTrash],
   );
 
   const unpairItem = useCallback(
@@ -430,15 +455,15 @@ function Results({ params }: { params: SearchParams }) {
   const openAt = useCallback(
     (i: number) => {
       setOpen(i);
-      if (i >= items.length - 3 && !done && !error) void loadMore();
+      if (i >= tiles.length - 3 && !done && !error) void loadMore();
     },
-    [items.length, done, error, loadMore],
+    [tiles.length, done, error, loadMore],
   );
 
   const indexing = params.q ? indexingNote(status) : null;
   // An older model answers while the configured one indexes the library: say so (the response knows first).
   const reindexing = params.q && (meta.reindexing || status?.embedding?.reindexing);
-  const total = meta.total ?? items.length;
+  const total = meta.total ?? everyPhoto.length;
   // (the pages are search results: they carry a tier)
   const strongLoaded = items.filter((i) => (i as SearchItem).tier !== "weak").length;
   const weakLoaded = items.length - strongLoaded;
@@ -545,6 +570,11 @@ function Results({ params }: { params: SearchParams }) {
               onSelectAll={sel.selectAll}
               onClear={sel.clear}
               onDone={() => sel.setSelecting(false)}
+              note={
+                hidden.bursts > 0
+                  ? `A burst (+N) selects all its photos: ${hidden.photos.toLocaleString("en-US")} more in ${hidden.bursts.toLocaleString("en-US")} ${hidden.bursts === 1 ? "burst" : "bursts"}.`
+                  : null
+              }
             >
               <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || busy} onClick={() => void favoriteSelected()}>
                 Favorite
@@ -576,7 +606,7 @@ function Results({ params }: { params: SearchParams }) {
             </SelectionBar>
           )}
           <Grid
-            items={items}
+            items={tiles}
             onOpen={openAt}
             onThumbError={(id) =>
               void api.getAsset(id).then(
@@ -586,8 +616,28 @@ function Results({ params }: { params: SearchParams }) {
             }
             selecting={sel.selecting}
             selected={sel.selected}
-            onSelect={sel.select}
-            onLongPress={sel.begin}
+            // A collapsed burst is one tile that stands for all of its photos; an open one is its photos one by one.
+            onSelect={(id, shift) => {
+              const found = byId.get(id);
+              const ids = found && found.cover.id === id ? selectionIds(found.cover, expanded) : [id];
+              if (ids.length > 1) sel.selectMany(ids);
+              else sel.select(id, shift);
+            }}
+            onLongPress={(id) => {
+              const found = byId.get(id);
+              const ids = found && found.cover.id === id ? selectionIds(found.cover, expanded) : [id];
+              if (ids.length > 1) sel.beginMany(ids);
+              else sel.begin(id);
+            }}
+            burst={(it) => {
+              const found = byId.get(it.id);
+              const n = found && found.cover.id === it.id ? (found.cover.burst?.members.length ?? 0) : 0;
+              return n > 0 ? { more: n, expanded: expanded.has(it.id), onToggle: () => toggleBurst(it.id) } : null;
+            }}
+            inBurst={(it) => {
+              const found = byId.get(it.id);
+              return found !== undefined && found.cover.id !== it.id;
+            }}
             onFavorite={(id, favorite) => void setFavorite([id], favorite)}
           />
         </>
@@ -597,10 +647,10 @@ function Results({ params }: { params: SearchParams }) {
       )}
       <div ref={sentinel} className="sentinel" aria-hidden="true" />
       {loading && items.length > 0 && <p className="center muted small" role="status">Loading more…</p>}
-      {open !== null && items.length > 0 && (
+      {open !== null && tiles.length > 0 && (
         <Lightbox
-          items={items}
-          index={Math.min(open, items.length - 1)}
+          items={tiles}
+          index={Math.min(open, tiles.length - 1)}
           onIndexChange={openAt}
           onClose={() => setOpen(null)}
           loadDetail={api.getAsset}

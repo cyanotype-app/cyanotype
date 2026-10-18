@@ -2457,3 +2457,40 @@ body:has(.selection-bar) .scrubber {
     white-space: nowrap;
   }
 }
+
+/* Bursts: the "+N" badge on a cover (it opens the burst inline), the stack look of a collapsed cover, and the open burst's
+   photos set apart by an accent edge. */
+.tile-burst {
+  position: absolute;
+  right: 0.35rem;
+  bottom: 0.35rem;
+  min-width: 2.25rem;
+  min-height: 2.25rem;
+  padding: 0 0.5rem;
+  border: 1px solid rgb(255 255 255 / 0.55);
+  border-radius: 999px;
+  background: rgb(0 19 31 / 0.72);
+  color: #fff;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+.tile-burst:hover,
+.tile-burst.open {
+  background: var(--accent, #0a67b0);
+}
+.tile-cell.burst-cover:not(:has(.tile-burst.open)) .tile {
+  box-shadow:
+    3px 3px 0 -1px var(--surface-2, #dfe9f1),
+    6px 6px 0 -2px var(--border, #c4d4e0);
+}
+.tile-cell.in-burst .tile {
+  outline: 2px solid var(--accent, #0a67b0);
+  outline-offset: -2px;
+}
+.selection-note {
+  display: block;
+  font-weight: 400;
+}
