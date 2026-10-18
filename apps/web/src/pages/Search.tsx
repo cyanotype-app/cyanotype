@@ -654,6 +654,7 @@ function Results({ params }: { params: SearchParams }) {
           onIndexChange={openAt}
           onClose={() => setOpen(null)}
           loadDetail={api.getAsset}
+          loadDetails={api.getDetails}
           onTrash={(it) => void trashOne(it)}
           onAddToAlbum={(it) => setAddIds({ target: [it.id], count: 1 })}
           onShare={(it) => setShareTarget({ kind: "photos", ids: [it.id] })}

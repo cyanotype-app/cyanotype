@@ -140,6 +140,60 @@ const PARSED = {
   ],
 };
 
+// The photo details panel: every row at its widest (long camera, lens, place, software and file names, a RAW pair, a burst
+// and several albums), and, for the other photos, nothing but the file.
+const LONG_LENS = "Canon RF 100-500mm F4.5-7.1 L IS USM with the 1.4x extender and the tripod collar attached";
+const LONG_SOFTWARE = "Adobe Photoshop Lightroom Classic 13.2 (Macintosh) with a rather long-winded processing history";
+const fullDetails = (id: string) => ({
+  id,
+  date: { instant: "2023-07-04T11:05:09Z", local: "2023-07-04T13:05:09", offset: "+02:00", zone_known: true, weekday: "Tuesday", basis: "taken", timeline_day: "2023-07-04" },
+  location: {
+    latitude: 38.7223,
+    longitude: -9.1393,
+    place: { city: LONG_PLACE, region: "Lisbon", country: "Portugal", country_code: "PT" },
+    altitude: "38 m above sea level",
+    altitude_m: 37.8,
+    direction: "132° SE (magnetic)",
+    direction_deg: 132.4,
+  },
+  camera: { label: LONG_CAMERA, make: "Hasselblad", model: "X2D", lens: LONG_LENS },
+  exposure: {
+    line: "ISO 12800 · 1000 mm · ƒ/22 · 1/8000 s · −0.7 ev",
+    iso: "ISO 12800",
+    focal_length: "1000 mm",
+    focal_length_35mm: "1500 mm",
+    aperture: "ƒ/22",
+    shutter: "1/8000 s",
+    bias: "−0.7 ev",
+    flash: "Fired, auto, red-eye reduction",
+    white_balance: "Manual",
+    metering: "Center-weighted average",
+    program: "Aperture priority",
+  },
+  file: { name: LONG_NAME, format: "JPEG", raw: false, content_type: "image/jpeg", size_bytes: 3_000_000, width: 11648, height: 8736, megapixels: "102 MP", color_space: "sRGB", software: LONG_SOFTWARE },
+  files: [
+    { id, name: LONG_NAME, format: "JPEG", raw: false, size_bytes: 3_000_000 },
+    { id: "raw-" + id, name: LONG_NAME.replace(".jpg", ".CR3"), format: "CR3", raw: true, size_bytes: 25_000_000 },
+  ],
+  albums: [
+    { id: "l1", title: LONG_ALBUM },
+    { id: "l2", title: "Pets" },
+    { id: "l3", title: albums[2]!.title },
+  ],
+  burst: { position: 3, size: 12 },
+});
+const bareDetails = (id: string) => ({
+  ...fullDetails(id),
+  date: { instant: "2024-02-03T04:05:06Z", local: "2024-02-03T04:05:06", offset: null, zone_known: false, weekday: "Saturday", basis: "file", timeline_day: "2024-02-03" },
+  location: null,
+  camera: null,
+  exposure: null,
+  file: { name: "scan.png", format: "PNG", raw: false, content_type: "image/png", size_bytes: 1000, width: null, height: null, megapixels: null, color_space: null, software: null },
+  files: [{ id, name: "scan.png", format: "PNG", raw: false, size_bytes: 1000 }],
+  albums: [],
+  burst: null,
+});
+
 async function mock(page: Page) {
   const json = (body: unknown) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   await page.route("**/fixture-thumbs/*.svg", (r) =>
@@ -221,6 +275,8 @@ async function mock(page: Page) {
           json({ items, next_cursor: null, ranked: true, total: null, strong_count: 8, weaker: weaker ? null : { count: 12, cursor: "after-strong" }, similar_to: sm[1] }),
         );
       }
+      const dtm = /^\/assets\/([^/]+)\/details$/.exec(p);
+      if (dtm && m === "GET") return route.fulfill(json(Number(dtm[1]!.replace(/\D/g, "")) % 2 === 0 ? fullDetails(dtm[1]!) : bareDetails(dtm[1]!)));
       const um = /^\/assets\/([0-9a-f-]{36})$/.exec(p);
       if (um && m === "GET") return route.fulfill(json({ ...assets[3], id: um[1], albums: [], original_url: thumb(3), preview_url: thumb(3) }));
       if (p === "/assets/processing" && m === "GET") return route.fulfill(json(processing));
@@ -495,6 +551,30 @@ for (const { width, scheme } of RUNS) {
       await check("lightbox-long-name");
       await page.getByRole("button", { name: "Next photo" }).click();
       await check("lightbox");
+
+      // Photo details: the Info button (then `i` and Escape), a photo with every row, then one with none but the file
+      await page.getByRole("button", { name: "Info" }).click();
+      const panel = page.getByRole("complementary", { name: "Photo details" });
+      await panel.waitFor();
+      await panel.getByText("Time zone unknown").waitFor();
+      await check("lightbox-info-bare");
+      await page.getByRole("button", { name: "Previous photo" }).click();
+      await panel.getByText("Altitude 38 m above sea level").waitFor();
+      await page.locator(".place-map canvas").first().waitFor({ timeout: 20_000 });
+      await page.waitForTimeout(1200); // basemap tiles draw
+      await check("lightbox-info");
+      // The panel's own scroll reaches its last row, and the sheet never grows past the screen.
+      await panel.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+      await panel.getByText("3 of 12 in a burst").waitFor();
+      await check("lightbox-info-scrolled");
+      await page.keyboard.press("Escape");
+      await panel.waitFor({ state: "detached" });
+      await page.getByRole("dialog").waitFor();
+      await page.keyboard.press("i");
+      await panel.waitFor();
+      await page.keyboard.press("i");
+      await panel.waitFor({ state: "detached" });
+      await check("lightbox-info-closed");
 
       // Upload tray (the mocked check endpoint refuses, so every file shows as failed)
       await open("/library", /Open IMG_1000/);

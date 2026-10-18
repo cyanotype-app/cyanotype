@@ -1,4 +1,5 @@
 //! Assets service: presigned multipart upload flow and asset reads. Routes live under `/assets/*`.
+mod details;
 mod janitor;
 mod purge;
 mod query_parse;

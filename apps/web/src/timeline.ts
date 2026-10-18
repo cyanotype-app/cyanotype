@@ -133,6 +133,18 @@ export function buildLayout(idx: TimelineIndex, g: Geometry): Layout {
 }
 
 /** Index of the row containing offset `y` (clamped). */
+/**
+ * Where to scroll (offset in the list) to show `day`: the top of its header, or of the nearest day with photos before it
+ * (the library is newest first; a day with nothing in it has no header), or the last day when `day` is older than all.
+ * Null for an empty library.
+ */
+export function dayTop(rows: readonly Row[], day: string): number | null {
+  const days = rows.filter((r): r is Extract<Row, { kind: "day" }> => r.kind === "day");
+  if (days.length === 0) return null;
+  const hit = days.find((r) => r.day <= day) ?? days[days.length - 1]!;
+  return hit.top;
+}
+
 export function rowAt(rows: readonly Row[], y: number): number {
   if (rows.length === 0) return -1;
   let lo = 0;

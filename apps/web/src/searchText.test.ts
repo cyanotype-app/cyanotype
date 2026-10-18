@@ -111,6 +111,14 @@ describe("filter chips", () => {
     expect(yearRange("2021")).toEqual({ from: "2021-01-01", to: "2021-12-31" });
   });
 
+  it("carries the lens filter through the URL and its chip", () => {
+    const p = paramsFromUrl(new URLSearchParams("lens=RF%2024-70mm%20F2.8%20L&camera=Canon%20EOS%20R5"));
+    expect(p).toEqual({ lens: "RF 24-70mm F2.8 L", camera: "Canon EOS R5" });
+    expect(paramsFromUrl(new URLSearchParams(urlFromParams(p)))).toEqual(p);
+    expect(chipsOf(p).map((c) => c.label)).toEqual(["Canon EOS R5", "RF 24-70mm F2.8 L"]);
+    expect(chipsOf(p)[1]!.clears).toEqual(["lens"]);
+  });
+
   it("makes one chip per filter and says which parameters it clears", () => {
     const chips = chipsOf(
       { from: "2024-01-01", to: "2024-12-31", favorite: true, camera: "Canon EOS R5", place: "Lisbon", type: "heic", has_location: true, album: "a" },

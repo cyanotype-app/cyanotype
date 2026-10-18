@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { dayFromSearch } from "../detailsText";
 import { api, ApiError, isScope, type AssetListItem, type Target } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
@@ -29,6 +30,8 @@ const photos = (n: number) => `${n.toLocaleString("en-US")} photo${n === 1 ? "" 
 /** The library as a date-grouped, virtualized timeline; `favorites` limits it to the photos with a heart. */
 export function Library({ favorites = false }: { favorites?: boolean }) {
   const navigate = useNavigate();
+  const [search] = useSearchParams();
+  const jumpToDay = dayFromSearch(search);
   const { setAnonymous } = useAuth();
   const [open, setOpen] = useState<number | null>(null); // global index of the photo in the lightbox
   const { queue } = useUploads();
@@ -453,6 +456,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
         onSelect={sel.select}
         onLongPress={sel.begin}
         onFavorite={favoriteOne}
+        jumpToDay={jumpToDay}
       />
       <p className="muted center small" role="status">
         {photos(index.total)}
@@ -474,6 +478,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
           onIndexChange={(rel) => setOpen(run.start + rel)}
           onClose={closeLightbox}
           loadDetail={api.getAsset}
+          loadDetails={api.getDetails}
           onTrash={(it) => void trashItems([it])}
           onAddToAlbum={(it) => setAddIds({ target: [it.id], count: 1 })}
           onShare={(it) => setShareTarget({ kind: "photos", ids: [it.id] })}

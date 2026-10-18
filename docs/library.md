@@ -944,7 +944,7 @@ ways that are unknown (real recall with the real model on a real library is not 
 
 | Request | Effect |
 |---|---|
-| `GET /assets/search?q=&from=&to=&favorite=&camera=&place=&type=&album=&has_location=&limit=&cursor=&weaker=&skip=&cutoff=` | Ranked results for `q` (the strong tier; at most 300 altogether, best first) or, without `q`, the photos matching the filters, newest first. Every parameter is optional; `from`/`to` are inclusive UTC days (`2024-03-01`), `camera` and `place` are the facet values below (case-insensitive; `place` matches a city, region, country or country code), `type` is `jpeg`, `heic` (also HEIF and AVIF), `raw` or `other`, `limit` defaults to 60 (at most 200). `weaker=true` also lists the weaker tier (continue with `weaker.cursor`); `skip=date`, `skip=place` or `skip=date,place` does not read that kind of thing out of `q`; `cutoff=false` returns the whole ranked list. Items have the shape of `GET /assets` plus `score` (cosine similarity, null without `q`), `probability` (the model's calibrated estimate, SigLIP 2 only) and `tier` (`strong`/`weak`). The response has `next_cursor`, `ranked`, `total` (first page of a filter-only search), and with `q`: `strong_count`, `weaker` (`{count, cursor}` or null), `parsed` (`{text, chips}`), `model` (which model answered) and `reindexing` (null, or how far the configured model is while an older one answers). `400` for a bad date, type, album id, cursor or a `q` over 200 characters; `503` when the model is not installed and `q` is set. |
+| `GET /assets/search?q=&from=&to=&favorite=&camera=&lens=&place=&type=&album=&has_location=&limit=&cursor=&weaker=&skip=&cutoff=` | Ranked results for `q` (the strong tier; at most 300 altogether, best first) or, without `q`, the photos matching the filters, newest first. Every parameter is optional; `from`/`to` are inclusive UTC days (`2024-03-01`), `camera` and `place` are the facet values below (case-insensitive; `place` matches a city, region, country or country code), `type` is `jpeg`, `heic` (also HEIF and AVIF), `raw` or `other`, `limit` defaults to 60 (at most 200). `weaker=true` also lists the weaker tier (continue with `weaker.cursor`); `skip=date`, `skip=place` or `skip=date,place` does not read that kind of thing out of `q`; `cutoff=false` returns the whole ranked list. Items have the shape of `GET /assets` plus `score` (cosine similarity, null without `q`), `probability` (the model's calibrated estimate, SigLIP 2 only) and `tier` (`strong`/`weak`). The response has `next_cursor`, `ranked`, `total` (first page of a filter-only search), and with `q`: `strong_count`, `weaker` (`{count, cursor}` or null), `parsed` (`{text, chips}`), `model` (which model answered) and `reindexing` (null, or how far the configured model is while an older one answers). `400` for a bad date, type, album id, cursor or a `q` over 200 characters; `503` when the model is not installed and `q` is set. |
 | `GET /assets/{id}/similar?from=&to=&favorite=&camera=&place=&type=&album=&has_location=&limit=&cursor=&weaker=&cutoff=` | "More like this": the caller's photos most similar to this one (see above), the strong tier by default, `weaker=true` for the weaker one too (continue with `weaker.cursor`), the filters of search, no text. Response as search's, plus `similar_to`. `404` when the photo is not the caller's, is in the trash or is the hidden half of a pair; `409` when it has no vector yet for the model that serves searches; `400` for a bad filter or cursor. |
 | (search and similar results) | Items of a ranked list may carry `burst` (`{size, members: [{...list item, score}]}`), see "Bursts". `strong_count`, `weaker.count`, `limit` and the cursors count groups (a burst is one). The `search` bulk scope is unchanged: it only exists for filter-only searches, which are never collapsed, and a ranked list's actions send the ids of the photos selected, members of collapsed bursts included. |
 | `GET /assets/search/facets` | What the filters can be set to, with counts over the whole library: `total`, `favorites`, `with_location`, `types`, `cameras` (top 50), `places` (top 120, each with its `kind`), `years`. |
@@ -1016,3 +1016,89 @@ ways that are unknown (real recall with the real model on a real library is not 
   `e2e/mobile-overflow.spec.ts` (bar collapsed and expanded, recent searches, results, selection, the filter sheet with
   long names, chips, parsed chips with a very long place, the weaker tier offered and shown, no close matches, no results,
   indexing, re-indexing, unavailable, intro, and the similar-photos page with its chip, weaker tier, lightbox button and not-indexed state) at 320 to 1280 px, light and dark.
+
+# Photo details
+
+Apple Photos style details for the photo in the lightbox: when and where it was taken, with what, and what the file is.
+The panel is derived from what is already stored (the asset's columns and the EXIF dump in `assets.exif`), so **photos
+imported long ago need no reprocessing** and there is no migration.
+
+## What the user sees
+
+- **Open it** with the Info button in the lightbox's bar, the `i` key, or (on a phone) **a swipe up on the photo**. On a wide
+  screen it is a column beside the photo; on a narrow one the photo moves up and the details sit under it (a header with a
+  grip: drag it down, or tap *Close info*, to put it away). It stays open while paging with the arrows, and shows the next
+  photo's details. **Escape** closes the panel first (a second one closes the lightbox); the browser's **Back** button (or a
+  phone's back gesture) does the same, through one history entry that the panel takes when it opens and gives back when it
+  closes (also when the lightbox closes with it open, or a link in it is followed).
+- **Rows, only when the photo has the information:**
+  - *Date*: weekday, date and time in the photo's own time zone when EXIF recorded one (`UTC+02:00`), otherwise "Time zone
+    unknown" (the time is then the camera's clock as it was written). A photo with no capture time says its date is the
+    file's modification date or the day it was added. The date is a link that scrolls the library to that day.
+  - *Location*: the place line (city, region, country: a link to the search in that place), the coordinates, GPS altitude
+    (`38 m above sea level`) and the direction the camera faced (`132° SE`, with "(magnetic)" when the camera did not say
+    true north), and a **small map with a pin** (not interactive: a tap opens `/map` centred there). It is the map page's
+    own style and basemap, so its tiles come same origin through the assets service; without a basemap the pin sits on the
+    plain background, and without WebGL the map is left out and the coordinates remain.
+  - *Camera* and *Lens* (links to the search filtered by that camera, or that lens).
+  - *Exposure* in the familiar line `ISO 100 · 26 mm · ƒ/1.8 · 1/120 s · +0.3 ev` (only the parts the photo has), the
+    *35 mm equivalent* when the EXIF has `FocalLengthIn35mmFilm` and it differs from the focal length, and the secondary rows
+    *Flash* (fired or not, with the mode), *White balance*, *Metering* and *Exposure program*.
+  - *File(s)*: name, format (`HEIC`, `JPEG`, `CR3 (RAW)`...) and size of every file (a RAW + JPEG pair lists both), then
+    *Resolution* (`4032 × 3024 · 12 MP`), *Colour space* (`sRGB`, or `Uncalibrated` when the EXIF says so: the ICC profile's
+    name is not read, so a Display P3 photo shows as uncalibrated) and *Software*.
+  - *Albums* (links) and *Burst* (`3 of 8 in a burst`, in capture order).
+- Camera, lens and place link to `/search?camera=` / `lens=` / `place=`; the date to `/library?day=YYYY-MM-DD`; the map to
+  `/map?lat=&lon=`. The search gained a **lens filter** (and `lenses` in the facets, a *Lens* field in the filter sheet and a
+  chip) so that a lens link is a filter like the others.
+
+## How it works
+
+`GET /assets/{id}/details` (a separate endpoint, so the viewer's detail request stays as light as it was) reads one row and
+formats it on the server (`apps/assets/src/details.rs`, pure functions with unit tests), so the web only lays the text out:
+
+- **The dump.** `assets.exif` holds tag names to display strings from the primary IFD with its Exif and GPS sub-IFDs
+  (`"FNumber": "1.8"`, `"ExposureTime": "1/120"`, `"Flash": "fired, return light detected"`, `"GPSAltitudeRef": "above sea level"`).
+  JPEG, HEIC (the "Exif" item) and TIFF-based RAW land in that shape; a RAW whose EXIF the reader cannot open keeps rawler's own
+  serialisation (snake_case keys, rationals as `{n, d}`, enums as numbers), which the readers accept too. Unreadable values
+  (`unknown`, `[reserved ...]`, `0`) leave their row out.
+- **Formatting.** Shutter: `1/120 s` below a third of a second (the camera's `1/119.99999` rounds to 120), decimals from there
+  (`0.3 s`, `2 s`). ƒ-number: one decimal, none for whole stops (`ƒ/1.78` reads `ƒ/1.8`, `ƒ/4`). Exposure bias: always signed
+  (`+0.3 ev`, `−0.7 ev` with a real minus sign, `0 ev`), thirds rounded to one decimal.
+- **The time zone.** `taken_at` is a `timestamptz`: the worker stores the instant only (a missing `OffsetTime` is read as
+  UTC). The offset therefore comes from the dump: the first date tag the worker would have used, with its own `OffsetTime*`
+  tag, and only when the two give back exactly the stored instant. The weekday and the clock follow the photo's own zone; the
+  day the *timeline* files the photo under stays the UTC day (`date.timeline_day`), which is what the date link jumps to.
+- **Rules as the detail endpoint:** the caller's own photo that is not in the trash (a hidden RAW answers as it does there);
+  another user's photo or an unknown id is a `404`. Share links never use this: no public endpoint reads the dump, and a
+  shared photo's derived images and JPEG copies carry no metadata (see "Share links").
+- **Not done:** an ICC profile name (it is not stored; extracting it would need the metadata job re-run for every photo),
+  lens make, serial numbers, maker notes.
+
+## API (assets service, owner-scoped)
+
+| Request | Effect |
+|---|---|
+| `GET /assets/{id}/details` | `{id, date: {instant, local, offset, zone_known, weekday, basis, timeline_day}, location: {latitude, longitude, place, altitude, altitude_m, direction, direction_deg} \| null, camera: {label, make, model, lens} \| null, exposure: {line, iso, focal_length, focal_length_35mm, aperture, shutter, bias, flash, white_balance, metering, program} \| null, file: {name, format, raw, content_type, size_bytes, width, height, megapixels, color_space, software}, files: [{id, name, format, raw, size_bytes}], albums: [{id, title}], burst: {position, size} \| null}`. Text values are formatted and null when unknown. `404` for a photo that is not the caller's live photo. |
+| `GET /assets/search?lens=` and the other places that take the search filters (`similar`, the `search` scope of the bulk endpoints) | Photos whose EXIF lens model equals `lens` (case-insensitive). `GET /assets/search/facets` gains `lenses` (top 50 lens models with counts). No index: the filter reads `lens_model` of the owner's photos like the place filter does of its columns. |
+
+## Tests
+
+- `apps/assets/src/details.rs` unit tests: shutter fractions and decimals, ƒ-number rounding, exposure bias sign and rounding,
+  the 35 mm equivalent (shown only when it adds something, `0` and `unknown` ignored), missing and unreadable fields, every
+  exposure-time form, GPS altitude (above and below sea level) and direction (true and magnetic), rawler's own dump, flash
+  wording, colour space and software, the photo's own zone, weekday and timeline day across midnight UTC, an unknown zone,
+  an offset that disagrees with the stored instant, fallback dates, file formats and megapixels.
+- `apps/assets/src/routes/details_tests.rs` (Postgres): a fully described photo, a bare one (no rows), coordinates without a
+  place, a RAW + JPEG pair listing both files, burst position in capture order (and a trashed member leaving the count),
+  owner isolation (404 and no leak in the body), the trash, signed out, and the detail endpoint unchanged. `search_tests.rs`
+  covers the lens filter and the `lenses` facet.
+- Web: `detailsText.test.ts`, `DetailsPanel.test.tsx` (every row, hidden rows, the pair, every link's target, retry, focus),
+  `LightboxInfo.test.tsx` (button, `i`, Escape order, Back, the history entry given back, paging, retry, a dialog over the
+  lightbox, the swipe: up, a quick flick, a mouse, slow/short/downward/sideways drags, a pinch, a zoomed page, a button,
+  and down on the header), `PlaceMap.test.tsx`, plus `timeline.test.ts` (`dayTop`), `searchText.test.ts` and
+  `FilterSheet.test.tsx` (the lens).
+- `e2e/mobile-overflow.spec.ts`: the panel with every row at its widest (very long camera, lens, place, software, file and
+  album names, a RAW pair, a burst) and with none but the file, scrolled to its end, closed again with Escape and `i`, at 320 to
+  1280 px, light and dark. `e2e/timeline.spec.ts`: a real touch swipe up (Chromium touch events) and the Info button open the panel,
+  Back closes only the panel, and the date link scrolls a 400-photo library to the day it names.

@@ -2494,3 +2494,208 @@ body:has(.selection-bar) .scrubber {
   display: block;
   font-weight: 400;
 }
+
+/* Photo details (the lightbox's Info panel): a side column beside the photo on wide screens, a sheet over its lower part
+   on phones. The lightbox is dark in both colour schemes, and so is the panel. */
+.lightbox-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.lightbox-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.lightbox-stage {
+  /* One finger moving vertically is the swipe that opens the details; pinch stays the browser's. */
+  touch-action: pinch-zoom;
+}
+.lightbox-info {
+  gap: 0.4rem;
+}
+.lightbox-info svg {
+  flex: none;
+}
+.lightbox-info.on {
+  background: rgb(255 255 255 / 0.28);
+}
+.details-panel {
+  flex: none;
+  width: 22rem;
+  max-width: 40%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: #0a1722;
+  border-left: 1px solid rgb(255 255 255 / 0.12);
+  color: #e6eef5;
+}
+.details-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.6rem 1rem;
+  background: #0a1722;
+  touch-action: pinch-zoom;
+}
+.details-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+.details-grip {
+  display: none;
+}
+.details-body {
+  padding: 0 1rem 1rem;
+}
+.details-list {
+  margin: 0;
+}
+.details-row {
+  padding: 0.65rem 0;
+  border-top: 1px solid rgb(255 255 255 / 0.1);
+}
+.details-row dt {
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #9db4c6;
+}
+.details-row dd {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin: 0.2rem 0 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.details-sub {
+  font-size: 0.85rem;
+  color: #9db4c6;
+}
+.details-unknown {
+  font-style: italic;
+}
+.details-link {
+  color: #8fbbe0;
+  text-decoration: underline;
+  text-decoration-color: rgb(143 187 224 / 0.4);
+  text-underline-offset: 0.15em;
+}
+.details-link:hover {
+  text-decoration-color: currentColor;
+}
+.details-file {
+  display: flex;
+  flex-direction: column;
+}
+.details-name {
+  overflow-wrap: anywhere;
+}
+.place-map-link {
+  display: block;
+  margin-top: 0.5rem;
+  border: 1px solid rgb(255 255 255 / 0.15);
+  border-radius: 0.6rem;
+  overflow: hidden;
+}
+.place-map {
+  position: relative;
+  height: 9rem;
+  background: #0b1822;
+}
+.place-pin {
+  display: block;
+  line-height: 0;
+  color: #e5484d;
+  filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.5));
+}
+@media (max-width: 760px) {
+  /* Narrow: the photo moves up and the details sit under it (the photo stays visible and the arrows work). */
+  .lightbox-body.with-info {
+    flex-direction: column;
+  }
+  .lightbox-body.with-info .lightbox-main {
+    flex: 1 1 0;
+  }
+  .lightbox-body.with-info .lightbox-caption {
+    display: none; /* the panel says the same */
+  }
+  .details-panel {
+    flex: 0 1 auto;
+    width: auto;
+    max-width: none;
+    max-height: 58%;
+    border-left: 0;
+    border-top: 1px solid rgb(255 255 255 / 0.18);
+    border-radius: 1rem 1rem 0 0;
+    box-shadow: 0 -10px 30px rgb(0 0 0 / 0.55);
+  }
+  .details-head {
+    padding: 1.1rem max(1rem, env(safe-area-inset-right)) 0.4rem max(1rem, env(safe-area-inset-left));
+    border-radius: 1rem 1rem 0 0;
+  }
+  .details-grip {
+    display: block;
+    position: absolute;
+    top: 0.4rem;
+    left: 50%;
+    width: 2.5rem;
+    height: 0.25rem;
+    border-radius: 0.125rem;
+    background: rgb(255 255 255 / 0.3);
+    transform: translateX(-50%);
+  }
+  .details-body {
+    padding-inline: max(1rem, env(safe-area-inset-left));
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+}
+@media (max-width: 600px) {
+  .lightbox-bar {
+    grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  }
+  .lightbox-info {
+    width: 2.75rem;
+    padding: 0;
+  }
+  .lightbox-info-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+.details-row dd {
+  gap: 0.3rem;
+}
+@media (min-width: 601px) {
+  /* The counter sits beside Close: centred, the wider bar (Info, Similar photos...) would cover it. */
+  .lightbox-count {
+    left: 6.25rem;
+    transform: none;
+  }
+}
+@media (min-width: 601px) and (max-width: 1100px) {
+  .lightbox-info {
+    width: 2.5rem;
+    padding: 0;
+  }
+  .lightbox-info-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}

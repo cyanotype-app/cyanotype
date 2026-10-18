@@ -88,6 +88,7 @@ export function FilterSheet({ value, onApply, onClose, load = defaultLoad }: Pro
   const withCurrent = <T extends { value: string }>(list: T[], current: string | undefined, make: (v: string) => T) =>
     current && !list.some((x) => x.value.toLowerCase() === current.toLowerCase()) ? [make(current), ...list] : list;
   const cameras = withCurrent(facets?.cameras ?? [], draft.camera, (v) => ({ value: v, count: 0 }));
+  const lenses = withCurrent(facets?.lenses ?? [], draft.lens, (v) => ({ value: v, count: 0 }));
   const places = withCurrent(facets?.places ?? [], draft.place, (v) => ({ value: v, count: 0, kind: "city" as const }));
   const year = yearOf(draft);
   const years = withCurrent(facets?.years ?? [], year || undefined, (v) => ({ value: v, count: 0 }));
@@ -160,6 +161,19 @@ export function FilterSheet({ value, onApply, onClose, load = defaultLoad }: Pro
               ))}
             </select>
           </div>
+          {lenses.length > 0 && (
+            <div className="sheet-field">
+              <label htmlFor={`${id}-lens`}>Lens</label>
+              <select id={`${id}-lens`} className="text-input" value={draft.lens ?? ""} onChange={(e) => set({ lens: e.target.value })}>
+                <option value="">Any</option>
+                {lenses.map((l) => (
+                  <option key={l.value} value={l.value}>
+                    {label("", l)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="sheet-field">
             <label htmlFor={`${id}-place`}>Place</label>
             <select id={`${id}-place`} className="text-input" value={draft.place ?? ""} onChange={(e) => set({ place: e.target.value })}>

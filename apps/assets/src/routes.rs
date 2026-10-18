@@ -25,6 +25,9 @@ use uuid::Uuid;
 mod albums;
 #[cfg(test)]
 mod burst_tests;
+mod details;
+#[cfg(test)]
+mod details_tests;
 mod download;
 mod favorites;
 mod group;
@@ -117,6 +120,7 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/albums/{id}/assets/remove", post(albums::remove_assets))
         .route("/assets/{id}/unpair", post(unpair))
         .route("/assets/{id}/similar", get(similar::similar))
+        .route("/assets/{id}/details", get(details::get))
         .route("/assets/{id}/download", get(download::download))
         .route("/assets/{id}", get(get_one))
         .route("/assets/{id}", delete(remove))

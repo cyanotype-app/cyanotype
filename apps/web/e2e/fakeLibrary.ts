@@ -124,6 +124,9 @@ export async function startBucket() {
   };
 }
 
+/** `timeline_day` the fake details answer with, per asset id (default: the day of the photo's own time). */
+export const detailsDay = new Map<string, string>();
+
 export interface Requests {
   timeline: string[];
   list: string[];
@@ -185,6 +188,26 @@ export async function installLibrary(
             location: `${bucketOrigin}/originals/u/${name}?response-content-disposition=${encodeURIComponent(`attachment; filename="${name}"`)}&X-Amz-Expires=60&X-Amz-Signature=abc`,
           },
         });
+      }
+      const dt = /^\/assets\/(a\d+)\/details$/.exec(p);
+      if (req.method() === "GET" && dt) {
+        const a = assets.find((x) => x.id === dt[1]);
+        if (!a) return route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' });
+        // The date's day is what the panel's date link jumps to: a test can ask for another one with `detailsDay`.
+        const day = detailsDay.get(a.id) ?? dayOf(a.sort_time);
+        return route.fulfill(
+          json({
+            id: a.id,
+            date: { instant: a.sort_time, local: a.sort_time.slice(0, 19), offset: null, zone_known: false, weekday: "Wednesday", basis: "taken", timeline_day: day },
+            location: null,
+            camera: null,
+            exposure: null,
+            file: { name: a.original_name, format: "JPEG", raw: false, content_type: a.content_type, size_bytes: a.size_bytes, width: a.width, height: a.height, megapixels: "12 MP", color_space: null, software: null },
+            files: [{ id: a.id, name: a.original_name, format: "JPEG", raw: false, size_bytes: a.size_bytes }],
+            albums: [],
+            burst: null,
+          }),
+        );
       }
       const one = /^\/assets\/(a\d+)$/.exec(p);
       if (req.method() === "GET" && one) {
