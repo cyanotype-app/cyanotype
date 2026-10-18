@@ -311,6 +311,10 @@ What the numbers say, and the choices they led to:
 - Whatever the cut-off decides, **"Show weaker matches"** is there: strong + weaker returns more than the top 10 at lower
   precision, so a query is never a dead end.
 
+The same set also calibrates the photo-to-photo cut-off of "More like this" (`similar_bakeoff`, in the same `just bakeoff` run; numbers
+and rules in `docs/library.md`, "More like this"): every photo is a source, a result is relevant when it is in the source's category.
+The strong tier has a precision of 0.92 for both models (a plain top 10: 0.52 to 0.54) at a recall of 0.20 to 0.22.
+
 ### 8-bit against full precision (CLIP)
 
 CLIP's 8-bit exports are 4x smaller and a little faster (118 against 144 ms an image on one thread), and dynamic quantisation

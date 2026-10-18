@@ -346,6 +346,17 @@ describe("timeline, favorites and downloads", () => {
     expect(f).toHaveBeenLastCalledWith("/assets/search/facets", expect.anything());
   });
 
+  it("asks for photos like one photo on its own path, with the filters and without text", async () => {
+    const f = mockFetchJson({ items: [], next_cursor: null, ranked: true });
+    const id = "6f1c2b0e-0000-4000-8000-000000000001";
+    await api.search({ similar: id, q: "ignored", skip: "date", favorite: true, from: "2024-01-01" }, { cursor: "c1", limit: 60, weaker: true });
+    expect(f).toHaveBeenLastCalledWith(
+      `/assets/${id}/similar?from=2024-01-01&favorite=true&limit=60&cursor=c1&weaker=true`,
+      expect.anything(),
+    );
+    expect(searchQuery({ similar: id })).toBe("");
+  });
+
   it("sends a filter-only select-all as a search scope", async () => {
     const f = mockFetchJson({ count: 5 });
     await api.favoriteAssets({ scope: { search: { camera: "Canon EOS R5" } }, except: ["x"] }, true);

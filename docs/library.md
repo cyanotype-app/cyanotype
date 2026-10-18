@@ -597,6 +597,11 @@ search model").
   be incomplete"** with a progress bar; photos that are not indexed yet are simply not text results (they still match
   filters). "Nothing matched" says so too. After a **model change** the library keeps answering with the old model until the
   new one has indexed 95 %, and the page says **"Re-indexing with the improved search model: 40 %"** instead.
+- **Similar photos.** The lightbox has a **Similar photos** button (an icon next to the heart on a phone, where the bar has no
+  room for its words) that opens `/search?similar=<id>`: the library's photos that look like that one, best first, in the same
+  grid, with a chip showing the source photo's thumbnail (its x ends the mode) and the same Filters. Like a text search it
+  shows the strong matches and offers **"Show weaker matches (N)"**. A photo the worker has not embedded yet says **"This photo
+  is still being indexed"** instead. See "More like this" below.
 - **Select all** on a filter-only search selects every match (a server-side scope, like the other views). On a text search
   it selects the results that are loaded (at most 300): a ranked list has no stable "everything" for the server to
   re-resolve, so those actions send explicit ids.
@@ -696,6 +701,59 @@ the weaker ones were not asked for, how many exist (`weaker.count`) and the curs
 one (`weaker.cursor`, set once a page has reached it; with no strong matches `weaker=true` alone lists the weaker ones).
 `cutoff=false` returns the whole ranked list with every item's tier, for tooling and tests.
 
+### More like this
+
+`GET /assets/{id}/similar` ranks the owner's photos by cosine similarity to one photo's **own stored vector**, with the model
+that answers text searches for that user right now (`SearchState::serving`: the configured model once it covers
+`SEARCH_SWITCH_PERCENT` of the library, until then the one it replaces). Vectors of two models are never compared: the source's
+vector is read for the serving model and version, and only photos with a vector of that model can be in the list. If the source
+has none (just uploaded and still in the embed queue; or, during a model change, embedded only by the model that is not serving
+yet) the answer is **409** "this photo is still being indexed" and the web app shows that state. The query runs the same way as
+a text search (`search.rs`'s plans: exact distance when at most 8,000 photos pass the filters, else the model's partial HNSW
+index with the index expression and predicate repeated as migration 0013 requires; the same cursor, depth of 300 and tiers),
+so it takes the same time as one (the text model is not involved, which saves its ~10 ms).
+
+Left out: the source itself, trashed photos, other users' photos, and the hidden RAW half of a pair (the source's RAW partner,
+if it has one: a RAW + JPEG pair is one photo, `assets.primary_id`). The filters are those of `GET /assets/search` (dates, place,
+camera, favorites, album, file type, has location); there is no text. The response is a search response: `score` (cosine
+similarity to the source, about 0.4 to 0.97), `tier`, `strong_count`, `weaker`, `model`, `reindexing`, plus `similar_to`; `probability`
+is null, because the sigmoid head of SigLIP 2 reads image-text cosines.
+
+**The cut-off is its own** (`ImageRules` in `cutoff.rs`, `Model::image_cutoff_rules`). Photo-to-photo cosines are on another
+scale than text-to-photo ones (a query's good match is 0.1 to 0.2 for SigLIP 2 and 0.3 for CLIP; two photos of one kind of thing are
+0.6 to 0.9), and there is no per-query probability, so the text rules do not carry over. Unlike a text query's cosine, a photo-to-photo
+cosine means about the same for every source, so both models get an absolute floor, plus a distance below the best neighbour
+(so a source with a near-duplicate does not list loose matches as its equals) and the same gap guard:
+
+| Model | Strong: cosine at least | within of the best | Gap | Weaker: cosine at least | within of the best |
+|---|---|---|---|---|---|
+| SigLIP 2 | 0.76 | 0.10 | 0.05 | 0.70 | 0.20 |
+| CLIP | 0.74 | 0.10 | 0.05 | 0.68 | 0.20 |
+
+Calibrated on the 209-photo evaluation set (`similar_bakeoff` in `tests/bakeoff.rs`, run by `just bakeoff`): every photo is the
+source once, the other 208 are ranked by cosine and a result is relevant when it has the source's category (there are only 9
+other photos of the same category, which caps recall, and categories are broad: a "dog" photo is relevant to any dog photo
+whatever the scene, and a photo of a different category that looks alike counts as wrong, so these precisions are floors for
+what a person would call similar). Cosines of same-category pairs have a median of 0.68 (SigLIP 2) / 0.66 (CLIP), of other-category pairs
+0.52 / 0.48, and their 99th percentile is 0.70 / 0.68; the best neighbour of a photo has a median of 0.80 / 0.82.
+
+| List (209 sources) | Precision | Recall | Photos per source | Sources with nothing |
+|---|---|---|---|---|
+| SigLIP 2, top 5 | 0.700 | 0.390 | 5.0 | 0 % |
+| SigLIP 2, top 10 | 0.542 | 0.605 | 10.0 | 0 % |
+| **SigLIP 2, strong tier** | **0.922** | 0.196 | 1.9 | 35 % |
+| SigLIP 2, strong + weaker | 0.669 | 0.396 | 5.3 | 15 % |
+| CLIP, top 5 | 0.660 | 0.369 | 5.0 | 0 % |
+| CLIP, top 10 | 0.518 | 0.578 | 10.0 | 0 % |
+| **CLIP, strong tier** | **0.919** | 0.224 | 2.2 | 30 % |
+| CLIP, strong + weaker | 0.668 | 0.411 | 5.5 | 12 % |
+
+The strong tier is deliberately strict (precision 0.92 against 0.54 for a plain top 10): in a set of one-off photos a third of
+the sources have no close relative, and the page then says "No close matches" with the weaker button instead of ten loosely
+related photos. A real library has bursts, duplicates and trips, so the strong tier is longer there than on this set; the
+numbers are the floor for how few it gives. The sweep behind the choice (floor x distance, 55 cells per model) is printed by
+the test.
+
 ### What is read out of the words
 
 `apps/assets/src/query_parse.rs` takes dates and the user's own places out of `q` before it is embedded. Everything
@@ -787,6 +845,7 @@ ways that are unknown (real recall with the real model on a real library is not 
 | Request | Effect |
 |---|---|
 | `GET /assets/search?q=&from=&to=&favorite=&camera=&place=&type=&album=&has_location=&limit=&cursor=&weaker=&skip=&cutoff=` | Ranked results for `q` (the strong tier; at most 300 altogether, best first) or, without `q`, the photos matching the filters, newest first. Every parameter is optional; `from`/`to` are inclusive UTC days (`2024-03-01`), `camera` and `place` are the facet values below (case-insensitive; `place` matches a city, region, country or country code), `type` is `jpeg`, `heic` (also HEIF and AVIF), `raw` or `other`, `limit` defaults to 60 (at most 200). `weaker=true` also lists the weaker tier (continue with `weaker.cursor`); `skip=date`, `skip=place` or `skip=date,place` does not read that kind of thing out of `q`; `cutoff=false` returns the whole ranked list. Items have the shape of `GET /assets` plus `score` (cosine similarity, null without `q`), `probability` (the model's calibrated estimate, SigLIP 2 only) and `tier` (`strong`/`weak`). The response has `next_cursor`, `ranked`, `total` (first page of a filter-only search), and with `q`: `strong_count`, `weaker` (`{count, cursor}` or null), `parsed` (`{text, chips}`), `model` (which model answered) and `reindexing` (null, or how far the configured model is while an older one answers). `400` for a bad date, type, album id, cursor or a `q` over 200 characters; `503` when the model is not installed and `q` is set. |
+| `GET /assets/{id}/similar?from=&to=&favorite=&camera=&place=&type=&album=&has_location=&limit=&cursor=&weaker=&cutoff=` | "More like this": the caller's photos most similar to this one (see above), the strong tier by default, `weaker=true` for the weaker one too (continue with `weaker.cursor`), the filters of search, no text. Response as search's, plus `similar_to`. `404` when the photo is not the caller's, is in the trash or is the hidden half of a pair; `409` when it has no vector yet for the model that serves searches; `400` for a bad filter or cursor. |
 | `GET /assets/search/facets` | What the filters can be set to, with counts over the whole library: `total`, `favorites`, `with_location`, `types`, `cameras` (top 50), `places` (top 120, each with its `kind`), `years`. |
 | `POST /assets/favorite`, `trash`, `restore`, albums, shares with `{"scope": {"search": {"camera": "...", ...}}, "except": [...]}` | The bulk endpoints accept the filters of a filter-only search as a scope (never `q`). |
 | `GET /assets/processing` | Gains `embedding`: `indexed`, `total` (visible live photos with a preview), `queued`, `running`, `failed`, and for the configured model `model`, `percent`, `reindexing` (an older model answers meanwhile), `switch_at_percent` and `serving_model`. Indexing does not count towards `active`, `queued` or `running`, so the library page's "Processing..." banner is not on for hours after a model change; failed embed jobs do show in `failed` and `failures` and "Retry failed" requeues them. |
@@ -836,8 +895,13 @@ ways that are unknown (real recall with the real model on a real library is not 
   out of the query and turned off again, places from the caller's own photos only, the model swap (the old model answers
   until the new one has 95 %, then the new one; a fresh library; a missing old model), and `apps/assets/src/query_parse.rs`
   unit tests for the parser (years, months, days, seasons, relative dates, the ambiguous words, multi-word places).
+- `apps/assets/src/routes/similar_tests.rs`: ranking by the photo's own vector, the source left out on both plans, other people's
+  photos / the trash / purging / the hidden RAW left out and a 404 for a photo that is not the caller's, each filter, one-result
+  paging, the strong and weaker tiers (and the cursor between them), the 409 for a photo without a vector (and for an old
+  version of it), and the model switch (CLIP answers with CLIP's vectors only until SigLIP 2 covers the library; a photo that only the
+  new model has embedded is "still being indexed"). `cutoff.rs` has unit tests for the image rules.
 - Web: `searchText.test.ts`, `SearchBar.test.tsx`, `FilterSheet.test.tsx`, `Search.test.tsx` (the weaker tier button, no close
-  matches, parsed chips and removing one, select-all over a parsed filter-only search, the re-index note), and
+  matches, More like this (chip, filters beside it, select-all of the loaded photos, the not-indexed state), parsed chips and removing one, select-all over a parsed filter-only search, the re-index note), and
   `e2e/mobile-overflow.spec.ts` (bar collapsed and expanded, recent searches, results, selection, the filter sheet with
   long names, chips, parsed chips with a very long place, the weaker tier offered and shown, no close matches, no results,
-  indexing, re-indexing, unavailable, intro) at 320 to 1280 px, light and dark.
+  indexing, re-indexing, unavailable, intro, and the similar-photos page with its chip, weaker tier, lightbox button and not-indexed state) at 320 to 1280 px, light and dark.

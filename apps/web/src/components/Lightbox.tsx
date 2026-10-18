@@ -20,6 +20,8 @@ interface Props {
   onShare?: (item: AssetListItem) => void;
   /** Separate the current photo from its RAW (offered in the pair info when the photo has one). */
   onUnpair?: (item: AssetListItem) => void;
+  /** Show photos like the current one ("Similar photos"). */
+  onSimilar?: (item: AssetListItem) => void;
   /** Favorite or unfavorite the current photo (the parent updates `item.favorite`). Shows the heart when given. */
   onFavorite?: (item: AssetListItem, favorite: boolean) => void;
   /** Position of `items[0]` in the whole list and the size of the whole list, when `items` is only the part that is
@@ -40,6 +42,7 @@ export function Lightbox({
   onAddToAlbum,
   onShare,
   onUnpair,
+  onSimilar,
   onFavorite,
   offset = 0,
   total = items.length,
@@ -165,6 +168,12 @@ export function Lightbox({
           {position + 1} / {total}
         </span>
         <div className="lightbox-right">
+          {onSimilar && (
+            <button type="button" className="btn btn-glass lightbox-similar" aria-label="Similar photos" onClick={() => onSimilar(item)}>
+              <SimilarIcon />
+              <span className="lightbox-similar-label">Similar photos</span>
+            </button>
+          )}
           {onFavorite && (
             <button
               type="button"
@@ -292,5 +301,15 @@ export function Lightbox({
         </p>
       )}
     </div>
+  );
+}
+
+/** Two overlapping frames. On a phone this is all the button shows (the bar has no room for its words). */
+function SimilarIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="7" width="13" height="13" rx="2" />
+      <path d="M8 3h11a2 2 0 0 1 2 2v11" strokeLinecap="round" />
+    </svg>
   );
 }

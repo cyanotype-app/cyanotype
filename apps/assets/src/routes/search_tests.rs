@@ -887,6 +887,65 @@ async fn search_performance_on_50k_photos() {
     }
 }
 
+/// `GET /assets/{id}/similar` on the same synthetic library: the whole request path for 40 random photos as the source, with
+/// and without filters (the text model is not involved). Needs the seeded perf database, like the search measurement above.
+#[tokio::test]
+#[ignore = "needs the seeded perf database"]
+async fn similar_performance_on_50k_photos() {
+    use std::time::Instant;
+    let Ok(url) = std::env::var("PERF_DATABASE_URL") else {
+        return;
+    };
+    let pool = cyanotype_core::db::connect(&url).await.unwrap();
+    let owner: Uuid = "00000000-0000-0000-0000-0000000000a1".parse().unwrap();
+    let state = crate::AppState {
+        db: pool.clone(),
+        storage: crate::testutil::dummy_storage(),
+        trash_retention_days: 30,
+        purge_wake: Default::default(),
+        text: Arc::new(crate::testutil::FakeText::default()),
+        // The seed script writes CLIP vectors.
+        search: Arc::new(crate::search::SearchState::uncached(cyanotype_clip::Model::ClipB32, 95)),
+    };
+    let sources: Vec<Uuid> =
+        sqlx::query_scalar("SELECT asset_id FROM (SELECT asset_id FROM asset_embeddings ORDER BY random() LIMIT 40) s")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    println!(
+        "\n{:<40} {:>8} {:>8} {:>8} {:>10}",
+        "More like this (limit 60)", "p50 ms", "p95 ms", "max ms", "plan"
+    );
+    for (name, extra) in [
+        ("no filter (HNSW)", ""),
+        ("favorites, 5k (exact)", "&favorite=true"),
+        ("one camera, ~17k (HNSW, filtered)", "&camera=Apple%20iPhone%2014%20Pro"),
+        ("one year, ~6k (exact)", "&from=2022-01-01&to=2022-12-31"),
+    ] {
+        let uri: axum::http::Uri = format!("/x?cutoff=false{extra}").parse().unwrap();
+        let q = axum::extract::Query::<super::similar::SimilarQuery>::try_from_uri(&uri)
+            .unwrap()
+            .0;
+        let mut lat = Vec::new();
+        let mut plan = Plan::Timeline;
+        for id in &sources {
+            let t = Instant::now();
+            let (_, p) = super::similar::run(&state, owner, *id, &q).await.unwrap();
+            lat.push(t.elapsed().as_secs_f64() * 1000.0);
+            plan = p;
+        }
+        lat.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let pct = |p: f64| lat[((lat.len() as f64 * p) as usize).min(lat.len() - 1)];
+        println!(
+            "{name:<40} {:>8.1} {:>8.1} {:>8.1} {:>10?}",
+            pct(0.5),
+            pct(0.95),
+            lat[lat.len() - 1],
+            plan
+        );
+    }
+}
+
 /// `a=1&b=2` into a `SearchQuery`, for tests that build queries as strings.
 fn serde_urlencoded_like(qs: &str) -> SearchQuery {
     let uri: axum::http::Uri = format!("/x?{qs}").parse().unwrap();

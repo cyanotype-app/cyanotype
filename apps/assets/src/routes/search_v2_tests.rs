@@ -14,7 +14,7 @@ use crate::{
     testutil::{FakeText, TEST_MODEL, TestDb, app, app_with, asset, send, set_embedding_for, user},
 };
 
-async fn photo(pool: &PgPool, owner: Uuid, name: &str, model: Model, words: &[(&str, f32)]) -> Uuid {
+pub(super) async fn photo(pool: &PgPool, owner: Uuid, name: &str, model: Model, words: &[(&str, f32)]) -> Uuid {
     let id = asset(pool, owner, name).await;
     // `asset` writes a constant vector for the test model; start from a clean slate.
     sqlx::query("DELETE FROM asset_embeddings WHERE asset_id = $1")
@@ -30,7 +30,7 @@ async fn get(app: &axum::Router, key: &str, query: &str) -> (StatusCode, Value) 
     send(app, "GET", &format!("/assets/search?{query}"), key, None).await
 }
 
-fn ids(body: &Value) -> Vec<Uuid> {
+pub(super) fn ids(body: &Value) -> Vec<Uuid> {
     body["items"]
         .as_array()
         .unwrap()

@@ -14,7 +14,7 @@ mod text_tower;
 
 use std::path::PathBuf;
 
-pub use cutoff::{MIN_BEFORE_GAP, Rules, Tiers, tiers};
+pub use cutoff::{ImageRules, MIN_BEFORE_GAP, Rules, Tiers, image_tiers, image_tiers_with, tiers};
 pub use image_tower::{ImageEncoder, preprocess_rgb8};
 pub use text_tower::TextEncoder;
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, ApiError, isScope, type AssetListItem, type Target } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
@@ -10,6 +11,7 @@ import { SelectionBar } from "../components/SelectionBar";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
 import { TimelineGrid } from "../components/TimelineGrid";
 import { useToast } from "../components/Toast";
+import { similarUrl } from "../searchText";
 import { useSelection } from "../selection";
 import { inOrder, runAround } from "../timeline";
 import { PAGE, useTimeline } from "../useTimeline";
@@ -26,6 +28,7 @@ const photos = (n: number) => `${n.toLocaleString("en-US")} photo${n === 1 ? "" 
 
 /** The library as a date-grouped, virtualized timeline; `favorites` limits it to the photos with a heart. */
 export function Library({ favorites = false }: { favorites?: boolean }) {
+  const navigate = useNavigate();
   const { setAnonymous } = useAuth();
   const [open, setOpen] = useState<number | null>(null); // global index of the photo in the lightbox
   const { queue } = useUploads();
@@ -475,6 +478,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
           onAddToAlbum={(it) => setAddIds({ target: [it.id], count: 1 })}
           onShare={(it) => setShareTarget({ kind: "photos", ids: [it.id] })}
           onUnpair={(it) => void unpairItem(it)}
+          onSimilar={(it) => navigate(similarUrl(it.id))}
           onFavorite={(it, value) => void setFavorite([it], value)}
           refreshKey={albumsVersion}
         />

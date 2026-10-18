@@ -60,6 +60,59 @@ impl Model {
     }
 }
 
+/// The rules for "More like this" (photo to photo), in cosine terms: there is no sigmoid head to read an absolute probability
+/// from, so the floors are cosines of their own. See [`Model::image_cutoff_rules`] for the numbers and where they came from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageRules {
+    /// Strong: minimum cosine to the source photo.
+    pub strong_min: f32,
+    /// Strong: at most this far below the best cosine.
+    pub strong_delta: f32,
+    /// Strong: stop before a drop between neighbouring cosines of at least this.
+    pub gap: f32,
+    /// Weak: minimum cosine.
+    pub weak_min: f32,
+    /// Weak: at most this far below the best cosine.
+    pub weak_delta: f32,
+}
+
+impl Model {
+    /// Where "More like this" cuts its list (photo to photo; `docs/library.md`, "More like this").
+    ///
+    /// Derived on the 209-photo evaluation set with `similar_bakeoff` in `tests/bakeoff.rs` (`just bakeoff`): every photo is
+    /// the source once, the other 208 are ranked by cosine, a result is relevant when it is in the source's category. The
+    /// photo-to-photo cosines are not the text-to-photo ones: they run from about 0.4 to 0.97 (the 99th percentile of
+    /// pairs from different categories is 0.68 for CLIP and 0.70 for SigLIP 2), so the text rules (`cutoff_rules`: SigLIP 2's
+    /// probability floor reads image-text cosines of about 0.1 to 0.2) cannot be reused, and there is no per-query
+    /// probability to lean on. Unlike for a text query, an absolute cosine means about the same for any source photo, so
+    /// both models get an absolute floor:
+    /// - `strong_min`: a precision of 0.92 (wrong one time in twelve) at the smallest floor that gets there with a relative
+    ///   distance of 0.10: CLIP 0.74 (precision 0.919, recall 0.224, 2.2 photos per source), SigLIP 2 0.76 (0.922, 0.196, 1.9);
+    /// - `strong_delta` 0.10 below the best neighbour, so a source with a near-identical photo (0.95) does not list the loosely
+    ///   related ones (0.76) behind it as equals; `gap` 0.05, the same guard against a cliff as for text (it changed
+    ///   precision and recall by less than 0.01 on this set);
+    /// - `weak_min`: the 99th percentile of other-category pairs (CLIP 0.68, SigLIP 2 0.70), within 0.20 of the best; strong
+    ///   plus weaker has precision 0.67 and recall 0.40 to 0.41 (5.3 to 5.5 photos per source), against 0.52 / 0.58 for a plain top 10.
+    pub fn image_cutoff_rules(self) -> ImageRules {
+        match self {
+            Model::ClipB32 => ImageRules {
+                strong_min: 0.74,
+                strong_delta: 0.10,
+                gap: 0.05,
+                weak_min: 0.68,
+                weak_delta: 0.20,
+            },
+            Model::Siglip2B16 => ImageRules {
+                strong_min: 0.76,
+                strong_delta: 0.10,
+                gap: 0.05,
+                weak_min: 0.70,
+                weak_delta: 0.20,
+            },
+        }
+    }
+}
+
 /// How many of the best-first results are strong and how many are strong or weak (`strong <= weak <= len`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tiers {
@@ -70,15 +123,58 @@ pub struct Tiers {
 /// Apply the model's rules to `cosines`, sorted best first.
 pub fn tiers(model: Model, cosines: &[f32]) -> Tiers {
     let rules = model.cutoff_rules();
-    let Some(&best) = cosines.first() else {
-        return Tiers { strong: 0, weak: 0 };
-    };
     let floor = |p: Option<f32>| match (p, model.calibration()) {
         (Some(p), Some(c)) => c.cosine_at(p),
         _ => f32::NEG_INFINITY,
     };
+    cut(
+        cosines,
+        Cut {
+            strong_min: floor(rules.strong_probability),
+            strong_delta: rules.strong_delta,
+            gap: rules.gap,
+            weak_min: floor(rules.weak_probability),
+            weak_delta: rules.weak_delta,
+        },
+    )
+}
+
+/// Strong and weaker tiers of a photo-to-photo list (`cosines` best first, the source photo itself not among them).
+pub fn image_tiers(model: Model, cosines: &[f32]) -> Tiers {
+    image_tiers_with(model.image_cutoff_rules(), cosines)
+}
+
+/// [`image_tiers`] with the rules given (the calibration in `tests/bakeoff.rs` sweeps them).
+pub fn image_tiers_with(r: ImageRules, cosines: &[f32]) -> Tiers {
+    cut(
+        cosines,
+        Cut {
+            strong_min: r.strong_min,
+            strong_delta: r.strong_delta,
+            gap: r.gap,
+            weak_min: r.weak_min,
+            weak_delta: r.weak_delta,
+        },
+    )
+}
+
+/// The rules of a list in cosine terms (an absolute floor, a distance below the best, a cliff size), whatever they were
+/// derived from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Cut {
+    strong_min: f32,
+    strong_delta: f32,
+    gap: f32,
+    weak_min: f32,
+    weak_delta: f32,
+}
+
+fn cut(cosines: &[f32], r: Cut) -> Tiers {
+    let Some(&best) = cosines.first() else {
+        return Tiers { strong: 0, weak: 0 };
+    };
     let count_above = |min: f32| cosines.iter().take_while(|&&c| c >= min).count();
-    let strong_min = floor(rules.strong_probability).max(best - rules.strong_delta);
+    let strong_min = r.strong_min.max(best - r.strong_delta);
     let mut strong = count_above(strong_min);
     // The largest drop between neighbours, if it is a cliff.
     if strong > MIN_BEFORE_GAP {
@@ -89,11 +185,11 @@ pub fn tiers(model: Model, cosines: &[f32]) -> Tiers {
                 (at, size) = (i, drop);
             }
         }
-        if size >= rules.gap {
+        if size >= r.gap {
             strong = at;
         }
     }
-    let weak_min = floor(rules.weak_probability).max(best - rules.weak_delta);
+    let weak_min = r.weak_min.max(best - r.weak_delta);
     let weak = count_above(weak_min).max(strong);
     Tiers { strong, weak }
 }
@@ -177,5 +273,39 @@ mod tests {
                 assert!(t.strong <= t.weak && t.weak <= cos.len(), "{model:?} {t:?}");
             }
         }
+    }
+
+    #[test]
+    fn image_lists_need_a_close_photo_to_have_a_strong_tier() {
+        for model in Model::ALL {
+            let r = model.image_cutoff_rules();
+            // Nothing near the source: no strong match, a weaker tier for what is moderately close.
+            let t = image_tiers(
+                model,
+                &[
+                    r.strong_min - 0.01,
+                    r.strong_min - 0.02,
+                    r.weak_min + 0.01,
+                    r.weak_min - 0.05,
+                ],
+            );
+            assert_eq!(t, Tiers { strong: 0, weak: 3 }, "{model:?}");
+            // An empty library has nothing to list.
+            assert_eq!(image_tiers(model, &[]), Tiers { strong: 0, weak: 0 });
+        }
+    }
+
+    #[test]
+    fn image_strong_is_relative_to_the_best_neighbour() {
+        let model = Model::Siglip2B16;
+        let r = model.image_cutoff_rules();
+        // A near-duplicate at 0.97: photos within 0.10 stay; the one at 0.80 is over the floor but not close to the best, so it
+        // is weaker, and so is nothing under 0.77 (within 0.20).
+        let cos = [0.97, 0.95, 0.90, 0.80, 0.72, 0.6];
+        let t = image_tiers(model, &cos);
+        assert_eq!(t, Tiers { strong: 3, weak: 4 });
+        // Without a near-duplicate the floor decides.
+        let t = image_tiers(model, &[r.strong_min + 0.01, r.strong_min, r.strong_min - 0.001]);
+        assert_eq!(t.strong, 2);
     }
 }

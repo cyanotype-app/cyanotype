@@ -200,6 +200,19 @@ async function mock(page: Page) {
             };
         return route.fulfill(json({ items, next_cursor: null, ranked, total: ranked ? null : items.length, ...extra }));
       }
+      // "More like this": the photo is IMG_1003 (a3) under a uuid; the one ending in `dead` is not indexed yet.
+      const sm = /^\/assets\/([0-9a-f-]{36})\/similar$/.exec(p);
+      if (sm && m === "GET") {
+        if (sm[1]!.endsWith("dead"))
+          return route.fulfill({ status: 409, contentType: "application/json", body: '{"error":"this photo is still being indexed: similar photos are available once it is"}' });
+        const weaker = u.searchParams.get("weaker") === "true";
+        const items = weaker ? searchHits(8, 12) : searchHits(8);
+        return route.fulfill(
+          json({ items, next_cursor: null, ranked: true, total: null, strong_count: 8, weaker: weaker ? null : { count: 12, cursor: "after-strong" }, similar_to: sm[1] }),
+        );
+      }
+      const um = /^\/assets\/([0-9a-f-]{36})$/.exec(p);
+      if (um && m === "GET") return route.fulfill(json({ ...assets[3], id: um[1], albums: [], original_url: thumb(3), preview_url: thumb(3) }));
       if (p === "/assets/processing" && m === "GET") return route.fulfill(json(processing));
       if (p === "/assets/processing/retry" && m === "POST") {
         processing = { ...IDLE };
@@ -730,6 +743,22 @@ for (const { width, scheme } of RUNS) {
       await page.goto("/search");
       await page.getByRole("heading", { name: "Search your photos" }).waitFor();
       await check("intro");
+
+      // "More like this": the source chip with its thumbnail, the filters beside it, weaker matches, the lightbox button
+      // that starts it, and a photo that is not indexed yet.
+      await page.goto("/search?similar=6f1c2b0e-0000-4000-8000-0000000000a3&favorite=true");
+      await page.getByText("8 similar photos").waitFor();
+      await check("similar");
+      await page.getByRole("button", { name: /Show weaker matches \(12\)/ }).click();
+      await page.getByText("8 similar photos, 12 weaker").waitFor();
+      await check("similar-weaker-shown");
+      await page.getByRole("button", { name: /Open IMG_1000/ }).first().click();
+      await page.getByRole("button", { name: "Similar photos" }).waitFor();
+      await check("similar-lightbox");
+      await page.keyboard.press("Escape");
+      await page.goto("/search?similar=6f1c2b0e-0000-4000-8000-00000000dead");
+      await page.getByRole("heading", { name: "This photo is still being indexed" }).waitFor();
+      await check("similar-not-indexed");
 
       expect(problems, problems.join("\n")).toEqual([]);
     });

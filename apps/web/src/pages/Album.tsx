@@ -8,6 +8,7 @@ import { Lightbox } from "../components/Lightbox";
 import { SelectionBar } from "../components/SelectionBar";
 import { ShareDialog, type ShareTarget } from "../components/ShareDialog";
 import { useToast } from "../components/Toast";
+import { similarUrl } from "../searchText";
 import { dateRange, photoCount } from "../albumText";
 import { useSelection } from "../selection";
 import { useAssetPages } from "../useAssetPages";
@@ -331,6 +332,7 @@ function AlbumView({ id }: { id: string }) {
           onShare={(it) => setSharing({ kind: "photos", ids: [it.id] })}
           onFavorite={(it, favorite) => void setFavorite(it.id, favorite)}
           onUnpair={(it) => void unpairItem(it)}
+          onSimilar={(it) => navigate(similarUrl(it.id))}
         />
       )}
       {confirmDelete && (
