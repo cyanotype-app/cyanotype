@@ -11,6 +11,10 @@ export const TYPE_LABEL: Record<(typeof TYPES)[number], string> = {
 };
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const UUID = /^[0-9a-f-]{36}$/i;
+
+/** The page that lists photos similar to one photo. */
+export const similarUrl = (id: string) => `/search?${new URLSearchParams({ similar: id })}`;
 
 /** `/search?...` query string to params. Unknown or malformed values are dropped, never passed to the server. */
 export function paramsFromUrl(search: URLSearchParams): SearchParams {
@@ -35,6 +39,13 @@ export function paramsFromUrl(search: URLSearchParams): SearchParams {
   if (loc === "false") out.has_location = false;
   const skip = parseSkip(search.get("skip"));
   if (skip) out.skip = skip;
+  // "More like this" has no text: a `q` next to it is dropped (the same URL always means the same search).
+  const similar = search.get("similar");
+  if (similar && UUID.test(similar)) {
+    out.similar = similar;
+    delete out.q;
+    delete out.skip;
+  }
   return out;
 }
 
@@ -61,14 +72,15 @@ export function urlFromParams(p: SearchParams): string {
   if (p.album) q.set("album", p.album);
   if (p.has_location !== undefined) q.set("has_location", String(p.has_location));
   if (p.skip) q.set("skip", p.skip);
+  if (p.similar) q.set("similar", p.similar);
   return q.toString();
 }
 
 /** Is there anything to search for: a query or at least one filter. */
 export const isEmptySearch = (p: SearchParams) => Object.keys(p).length === 0;
 
-/** Does the search have a filter (a query alone is not one)? */
-export const hasFilters = (p: SearchParams) => Object.keys(p).some((k) => k !== "q" && k !== "skip");
+/** Does the search have a filter (a query, or the photo of "More like this", alone is not one)? */
+export const hasFilters = (p: SearchParams) => Object.keys(p).some((k) => k !== "q" && k !== "skip" && k !== "similar");
 
 export interface Chip {
   /** Which parameters clearing the chip removes. */

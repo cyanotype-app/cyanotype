@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, ApiError, type AssetListItem, type MapCluster, type TilesInstalled } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
@@ -7,6 +8,7 @@ import { Grid } from "../components/Grid";
 import { LibraryTabs } from "../components/LibraryTabs";
 import { Lightbox } from "../components/Lightbox";
 import { useToast } from "../components/Toast";
+import { similarUrl } from "../searchText";
 import { bboxParam, clusterZoom, extent, WORLD, type Bounds } from "../map/geo";
 import type { MapViewport } from "../map/MapCanvas";
 import { useViewportPhotos } from "../map/useViewportPhotos";
@@ -22,6 +24,7 @@ const photos = (n: number) => `${n.toLocaleString()} photo${n === 1 ? "" : "s"}`
 
 /** Where the geotagged photos are: a clustered map and, beside or under it, the photos in the part on screen. */
 export function MapPage() {
+  const navigate = useNavigate();
   const { setAnonymous } = useAuth();
   const { toast, show } = useToast();
   const [tiles, setTiles] = useState<TilesInstalled | null>(null);
@@ -328,6 +331,7 @@ export function MapPage() {
           onAddToAlbum={(it) => setAddIds([it.id])}
           onShare={(it) => setShareIds([it.id])}
           onFavorite={(it, favorite) => void setFavorite(it, favorite)}
+          onSimilar={(it) => navigate(similarUrl(it.id))}
         />
       )}
       {shareIds && <ShareDialog target={{ kind: "photos", ids: shareIds }} onClose={() => setShareIds(null)} />}

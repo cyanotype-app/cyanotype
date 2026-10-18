@@ -22,6 +22,7 @@ import {
   loadRecent,
   paramsFromUrl,
   reindexNote,
+  similarUrl,
   urlFromParams,
 } from "../searchText";
 import { useSelection } from "../selection";
@@ -40,15 +41,16 @@ export function SearchPage() {
   return <SearchView key={key} params={params} />;
 }
 
-const withoutQuery = (p: SearchParams): Omit<SearchParams, "q" | "skip"> => {
+const withoutQuery = (p: SearchParams): Omit<SearchParams, "q" | "skip" | "similar"> => {
   const rest = { ...p };
   delete rest.q;
   delete rest.skip;
+  delete rest.similar;
   return rest;
 };
 
 /** The filters a parsed query adds to the explicit ones (a date chip's range, a place chip's name). */
-function withParsed(filters: Omit<SearchParams, "q" | "skip">, chips: ParsedChip[] | undefined): Omit<SearchParams, "q" | "skip"> {
+function withParsed(filters: Omit<SearchParams, "q" | "skip" | "similar">, chips: ParsedChip[] | undefined): Omit<SearchParams, "q" | "skip" | "similar"> {
   const out = { ...filters };
   for (const c of chips ?? []) {
     if (c.kind === "date" && c.from && c.to) {
@@ -81,7 +83,7 @@ function SearchView({ params }: { params: SearchParams }) {
 
   const apply = (next: Omit<SearchParams, "q">) => {
     setFiltersOpen(false);
-    const qs = urlFromParams({ ...next, q, skip: params.skip });
+    const qs = urlFromParams({ ...next, q, skip: params.skip, similar: params.similar });
     navigate(qs ? `/search?${qs}` : "/search");
   };
   const clear = (keys: (keyof SearchParams)[]) => {
@@ -106,6 +108,7 @@ function SearchView({ params }: { params: SearchParams }) {
           <FilterIcon />
           Filters{chips.length > 0 ? ` (${chips.length})` : ""}
         </button>
+        {params.similar && <SimilarChip id={params.similar} onRemove={() => clear(["similar"])} />}
         <ul className="chips" aria-label="Active filters">
           {chips.map((c) => (
             <li key={c.clears.join()}>
@@ -129,6 +132,32 @@ function SearchView({ params }: { params: SearchParams }) {
       {isEmptySearch(params) ? <Intro /> : <Results params={params} />}
       {filtersOpen && <FilterSheet value={filters} onApply={apply} onClose={() => setFiltersOpen(false)} />}
     </div>
+  );
+}
+
+/** "More like this": the photo the list is similar to, with its thumbnail; removing it ends the similar mode. */
+function SimilarChip({ id, onRemove }: { id: string; onRemove: () => void }) {
+  const [source, setSource] = useState<{ name: string; thumb: string | null } | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.getAsset(id).then(
+      (d) => live && setSource({ name: d.original_name, thumb: d.thumb_url }),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [id]);
+  return (
+    <span className="chip chip-photo" aria-label="Similar to">
+      {source?.thumb ? <img src={source.thumb} alt="" className="chip-thumb" /> : <span className="chip-thumb" aria-hidden="true" />}
+      <span className="chip-label">Similar to {source?.name ?? "photo"}</span>
+      <button type="button" className="chip-x" aria-label="Remove similar photo" onClick={onRemove}>
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+          <path d="m6 6 12 12M18 6 6 18" />
+        </svg>
+      </button>
+    </span>
   );
 }
 
@@ -207,7 +236,7 @@ function Results({ params }: { params: SearchParams }) {
   const { setAnonymous } = useAuth();
   const [open, setOpen] = useState<number | null>(null);
   const [meta, setMeta] = useState<Meta>({
-    ranked: Boolean(params.q),
+    ranked: Boolean(params.q || params.similar),
     total: null,
     parsed: null,
     weaker: null,
@@ -413,12 +442,16 @@ function Results({ params }: { params: SearchParams }) {
   // (the pages are search results: they carry a tier)
   const strongLoaded = items.filter((i) => (i as SearchItem).tier !== "weak").length;
   const weakLoaded = items.length - strongLoaded;
-  const matches = `${strongLoaded.toLocaleString("en-US")} match${strongLoaded === 1 ? "" : "es"}`;
+  const matches = params.similar
+    ? `${strongLoaded.toLocaleString("en-US")} similar photo${strongLoaded === 1 ? "" : "s"}`
+    : `${strongLoaded.toLocaleString("en-US")} match${strongLoaded === 1 ? "" : "es"}`;
   const shown = meta.ranked
     ? `${matches}${weakLoaded > 0 ? `, ${weakLoaded.toLocaleString("en-US")} weaker` : ""}${done ? "" : " so far"}`
     : photos(meta.total ?? items.length);
   const noResults = started && items.length === 0 && !error;
   const noModel = error !== null && /not available|not installed/i.test(error);
+  // "More like this" of a photo the worker has not embedded yet (the server answers 409).
+  const notIndexed = Boolean(params.similar) && error !== null && /still being indexed/i.test(error);
   const weakerCount = meta.weaker?.count ?? 0;
   const weakerButton = (
     <button type="button" className="btn btn-quiet weaker-btn" onClick={showWeaker}>
@@ -450,11 +483,15 @@ function Results({ params }: { params: SearchParams }) {
       )}
       {noResults && (
         <div className="empty" role="status">
-          <h2>{weakerCount > 0 && !weakerShown ? "No close matches" : "Nothing matched"}</h2>
+          <h2>
+            {weakerCount > 0 && !weakerShown ? "No close matches" : params.similar ? "No similar photos" : "Nothing matched"}
+          </h2>
           <p>
             {weakerCount > 0 && !weakerShown
               ? "Nothing in your library matches this closely. There are weaker matches."
-              : params.q
+              : params.similar
+                ? "Nothing else in your library looks like this photo, or the filters leave nothing. Remove a filter to widen it."
+                : params.q
                 ? "Try describing the scene with other words, or remove a filter."
                 : "No photo has all of these. Remove a filter to widen the search."}
           </p>
@@ -462,7 +499,16 @@ function Results({ params }: { params: SearchParams }) {
           {indexing && <p className="muted small">Photos that are still being indexed cannot match a description yet.</p>}
         </div>
       )}
-      {error && (
+      {notIndexed && (
+        <div className="empty" role="status">
+          <h2>This photo is still being indexed</h2>
+          <p className="muted">Similar photos can be found once it has been indexed, which usually takes a few minutes after an upload.</p>
+          <button type="button" className="btn btn-primary" onClick={() => reset()}>
+            Try again
+          </button>
+        </div>
+      )}
+      {error && !notIndexed && (
         <div className="empty" role="alert">
           <h2>{noModel ? "Search isn’t available" : "Couldn’t search"}</h2>
           <p className="muted">
@@ -563,6 +609,7 @@ function Results({ params }: { params: SearchParams }) {
           onShare={(it) => setShareTarget({ kind: "photos", ids: [it.id] })}
           onUnpair={(it) => void unpairItem(it)}
           onFavorite={(it, favorite) => void setFavorite([it.id], favorite)}
+          onSimilar={(it) => navigate(similarUrl(it.id))}
         />
       )}
       {confirmed && (

@@ -2419,3 +2419,41 @@ body:has(.selection-bar) .scrubber {
 .parsed-chips { margin: 0.5rem 0 0; padding: 0 1rem; }
 .weaker-more { display: flex; justify-content: center; padding: 1rem 0 0.5rem; }
 .weaker-btn { max-width: 100%; white-space: normal; text-align: center; }
+
+/* "More like this": the source photo as a chip, and the lightbox button that starts it. */
+.chip-photo {
+  padding-left: 0.25rem;
+  min-height: 2.5rem;
+}
+.chip-thumb {
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--surface-2);
+}
+.lightbox-similar {
+  gap: 0.4rem;
+}
+.lightbox-similar svg {
+  flex: none;
+}
+@media (max-width: 600px) {
+  /* The phone bar is Close, the counter and icons: the words stay for screen readers. */
+  .lightbox-bar {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+  }
+  .lightbox-similar {
+    width: 2.75rem;
+    padding: 0;
+  }
+  .lightbox-similar-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}

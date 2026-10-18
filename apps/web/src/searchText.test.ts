@@ -9,6 +9,7 @@ import {
   hasFilters,
   indexingNote,
   indexingPercent,
+  similarUrl,
   isEmptySearch,
   loadRecent,
   paramsFromUrl,
@@ -79,6 +80,24 @@ describe("what the server may not read out of the query (skip)", () => {
     expect(urlFromParams(p)).toBe("q=dog+in+Nice&skip=date%2Cplace");
     expect(hasFilters(p)).toBe(false);
     expect(chipsOf(p)).toEqual([]);
+  });
+});
+
+describe("More like this URL", () => {
+  const id = "6f1c2b0e-0000-4000-8000-000000000001";
+
+  it("reads the source photo, drops the text next to it, and writes the same URL back", () => {
+    const p = paramsFromUrl(new URLSearchParams(`similar=${id}&q=dog&skip=date&favorite=true`));
+    expect(p).toEqual({ similar: id, favorite: true });
+    expect(urlFromParams(p)).toBe(`favorite=true&similar=${id}`);
+    expect(similarUrl(id)).toBe(`/search?similar=${id}`);
+    expect(paramsFromUrl(new URLSearchParams("similar=not-a-photo"))).toEqual({});
+  });
+
+  it("is a search of its own but not a filter", () => {
+    expect(isEmptySearch({ similar: id })).toBe(false);
+    expect(hasFilters({ similar: id })).toBe(false);
+    expect(hasFilters({ similar: id, camera: "X" })).toBe(true);
   });
 });
 

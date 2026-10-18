@@ -43,6 +43,9 @@ mod share_public;
 #[cfg(test)]
 mod share_tests;
 mod shares;
+mod similar;
+#[cfg(test)]
+mod similar_tests;
 mod tiles;
 #[cfg(test)]
 mod tiles_tests;
@@ -110,6 +113,7 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/albums/{id}/assets", get(albums::assets).post(albums::add))
         .route("/assets/albums/{id}/assets/remove", post(albums::remove_assets))
         .route("/assets/{id}/unpair", post(unpair))
+        .route("/assets/{id}/similar", get(similar::similar))
         .route("/assets/{id}/download", get(download::download))
         .route("/assets/{id}", get(get_one))
         .route("/assets/{id}", delete(remove))
