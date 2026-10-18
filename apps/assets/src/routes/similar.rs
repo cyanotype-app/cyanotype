@@ -41,6 +41,7 @@ pub(super) struct SimilarQuery {
     to: Option<String>,
     favorite: Option<bool>,
     camera: Option<String>,
+    lens: Option<String>,
     place: Option<String>,
     #[serde(rename = "type")]
     kind: Option<String>,
@@ -60,6 +61,7 @@ impl SimilarQuery {
             to: self.to.clone(),
             favorite: self.favorite,
             camera: self.camera.clone(),
+            lens: self.lens.clone(),
             place: self.place.clone(),
             kind: self.kind.clone(),
             album: self.album,
