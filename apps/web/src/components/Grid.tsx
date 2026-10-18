@@ -1,5 +1,5 @@
 import type { AssetListItem } from "../api";
-import { Tile } from "./Tile";
+import { Tile, type TileProps } from "./Tile";
 
 interface Props<T extends AssetListItem> {
   items: T[];
@@ -17,6 +17,9 @@ interface Props<T extends AssetListItem> {
   onFavorite?: (id: string, favorite: boolean) => void;
   /** Small text over the bottom of a tile (the trash page shows when it will be deleted). */
   caption?: (item: T) => string | null;
+  /** Bursts (search): which tiles cover a burst (and whether it is open), and which are shown because one is. */
+  burst?: (item: T) => TileProps["burst"];
+  inBurst?: (item: T) => boolean;
 }
 
 /** Plain (not virtualized) grid of tiles, for the short lists of albums, the trash and the photo picker. */
@@ -30,6 +33,8 @@ export function Grid<T extends AssetListItem>({
   onLongPress,
   onFavorite,
   caption,
+  burst,
+  inBurst,
 }: Props<T>) {
   return (
     <ul className={`grid${selecting ? " selecting" : ""}`} aria-label="Photos">
@@ -46,6 +51,8 @@ export function Grid<T extends AssetListItem>({
             onLongPress={onLongPress}
             onFavorite={onFavorite}
             caption={caption?.(it) ?? null}
+            burst={burst?.(it) ?? null}
+            inBurst={inBurst?.(it) ?? false}
           />
         </li>
       ))}

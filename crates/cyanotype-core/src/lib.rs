@@ -1,3 +1,4 @@
+pub mod bursts;
 pub mod config;
 pub mod db;
 pub mod embeddings;

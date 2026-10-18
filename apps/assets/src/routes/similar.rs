@@ -27,8 +27,8 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use super::search::{
-    DEFAULT_LIMIT, Filters, MAX_LIMIT, Page, Plan, Position, Ranking, SearchQuery, SearchResponse, decode_rank_cursor,
-    ranked_rows, respond,
+    After, DEFAULT_LIMIT, DEPTH, Filters, MAX_LIMIT, Page, Plan, RankKind, Ranking, SearchQuery, SearchResponse,
+    decode_rank_cursor, ranked_rows, respond_ranked,
 };
 use crate::AppState;
 use cyanotype_service::{ApiError, ApiResult, AuthUser};
@@ -107,7 +107,6 @@ fn parse_vector(text: &str) -> Option<Vec<f32>> {
 }
 
 pub(super) async fn run(s: &AppState, owner: Uuid, id: Uuid, q: &SimilarQuery) -> ApiResult<(SearchResponse, Plan)> {
-    let filters = Filters::parse(&q.as_search())?.excluding(id);
     let limit = q.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let cursor = q.cursor.as_deref().filter(|c| !c.is_empty());
     let after = match cursor {
@@ -115,15 +114,17 @@ pub(super) async fn run(s: &AppState, owner: Uuid, id: Uuid, q: &SimilarQuery) -
         None => None,
     };
 
-    // The source must be a photo of the caller's that is listed (not trashed, not the hidden half of a pair).
-    let visible: Option<(i32,)> = sqlx::query_as(
-        "SELECT 1 FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL AND primary_id IS NULL",
+    // The source must be a photo of the caller's that is listed (not trashed, not the hidden half of a pair). Its burst, if
+    // it is in one, is left out of the list with it: the shots of one moment are not "more like this".
+    let source: Option<(Option<Uuid>,)> = sqlx::query_as(
+        "SELECT burst_id FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL AND primary_id IS NULL",
     )
     .bind(id)
     .bind(owner)
     .fetch_optional(&s.db)
     .await?;
-    visible.ok_or(ApiError::NotFound)?;
+    let (burst,) = source.ok_or(ApiError::NotFound)?;
+    let filters = Filters::parse(&q.as_search())?.excluding(id, burst);
 
     let serving = s
         .search
@@ -152,25 +153,16 @@ pub(super) async fn run(s: &AppState, owner: Uuid, id: Uuid, q: &SimilarQuery) -
             })
         })?;
 
-    let r = ranked_rows(&s.db, owner, &filters, model, &vector, limit, after.map(|a| a.0)).await?;
-    // The tiers are cut from the whole list on the first page and carried in the cursor after that.
-    let position = match after {
-        Some((_, position)) => position,
-        None => {
-            let cos: Vec<f32> = r
-                .rows
-                .first()
-                .and_then(|row| row.all_dists.as_ref())
-                .map(|d| d.iter().map(|d| (1.0 - d) as f32).collect())
-                .unwrap_or_default();
-            let t = cyanotype_clip::image_tiers(model, &cos);
-            Position {
-                offset: 0,
-                strong: t.strong,
-                weak: t.weak,
-            }
-        }
-    };
+    let r = ranked_rows(
+        &s.db,
+        owner,
+        &filters,
+        model,
+        &vector,
+        DEPTH,
+        Some(After::whole(after.as_ref().map(|c| c.k))),
+    )
+    .await?;
     let page = Page {
         filters: &filters,
         limit,
@@ -178,21 +170,10 @@ pub(super) async fn run(s: &AppState, owner: Uuid, id: Uuid, q: &SimilarQuery) -
         weaker_requested: q.weaker.unwrap_or(false),
         cutoff: q.cutoff.unwrap_or(true),
     };
-    respond(
-        s,
-        owner,
-        &page,
-        r.rows,
-        r.plan,
-        true,
-        r.k,
-        Some(Ranking {
-            model,
-            reindexing: serving.reindexing,
-            position,
-        }),
-        None,
-        Some(id),
-    )
-    .await
+    let ranking = Ranking {
+        model,
+        reindexing: serving.reindexing,
+        kind: RankKind::Similar,
+    };
+    respond_ranked(s, owner, &page, r, after.map(|c| c.position), ranking, None, Some(id)).await
 }

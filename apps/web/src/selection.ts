@@ -21,6 +21,20 @@ export function toggle(sel: Selection, id: string): Selection {
   return { ids, anchor: id, all: sel.all };
 }
 
+/** Add or remove several items as one (a collapsed burst): all of them go out when all are in, else all come in. */
+export function toggleMany(sel: Selection, ids: readonly string[]): Selection {
+  const picked = (id: string) => sel.ids.has(id) !== (sel.all === true);
+  const everySelected = ids.length > 0 && ids.every(picked);
+  const next = new Set(sel.ids);
+  // In `all` mode the ids are the exceptions: selecting takes them out, deselecting puts them in.
+  const remove = sel.all === true ? !everySelected : everySelected;
+  for (const id of ids) {
+    if (remove) next.delete(id);
+    else next.add(id);
+  }
+  return { ids: next, anchor: ids[0] ?? sel.anchor, all: sel.all };
+}
+
 /**
  * Select every item from the anchor to `id` (inclusive, in `order`), keeping what was already selected.
  * Without a usable anchor (none yet, or no longer in `order`) it behaves like a plain toggle.
@@ -86,8 +100,12 @@ export interface SelectionApi {
   target: (scope: Scope) => Target;
   /** Click / tap on an item. With `shift`, selects the range from the last clicked item. */
   select: (id: string, shift?: boolean) => void;
+  /** Click / tap on a group of items (a collapsed burst): selects or deselects all of them together. */
+  selectMany: (ids: readonly string[]) => void;
   /** Enter selection mode with `id` selected (long-press). */
   begin: (id: string) => void;
+  /** Enter selection mode with these selected (long-press on a collapsed burst). */
+  beginMany: (ids: readonly string[]) => void;
   setSelecting: (on: boolean) => void;
   selectAll: () => void;
   clear: () => void;
@@ -114,9 +132,14 @@ export function useSelection(order: readonly string[], total?: number): Selectio
     (id: string, shift = false) => setSel((s) => (shift ? selectRange(s, order, id) : toggle(s, id))),
     [order],
   );
+  const selectMany = useCallback((ids: readonly string[]) => setSel((s) => toggleMany(s, ids)), []);
   const begin = useCallback((id: string) => {
     setSelectingState(true);
     setSel({ ids: new Set([id]), anchor: id });
+  }, []);
+  const beginMany = useCallback((ids: readonly string[]) => {
+    setSelectingState(true);
+    setSel({ ids: new Set(ids), anchor: ids[0] ?? null });
   }, []);
   const hasTotal = total !== undefined;
   const selectAllInView = useCallback(
@@ -141,7 +164,9 @@ export function useSelection(order: readonly string[], total?: number): Selectio
     count,
     target,
     select,
+    selectMany,
     begin,
+    beginMany,
     setSelecting,
     selectAll: selectAllInView,
     clear,

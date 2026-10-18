@@ -106,6 +106,12 @@ pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job, info: &JobInfo) -> Result<Outc
         return Ok(Outcome::Skipped("asset is being deleted"));
     }
 
+    // Burst grouping reads the vectors the embed jobs stored: database-only. (Runs for a trashed photo too: that is how its
+    // neighbours get regrouped without it.)
+    if job.kind == jobs::KIND_BURST {
+        return crate::burst::run(ctx, job).await;
+    }
+
     // Backfill of RAW + JPEG pairs: a database-only job, nothing to download.
     if job.kind == jobs::KIND_PAIR {
         return pair(ctx, job).await;

@@ -14,6 +14,10 @@ pub const KIND_METADATA: &str = "metadata";
 pub const KIND_THUMBNAIL: &str = "thumbnail";
 pub const KIND_GEOCODE: &str = "geocode";
 pub const KIND_EMBED: &str = "embed";
+/// Regroup the burst neighbourhood of one photo (`bursts`). Database only; queued by the worker after an embed, by a trigger
+/// when a photo is trashed, restored, paired or unpaired (migration 0014), and by the worker's sweep. Every row has its own
+/// version (a sequence), so a new one can be queued while an earlier one runs.
+pub const KIND_BURST: &str = "burst";
 /// Backfill: try to pair an existing asset with its RAW/JPEG counterpart (`pairing`). New uploads pair inline when
 /// their metadata job finishes, so this is never in `DEFAULT_PIPELINE`.
 pub const KIND_PAIR: &str = "pair";

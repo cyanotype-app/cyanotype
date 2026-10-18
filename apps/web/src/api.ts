@@ -167,6 +167,17 @@ export interface SearchItem extends AssetListItem {
   probability?: number | null;
   /** `strong` is what the search shows; `weak` only after "Show weaker matches". */
   tier?: "strong" | "weak" | null;
+  /** Rapid-fire shots of one moment collapsed into this result; this photo is the cover. Absent for a photo on its own. */
+  burst?: Burst;
+}
+
+/** The other photos of a burst that are in the results (best first); `size` counts the cover too. */
+export interface Burst {
+  size: number;
+  members: BurstMember[];
+}
+export interface BurstMember extends AssetListItem {
+  score: number | null;
 }
 
 /** What the server read out of the query besides the words to search for. */
