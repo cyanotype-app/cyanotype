@@ -1,0 +1,48 @@
+# Weekly updates, held back 14 days after a release is published (cooldown), with
+# minor and patch bumps grouped per ecosystem. Security updates are not subject to
+# the cooldown: Dependabot opens those as soon as an advisory applies.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: npm
+    directory: "/apps/web"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 5
+    groups:
+      github-actions-minor-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: docker
+    directories:
+      - "/"
+      - "/apps/web"
+      - "/infra/backup"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 5
+    groups:
+      docker-minor-patch:
+        update-types: [minor, patch]
