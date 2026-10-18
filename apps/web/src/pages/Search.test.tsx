@@ -234,4 +234,38 @@ describe("Search page", () => {
     await userEvent.click(screen.getByRole("button", { name: "Favorite" }));
     await waitFor(() => expect(fav).toHaveBeenCalledWith(["id-1", "id-2"], true));
   });
+  describe("More like this", () => {
+    const src = "6f1c2b0e-0000-4000-8000-000000000007";
+
+    it("lists photos like the source, shows its chip, and removing the chip leaves the mode", async () => {
+      const search = vi.spyOn(api, "search").mockResolvedValue(result([hit(1, 0.9), hit(2, 0.8)], { similar_to: src }));
+      renderAt(`/search?similar=${src}&favorite=true`);
+      expect(await screen.findByText("2 similar photos")).toBeInTheDocument();
+      expect(search).toHaveBeenCalledWith({ similar: src, favorite: true }, { cursor: null, limit: 60, weaker: false });
+      expect(screen.getByText(/Similar to photo-0.jpg/)).toBeInTheDocument();
+      // The filters still work next to it: they keep the source in the URL.
+      expect(within(screen.getByRole("list", { name: "Active filters" })).getByText("Favorites")).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Remove similar photo" }));
+      await waitFor(() => expect(screen.getByTestId("where")).not.toHaveTextContent("similar"));
+      expect(screen.getByTestId("where")).toHaveTextContent("favorite=true");
+    });
+
+    it("selects what is loaded (not a scope) with Select all", async () => {
+      vi.spyOn(api, "search").mockResolvedValue(result([hit(1, 0.9), hit(2, 0.8)], { similar_to: src, total: null }));
+      const fav = vi.spyOn(api, "favoriteAssets").mockResolvedValue({ count: 2 });
+      renderAt(`/search?similar=${src}`);
+      await screen.findByText("2 similar photos");
+      await userEvent.click(screen.getByRole("button", { name: "Select" }));
+      await userEvent.click(screen.getByRole("button", { name: /Select all/ }));
+      await userEvent.click(screen.getByRole("button", { name: "Favorite" }));
+      await waitFor(() => expect(fav).toHaveBeenCalledWith(["id-1", "id-2"], true));
+    });
+
+    it("says the photo is still being indexed when the server answers 409", async () => {
+      vi.spyOn(api, "search").mockRejectedValue(new ApiError(409, "this photo is still being indexed: similar photos are available once it is"));
+      renderAt(`/search?similar=${src}`);
+      expect(await screen.findByRole("heading", { name: "This photo is still being indexed" })).toBeInTheDocument();
+      expect(screen.queryByText("Couldn’t search")).not.toBeInTheDocument();
+    });
+  });
 });

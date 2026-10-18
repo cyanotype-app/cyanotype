@@ -156,6 +156,8 @@ export interface SearchParams {
   has_location?: boolean;
   /** Dates and places the server should not read out of `q`: `date`, `place` or `date,place` (what a chip's "x" sets). */
   skip?: string;
+  /** "More like this": list photos similar to this photo (`GET /assets/{id}/similar`) instead of searching for `q`. */
+  similar?: string;
 }
 
 /** A search result: a list item plus the similarity to the query (null for filter-only searches). */
@@ -197,6 +199,8 @@ export interface SearchResult {
   model?: string | null;
   /** An older model answers while the configured one indexes the library. */
   reindexing?: { model: string; indexed: number; total: number; percent: number; switch_at_percent: number } | null;
+  /** "More like this": the photo the list is similar to. */
+  similar_to?: string | null;
 }
 
 export interface Facet {
@@ -478,7 +482,12 @@ export function searchQuery(
 ): string {
   const q = new URLSearchParams();
   // A fixed order, so the same search is always the same URL (cache keys, tests).
-  const keys = ["q", "from", "to", "favorite", "camera", "place", "type", "album", "has_location", "skip"] as const;
+  // (`similar` is part of the path of "More like this", and that endpoint takes neither `q` nor `skip`.)
+  const keys = (
+    params.similar
+      ? ["from", "to", "favorite", "camera", "place", "type", "album", "has_location"]
+      : ["q", "from", "to", "favorite", "camera", "place", "type", "album", "has_location", "skip"]
+  ) as readonly (keyof SearchParams)[];
   for (const k of keys) {
     const v = params[k];
     // `favorite: false` means "no filter"; `has_location: false` is a real filter ("photos without a location").
@@ -570,7 +579,11 @@ export const api = {
   unpair: (id: string) => request<void>(`/assets/${encodeURIComponent(id)}/unpair`, { method: "POST" }),
   /** Natural-language and/or filtered search; `cursor` from the previous page's `next_cursor`. */
   search: (params: SearchParams, opts: { cursor?: string | null; limit?: number; weaker?: boolean } = {}) =>
-    request<SearchResult>(`/assets/search?${searchQuery(params, opts)}`),
+    request<SearchResult>(
+      params.similar
+        ? `/assets/${encodeURIComponent(params.similar)}/similar?${searchQuery(params, opts)}`
+        : `/assets/search?${searchQuery(params, opts)}`,
+    ),
   searchFacets: () => request<Facets>("/assets/search/facets"),
   processing: () => request<Processing>("/assets/processing"),
   retryFailedJobs: () => request<{ requeued: number }>("/assets/processing/retry", { method: "POST" }),

@@ -18,7 +18,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cyanotype_clip::{ImageEncoder, Model, TextEncoder, cosine, preprocess_rgb8, tiers};
+use cyanotype_clip::{
+    ImageEncoder, ImageRules, Model, TextEncoder, cosine, image_tiers, image_tiers_with, preprocess_rgb8, tiers,
+};
 use serde_json::Value;
 
 fn repo() -> PathBuf {
@@ -388,5 +390,133 @@ fn bakeoff() {
             old.2.map
         );
         assert!(new.2.p5 >= old.2.p5 - 0.01);
+    }
+}
+
+/// Every photo as the source of a "More like this": the other 208 best first as (cosine, same category).
+fn image_lists(photos: &[Photo], images: &[Vec<f32>]) -> Vec<Vec<(f32, bool)>> {
+    (0..photos.len())
+        .map(|q| {
+            let mut l: Vec<(f32, bool)> = (0..photos.len())
+                .filter(|&i| i != q)
+                .map(|i| (cosine(&images[q], &images[i]), photos[i].category == photos[q].category))
+                .collect();
+            l.sort_by(|a, b| b.0.total_cmp(&a.0));
+            l
+        })
+        .collect()
+}
+
+/// Precision, recall (of the 9 or 10 same-category photos), photos returned per source, and the share of sources with
+/// nothing returned, for the first `take(cosines)` results of every list.
+fn image_row(lists: &[Vec<(f32, bool)>], take: &dyn Fn(&[f32]) -> usize) -> (f64, f64, f64, f64) {
+    let (mut tp, mut ret, mut rel, mut empty) = (0usize, 0usize, 0usize, 0usize);
+    for l in lists {
+        let cos: Vec<f32> = l.iter().map(|x| x.0).collect();
+        let k = take(&cos);
+        tp += l[..k].iter().filter(|x| x.1).count();
+        ret += k;
+        rel += l.iter().filter(|x| x.1).count();
+        empty += usize::from(k == 0);
+    }
+    let n = lists.len() as f64;
+    (
+        tp as f64 / ret.max(1) as f64,
+        tp as f64 / rel as f64,
+        ret as f64 / n,
+        empty as f64 / n,
+    )
+}
+
+/// The calibration of the "More like this" cut-off (`cutoff.rs`, `ImageRules`): each of the 209 photos is the source, the
+/// other 208 are ranked by cosine to it, and a result is relevant when it is in the same category. Prints the cosine
+/// distributions, a sweep of the strong rule's floor and relative distance, and what the shipped rules give.
+#[test]
+#[ignore = "the similar-photos calibration: needs the evaluation set and the models, prints tables"]
+fn similar_bakeoff() {
+    let Some(dir) = eval_dir() else {
+        panic!("evaluation set not found: scripts/fetch-eval-set.sh, then SEARCH_EVAL_DIR=models/eval");
+    };
+    let photos = photos(&dir);
+    for v in variants().into_iter().filter(|v| v.name.contains("shipped")) {
+        let images = embed_photos(&v, &photos);
+        let lists = image_lists(&photos, &images);
+        println!("\n== {} ==", v.name);
+        // Where same-category and other pairs sit.
+        let (mut same, mut other): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
+        for l in &lists {
+            for (c, r) in l {
+                if *r { same.push(*c) } else { other.push(*c) }
+            }
+        }
+        let q = |v: &mut Vec<f32>, p: f64| {
+            v.sort_by(f32::total_cmp);
+            v[((v.len() - 1) as f64 * p) as usize]
+        };
+        println!("cosine quantiles (5 / 25 / 50 / 75 / 95 %):");
+        for (name, v) in [("same category", &mut same), ("other category", &mut other)] {
+            println!(
+                "  {name}: {:.3} {:.3} {:.3} {:.3} {:.3}",
+                q(v, 0.05),
+                q(v, 0.25),
+                q(v, 0.5),
+                q(v, 0.75),
+                q(v, 0.95)
+            );
+        }
+        let best: Vec<f32> = lists.iter().map(|l| l[0].0).collect();
+        let mut b = best.clone();
+        println!(
+            "  best neighbour of each photo: {:.3} {:.3} {:.3} {:.3} {:.3}",
+            q(&mut b, 0.05),
+            q(&mut b, 0.25),
+            q(&mut b, 0.5),
+            q(&mut b, 0.75),
+            q(&mut b, 0.95)
+        );
+        println!(
+            "\nstrong rule sweep (floor x distance below the best; no gap rule): precision / recall / per source / empty"
+        );
+        let floors: Vec<f32> = [-0.06, -0.04, -0.02, 0.0, 0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.15]
+            .iter()
+            .map(|d| q(&mut other.clone(), 0.99) + d)
+            .collect();
+        println!(
+            "(floors are the 99th percentile of other-category cosines, {:.3}, plus -0.06 .. 0.15)",
+            floors[0]
+        );
+        for delta in [0.03f32, 0.05, 0.08, 0.12, 1.0] {
+            for &f in &floors {
+                let rules = ImageRules {
+                    strong_min: f,
+                    strong_delta: delta,
+                    gap: 1.0,
+                    weak_min: f,
+                    weak_delta: delta,
+                };
+                let (p, r, n, e) = image_row(&lists, &|c| image_tiers_with(rules, c).strong);
+                println!("  floor {f:.3} delta {delta:.2}: {p:.3} / {r:.3} / {n:.1} / {e:.2}");
+            }
+        }
+        let rules = v.model.image_cutoff_rules();
+        println!("\ngap rule with the shipped floor and distance (precision / recall / per source):");
+        for gap in [0.02f32, 0.03, 0.05, 1.0] {
+            let r = ImageRules { gap, ..rules };
+            let (p, rc, n, _) = image_row(&lists, &|c| image_tiers_with(r, c).strong);
+            println!("  gap {gap:.2}: {p:.3} / {rc:.3} / {n:.1}");
+        }
+        println!("\nshipped rules {rules:?}:");
+        let top = |k: usize| move |c: &[f32]| k.min(c.len());
+        for (name, row) in [
+            ("top 5", image_row(&lists, &top(5))),
+            ("top 10", image_row(&lists, &top(10))),
+            ("strong", image_row(&lists, &|c| image_tiers(v.model, c).strong)),
+            ("strong + weaker", image_row(&lists, &|c| image_tiers(v.model, c).weak)),
+        ] {
+            println!(
+                "  {name}: precision {:.3}, recall {:.3}, {:.1} per source, {:.2} empty",
+                row.0, row.1, row.2, row.3
+            );
+        }
     }
 }

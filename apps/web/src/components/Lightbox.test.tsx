@@ -79,6 +79,18 @@ describe("Lightbox", () => {
     expect(onTrash).toHaveBeenCalledTimes(2);
   });
 
+  it("offers Similar photos for the current photo only when wired up", async () => {
+    const user = userEvent.setup();
+    const onSimilar = vi.fn();
+    const { rerender } = render(
+      <Lightbox items={items} index={1} onIndexChange={() => {}} onClose={() => {}} loadDetail={async () => detail(2)} onSimilar={onSimilar} />,
+    );
+    await user.click(screen.getByRole("button", { name: "Similar photos" }));
+    expect(onSimilar).toHaveBeenCalledWith(items[1]);
+    rerender(<Lightbox items={items} index={1} onIndexChange={() => {}} onClose={() => {}} loadDetail={async () => detail(2)} />);
+    expect(screen.queryByRole("button", { name: "Similar photos" })).not.toBeInTheDocument();
+  });
+
   describe("RAW + JPEG pairs", () => {
     it("shows both files with their sizes and an Unpair action", async () => {
       const user = userEvent.setup();

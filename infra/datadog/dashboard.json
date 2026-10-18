@@ -1267,6 +1267,78 @@
     },
     {
       "definition": {
+        "type": "timeseries",
+        "title": "More like this: queries per minute by outcome",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "q",
+                "query": "sum:cyanotype.search.queries{$env,mode:similar} by {outcome}.as_count().rollup(sum, 60)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "q"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 48,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "More like this: latency p50 / p95 (ms)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "p50",
+                "query": "avg:cyanotype.search.latency_ms.median{$env,mode:similar} by {plan}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "p95",
+                "query": "max:cyanotype.search.latency_ms.95percentile{$env,mode:similar} by {plan}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "p50"
+              },
+              {
+                "formula": "p95"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 48,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
         "type": "log_stream",
         "title": "Worker errors and warnings",
         "logset": "",
@@ -1286,7 +1358,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 48,
+        "y": 51,
         "width": 12,
         "height": 5
       }
