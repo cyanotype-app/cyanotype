@@ -329,6 +329,14 @@ describe("timeline, favorites and downloads", () => {
     expect(JSON.parse((f.mock.calls[1] as unknown as [string, RequestInit])[1].body as string).ids).toHaveLength(500);
   });
 
+  it("reads a photo's details from its own endpoint, and sends the lens filter", async () => {
+    const f = mockFetchJson({ id: "a/b" });
+    await api.getDetails("a/b");
+    expect(f).toHaveBeenLastCalledWith("/assets/a%2Fb/details", expect.anything());
+    expect(searchQuery({ camera: "Canon EOS R5", lens: "RF 24-70mm F2.8 L" })).toBe("camera=Canon+EOS+R5&lens=RF+24-70mm+F2.8+L");
+    expect(searchQuery({ lens: "X", similar: "id" })).toBe("lens=X");
+  });
+
   it("builds the search query from the fields that are set, and pages with the cursor", async () => {
     expect(searchQuery({})).toBe("");
     expect(searchQuery({ q: "dog on the beach", favorite: false, camera: "", has_location: false })).toBe(

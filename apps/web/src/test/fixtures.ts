@@ -1,4 +1,4 @@
-import type { Album, AssetDetail, AssetListItem, TrashItem } from "../api";
+import type { Album, AssetDetail, AssetListItem, PhotoDetails, TrashItem } from "../api";
 
 export const item = (n: number, over: Partial<AssetListItem> = {}): AssetListItem => ({
   id: `id-${n}`,
@@ -38,6 +38,72 @@ export const album = (n: number, over: Partial<Album> = {}): Album => ({
   updated_at: "2026-01-02T00:00:00Z",
   ...over,
 });
+
+/** What GET /assets/{id}/details answers for a fully described photo (a HEIC taken in Lisbon, UTC+2). */
+export const photoDetails = (over: Partial<PhotoDetails> = {}): PhotoDetails => ({
+  id: "id-1",
+  date: {
+    instant: "2023-07-04T11:05:09Z",
+    local: "2023-07-04T13:05:09",
+    offset: "+02:00",
+    zone_known: true,
+    weekday: "Tuesday",
+    basis: "taken",
+    timeline_day: "2023-07-04",
+  },
+  location: {
+    latitude: 38.7223,
+    longitude: -9.1393,
+    place: { city: "Lisbon", region: "Lisbon", country: "Portugal", country_code: "PT" },
+    altitude: "38 m above sea level",
+    altitude_m: 37.8,
+    direction: "132° SE",
+    direction_deg: 132.4,
+  },
+  camera: { label: "Apple iPhone 15", make: "Apple", model: "iPhone 15", lens: "iPhone 15 back camera 6.765mm f/1.78" },
+  exposure: {
+    line: "ISO 100 · 6.8 mm · ƒ/1.8 · 1/120 s · +0.3 ev",
+    iso: "ISO 100",
+    focal_length: "6.8 mm",
+    focal_length_35mm: "24 mm",
+    aperture: "ƒ/1.8",
+    shutter: "1/120 s",
+    bias: "+0.3 ev",
+    flash: "Did not fire",
+    white_balance: "Auto",
+    metering: "Pattern",
+    program: "Normal program",
+  },
+  file: {
+    name: "IMG_0001.HEIC",
+    format: "HEIC",
+    raw: false,
+    content_type: "image/heic",
+    size_bytes: 2_500_000,
+    width: 4032,
+    height: 3024,
+    megapixels: "12 MP",
+    color_space: "Uncalibrated",
+    software: "17.4.1",
+  },
+  files: [{ id: "id-1", name: "IMG_0001.HEIC", format: "HEIC", raw: false, size_bytes: 2_500_000 }],
+  albums: [{ id: "album-1", title: "Portugal" }],
+  burst: { position: 1, size: 8 },
+  ...over,
+});
+
+/** A photo with nothing but a file: every optional part absent. */
+export const bareDetails = (): PhotoDetails =>
+  photoDetails({
+    date: { instant: "2024-02-03T04:05:06Z", local: "2024-02-03T04:05:06", offset: null, zone_known: false, weekday: "Saturday", basis: "added", timeline_day: "2024-02-03" },
+    location: null,
+    camera: null,
+    exposure: null,
+    file: { name: "scan.png", format: "PNG", raw: false, content_type: "image/png", size_bytes: 1000, width: null, height: null, megapixels: null, color_space: null, software: null },
+    files: [{ id: "id-1", name: "scan.png", format: "PNG", raw: false, size_bytes: 1000 }],
+    albums: [],
+    burst: null,
+  });
 
 /** A photo with a RAW stacked behind it (the API's `paired` list). */
 export const withRaw = (n: number, over: Partial<AssetListItem> = {}): AssetListItem =>

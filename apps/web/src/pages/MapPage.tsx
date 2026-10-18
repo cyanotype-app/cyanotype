@@ -1,5 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { pointFromSearch } from "../detailsText";
 import { api, ApiError, type AssetListItem, type MapCluster, type TilesInstalled } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
@@ -25,6 +26,15 @@ const photos = (n: number) => `${n.toLocaleString()} photo${n === 1 ? "" : "s"}`
 /** Where the geotagged photos are: a clustered map and, beside or under it, the photos in the part on screen. */
 export function MapPage() {
   const navigate = useNavigate();
+  // /map?lat=&lon= (from a photo's details) opens centred on that spot instead of on the whole library.
+  const [search] = useSearchParams();
+  const focus = pointFromSearch(search);
+  const focusLat = focus?.lat;
+  const focusLon = focus?.lon;
+  const focusBounds = useMemo<Bounds | null>(
+    () => (focusLat === undefined || focusLon === undefined ? null : { west: focusLon, south: focusLat, east: focusLon, north: focusLat }),
+    [focusLat, focusLon],
+  );
   const { setAnonymous } = useAuth();
   const { toast, show } = useToast();
   const [tiles, setTiles] = useState<TilesInstalled | null>(null);
@@ -271,7 +281,7 @@ export function MapPage() {
                 clusters={clusters}
                 basemap={basemap}
                 dark={dark}
-                fitTo={overview.fit}
+                fitTo={focusBounds ?? overview.fit}
                 onViewport={setView}
                 onOpenPhoto={(id) => void openPhoto(id)}
                 onUnavailable={setMapError}
@@ -327,6 +337,7 @@ export function MapPage() {
           onIndexChange={(index) => setLightbox((lb) => lb && { ...lb, index })}
           onClose={() => setLightbox(null)}
           loadDetail={api.getAsset}
+          loadDetails={api.getDetails}
           onTrash={(it) => void trash(it)}
           onAddToAlbum={(it) => setAddIds([it.id])}
           onShare={(it) => setShareIds([it.id])}

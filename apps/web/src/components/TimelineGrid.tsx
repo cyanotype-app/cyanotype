@@ -1,8 +1,8 @@
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AssetListItem } from "../api";
-import { buildLayout, gridGeometry, photoRange, type Loaded, type TimelineIndex } from "../timeline";
-import { Scrubber } from "./Scrubber";
+import { buildLayout, dayTop, gridGeometry, photoRange, type Loaded, type TimelineIndex } from "../timeline";
+import { Scrubber, stickyTop } from "./Scrubber";
 import { Tile } from "./Tile";
 
 /** Rows beyond the viewport that are rendered, each way. */
@@ -23,6 +23,8 @@ interface Props {
   onSelect: (id: string, shift: boolean) => void;
   onLongPress: (id: string) => void;
   onFavorite: (id: string, favorite: boolean) => void;
+  /** Scroll to this day (`YYYY-MM-DD`) once when it is given or changes (a link from a photo's details). */
+  jumpToDay?: string | null;
 }
 
 /**
@@ -31,7 +33,7 @@ interface Props {
  * the scrubber) is exact from the per-day counts alone; tiles whose photos are not loaded yet are placeholders.
  * The page itself scrolls (window virtualizer), so the sticky bars and the browser's scroll restoration just work.
  */
-export function TimelineGrid({ index, loaded, onRange, onOpen, onThumbError, selecting, selected, onSelect, onLongPress, onFavorite }: Props) {
+export function TimelineGrid({ index, loaded, onRange, onOpen, onThumbError, selecting, selected, onSelect, onLongPress, onFavorite, jumpToDay }: Props) {
   const listRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(() => (typeof window === "undefined" ? 1024 : window.innerWidth) - 26);
   const [scrollMargin, setScrollMargin] = useState(0);
@@ -59,6 +61,17 @@ export function TimelineGrid({ index, loaded, onRange, onOpen, onThumbError, sel
   }, []);
   const layout = useMemo(() => buildLayout(index, gridGeometry(width)), [index, width]);
   const { rows } = layout;
+
+  // A link to a day: scroll there once the layout exists (the position is measured now, not from state that lags a render).
+  const jumped = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!jumpToDay || jumped.current === jumpToDay || !el) return;
+    const top = dayTop(rows, jumpToDay);
+    if (top === null) return;
+    jumped.current = jumpToDay;
+    window.scrollTo(0, Math.max(0, top + el.getBoundingClientRect().top + window.scrollY - stickyTop()));
+  }, [jumpToDay, rows]);
 
   const virtualizer = useWindowVirtualizer({
     count: rows.length,

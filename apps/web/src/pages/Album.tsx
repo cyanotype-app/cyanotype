@@ -329,6 +329,7 @@ function AlbumView({ id }: { id: string }) {
           onIndexChange={select}
           onClose={closeLightbox}
           loadDetail={api.getAsset}
+          loadDetails={api.getDetails}
           onShare={(it) => setSharing({ kind: "photos", ids: [it.id] })}
           onFavorite={(it, favorite) => void setFavorite(it.id, favorite)}
           onUnpair={(it) => void unpairItem(it)}

@@ -6,6 +6,7 @@ import type { Map as MapLibreMap, Marker } from "maplibre-gl";
 import type { MapCluster } from "../api";
 import { placeholderUrl } from "../thumbhash";
 import { bubbleSize, clusterTarget, shortCount, type Bounds } from "./geo";
+import { loadMapLibre } from "./maplibre";
 import { buildStyle, type BasemapState } from "./mapStyle";
 
 export interface MapViewport {
@@ -28,8 +29,6 @@ interface Props {
 }
 
 const MAX_ZOOM = 19;
-
-let protocolReady = false;
 
 function viewport(map: MapLibreMap): MapViewport {
   const b = map.getBounds();
@@ -91,20 +90,9 @@ export default function MapCanvas({ clusters, basemap, dark, fitTo, onViewport, 
     const els = markers.current;
     void (async () => {
       try {
-        const [maplibre, pm, worker] = await Promise.all([
-          import("maplibre-gl"),
-          import("pmtiles"),
-          // MapLibre 6 ships its worker as a separate module that imports a shared chunk; Vite bundles it into one
-          // file and gives its URL, which has to be handed over (the default lookup fails in a bundled app).
-          import("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url"),
-        ]);
+        const maplibre = await loadMapLibre();
         if (cancelled || !host.current) return;
         lib.current = maplibre;
-        if (!protocolReady) {
-          maplibre.setWorkerUrl(worker.default);
-          maplibre.addProtocol("pmtiles", new pm.Protocol().tile);
-          protocolReady = true;
-        }
         map = new maplibre.Map({
           container: host.current,
           style: styleRef.current,
