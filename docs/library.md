@@ -602,9 +602,17 @@ search model").
   grid, with a chip showing the source photo's thumbnail (its x ends the mode) and the same Filters. Like a text search it
   shows the strong matches and offers **"Show weaker matches (N)"**. A photo the worker has not embedded yet says **"This photo
   is still being indexed"** instead. See "More like this" below.
+- **Bursts.** Rapid-fire shots of one moment collapse into one result: a tile with a **"+N"** badge (N more photos behind it). Tapping
+  the badge opens the burst inline (its photos appear right behind the cover, set apart by an accent edge; the badge turns into a
+  "-" that closes it again). This is in text searches and in "More like this", not in the timeline, the albums, or a filter-only
+  search, which list every photo. See "Bursts" below.
 - **Select all** on a filter-only search selects every match (a server-side scope, like the other views). On a text search
   it selects the results that are loaded (at most 300): a ranked list has no stable "everything" for the server to
-  re-resolve, so those actions send explicit ids.
+  re-resolve, so those actions send explicit ids. **A collapsed burst is one tile that stands for all of its photos**: tapping it
+  (or long-pressing it) selects every photo of the burst, its label says "Select IMG_1 and 3 more from its burst", and the
+  selection bar says how many photos are hidden in collapsed bursts; the count, "Select all" and the actions (favorite, album,
+  share, trash) work on photos, so selecting a collapsed burst and moving it to the trash trashes all of its photos. Open
+  the burst first to pick its photos one by one.
 
 Privacy: queries are never logged (the request log has the route template and no query string, the gateway's redacts it,
 the metrics carry only `mode`, `plan` and `outcome` tags), the recent searches live in the browser's `localStorage`, and
@@ -754,6 +762,90 @@ related photos. A real library has bursts, duplicates and trips, so the strong t
 numbers are the floor for how few it gives. The sweep behind the choice (floor x distance, 55 cells per model) is printed by
 the test.
 
+### Bursts
+
+Rapid-fire shots of the same moment (a held shutter button, a burst mode) are grouped so that a search shows one result for
+them instead of ten near-identical photos in a row. The grouping is **stored** (`assets.burst_id`, migration 0014) and computed in
+the background, not at query time.
+
+**What a burst is** (`crates/cyanotype-core/src/bursts.rs`): a chain of one owner's visible photos taken with the same camera
+(`camera_label`), in capture-time order (`taken_at`), where each photo is
+- at most **2 s** after the one before it (capture times are whole seconds on most cameras, so this is "the same or the next
+  second"), **and**
+- **visually near-identical** to it: the cosine of their image embeddings is at least the model's threshold (SigLIP 2 0.91, CLIP
+  0.87, `Model::burst_rules` in `cyanotype-clip`, `burst.rs`),
+and a chain is cut where it would span more than **30 s** or hold more than **40 photos**, counting from its start. Only photos with
+a capture time, a camera and a vector are ever grouped; trashed photos and the hidden RAW half of a pair are not (a RAW + JPEG pair
+is one photo). **No vector yet: not grouped.** A time-and-camera-only fallback with a stricter gap was considered and left out:
+two shots two seconds apart of different things are common, and "the same thing" is exactly what the embedding says; a photo
+is grouped as soon as it is embedded (the embed job queues its regroup), so the cost is a short delay, and a library with
+embedding turned off is not grouped at all (search does not work then either).
+
+**Calibration** of the visual threshold (`burst_bakeoff` in `tests/bakeoff.rs`, run by `just bakeoff`). There is no real burst data
+in the evaluation set (209 unrelated photos) and none could be taken from a real library, so a burst is **simulated**: every third photo
+(70) gets 5 more frames with a camera move (shift and zoom up to 2, 5 or 10 % of the frame, in random directions) and an exposure drift
+(up to 4, 10 or 20 % of full scale), each frame moved independently from the original; consecutive frames are therefore further
+apart than frames of a real burst, whose subject moves less than a whole frame. They are compared with all 21,736 pairs of different
+photos. Cosines of two different photos: median 0.48 (CLIP) / 0.52 (SigLIP 2), 99th percentile 0.77 / 0.77, 99.9th 0.92 / 0.93;
+consecutive burst frames: median 0.95 to 0.98, 1st percentile 0.81 to 0.92 even for a 10 % move.
+
+| min cosine | CLIP: different photos merged | CLIP: burst frames kept (2 / 5 / 10 % move) | SigLIP 2: different photos merged | SigLIP 2: burst frames kept |
+|---|---|---|---|---|
+| 0.80 | 0.74 % | 100 / 100 / 99.4 % | 0.75 % | 100 / 100 / 100 % |
+| 0.85 | 0.44 % | 100 / 99.4 / 98.3 % | 0.50 % | 100 / 100 / 100 % |
+| **0.87** (CLIP) | **0.30 %** | **100 / 99.1 / 96.9 %** | 0.44 % | 100 / 100 / 100 % |
+| 0.89 | 0.17 % | 99.7 / 98.0 / 96.3 % | 0.34 % | 100 / 100 / 100 % |
+| **0.91** (SigLIP 2) | 0.12 % | 99.4 / 96.3 / 91.1 % | **0.22 %** | **100 / 100 / 99.1 %** |
+| 0.93 | 0.07 % | 98.0 / 93.4 / 78.6 % | 0.11 % | 99.7 / 100 / 97.4 % |
+
+The thresholds keep at least 99 % of the frames of a 5 % camera move and merge 0.2 to 0.3 % of arbitrary pairs of different photos
+(some of those are near-duplicates in the set: it holds a few photos that are the same picture twice, and many that are the same
+kind of scene). That share is an upper bound for the real risk, because a pair is only judged when the same camera took both
+within two seconds. CLIP's cosines are lower for the same change, so its threshold is lower. Real bursts differ (a moving subject,
+a pan); the limits that keep a wrong merge cheap are the 2 s gap, the 30 s span and the 40 photos, and the expanded burst shows
+every photo, so a wrong merge costs a tap.
+
+**How it is computed and kept right.** A `burst` job regroups the neighbourhood of one photo from scratch: it loads the owner's visible
+photos of that camera around the photo's capture time (a 2-minute window, doubled while a chain reaches its edge, so a chain is never
+cut by the window and the cut points do not depend on which photo asked), judges each close pair by the first model that has a vector for
+both photos (the configured model, then the one it replaces while a library is re-indexed), cuts the chains and writes `burst_id` (the
+earliest member's id, on every member of a group of two or more; NULL otherwise) and `burst_version` where they differ. It is idempotent
+and safe to run twice or at once (runs for one owner take an advisory lock). Jobs are queued by:
+- the worker after it **embeds** a photo (so grouping follows indexing, including a model change: each new vector regroups its
+  neighbourhood, and a pair is judged by the new model as soon as both photos have its vector);
+- a **trigger** on `assets` when `deleted_at` or `primary_id` changes (migration 0014): a photo trashed, restored, paired as a
+  RAW or unpaired. The job runs for the photo itself even when it is hidden now, which is how the photos around a removed one regroup
+  without it. Purging needs nothing (the photo was trashed first);
+- the worker's **sweep** (with the embedding sweep, every 15 minutes): every visible photo with a capture time, a camera and a vector whose
+  `burst_version` is not `bursts::VERSION` (never computed, a rules bump, lost jobs) gets a job at backfill priority. This is how an
+  existing library is grouped: **the migration itself writes no rows** (two nullable columns and two partial indexes; the window index is built over the existing photos, 3 MB at 50,000), and a library of 50,000 photos is
+  grouped in the background over the following minutes. Jobs are one row per event (versions from a sequence) so a regroup can be
+  queued while another runs; done ones are deleted after a day.
+
+**Measured** (`burst_performance_on_50k_photos`, ignored, same synthetic library as the search numbers plus 3 near-identical shots a
+third of a second apart for each of 5,000 photos: 65,000 photos, 20,009 of them in bursts afterwards; release build, busy shared host,
+unconstrained Postgres): the sweep queued a job per photo in about 0.6 s (the migration itself writes no rows; the whole `migrate` run, the 3 MB window index included, took a couple of seconds at this size); a regroup takes **p50 1.8 ms, p95 3.7 ms** (a window of a handful of photos, one query for the window and one for the pairs), and the
+whole library was grouped in 139 s on one thread (49,806 regroups ran; 15,194 jobs found their photo already grouped by an earlier job and
+skipped). Search itself, with the whole 300-photo ranked list now fetched and grouped on every page instead of a page of 60: text
+search "no filter" p50 225 ms (221 ms before, same session, 50,000 photos; the p95 of that run, 711 ms, was a load spike on the host),
+More like this "no filter" p50 141 ms / p95 176 ms (138 / 166 before): no measurable change beyond the host's noise. Memory: the
+response carries the members of every burst on the page (list items, at most 40 per burst), a few KB per burst; nothing is resident.
+
+**In search and "More like this"** (`apps/assets/src/routes/group.rs`). The whole ranked list (at most 300 photos) is grouped in Rust
+after ranking and before the tiers are cut, so everything after it counts **groups**:
+- a group ranks by its **best photo**, and its tier is that photo's tier; its members are listed whatever their own scores;
+- the **cover** is the best-ranked favorite of the group if it has one, else its best-ranked photo; `score` is the cover's;
+- `strong_count`, `weaker.count`, `limit` and the cursor count groups. Pages are cut from the grouped list (the cursor carries
+  the `k` that built the list, the position in groups and where the tiers end), so a burst is never split across pages;
+- only photos that are **in the result** are in its burst: with a filter (say favorites) a burst shows only the members that pass it,
+  and a burst with one photo left is a result of its own;
+- each item with a burst has `burst: {size, members}`: `size` counts the cover, `members` are the other photos as list items with
+  their `score`, best first (so the web app opens a burst without another request). At most 40 photos make a burst.
+- **"More like this" leaves out the source photo's own burst** (the other shots of that moment are not "more like this"; you can
+  see them next to it in the library). Other bursts in its results collapse like anywhere else. A photo whose burst has not been
+  computed yet is just the source.
+- A filter-only search and the timeline are **not** collapsed (the timeline stays unchanged; collapsing it is a possible follow-up).
+
 ### What is read out of the words
 
 `apps/assets/src/query_parse.rs` takes dates and the user's own places out of `q` before it is embedded. Everything
@@ -854,6 +946,7 @@ ways that are unknown (real recall with the real model on a real library is not 
 |---|---|
 | `GET /assets/search?q=&from=&to=&favorite=&camera=&place=&type=&album=&has_location=&limit=&cursor=&weaker=&skip=&cutoff=` | Ranked results for `q` (the strong tier; at most 300 altogether, best first) or, without `q`, the photos matching the filters, newest first. Every parameter is optional; `from`/`to` are inclusive UTC days (`2024-03-01`), `camera` and `place` are the facet values below (case-insensitive; `place` matches a city, region, country or country code), `type` is `jpeg`, `heic` (also HEIF and AVIF), `raw` or `other`, `limit` defaults to 60 (at most 200). `weaker=true` also lists the weaker tier (continue with `weaker.cursor`); `skip=date`, `skip=place` or `skip=date,place` does not read that kind of thing out of `q`; `cutoff=false` returns the whole ranked list. Items have the shape of `GET /assets` plus `score` (cosine similarity, null without `q`), `probability` (the model's calibrated estimate, SigLIP 2 only) and `tier` (`strong`/`weak`). The response has `next_cursor`, `ranked`, `total` (first page of a filter-only search), and with `q`: `strong_count`, `weaker` (`{count, cursor}` or null), `parsed` (`{text, chips}`), `model` (which model answered) and `reindexing` (null, or how far the configured model is while an older one answers). `400` for a bad date, type, album id, cursor or a `q` over 200 characters; `503` when the model is not installed and `q` is set. |
 | `GET /assets/{id}/similar?from=&to=&favorite=&camera=&place=&type=&album=&has_location=&limit=&cursor=&weaker=&cutoff=` | "More like this": the caller's photos most similar to this one (see above), the strong tier by default, `weaker=true` for the weaker one too (continue with `weaker.cursor`), the filters of search, no text. Response as search's, plus `similar_to`. `404` when the photo is not the caller's, is in the trash or is the hidden half of a pair; `409` when it has no vector yet for the model that serves searches; `400` for a bad filter or cursor. |
+| (search and similar results) | Items of a ranked list may carry `burst` (`{size, members: [{...list item, score}]}`), see "Bursts". `strong_count`, `weaker.count`, `limit` and the cursors count groups (a burst is one). The `search` bulk scope is unchanged: it only exists for filter-only searches, which are never collapsed, and a ranked list's actions send the ids of the photos selected, members of collapsed bursts included. |
 | `GET /assets/search/facets` | What the filters can be set to, with counts over the whole library: `total`, `favorites`, `with_location`, `types`, `cameras` (top 50), `places` (top 120, each with its `kind`), `years`. |
 | `POST /assets/favorite`, `trash`, `restore`, albums, shares with `{"scope": {"search": {"camera": "...", ...}}, "except": [...]}` | The bulk endpoints accept the filters of a filter-only search as a scope (never `q`). |
 | `GET /assets/processing` | Gains `embedding`: `indexed`, `total` (visible live photos with a preview), `queued`, `running`, `failed`, and for the configured model `model`, `percent`, `reindexing` (an older model answers meanwhile), `switch_at_percent` and `serving_model`. Indexing does not count towards `active`, `queued` or `running`, so the library page's "Processing..." banner is not on for hours after a model change; failed embed jobs do show in `failed` and `failures` and "Retry failed" requeues them. |
@@ -908,6 +1001,16 @@ ways that are unknown (real recall with the real model on a real library is not 
   paging, the strong and weaker tiers (and the cursor between them), the 409 for a photo without a vector (and for an old
   version of it), and the model switch (CLIP answers with CLIP's vectors only until SigLIP 2 covers the library; a photo that only the
   new model has embedded is "still being indexed"). `cutoff.rs` has unit tests for the image rules.
+- `crates/cyanotype-core/tests/bursts.rs` (Postgres): chains by gap, camera, owner and vector, ties and the burst id, the model fallback
+  (the configured model decides when it has both vectors, else the older one), regrouping after trash, restore and pairing (the trigger and
+  the neighbours), a chain longer than the first window cut the same way from either end, idempotence, the sweep (queued, failed, done,
+  a rules bump), the embed hand-off, and pruning finished jobs; `bursts.rs` unit tests for the grouping rules (gap, span, size, the visual
+  test only asked when time allows). `apps/assets/src/routes/burst_tests.rs`: a burst as one result at its best photo's place, tiers and pages
+  counting groups, a favorite as the cover, filters and trashed photos applied to the members, "More like this" leaving out the
+  source's burst, filter-only searches never collapsed; `group.rs` unit tests for the collapse.
+- Web: `burst.test.ts` (flattening, what a click selects, patching and removing photos inside bursts), `selection.test.ts` (group
+  selection), `Grid.test.tsx`, `Search.test.tsx` (the badge, opening a burst, selecting a collapsed burst and the note, one photo at a
+  time once open, Select all with members) and the burst states of `e2e/mobile-overflow.spec.ts`.
 - Web: `searchText.test.ts`, `SearchBar.test.tsx`, `FilterSheet.test.tsx`, `Search.test.tsx` (the weaker tier button, no close
   matches, More like this (chip, filters beside it, select-all of the loaded photos, the not-indexed state), parsed chips and removing one, select-all over a parsed filter-only search, the re-index note), and
   `e2e/mobile-overflow.spec.ts` (bar collapsed and expanded, recent searches, results, selection, the filter sheet with

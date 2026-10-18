@@ -11,14 +11,17 @@ interface Props {
   /** The actions for the selection: "Move to trash" in the library, "Restore" / "Delete forever" in the trash.
    * Later features (add to album) add their button here; the bar itself does not change. */
   children?: ReactNode;
+  /** A line under the count, for what the selection includes beyond the tiles that are ticked (photos inside bursts). */
+  note?: string | null;
 }
 
 /** Sticky bar shown while selecting: count, select all / clear, and the page's actions. */
-export function SelectionBar({ count, total, onSelectAll, onClear, onDone, children }: Props) {
+export function SelectionBar({ count, total, onSelectAll, onClear, onDone, children, note = null }: Props) {
   return (
     <div className="selection-bar" role="toolbar" aria-label="Selection">
       <span className="selection-count" aria-live="polite">
         {count === 0 ? "Select photos" : `${count.toLocaleString("en-US")} selected`}
+        {note && <span className="selection-note muted small">{note}</span>}
       </span>
       <div className="selection-actions">
         <button

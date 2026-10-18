@@ -407,6 +407,7 @@ async fn ranked_results_stop_at_the_depth_limit() {
                         dist: r.dist.unwrap(),
                         id: r.row.summary.id,
                         k: page.k,
+                        start: false,
                     })
                 }
                 _ => break,
@@ -856,6 +857,7 @@ async fn search_performance_on_50k_photos() {
                                     dist: r.dist.unwrap(),
                                     id: r.row.summary.id,
                                     k: page.k,
+                                    start: false,
                                 })
                             }
                             _ => break,

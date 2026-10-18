@@ -10,6 +10,7 @@ import {
   selectedIds,
   targetOf,
   toggle,
+  toggleMany,
   useSelection,
 } from "./selection";
 
@@ -64,6 +65,36 @@ describe("selection", () => {
   it("lists selected ids in grid order", () => {
     const s = toggle(toggle(emptySelection, "d"), "b");
     expect(selectedIds(s, order)).toEqual(["b", "d"]);
+  });
+});
+
+describe("selecting a group (a collapsed burst)", () => {
+  it("selects all of it, then deselects all of it, and completes a partly selected group", () => {
+    let s = toggleMany(emptySelection, ["a", "b", "c"]);
+    expect(ids(s)).toEqual(["a", "b", "c"]);
+    s = toggleMany(s, ["a", "b", "c"]);
+    expect(ids(s)).toEqual([]);
+    s = toggle(emptySelection, "b");
+    s = toggleMany(s, ["a", "b", "c"]);
+    expect(ids(s)).toEqual(["a", "b", "c"]);
+  });
+
+  it("works on the exceptions of an everything-selected view", () => {
+    let s = toggleMany(everything, ["a", "b"]);
+    expect(ids(s)).toEqual(["a", "b"]);
+    expect(selectedCount(s, 5)).toBe(3);
+    s = toggleMany(s, ["a", "b"]);
+    expect(ids(s)).toEqual([]);
+  });
+
+  it("is what a click and a long press on a collapsed burst do, through the hook", () => {
+    const { result } = renderHook(() => useSelection(order));
+    act(() => result.current.beginMany(["a", "b"]));
+    expect([result.current.selecting, [...result.current.selected].sort(), result.current.count]).toEqual([true, ["a", "b"], 2]);
+    act(() => result.current.selectMany(["c", "d"]));
+    expect(result.current.count).toBe(4);
+    act(() => result.current.selectMany(["a", "b"]));
+    expect([...result.current.selected].sort()).toEqual(["c", "d"]);
   });
 });
 
