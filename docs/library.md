@@ -818,14 +818,13 @@ and safe to run twice or at once (runs for one owner take an advisory lock). Job
   without it. Purging needs nothing (the photo was trashed first);
 - the worker's **sweep** (with the embedding sweep, every 15 minutes): every visible photo with a capture time, a camera and a vector whose
   `burst_version` is not `bursts::VERSION` (never computed, a rules bump, lost jobs) gets a job at backfill priority. This is how an
-  existing library is grouped: **the migration itself writes no rows**, so it is instant at any size, and a library of 50,000 photos is
+  existing library is grouped: **the migration itself writes no rows** (two nullable columns and two partial indexes; the window index is built over the existing photos, 3 MB at 50,000), and a library of 50,000 photos is
   grouped in the background over the following minutes. Jobs are one row per event (versions from a sequence) so a regroup can be
   queued while another runs; done ones are deleted after a day.
 
 **Measured** (`burst_performance_on_50k_photos`, ignored, same synthetic library as the search numbers plus 3 near-identical shots a
 third of a second apart for each of 5,000 photos: 65,000 photos, 20,009 of them in bursts afterwards; release build, busy shared host,
-unconstrained Postgres): the sweep queued a job per photo in about 0.6 s (the migration itself writes no rows and applied in under a
-second); a regroup takes **p50 1.8 ms, p95 3.7 ms** (a window of a handful of photos, one query for the window and one for the pairs), and the
+unconstrained Postgres): the sweep queued a job per photo in about 0.6 s (the migration itself writes no rows; the whole `migrate` run, the 3 MB window index included, took a couple of seconds at this size); a regroup takes **p50 1.8 ms, p95 3.7 ms** (a window of a handful of photos, one query for the window and one for the pairs), and the
 whole library was grouped in 139 s on one thread (49,806 regroups ran; 15,194 jobs found their photo already grouped by an earlier job and
 skipped). Search itself, with the whole 300-photo ranked list now fetched and grouped on every page instead of a page of 60: text
 search "no filter" p50 225 ms (221 ms before, same session, 50,000 photos; the p95 of that run, 711 ms, was a load spike on the host),
