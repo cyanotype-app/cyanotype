@@ -97,6 +97,8 @@ pub(super) struct SearchQuery {
     pub favorite: Option<bool>,
     /// A camera as the facets list it ("Canon EOS R5"); case-insensitive.
     pub camera: Option<String>,
+    /// A lens as the facets list it (the EXIF lens model); case-insensitive.
+    pub lens: Option<String>,
     /// A city, region or country name (or country code) as the facets list it; case-insensitive.
     pub place: Option<String>,
     /// `jpeg`, `heic` (HEIC, HEIF and AVIF), `raw` (a RAW file, or a photo with a RAW paired behind it) or `other`.
@@ -131,6 +133,7 @@ pub(super) struct Filters {
     to_exclusive: Option<OffsetDateTime>,
     favorite: bool,
     camera: Option<String>,
+    lens: Option<String>,
     place: Option<String>,
     kind: Option<FileType>,
     album: Option<Uuid>,
@@ -177,6 +180,7 @@ impl Filters {
             to_exclusive: to.map(|d| midnight(d) + time::Duration::days(1)),
             favorite: q.favorite.unwrap_or(false),
             camera: clean(&q.camera),
+            lens: clean(&q.lens),
             place: clean(&q.place),
             kind,
             album: q.album,
@@ -199,6 +203,7 @@ impl Filters {
             || self.to_exclusive.is_some()
             || self.favorite
             || self.camera.is_some()
+            || self.lens.is_some()
             || self.place.is_some()
             || self.kind.is_some()
             || self.album.is_some()
@@ -231,6 +236,11 @@ impl Filters {
         if let Some(c) = &self.camera {
             qb.push(format!(" AND lower({CAMERA_LABEL}) = lower("))
                 .push_bind(c.clone())
+                .push(")");
+        }
+        if let Some(l) = &self.lens {
+            qb.push(" AND lower(a.lens_model) = lower(")
+                .push_bind(l.clone())
                 .push(")");
         }
         if let Some(p) = &self.place {
@@ -1129,12 +1139,15 @@ pub(super) struct Facets {
     /// Photos that are, or have behind them, a file of each type (a JPEG + RAW pair counts under both).
     types: Vec<Facet>,
     cameras: Vec<Facet>,
+    /// Lens models, most used first.
+    lenses: Vec<Facet>,
     places: Vec<PlaceFacet>,
     /// Calendar years (UTC) of the photo's timeline time, newest first.
     years: Vec<Facet>,
 }
 
 const MAX_CAMERAS: i64 = 50;
+const MAX_LENSES: i64 = 50;
 const MAX_PLACES: i64 = 120;
 
 /// What the filters can be set to, with how many photos each matches: the whole library (not narrowed by the filters
@@ -1170,6 +1183,14 @@ pub(super) async fn facets(State(s): State<AppState>, user: AuthUser) -> ApiResu
     .fetch_all(&s.db)
     .await?;
 
+    let lenses: Vec<Facet> = sqlx::query_as(&format!(
+        "SELECT a.lens_model AS value, count(*) AS count {base} AND a.lens_model IS NOT NULL
+         GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT {MAX_LENSES}"
+    ))
+    .bind(user.id)
+    .fetch_all(&s.db)
+    .await?;
+
     let place_part = |col: &str, kind: &str| {
         format!(
             "SELECT a.{col} AS value, '{kind}' AS kind, count(*) AS count {base} AND a.{col} IS NOT NULL GROUP BY 1"
@@ -1199,6 +1220,7 @@ pub(super) async fn facets(State(s): State<AppState>, user: AuthUser) -> ApiResu
         with_location,
         types,
         cameras,
+        lenses,
         places,
         years,
     }))

@@ -92,7 +92,7 @@ async fn filters_alone_list_in_timeline_order_and_combine_with_text() {
     let old_cat = photo(&t.pool, alice, "old_cat.jpg", &[("cat", 1.0)]).await;
     let new_cat = photo(&t.pool, alice, "new_cat.heic", &[("cat", 1.0)]).await;
     let new_dog = photo(&t.pool, alice, "new_dog.jpg", &[("dog", 1.0)]).await;
-    set(&t.pool, old_cat, "taken_at = '2020-06-15T12:00:00Z', camera_make = 'Canon', camera_model = 'Canon EOS R5', place_city = 'Lisbon', place_region = 'Lisboa', place_country = 'Portugal', place_country_code = 'PT', latitude = 38.7, longitude = -9.1, favorite = true").await;
+    set(&t.pool, old_cat, "lens_model = 'RF 24-70mm F2.8 L', taken_at = '2020-06-15T12:00:00Z', camera_make = 'Canon', camera_model = 'Canon EOS R5', place_city = 'Lisbon', place_region = 'Lisboa', place_country = 'Portugal', place_country_code = 'PT', latitude = 38.7, longitude = -9.1, favorite = true").await;
     set(&t.pool, new_cat, "taken_at = '2024-03-01T08:00:00Z', camera_make = 'Apple', camera_model = 'iPhone 15', latitude = 48.8, longitude = 2.3, place_city = 'Paris', place_country = 'France', place_country_code = 'FR'").await;
     set(&t.pool, new_dog, "taken_at = '2024-03-02T08:00:00Z'").await;
 
@@ -118,6 +118,8 @@ async fn filters_alone_list_in_timeline_order_and_combine_with_text() {
     only("favorite=true", vec![old_cat]).await;
     only("camera=canon%20eos%20r5", vec![old_cat]).await; // "Canon" is not repeated for a model that starts with it; case-insensitive
     only("camera=Apple%20iPhone%2015", vec![new_cat]).await; // "Apple" + "iPhone 15"
+    only("lens=rf%2024-70mm%20f2.8%20l", vec![old_cat]).await; // the EXIF lens model, case-insensitive
+    only("lens=No%20such%20lens", vec![]).await;
     only("place=lisbon", vec![old_cat]).await;
     only("place=Portugal", vec![old_cat]).await;
     only("place=FR", vec![new_cat]).await;
@@ -623,12 +625,12 @@ async fn facets_count_cameras_places_years_types_and_favorites() {
     let c = photo(&t.pool, alice, "c.nef", &[("cat", 1.0)]).await;
     let d = photo(&t.pool, alice, "d.jpg", &[("cat", 1.0)]).await;
     let theirs = photo(&t.pool, bob, "x.jpg", &[("cat", 1.0)]).await;
-    set(&t.pool, a, "taken_at = '2023-05-01Z', camera_make = 'Canon', camera_model = 'Canon EOS R5', place_city = 'Lisbon', place_country = 'Portugal', latitude = 1, longitude = 1, favorite = true").await;
+    set(&t.pool, a, "lens_model = 'RF 24-70mm F2.8 L', taken_at = '2023-05-01Z', camera_make = 'Canon', camera_model = 'Canon EOS R5', place_city = 'Lisbon', place_country = 'Portugal', latitude = 1, longitude = 1, favorite = true").await;
     set(&t.pool, b, "taken_at = '2023-06-01Z', camera_make = 'Apple', camera_model = 'iPhone 15', place_city = 'Lisbon', place_country = 'Portugal', latitude = 1, longitude = 1").await;
     set(
         &t.pool,
         c,
-        "taken_at = '2021-01-01Z', camera_make = 'Canon', camera_model = 'Canon EOS R5'",
+        "lens_model = 'RF 24-70mm F2.8 L', taken_at = '2021-01-01Z', camera_make = 'Canon', camera_model = 'Canon EOS R5'",
     )
     .await;
     set(
@@ -649,6 +651,8 @@ async fn facets_count_cameras_places_years_types_and_favorites() {
         f["cameras"],
         json!([{"value": "Canon EOS R5", "count": 2}, {"value": "Apple iPhone 15", "count": 1}])
     );
+    // Lenses: the EXIF lens model, counted over live photos only.
+    assert_eq!(f["lenses"], json!([{"value": "RF 24-70mm F2.8 L", "count": 2}]));
     let place = |v: &str, kind: &str| {
         f["places"]
             .as_array()
