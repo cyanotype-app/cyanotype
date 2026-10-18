@@ -148,6 +148,8 @@ export interface SearchParams {
   favorite?: boolean;
   /** A camera as `facets().cameras` lists it. */
   camera?: string;
+  /** A lens as `facets().lenses` lists it (the EXIF lens model). */
+  lens?: string;
   /** A city, region or country name as `facets().places` lists it. */
   place?: string;
   type?: "jpeg" | "heic" | "raw" | "other";
@@ -226,6 +228,8 @@ export interface Facets {
   with_location: number;
   types: Facet[];
   cameras: Facet[];
+  /** Absent on older servers. */
+  lenses?: Facet[];
   places: (Facet & { kind: "country" | "region" | "city" })[];
   years: Facet[];
 }
@@ -288,6 +292,64 @@ export interface Place {
   region: string | null;
   country: string;
   country_code: string | null;
+}
+
+/** GET /assets/{id}/details (the photo details panel). Every part is absent or null when the photo has nothing to show. */
+export interface PhotoDetails {
+  id: string;
+  date: {
+    /** RFC 3339, UTC. */
+    instant: string;
+    /** `YYYY-MM-DDTHH:MM:SS`: the wall-clock time in the photo's own zone (UTC when the zone is unknown). */
+    local: string;
+    /** `+02:00`; null when EXIF did not record a time zone. */
+    offset: string | null;
+    zone_known: boolean;
+    weekday: string;
+    /** `taken` is the camera's clock; `file` and `added` are the fallbacks for a photo without one. */
+    basis: "taken" | "file" | "added";
+    /** `YYYY-MM-DD` (UTC) the timeline files the photo under. */
+    timeline_day: string;
+  };
+  location: {
+    latitude: number;
+    longitude: number;
+    place: Place | null;
+    altitude: string | null;
+    altitude_m: number | null;
+    direction: string | null;
+    direction_deg: number | null;
+  } | null;
+  camera: { label: string | null; make: string | null; model: string | null; lens: string | null } | null;
+  exposure: {
+    line: string | null;
+    iso: string | null;
+    focal_length: string | null;
+    focal_length_35mm: string | null;
+    aperture: string | null;
+    shutter: string | null;
+    bias: string | null;
+    flash: string | null;
+    white_balance: string | null;
+    metering: string | null;
+    program: string | null;
+  } | null;
+  file: {
+    name: string;
+    format: string;
+    raw: boolean;
+    content_type: string;
+    size_bytes: number;
+    width: number | null;
+    height: number | null;
+    megapixels: string | null;
+    color_space: string | null;
+    software: string | null;
+  };
+  /** The photo's own file first, then the RAW of a pair. */
+  files: { id: string; name: string; format: string; raw: boolean; size_bytes: number }[];
+  albums: AlbumRef[];
+  burst: { position: number; size: number } | null;
 }
 
 /** One marker of GET /assets/map: a photo (count 1) or a cluster of photos in one grid cell. */
@@ -496,8 +558,8 @@ export function searchQuery(
   // (`similar` is part of the path of "More like this", and that endpoint takes neither `q` nor `skip`.)
   const keys = (
     params.similar
-      ? ["from", "to", "favorite", "camera", "place", "type", "album", "has_location"]
-      : ["q", "from", "to", "favorite", "camera", "place", "type", "album", "has_location", "skip"]
+      ? ["from", "to", "favorite", "camera", "lens", "place", "type", "album", "has_location"]
+      : ["q", "from", "to", "favorite", "camera", "lens", "place", "type", "album", "has_location", "skip"]
   ) as readonly (keyof SearchParams)[];
   for (const k of keys) {
     const v = params[k];
@@ -599,6 +661,8 @@ export const api = {
   processing: () => request<Processing>("/assets/processing"),
   retryFailedJobs: () => request<{ requeued: number }>("/assets/processing/retry", { method: "POST" }),
   getAsset: (id: string) => request<AssetDetail>(`/assets/${encodeURIComponent(id)}`),
+  /** What the details panel shows: date, place, camera, exposure, files, albums, burst. */
+  getDetails: (id: string) => request<PhotoDetails>(`/assets/${encodeURIComponent(id)}/details`),
   /** Dedupe + part URLs. Defaults to the proxy transport, the only one a browser can use. */
   checkUpload: (req: CheckRequest) => request<CheckResponse>("/assets/check", json({ transport: "proxy", ...req })),
   /** `url` is a `parts[].url` from `checkUpload` (relative, same origin). */

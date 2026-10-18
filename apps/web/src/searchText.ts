@@ -28,6 +28,8 @@ export function paramsFromUrl(search: URLSearchParams): SearchParams {
   if (search.get("favorite") === "true") out.favorite = true;
   const camera = search.get("camera")?.trim();
   if (camera) out.camera = camera;
+  const lens = search.get("lens")?.trim();
+  if (lens) out.lens = lens;
   const place = search.get("place")?.trim();
   if (place) out.place = place;
   const type = search.get("type");
@@ -67,6 +69,7 @@ export function urlFromParams(p: SearchParams): string {
   if (p.to) q.set("to", p.to);
   if (p.favorite) q.set("favorite", "true");
   if (p.camera) q.set("camera", p.camera);
+  if (p.lens) q.set("lens", p.lens);
   if (p.place) q.set("place", p.place);
   if (p.type) q.set("type", p.type);
   if (p.album) q.set("album", p.album);
@@ -116,6 +119,7 @@ export function chipsOf(p: SearchParams, albumTitle?: string): Chip[] {
   if (p.from || p.to) chips.push({ clears: ["from", "to"], label: dateRangeLabel(p.from, p.to) });
   if (p.favorite) chips.push({ clears: ["favorite"], label: "Favorites" });
   if (p.camera) chips.push({ clears: ["camera"], label: p.camera });
+  if (p.lens) chips.push({ clears: ["lens"], label: p.lens });
   if (p.place) chips.push({ clears: ["place"], label: p.place });
   if (p.type) chips.push({ clears: ["type"], label: TYPE_LABEL[p.type] });
   if (p.has_location !== undefined) chips.push({ clears: ["has_location"], label: p.has_location ? "Has location" : "No location" });

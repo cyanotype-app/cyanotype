@@ -9,6 +9,7 @@ import {
   dayLabel,
   dayOfIndex,
   dayOfTime,
+  dayTop,
   emptyLoaded,
   evict,
   firstMissing,
@@ -37,6 +38,31 @@ const DAYS = [
 ];
 const idx = buildIndex(DAYS);
 const G = { cols: 4, tile: 100, gap: 2 };
+
+describe("dayTop", () => {
+  const layout = buildLayout(
+    buildIndex([
+      { day: "2024-06-10", count: 3 },
+      { day: "2024-06-08", count: 1 },
+      { day: "2024-05-01", count: 2 },
+    ]),
+    gridGeometry(1000),
+  );
+  const tops = layout.rows.filter((r) => r.kind === "day").map((r) => r.top);
+
+  it("is the header of the day, or of the nearest day with photos before it", () => {
+    expect(dayTop(layout.rows, "2024-06-08")).toBe(tops[1]);
+    // 9 June has no photos: the page shows the next older day, 8 June.
+    expect(dayTop(layout.rows, "2024-06-09")).toBe(tops[1]);
+    expect(dayTop(layout.rows, "2024-06-10")).toBe(tops[0]);
+  });
+
+  it("clamps to the ends", () => {
+    expect(dayTop(layout.rows, "2030-01-01")).toBe(tops[0]); // newer than everything
+    expect(dayTop(layout.rows, "2001-01-01")).toBe(tops[2]); // older than everything
+    expect(dayTop([], "2024-06-10")).toBeNull();
+  });
+});
 
 describe("labels and days", () => {
   it("formats month and day headers in UTC", () => {

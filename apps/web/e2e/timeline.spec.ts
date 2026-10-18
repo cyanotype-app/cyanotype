@@ -4,7 +4,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { installLibrary, makeAssets, startBucket, type FakeAsset } from "./fakeLibrary";
+import { dayOf, detailsDay, installLibrary, makeAssets, startBucket, type FakeAsset } from "./fakeLibrary";
 
 const SHOT_DIR = process.env.SHOT_DIR;
 const TOTAL = 20_000;
@@ -209,6 +209,59 @@ for (const { width, height, touch } of [
       await page.waitForLoadState("networkidle");
       expect(await page.getByRole("button", { name: /^Remove .* from favorites$/ }).count()).toBe(await tiles(page));
       await shot(page, "favorites-view");
+    });
+
+    test("details: swipe up (phone) or the Info button open the panel, and its date link jumps the timeline to that day", async ({ page }) => {
+      test.setTimeout(90_000);
+      assets.splice(0, assets.length, ...makeAssets(400));
+      // The panel of the newest photo names a day far down the library: following the date must land there.
+      const target = dayOf(assets[300]!.sort_time);
+      detailsDay.set("a0", target);
+      await setup(page);
+      await page.goto("/library");
+      await page.getByRole("button", { name: "Open IMG_00000.jpg" }).click();
+      const box = page.getByRole("dialog");
+      const panel = page.getByRole("complementary", { name: "Photo details" });
+      await expect(panel).toBeHidden();
+
+      if (touch) {
+        // A real touch drag, upward, on the photo (not the arrows): the panel opens.
+        const cdp = await page.context().newCDPSession(page);
+        const stage = (await page.locator(".lightbox-stage").boundingBox())!;
+        const x = stage.x + stage.width / 2;
+        const y0 = stage.y + stage.height * 0.7;
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y: y0, id: 1 }] });
+        for (let i = 1; i <= 6; i++) {
+          await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y0 - i * 24, id: 1 }] });
+        }
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await cdp.detach();
+        await expect(panel).toBeVisible();
+      } else {
+        await box.getByRole("button", { name: "Info" }).click();
+        await expect(panel).toBeVisible();
+      }
+      await expect(panel.getByText("1:00 PM").or(panel.getByText(/\d{1,2}:\d{2} [AP]M/)).first()).toBeVisible();
+      await shot(page, "details-panel");
+
+      // Back closes the panel first: the lightbox and the page stay.
+      await page.goBack();
+      await expect(panel).toBeHidden();
+      await expect(box).toBeVisible();
+      await expect(page).toHaveURL(/\/library$/);
+
+      // The date jumps the library to the other day.
+      await box.getByRole("button", { name: "Info" }).click();
+      await panel.getByRole("link", { name: /\d{4}$/ }).click();
+      await expect(page).toHaveURL(new RegExp(`/library\\?day=${target}$`));
+      await expect(box).toBeHidden();
+      const label = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }).format(new Date(`${target}T12:00:00Z`));
+      const header = page.locator("h3", { hasText: label }).first();
+      await expect(header).toBeVisible({ timeout: 10_000 });
+      expect(await header.evaluate((e) => e.getBoundingClientRect().top)).toBeLessThan(220);
+      await page.waitForLoadState("networkidle");
+      await shot(page, "details-day-jump");
+      detailsDay.clear();
     });
 
     test("download: the original is saved straight from the bucket by a plain navigation", async ({ page }) => {

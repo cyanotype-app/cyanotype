@@ -14,6 +14,7 @@ const facets: Facets = {
     { value: "Canon EOS R5", count: 70 },
     { value: "Apple iPhone 15", count: 30 },
   ],
+  lenses: [{ value: "RF 24-70mm F2.8 L", count: 55 }],
   places: [
     { value: "Portugal", kind: "country", count: 40 },
     { value: "Lisbon", kind: "city", count: 35 },
@@ -34,6 +35,7 @@ describe("FilterSheet", () => {
 
     await userEvent.selectOptions(screen.getByLabelText("Year"), "2024");
     await userEvent.selectOptions(screen.getByLabelText("Camera"), "Canon EOS R5");
+    await userEvent.selectOptions(screen.getByLabelText("Lens"), "RF 24-70mm F2.8 L");
     await userEvent.selectOptions(screen.getByLabelText("Place"), "Lisbon");
     await userEvent.selectOptions(screen.getByLabelText("Location"), "true");
     await userEvent.selectOptions(screen.getByLabelText("Album"), "album-1");
@@ -45,6 +47,7 @@ describe("FilterSheet", () => {
       from: "2024-01-01",
       to: "2024-12-31",
       camera: "Canon EOS R5",
+      lens: "RF 24-70mm F2.8 L",
       place: "Lisbon",
       has_location: true,
       album: "album-1",
