@@ -1,0 +1,43 @@
+name: Restore drill
+# Manual only (workflow_dispatch), never a required check: builds the images from the checked-out ref, brings up the throwaway
+# `cyano-drill` compose stack on the runner, seeds a synthetic library through the real APIs and restores it twice (the nightly
+# Postgres dump, and `cyanotype reindex` from the bucket alone), then publishes the report. Nothing real is involved: no secrets,
+# no deploy host, no production bucket. See docs/recovery.md and scripts/restore-drill.sh.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to drill (default: the ref the workflow was started on)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: restore-drill
+  cancel-in-progress: false
+
+jobs:
+  drill:
+    name: Restore drill (synthetic data)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Run the drill
+        run: scripts/restore-drill.sh --report restore-drill-report.md --title "CI run ${{ github.run_id }}"
+      - name: Publish the report
+        if: always()
+        run: |
+          if [ -f restore-drill-report.md ]; then cat restore-drill-report.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: restore-drill-report
+          path: restore-drill-report.md
+          if-no-files-found: ignore

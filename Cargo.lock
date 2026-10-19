@@ -1162,8 +1162,10 @@ name = "cyanotype-core"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "argon2",
  "aws-sdk-s3",
  "bytes",
+ "rand 0.8.8",
  "serde",
  "serde_json",
  "sha2 0.10.9",

@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 use cyanotype_core::{
     config::{DatabaseConfig, S3Config, redact_url},
-    db, manifest,
+    db, identity, manifest,
     reindex::{self, Options},
     storage::Storage,
     telemetry,
@@ -101,12 +101,37 @@ pub async fn run(a: ReindexArgs) -> Result<ExitCode> {
     })
 }
 
-/// `cyanotype manifest`: write today's manifest for every user (replacing today's file if it exists).
+#[derive(Args)]
+pub struct ResetLinkArgs {
+    /// The account's email address.
+    #[arg(long, value_name = "EMAIL")]
+    email: String,
+    /// How long the link works.
+    #[arg(long, default_value_t = 24, value_name = "HOURS")]
+    hours: i32,
+}
+
+/// `cyanotype reset-link`: the same one-time link the admin portal makes, for an owner who cannot sign in.
+pub async fn reset_link(a: ResetLinkArgs) -> Result<()> {
+    telemetry::init("cyanotype-cli");
+    let pool = db::connect(&DatabaseConfig::from_env()?.url).await?;
+    let link = identity::create_reset_link(&pool, &a.email, a.hours).await?;
+    println!("Reset link for {} (works once, until {}):", link.email, link.expires_at);
+    println!("/reset-password?token={}", link.token);
+    println!("Put your site's address in front of it and open it in a browser; the page asks for the new password.");
+    Ok(())
+}
+
+/// `cyanotype manifest`: write today's manifests (accounts, and one per user with photos), replacing today's files.
 pub async fn write_manifests() -> Result<()> {
     telemetry::init("cyanotype-cli");
     let pool = db::connect(&DatabaseConfig::from_env()?.url).await?;
     let storage = Storage::new(&S3Config::from_env()?);
     let keep = manifest::keep_from_env()?.max(1);
+    let accounts = identity::write(&pool, &storage, keep)
+        .await
+        .context("account manifest")?;
+    tracing::info!(accounts, "wrote account manifest");
     let users: Vec<(uuid::Uuid,)> = sqlx::query_as("SELECT DISTINCT owner_id FROM assets WHERE purging_at IS NULL")
         .fetch_all(&pool)
         .await?;

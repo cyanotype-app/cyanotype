@@ -34,7 +34,7 @@ use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::{
-    edits, jobs, keys,
+    edits, identity, jobs, keys,
     manifest::{self, UserManifest},
     objmeta,
     scan::{Head, Listed, MAX_COPY_BYTES},
@@ -123,8 +123,22 @@ pub struct Report {
     pub manifest_users: u64,
     pub manifest_files: u64,
     pub manifest_bad_lines: u64,
+    /// Accounts in the newest account manifest.
+    pub accounts_in_manifest: u64,
+    /// Recreated (or that would be): the database lacked them. Their passwords are locked: `cyanotype reset-link`.
+    pub accounts_restored: u64,
+    /// Already in the database (same id).
+    pub accounts_present: u64,
+    /// The email is taken by an account with another id: left alone (their photos need `--assign-to`).
+    pub accounts_conflict: u64,
+    /// Server settings (default limits) put back.
+    pub settings_restored: u64,
     pub albums_restored: u64,
     pub album_items_restored: u64,
+    /// Share links recreated (or that would be). Password-protected ones come back locked.
+    pub shares_restored: u64,
+    /// Share links the manifest lists but whose album or photos are gone.
+    pub shares_skipped: u64,
     pub pairs_restored: u64,
     pub favorites_restored: u64,
     pub trashed_restored: u64,
@@ -227,6 +241,30 @@ impl Report {
             "    albums / items / pairs restored  {} / {} / {}",
             self.albums_restored, self.album_items_restored, self.pairs_restored
         );
+        let _ = writeln!(
+            s,
+            "    share links restored / skipped   {} / {}",
+            self.shares_restored, self.shares_skipped
+        );
+        let _ = writeln!(
+            s,
+            "  accounts in manifest / {} / have  {} / {} / {}",
+            w("restored", "to restore"),
+            self.accounts_in_manifest,
+            self.accounts_restored,
+            self.accounts_present
+        );
+        let _ = writeln!(
+            s,
+            "    email taken by another account   {}  (settings restored: {})",
+            self.accounts_conflict, self.settings_restored
+        );
+        if self.accounts_restored > 0 && apply {
+            let _ = writeln!(
+                s,
+                "    restored accounts have LOCKED passwords: run `cyanotype reset-link --email ...` for each owner"
+            );
+        }
         let _ = writeln!(
             s,
             "    trash state / favorites          {} / {}",
@@ -366,6 +404,8 @@ pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Repor
         "reindex starting"
     );
 
+    // First: the accounts, because the photos' keys name their owners and an owner without an account is skipped.
+    restore_accounts(&mut cx).await?;
     let derived = scan_derived(storage).await?;
     let seen = scan_originals(&mut cx).await?;
     check_rows(&mut cx, &seen, &derived).await?;
@@ -382,6 +422,52 @@ pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Repor
         "reindex finished"
     );
     Ok(cx.report)
+}
+
+/// Accounts and server settings from the newest account manifest (`identity`): recreate the accounts the database lacks (with a
+/// locked password) so their photos have owners. Nothing that exists is changed. Skipped with `--no-manifest`.
+async fn restore_accounts(cx: &mut Ctx<'_>) -> Result<()> {
+    if !cx.opts.use_manifests {
+        return Ok(());
+    }
+    let accounts = match identity::load_newest(cx.storage).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return Ok(()),
+        Err(e) => {
+            cx.report.errors += 1;
+            tracing::warn!(error = ?e, "could not read the account manifest; continuing without");
+            return Ok(());
+        }
+    };
+    cx.report.accounts_in_manifest = accounts.users.len() as u64;
+    cx.report.manifest_bad_lines += accounts.bad_lines as u64;
+    let out = match identity::restore(cx.db, &accounts, cx.opts.apply).await {
+        Ok(o) => o,
+        Err(e) => {
+            cx.report.errors += 1;
+            tracing::warn!(error = ?e, "could not restore accounts from the manifest");
+            return Ok(());
+        }
+    };
+    cx.report.accounts_restored = out.restored.len() as u64;
+    cx.report.accounts_present = out.present;
+    cx.report.accounts_conflict = out.conflicts.len() as u64;
+    cx.report.settings_restored = out.settings_restored;
+    for id in &out.restored {
+        // In a dry run too: the photos of an account that would be recreated are not "owner unknown".
+        cx.known_users.insert(*id, true);
+    }
+    for id in &out.conflicts {
+        cx.report.sample("accounts_email_taken", &id.to_string());
+    }
+    tracing::info!(
+        restored = out.restored.len(),
+        present = out.present,
+        conflicts = out.conflicts.len(),
+        apply = cx.opts.apply,
+        "accounts from the manifest"
+    );
+    Ok(())
 }
 
 /// Hashes of the `thumb.webp` / `preview.webp` keys that exist.
@@ -1044,6 +1130,115 @@ async fn asset_ids(db: &PgPool, user: Uuid, shas: &[Vec<u8>]) -> Result<HashMap<
     Ok(rows.into_iter().collect())
 }
 
+/// Share links of a user that has none, from the user's newest manifest: same id, same token (so links already handed out
+/// work again), same settings. An album link needs its album (restored just before) and a selection link at least one of its
+/// photos. A link that had a password comes back with a locked one: closed until its owner sets a new password, never open.
+async fn restore_shares(cx: &mut Ctx<'_>, user: Uuid, m: &UserManifest) -> Result<()> {
+    if m.shares.is_empty() {
+        return Ok(());
+    }
+    let apply = cx.opts.apply;
+    // Only into an account that has no share links at all (a rebuilt database). An account whose database already has links
+    // (a restored dump) is left alone: a link revoked after the manifest was written must never come back, and a link that
+    // is only missing (made since the dump) is cheaper to make again than a revoked one is to notice.
+    let any: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM shares WHERE owner_id = $1)")
+        .bind(user)
+        .fetch_one(cx.db)
+        .await?;
+    if any {
+        return Ok(());
+    }
+    let albums: HashSet<Uuid> = sqlx::query_scalar::<_, Uuid>("SELECT id FROM albums WHERE owner_id = $1")
+        .bind(user)
+        .fetch_all(cx.db)
+        .await?
+        .into_iter()
+        .collect();
+    let shas: Vec<Vec<u8>> = m
+        .shares
+        .values()
+        .flat_map(|s| s.items.iter())
+        .filter_map(|h| keys::parse_sha256(h))
+        .map(|s| s.to_vec())
+        .collect();
+    let ids = asset_ids(cx.db, user, &shas).await?;
+    for sh in m.shares.values() {
+        let members: Vec<Uuid> = sh
+            .items
+            .iter()
+            .filter_map(|h| keys::parse_sha256(h))
+            .filter_map(|s| ids.get(&s[..]).copied())
+            .collect();
+        let possible = match sh.kind.as_str() {
+            "album" => sh
+                .album
+                .is_some_and(|a| albums.contains(&a) || (!apply && m.albums.contains_key(&a))),
+            // In a dry run the photos may be orphans that --apply recreates first.
+            "selection" => !sh.items.is_empty() && (!members.is_empty() || !apply),
+            _ => false,
+        };
+        if !possible {
+            cx.report.shares_skipped += 1;
+            continue;
+        }
+        if !apply {
+            cx.report.shares_restored += 1;
+            continue;
+        }
+        let r: Result<bool> = async {
+            let hash = if sh.password_protected {
+                Some(identity::locked_password_hash()?)
+            } else {
+                None
+            };
+            let mut tx = cx.db.begin().await?;
+            let inserted: Option<Uuid> = sqlx::query_scalar(
+                "INSERT INTO shares (id, owner_id, token, kind, album_id, title, password_hash, allow_download,
+                                     include_originals, expires_at, created_at)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, coalesce($11, now())) ON CONFLICT DO NOTHING RETURNING id",
+            )
+            .bind(sh.id)
+            .bind(user)
+            .bind(&sh.token)
+            .bind(&sh.kind)
+            .bind(if sh.kind == "album" { sh.album } else { None })
+            .bind(&sh.title)
+            .bind(hash)
+            .bind(sh.allow_download)
+            .bind(sh.include_originals)
+            .bind(sh.expires_at)
+            .bind(sh.created_at)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if inserted.is_none() {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+            if sh.kind == "selection" {
+                for a in &members {
+                    sqlx::query("INSERT INTO share_assets (share_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING")
+                        .bind(sh.id)
+                        .bind(a)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+            }
+            tx.commit().await?;
+            Ok(true)
+        }
+        .await;
+        match r {
+            Ok(true) => cx.report.shares_restored += 1,
+            Ok(false) => cx.report.shares_skipped += 1,
+            Err(e) => {
+                cx.report.errors += 1;
+                tracing::warn!(share_id = %sh.id, error = ?e, "could not restore a share link");
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn restore_user(
     cx: &mut Ctx<'_>,
     user: Uuid,
@@ -1122,6 +1317,8 @@ async fn restore_user(
         }
         tx.commit().await?;
     }
+
+    restore_shares(cx, user, m).await?;
 
     // Pairs: only for RAWs recreated in this run.
     let pairs: Vec<([u8; 32], [u8; 32])> = m
