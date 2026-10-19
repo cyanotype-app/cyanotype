@@ -371,12 +371,13 @@ struct UnlockBody {
 fn unlock_cookie(name: String, value: String, token: &str, secure: bool) -> Cookie<'static> {
     let mut cookie = Cookie::build((name, value))
         .http_only(true)
+        .secure(true)
         .same_site(SameSite::Lax)
         .path(format!("/assets/public/s/{token}"))
         .max_age(time::Duration::hours(UNLOCK_HOURS))
         .build();
-    if secure {
-        cookie.set_secure(true);
+    if !secure {
+        cookie.set_secure(false);
     }
     cookie
 }

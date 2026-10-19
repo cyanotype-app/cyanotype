@@ -83,26 +83,27 @@ struct Credentials {
     password: String,
 }
 
-/// The session cookie. `Secure` is on unless `COOKIE_SECURE=false` was set explicitly (plain-http local dev);
-/// the setting defaults to true and production pins it.
+/// The session cookie. It is built `Secure`; that is turned off only when `COOKIE_SECURE=false` was set
+/// explicitly (plain-http local dev). The setting defaults to true and production pins it.
 fn session_cookie(token: String, secure: bool) -> Cookie<'static> {
     let mut cookie = Cookie::build((COOKIE, token))
         .http_only(true)
+        .secure(true)
         .same_site(SameSite::Lax)
         .path("/")
         .max_age(time::Duration::days(SESSION_DAYS))
         .build();
-    if secure {
-        cookie.set_secure(true);
+    if !secure {
+        cookie.set_secure(false);
     }
     cookie
 }
 
 /// Removal cookie for the session, carrying the same `Secure` attribute as the cookie it replaces.
 pub(crate) fn session_removal_cookie(secure: bool) -> Cookie<'static> {
-    let mut cookie = Cookie::build(COOKIE).http_only(true).path("/").build();
-    if secure {
-        cookie.set_secure(true);
+    let mut cookie = Cookie::build(COOKIE).http_only(true).secure(true).path("/").build();
+    if !secure {
+        cookie.set_secure(false);
     }
     cookie
 }
