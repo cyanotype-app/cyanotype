@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api, type MyUsage } from "../api";
+import { blockText, limitsLine, meters, warningFor } from "../limitsText";
 import { useUploads } from "./UploadProvider";
 import type { UploadItem } from "./queue";
 
@@ -21,24 +23,50 @@ function label(i: UploadItem): string {
       return "Already in library";
     case "failed":
       return `Failed: ${i.error ?? "upload error"}`;
+    case "stopped":
+      return "Not started";
   }
+}
+
+/** The account's limits while a batch runs, read when it starts and again when it finishes. Null without limits. */
+function useUsage(active: boolean, hasItems: boolean): MyUsage | null {
+  const [usage, setUsage] = useState<MyUsage | null>(null);
+  useEffect(() => {
+    if (!hasItems) return;
+    let live = true;
+    api
+      .usage()
+      .then((u) => live && setUsage(u))
+      .catch(() => undefined); // the tray works without it
+    return () => {
+      live = false;
+    };
+  }, [active, hasItems]);
+  return usage;
 }
 
 /** Bottom-corner list of the current upload batch with an overall summary. */
 export function UploadTray() {
   const { items, summary, queue } = useUploads();
   const [open, setOpen] = useState(true);
+  const usage = useUsage(summary.active, items.length > 0);
   if (items.length === 0) return null;
 
-  const parts = [`${summary.finished} of ${summary.total} processed`];
+  const parts = [`${summary.finished - summary.stopped} of ${summary.total} processed`];
   if (summary.duplicate) parts.push(`${summary.duplicate} already in library`);
   if (summary.failed) parts.push(`${summary.failed} failed`);
+  if (summary.stopped) parts.push(`${summary.stopped} not started`);
+  const m = usage ? meters(usage) : null;
+  const line = usage ? limitsLine(usage) : null;
+  const warnings = [warningFor(m?.quota ?? null, "storage"), warningFor(m?.daily ?? null, "daily upload limit")].filter(
+    (w): w is string => w !== null,
+  );
 
   return (
     <section className="tray" aria-label="Uploads">
       <header className="tray-head">
         <div>
-          <strong>{summary.active ? "Uploading" : "Uploads finished"}</strong>
+          <strong>{summary.active ? "Uploading" : summary.blocked ? "Uploads stopped" : "Uploads finished"}</strong>
           <div className="small muted" role="status">
             {parts.join(" · ")}
           </div>
@@ -54,6 +82,26 @@ export function UploadTray() {
           )}
         </div>
       </header>
+      {summary.blocked && (
+        <div className="tray-block" role="alert">
+          <strong>{blockText(summary.blocked)}</strong>
+          <div className="small">{summary.blocked.message}</div>
+          <button type="button" className="btn btn-quiet" onClick={() => queue.retryBlocked()}>
+            Try again
+          </button>
+        </div>
+      )}
+      {line && (
+        <p className="tray-limits small muted" aria-label="Your limits">
+          {line}
+        </p>
+      )}
+      {!summary.blocked &&
+        warnings.map((w) => (
+          <p key={w} className="tray-warning small" role="status">
+            {w}
+          </p>
+        ))}
       <progress className="tray-bar" max={1} value={summary.progress} aria-label="Overall upload progress" />
       {open && (
         <ul className="tray-list">
@@ -64,7 +112,7 @@ export function UploadTray() {
               </span>
               <span className="small muted">{size(i.file.size)}</span>
               <span className="small tray-status">{label(i)}</span>
-              {i.status === "failed" && (
+              {i.status === "failed" && !i.block && (
                 <button type="button" className="btn btn-quiet" onClick={() => queue.retry(i.id)}>
                   Retry
                 </button>

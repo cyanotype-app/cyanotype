@@ -118,15 +118,16 @@ impl Storage {
         out.upload_id.context("S3 returned no upload id")
     }
 
-    /// Presign `PUT` URLs for the given part numbers (1-based).
+    /// Presign `PUT` URLs for the given `(part number (1-based), exact byte length)` pairs. The length is part of the
+    /// signature, so a store that verifies signatures against the real request (AWS S3) refuses a body of any other size.
     pub async fn presign_parts(
         &self,
         key: &str,
         upload_id: &str,
-        numbers: impl IntoIterator<Item = i32>,
+        parts: impl IntoIterator<Item = (i32, i64)>,
     ) -> Result<Vec<PresignedPart>> {
         let mut out = Vec::new();
-        for number in numbers {
+        for (number, length) in parts {
             let req = self
                 .presign_client
                 .upload_part()
@@ -134,6 +135,7 @@ impl Storage {
                 .key(key)
                 .upload_id(upload_id)
                 .part_number(number)
+                .content_length(length)
                 .presigned(PresigningConfig::expires_in(self.ttl)?)
                 .await
                 .context("presign upload_part")?;

@@ -27,6 +27,16 @@ pub enum ApiError {
     /// A feature this deployment does not have (the search model is not installed); the message is client-safe.
     #[error("{0}")]
     Unavailable(String),
+    /// A per-account limit refused the request (HTTP 413 or 429): `code` is stable for clients, `details` is merged into
+    /// the body (sizes, a reset time), and `retry_after_secs` becomes `Retry-After`.
+    #[error("{message}")]
+    Limited {
+        status: StatusCode,
+        code: &'static str,
+        message: String,
+        details: serde_json::Value,
+        retry_after_secs: Option<u64>,
+    },
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -49,6 +59,23 @@ impl IntoResponse for ApiError {
             Self::RequestTimeout(_) => StatusCode::REQUEST_TIMEOUT,
             Self::BadGateway(_) => StatusCode::BAD_GATEWAY,
             Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Limited {
+                status,
+                code,
+                message,
+                details,
+                retry_after_secs,
+            } => {
+                let mut body = json!({"error": message, "code": code});
+                if let (Some(b), Some(d)) = (body.as_object_mut(), details.as_object()) {
+                    b.extend(d.clone());
+                }
+                let mut res = (*status, Json(body)).into_response();
+                if let Some(v) = retry_after_secs.and_then(|s| s.to_string().parse().ok()) {
+                    res.headers_mut().insert(axum::http::header::RETRY_AFTER, v);
+                }
+                return res;
+            }
             Self::Internal(e) => {
                 tracing::error!(error = ?e, "internal error");
                 return (

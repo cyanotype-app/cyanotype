@@ -78,8 +78,49 @@ pub enum ApiError {
     NotFound,
     /// A presigned URL was refused (expired, or signature problem). Ask `check` for fresh ones.
     Expired(String),
+    /// The account's limits refused the upload (see [`LimitInfo`]). Retrying right away will not help.
+    Limit(LimitInfo),
     /// Retrying will not help.
     Fatal(String),
+}
+
+/// A refusal by the account's limits, as the assets service words it (HTTP 413 or 429 with a `code`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LimitInfo {
+    /// `quota_exceeded`, `daily_cap_exceeded`, `file_too_large`, `file_exceeds_daily_cap` or `upload_larger_than_declared`.
+    pub code: String,
+    /// The server's own words, which say what to do.
+    pub message: String,
+    /// RFC 3339: when uploads can resume (the daily cap only).
+    pub retry_at: Option<String>,
+}
+
+impl LimitInfo {
+    /// Reads a limit refusal out of a response body; None for any other error.
+    pub fn from_body(text: &str) -> Option<LimitInfo> {
+        let v: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+        let code = v.get("code")?.as_str()?;
+        if !matches!(
+            code,
+            "quota_exceeded"
+                | "daily_cap_exceeded"
+                | "file_too_large"
+                | "file_exceeds_daily_cap"
+                | "upload_larger_than_declared"
+        ) {
+            return None;
+        }
+        Some(LimitInfo {
+            code: code.to_string(),
+            message: v.get("error")?.as_str()?.to_string(),
+            retry_at: v.get("retry_at").and_then(|t| t.as_str()).map(str::to_string),
+        })
+    }
+
+    /// Whether the whole import should stop (every further upload would be refused too) rather than skip this one file.
+    pub fn stops_import(&self) -> bool {
+        matches!(self.code.as_str(), "quota_exceeded" | "daily_cap_exceeded")
+    }
 }
 
 impl std::fmt::Display for ApiError {
@@ -87,6 +128,7 @@ impl std::fmt::Display for ApiError {
         match self {
             ApiError::NotFound => write!(f, "not found"),
             ApiError::Expired(m) | ApiError::Fatal(m) => write!(f, "{m}"),
+            ApiError::Limit(l) => write!(f, "{}", l.message),
         }
     }
 }
@@ -127,6 +169,10 @@ fn retry_after(res: &Response) -> Option<Duration> {
 async fn snippet(res: Response) -> String {
     let status = res.status();
     let body = res.text().await.unwrap_or_default();
+    snippet_of(status, &body)
+}
+
+fn snippet_of(status: StatusCode, body: &str) -> String {
     let body = body.trim();
     // The services answer {"error": "..."}; show just the message when it is that.
     let msg = serde_json::from_str::<serde_json::Value>(body)
@@ -186,6 +232,22 @@ impl Api {
             attempt += 1;
             let last = attempt >= API_ATTEMPTS;
             match build().send().await {
+                // A 429 from the daily upload cap is an answer, not congestion: waiting a few seconds will not change it.
+                Ok(res) if res.status() == StatusCode::TOO_MANY_REQUESTS => {
+                    let status = res.status();
+                    let wait = retry_after(&res).unwrap_or_else(|| backoff(attempt));
+                    let text = res.text().await.unwrap_or_default();
+                    if let Some(limit) = LimitInfo::from_body(&text) {
+                        return Err(ApiError::Limit(limit));
+                    }
+                    if last {
+                        return Err(ApiError::Fatal(format!(
+                            "server kept failing: {}",
+                            snippet_of(status, &text)
+                        )));
+                    }
+                    tokio::time::sleep(wait).await;
+                }
                 Ok(res) if is_transient(res.status()) && !last => {
                     let wait = retry_after(&res).unwrap_or_else(|| backoff(attempt));
                     tokio::time::sleep(wait).await;
@@ -213,7 +275,11 @@ impl Api {
             ));
         }
         if !status.is_success() {
-            return Err(ApiError::Fatal(snippet(res).await));
+            let text = res.text().await.unwrap_or_default();
+            if let Some(limit) = LimitInfo::from_body(&text) {
+                return Err(ApiError::Limit(limit));
+            }
+            return Err(ApiError::Fatal(snippet_of(status, &text)));
         }
         res.json::<T>()
             .await

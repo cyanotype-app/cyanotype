@@ -99,10 +99,14 @@ describe("DetailsPanel", () => {
   it("links the camera, lens, place and date to the search and the timeline", async () => {
     const user = userEvent.setup();
     const p = setup({ status: "ready", details: photoDetails() });
+    let last = screen.getByTestId("where").textContent;
     const go = async (name: string | RegExp) => {
       await user.click(screen.getByRole("link", { name }));
       await waitFor(() => expect(p.onNavigate).toHaveBeenCalled());
+      // The router commits the new location a moment after the click handler ran: wait for it, or read the previous one.
+      await waitFor(() => expect(screen.getByTestId("where").textContent).not.toBe(last));
       const where = screen.getByTestId("where").textContent;
+      last = where;
       p.onNavigate.mockClear();
       return where;
     };

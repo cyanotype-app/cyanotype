@@ -2,8 +2,10 @@
 // Framework-free so it can be tested without React; UploadProvider adapts it to the UI.
 import { ApiError, type Api, type DonePart } from "../api";
 import { contentTypeOf } from "./files";
+import type { UploadBlock } from "../limitsText";
 
-export type UploadStatus = "queued" | "hashing" | "checking" | "uploading" | "done" | "duplicate" | "failed";
+/** `stopped`: not started because the account's quota or daily cap refused an earlier file (see `UploadItem.block`). */
+export type UploadStatus = "queued" | "hashing" | "checking" | "uploading" | "done" | "duplicate" | "failed" | "stopped";
 
 export interface UploadItem {
   id: number;
@@ -13,6 +15,8 @@ export interface UploadItem {
   progress: number;
   error?: string;
   assetId?: string;
+  /** Set on the file a quota or daily cap refused and on every file stopped behind it. */
+  block?: UploadBlock;
 }
 
 export interface QueueDeps {
@@ -56,6 +60,10 @@ export interface Summary {
   done: number;
   duplicate: number;
   failed: number;
+  /** Files not started because a quota or daily cap refused an earlier one. */
+  stopped: number;
+  /** The quota or daily cap refusal that stopped the batch, if any. */
+  blocked: UploadBlock | null;
   active: boolean;
   /** 0..1 over all files, by bytes. */
   progress: number;
@@ -101,14 +109,25 @@ export class UploadQueue {
 
   retry(id: number) {
     const it = this.items.find((i) => i.id === id);
-    if (!it || it.status !== "failed") return;
-    this.patch(it, { status: "queued", progress: 0, error: undefined });
+    if (!it || (it.status !== "failed" && it.status !== "stopped")) return;
+    this.patch(it, { status: "queued", progress: 0, error: undefined, block: undefined });
     this.pump();
   }
 
-  /** Drop finished entries (done, duplicate, failed) from the list. */
+  /** Queue every file a quota or daily cap stopped again (after space was freed or the day rolled over). */
+  retryBlocked() {
+    this.items = this.items.map((i) =>
+      i.block && (i.status === "failed" || i.status === "stopped")
+        ? { ...i, status: "queued", progress: 0, error: undefined, block: undefined }
+        : i,
+    );
+    this.emit();
+    this.pump();
+  }
+
+  /** Drop finished entries (done, duplicate, failed, stopped) from the list. */
   clearFinished() {
-    this.items = this.items.filter((i) => !["done", "duplicate", "failed"].includes(i.status));
+    this.items = this.items.filter((i) => !FINISHED.includes(i.status));
     this.emit();
   }
 
@@ -218,20 +237,51 @@ export class UploadQueue {
         this.doneListeners.forEach((l) => l(item));
       }
     } catch (e) {
+      const block = blockOf(e);
+      if (block) {
+        // Every further file would be refused too: stop the ones not started and say why, once.
+        this.items = this.items.map((i) =>
+          i.status === "queued" ? { ...i, status: "stopped", error: block.message, block } : i,
+        );
+        set({ status: "failed", error: block.message, block });
+        return;
+      }
       set({ status: "failed", error: e instanceof Error ? e.message : "Upload failed." });
     }
   }
 }
 
+const FINISHED: UploadStatus[] = ["done", "duplicate", "failed", "stopped"];
+
+/** A refusal by the account's storage quota or daily cap (not a single file that is too big: that fails alone). */
+function blockOf(e: unknown): UploadBlock | null {
+  if (!(e instanceof ApiError) || (e.code !== "quota_exceeded" && e.code !== "daily_cap_exceeded")) return null;
+  const at = e.details?.retry_at;
+  return { code: e.code, message: e.message, retryAt: typeof at === "string" ? at : null };
+}
+
 export function summarize(items: readonly UploadItem[]): Summary {
-  let done = 0, duplicate = 0, failed = 0, bytes = 0, got = 0;
+  let done = 0, duplicate = 0, failed = 0, stopped = 0, bytes = 0, got = 0;
+  let blocked: UploadBlock | null = null;
   for (const i of items) {
     if (i.status === "done") done++;
     else if (i.status === "duplicate") duplicate++;
     else if (i.status === "failed") failed++;
+    else if (i.status === "stopped") stopped++;
+    if (i.block && (i.status === "failed" || i.status === "stopped")) blocked ??= i.block;
     bytes += i.file.size;
-    got += i.file.size * (["done", "duplicate", "failed"].includes(i.status) ? 1 : i.status === "uploading" ? i.progress : 0);
+    got += i.file.size * (FINISHED.includes(i.status) ? 1 : i.status === "uploading" ? i.progress : 0);
   }
-  const finished = done + duplicate + failed;
-  return { total: items.length, finished, done, duplicate, failed, active: finished < items.length, progress: bytes ? got / bytes : 1 };
+  const finished = done + duplicate + failed + stopped;
+  return {
+    total: items.length,
+    finished,
+    done,
+    duplicate,
+    failed,
+    stopped,
+    blocked,
+    active: finished < items.length,
+    progress: bytes ? got / bytes : 1,
+  };
 }

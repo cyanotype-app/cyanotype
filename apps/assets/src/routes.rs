@@ -13,7 +13,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use bytes::{Bytes, BytesMut};
 use cyanotype_core::{
-    jobs, keys, metrics, objmeta, pairing,
+    jobs, keys, limits, metrics, objmeta, pairing,
     storage::{Storage, UploadedPart},
 };
 use http_body_util::BodyExt;
@@ -34,6 +34,8 @@ mod edits;
 mod edits_tests;
 mod favorites;
 mod group;
+#[cfg(test)]
+mod limits_tests;
 mod map;
 #[cfg(test)]
 mod map_tests;
@@ -115,6 +117,11 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/processing/retry", post(processing::retry))
         .route("/assets/usage", get(usage::mine))
         .route("/assets/admin/accounts", get(usage::accounts))
+        .route("/assets/admin/accounts/{id}/limits", put(usage::set_limits))
+        .route(
+            "/assets/admin/default-limits",
+            get(usage::default_limits).put(usage::set_default_limits),
+        )
         .route(
             "/assets/admin/bucket-check",
             get(usage::bucket_check).post(usage::start_bucket_check),
@@ -187,12 +194,21 @@ async fn part_urls(
     transport: Transport,
     key: &str,
     upload_id: &str,
+    layout: (i64, i64),
     numbers: impl IntoIterator<Item = i32>,
 ) -> ApiResult<Vec<PartUrl>> {
+    let (size_bytes, part_size) = layout;
     Ok(match transport {
+        // Each URL is signed for the exact length the layout gives its part; `complete` checks what arrived either way.
         Transport::Direct => s
             .storage
-            .presign_parts(key, upload_id, numbers)
+            .presign_parts(
+                key,
+                upload_id,
+                numbers
+                    .into_iter()
+                    .map(|n| (n, expected_part_size(n, size_bytes, part_size))),
+            )
             .await?
             .into_iter()
             .map(|p| PartUrl {
@@ -267,7 +283,13 @@ struct PendingUpload {
 
 /// An earlier `check` for the same content left a multipart upload behind (client died, network drop).
 /// Resume it instead of creating (and leaking) another one. Returns None when there is nothing usable.
-async fn resume_upload(s: &AppState, owner: Uuid, sha: &[u8], req: &CheckRequest) -> ApiResult<Option<CheckResponse>> {
+async fn resume_upload(
+    s: &AppState,
+    conn: &mut sqlx::PgConnection,
+    owner: Uuid,
+    sha: &[u8],
+    req: &CheckRequest,
+) -> ApiResult<Option<CheckResponse>> {
     let Some(p) = sqlx::query_as::<_, PendingUpload>(
         "SELECT upload_id, key, part_size FROM uploads
          WHERE owner_id = $1 AND sha256 = $2 AND size_bytes = $3 ORDER BY created_at DESC LIMIT 1",
@@ -275,7 +297,7 @@ async fn resume_upload(s: &AppState, owner: Uuid, sha: &[u8], req: &CheckRequest
     .bind(owner)
     .bind(sha)
     .bind(req.size_bytes)
-    .fetch_optional(&s.db)
+    .fetch_optional(&mut *conn)
     .await?
     else {
         return Ok(None);
@@ -284,21 +306,29 @@ async fn resume_upload(s: &AppState, owner: Uuid, sha: &[u8], req: &CheckRequest
         // S3 forgot the upload (aborted or expired): drop the stale row and start over.
         sqlx::query("DELETE FROM uploads WHERE upload_id = $1")
             .bind(&p.upload_id)
-            .execute(&s.db)
+            .execute(&mut *conn)
             .await?;
         return Ok(None);
     };
     let done = usable_parts(found, req.size_bytes, p.part_size);
     let n_parts = ((req.size_bytes + p.part_size - 1) / p.part_size) as i32;
     let missing: Vec<i32> = (1..=n_parts).filter(|n| !done.iter().any(|d| d.number == *n)).collect();
-    let parts = part_urls(s, req.transport, &p.key, &p.upload_id, missing).await?;
+    let parts = part_urls(
+        s,
+        req.transport,
+        &p.key,
+        &p.upload_id,
+        (req.size_bytes, p.part_size),
+        missing,
+    )
+    .await?;
     // Keep an upload that is being actively resumed away from the stale-upload janitor.
     sqlx::query(
         "UPDATE uploads SET created_at = now(), file_modified_at = coalesce($2, file_modified_at) WHERE upload_id = $1",
     )
     .bind(&p.upload_id)
     .bind(req.file_modified_at)
-    .execute(&s.db)
+    .execute(&mut *conn)
     .await?;
     Ok(Some(CheckResponse::Upload {
         upload_id: p.upload_id,
@@ -352,7 +382,23 @@ async fn check(
 
     refuse_if_purging(&s, user.id, &sha[..]).await?;
 
-    if let Some(resp) = resume_upload(&s, user.id, &sha[..], &req).await? {
+    // The account's limits (docs/admin.md, "Limits"), checked under a per-account lock that is held until the `uploads` row
+    // exists, so concurrent uploads cannot each fit while together passing a limit.
+    let mut tx = s.db.begin().await?;
+    limits::lock_account_uploads(&mut tx, user.id).await?;
+    let in_trash: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM assets WHERE owner_id = $1 AND sha256 = $2 AND deleted_at IS NOT NULL)",
+    )
+    .bind(user.id)
+    .bind(&sha[..])
+    .fetch_one(&mut *tx)
+    .await?;
+    if let Some(refusal) = limits::check_new_upload(&mut tx, user.id, &sha[..], req.size_bytes, in_trash).await? {
+        metrics::global().count("uploads.refused", 1, &[("reason", refusal_reason(&refusal))]);
+        return Err(limit_error(&refusal));
+    }
+
+    if let Some(resp) = resume_upload(&s, &mut tx, user.id, &sha[..], &req).await? {
         return Ok(Json(resp));
     }
 
@@ -372,7 +418,15 @@ async fn check(
     });
     let upload_id = s.storage.create_multipart(&key, &content_type, metadata).await?;
     let n_parts = ((req.size_bytes + PART_SIZE - 1) / PART_SIZE) as i32;
-    let parts = part_urls(&s, req.transport, &key, &upload_id, 1..=n_parts).await?;
+    let parts = part_urls(
+        &s,
+        req.transport,
+        &key,
+        &upload_id,
+        (req.size_bytes, PART_SIZE),
+        1..=n_parts,
+    )
+    .await?;
 
     sqlx::query(
         "INSERT INTO uploads (upload_id, owner_id, sha256, key, size_bytes, part_size, original_name, content_type, file_modified_at)
@@ -387,8 +441,9 @@ async fn check(
     .bind(&req.filename)
     .bind(&content_type)
     .bind(req.file_modified_at)
-    .execute(&s.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     Ok(Json(CheckResponse::Upload {
         upload_id,
@@ -396,6 +451,98 @@ async fn check(
         parts,
         uploaded: Vec::new(),
     }))
+}
+
+fn refusal_reason(r: &limits::Refusal) -> &'static str {
+    match r {
+        limits::Refusal::FileTooLarge { .. } => "file_too_large",
+        limits::Refusal::FileExceedsDailyCap { .. } => "file_exceeds_daily_cap",
+        limits::Refusal::QuotaExceeded { .. } => "quota_exceeded",
+        limits::Refusal::DailyCap { .. } => "daily_cap_exceeded",
+    }
+}
+
+/// A refused upload as the API answers it: 413 (quota, file size) or 429 (daily cap, with when it can resume), a stable
+/// `code` for clients and a message a person can read as it is.
+fn limit_error(r: &limits::Refusal) -> ApiError {
+    use limits::human;
+    let rfc = |t: OffsetDateTime| {
+        t.format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default()
+    };
+    let (status, message, details, retry_after_secs) = match r {
+        limits::Refusal::FileTooLarge { size, max_bytes } => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "This file is {} and the largest file your account may upload is {}.",
+                human(*size),
+                human(*max_bytes)
+            ),
+            serde_json::json!({"size_bytes": size, "max_file_bytes": max_bytes}),
+            None,
+        ),
+        limits::Refusal::FileExceedsDailyCap { size, cap } => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "This file is {}, more than your whole daily upload limit of {}, so it cannot be uploaded with this account.",
+                human(*size),
+                human(*cap)
+            ),
+            serde_json::json!({"size_bytes": size, "daily_upload_bytes": cap}),
+            None,
+        ),
+        limits::Refusal::QuotaExceeded {
+            size,
+            quota_bytes,
+            stored_bytes,
+            reserved_bytes,
+        } => {
+            let remaining = (quota_bytes - stored_bytes - reserved_bytes).max(0);
+            (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "Not enough storage: this file needs {} and your account has {} left of {}. Photos in the trash count until it is emptied.",
+                    human(*size),
+                    human(remaining),
+                    human(*quota_bytes)
+                ),
+                serde_json::json!({
+                    "size_bytes": size, "quota_bytes": quota_bytes, "stored_bytes": stored_bytes,
+                    "reserved_bytes": reserved_bytes, "remaining_bytes": remaining,
+                }),
+                None,
+            )
+        }
+        limits::Refusal::DailyCap {
+            size,
+            cap,
+            used_bytes,
+            retry_at,
+        } => {
+            let secs = (*retry_at - OffsetDateTime::now_utc()).whole_seconds().max(1) as u64;
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                format!(
+                    "Daily upload limit reached: {} of {} used in the last 24 hours. Uploads can resume at {}.",
+                    human(*used_bytes),
+                    human(*cap),
+                    rfc(*retry_at)
+                ),
+                serde_json::json!({
+                    "size_bytes": size, "daily_upload_bytes": cap, "used_bytes": used_bytes,
+                    "retry_at": rfc(*retry_at), "retry_after_secs": secs,
+                }),
+                Some(secs),
+            )
+        }
+    };
+    ApiError::Limited {
+        status,
+        code: refusal_reason(r),
+        message,
+        details,
+        retry_after_secs,
+    }
 }
 
 #[derive(FromRow)]
@@ -616,6 +763,34 @@ async fn complete(
 
     let mut parts: Vec<(i32, String)> = req.parts.into_iter().map(|p| (p.number, p.etag)).collect();
     parts.sort_by_key(|p| p.0);
+    // What reached storage must not add up to more than was declared (and reserved against the limits). A client that
+    // lied about the size is refused before the object exists, and its parts are discarded.
+    if let Some(stored) = s.storage.list_parts(&up.key, &req.upload_id).await? {
+        let total: i64 = stored
+            .iter()
+            .filter(|p| parts.iter().any(|(n, _)| *n == p.number))
+            .map(|p| p.size)
+            .sum();
+        if total > up.size_bytes {
+            s.storage.abort_multipart(&up.key, &req.upload_id).await?;
+            sqlx::query("DELETE FROM uploads WHERE upload_id = $1")
+                .bind(&req.upload_id)
+                .execute(&s.db)
+                .await?;
+            metrics::global().count("uploads.refused", 1, &[("reason", "larger_than_declared")]);
+            return Err(ApiError::Limited {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                code: "upload_larger_than_declared",
+                message: format!(
+                    "The uploaded parts add up to {}, more than the {} that was declared. The upload was discarded.",
+                    limits::human(total),
+                    limits::human(up.size_bytes)
+                ),
+                details: serde_json::json!({"declared_bytes": up.size_bytes, "received_bytes": total}),
+                retry_after_secs: None,
+            });
+        }
+    }
     s.storage.complete_multipart(&up.key, &req.upload_id, &parts).await?;
 
     // Trust but verify: the stored object must be the size the client declared.

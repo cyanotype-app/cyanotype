@@ -115,6 +115,7 @@ configuration in Datadog (distributions would need percentile aggregation enable
 | `cyanotype.usage.reconcile.drift_bytes` | gauge | | Bytes those counters were off by, summed over accounts. |
 | `cyanotype.usage.bytes` | gauge | `kind` (`originals`, `trash`, `derived`) | Server totals of what accounts store, sampled at each reconcile. |
 | `cyanotype.usage.photos` | gauge | | Photos in all libraries, at the same time. |
+| `cyanotype.uploads.refused` | count | `reason` (`quota_exceeded`, `daily_cap_exceeded`, `file_too_large`, `file_exceeds_daily_cap`, `larger_than_declared`) | Uploads an account's limits refused (docs/admin.md, "Limits"). A steady trickle is people at their limits; a burst from one client is worth a look. |
 | `cyanotype.uploads.completed` / `.bytes` | count | `family` | Uploads completed (browser and CLI) and their bytes. |
 | `cyanotype.uploads.parts` | count | `outcome` (`ok`, `timeout` = HTTP 408, `error`) | Proxied (browser) part uploads. |
 | `cyanotype.uploads.part_latency_ms` | histogram | | Time to receive a part from the browser and relay it to the bucket (successful parts). |

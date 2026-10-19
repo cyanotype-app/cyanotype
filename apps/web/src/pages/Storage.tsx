@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api, type MyUsage } from "../api";
 import { bytesLabel } from "../adminText";
 import { barShares, countLabel, derivedLabel } from "../storageText";
+import { meters, resumeText, warningFor, type Meter } from "../limitsText";
 
 /** Settings > Storage: what the account stores, split into photos and trash, and what it uploaded lately. */
 export function Storage() {
@@ -42,6 +43,11 @@ export function Storage() {
 function UsageView({ usage }: { usage: MyUsage }) {
   const shares = barShares(usage.originals_bytes, usage.trash_bytes);
   const up = usage.uploads;
+  const m = meters(usage);
+  const warnings = [
+    { text: warningFor(m.quota, "storage"), level: m.quota?.level },
+    { text: warningFor(m.daily, "daily upload limit"), level: m.daily?.level },
+  ].filter((w): w is { text: string; level: Meter["level"] } => w.text !== null && w.level !== undefined);
   return (
     <>
       <p className="storage-total">
@@ -63,6 +69,32 @@ function UsageView({ usage }: { usage: MyUsage }) {
           <span className="swatch usage-trash" aria-hidden="true" /> Trash
         </li>
       </ul>
+
+      {warnings.map((w) => (
+        <p key={w.text} className={`limit-warning level-${w.level}`} role="status">
+          {w.text}
+        </p>
+      ))}
+
+      <h2>Your limits</h2>
+      <dl className="usage-list">
+        <dt>Storage</dt>
+        <dd>
+          {m.quota ? <MeterView m={m.quota} label="Storage used" /> : "No limit"}
+          {m.quota && <div className="muted small">Photos and the trash count; thumbnails do not.</div>}
+        </dd>
+        <dt>Uploads per day</dt>
+        <dd>
+          {m.daily ? <MeterView m={m.daily} label="Uploaded in the last 24 hours" /> : "No limit"}
+          {m.daily && usage.daily?.oldest_rolls_out_at && usage.daily.used_bytes > 0 && (
+            <div className="muted small">
+              Counts the last 24 hours. The first of it frees up at {resumeText(usage.daily.oldest_rolls_out_at)}.
+            </div>
+          )}
+        </dd>
+        <dt>Largest file</dt>
+        <dd>{m.maxFile ? bytesLabel(m.maxFile) : "No limit"}</dd>
+      </dl>
 
       <h2>Breakdown</h2>
       <dl className="usage-list">
@@ -107,6 +139,26 @@ function UsageView({ usage }: { usage: MyUsage }) {
           <span className="muted"> · {bytesLabel(up.bytes_30d)}</span>
         </dd>
       </dl>
+    </>
+  );
+}
+
+function MeterView({ m, label }: { m: Meter; label: string }) {
+  return (
+    <>
+      <div
+        className={`meter level-${m.level}`}
+        role="progressbar"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={m.percent}
+      >
+        <span style={{ width: `${m.percent}%` }} />
+      </div>
+      <div>
+        {bytesLabel(m.used)} of {bytesLabel(m.limit)} <span className="muted">({m.percent}%)</span>
+      </div>
     </>
   );
 }

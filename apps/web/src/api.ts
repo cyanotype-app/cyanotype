@@ -52,6 +52,13 @@ export interface IssuedInvite {
   path: string;
 }
 
+/** An account's limits; null is unlimited. */
+export interface Limits {
+  quota_bytes: number | null;
+  daily_upload_bytes: number | null;
+  max_file_bytes: number | null;
+}
+
 /** GET /assets/usage: what the caller stores and uploaded lately. */
 export interface MyUsage {
   originals_bytes: number;
@@ -66,6 +73,10 @@ export interface MyUsage {
   file_count: number;
   trash_count: number;
   uploads: { count_24h: number; bytes_24h: number; count_30d: number; bytes_30d: number };
+  /** Absent on older servers (no limits). */
+  limits?: Limits;
+  /** The rolling day as the daily cap counts it (completed uploads plus unfinished ones). */
+  daily?: { used_bytes: number; oldest_rolls_out_at: string | null };
 }
 
 /** An entry of GET /assets/admin/accounts: counts and sizes only. */
@@ -90,6 +101,9 @@ export interface AdminAccount {
   albums: number;
   shares: number;
   api_keys: number;
+  quota_bytes?: number | null;
+  daily_upload_bytes?: number | null;
+  max_file_bytes?: number | null;
 }
 
 export interface AdminTask<R = unknown> {
@@ -144,6 +158,8 @@ export interface AdminAccounts {
   /** The last nightly reconcile (null before the first). */
   reconcile: { at: string; users_checked: number; drifted_users: number; drift_bytes: number } | null;
   bucket_check: AdminTask<BucketReport> | null;
+  /** The limits accounts created from now on start with. */
+  default_limits?: Limits;
 }
 
 export interface NewInvite {
@@ -597,10 +613,16 @@ export type CheckResponse =
 /** A non-2xx response (or a network failure, status 0). `message` is the server's `{"error": ...}` text when present. */
 export class ApiError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  /** The server's machine-readable reason (`quota_exceeded`, `daily_cap_exceeded`, ...), when it gave one. */
+  readonly code?: string;
+  /** The rest of an error body (sizes, `retry_at`), when it had more than a message. */
+  readonly details?: Record<string, unknown>;
+  constructor(status: number, message: string, code?: string, details?: Record<string, unknown>) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = code;
+    this.details = details;
   }
 }
 
@@ -631,7 +653,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       typeof body === "object" && body !== null && "error" in body && typeof body.error === "string"
         ? body.error
         : `Request failed (${res.status})`;
-    throw new ApiError(res.status, msg);
+    const code =
+      typeof body === "object" && body !== null && "code" in body && typeof body.code === "string" ? body.code : undefined;
+    throw new ApiError(res.status, msg, code, code ? (body as Record<string, unknown>) : undefined);
   }
   return body as T;
 }
@@ -773,6 +797,10 @@ export const api = {
       json({ token }),
     ),
   usage: () => request<MyUsage>("/assets/usage"),
+  setAccountLimits: (id: string, limits: Limits) =>
+    request<Limits>(`/assets/admin/accounts/${encodeURIComponent(id)}/limits`, { method: "PUT", body: JSON.stringify(limits) }),
+  setDefaultLimits: (limits: Limits) =>
+    request<Limits>("/assets/admin/default-limits", { method: "PUT", body: JSON.stringify(limits) }),
   adminAccounts: () => request<AdminAccounts>("/assets/admin/accounts"),
   /** Queue the bucket listing (the worker runs it). */
   startBucketCheck: () =>

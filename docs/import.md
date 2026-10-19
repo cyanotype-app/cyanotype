@@ -95,6 +95,19 @@ Run the same command again. It is idempotent, and only what is missing is upload
   URLs for the rest, so only the missing parts are sent. Uploads idle for more than 7 days are aborted by a
   sweep in the assets service (which frees the storage that unfinished parts would keep billing for).
 
+## Account limits
+
+An administrator may give an account a storage quota (the trash counts until it is emptied), a daily upload cap and a largest
+file ([`admin.md`](admin.md), "Limits"). The import honours them without retrying forever:
+
+- **Quota or daily cap reached** (HTTP 413 `quota_exceeded`, 429 `daily_cap_exceeded`): the import stops starting new files (parts
+  already on their way finish), counts the rest as "not started" and prints why, in the server's words, plus what to do. For the
+  daily cap it says when uploads can resume (`Run the same command again after 2026-06-02T03:04:05Z ...`); for the quota, to free up
+  space or ask the administrator. The exit status is non-zero. Run the same command again later: files already uploaded are
+  recognised and skipped, so it carries on where it stopped. A 429 that is *not* a limit (busy server) is still retried with backoff.
+- **A file over the largest-file limit** (413 `file_too_large`, or `file_exceeds_daily_cap`): that file is reported as failed with
+  the reason and the import goes on with the others.
+
 ## RAW and HEIC
 
 Everything is imported as an immutable original with a vendor-specific MIME type (for example
