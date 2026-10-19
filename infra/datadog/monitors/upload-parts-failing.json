@@ -1,0 +1,23 @@
+{
+  "name": "[Cyanotype] Upload parts failing",
+  "type": "query alert",
+  "query": "sum(last_30m):sum:cyanotype.uploads.parts{outcome:error}.as_count() / clamp_min(sum:cyanotype.uploads.parts{*}.as_count(), 20) > 0.25",
+  "message": "{{#is_alert}}A quarter of proxied upload parts failed over 30 minutes.{{/is_alert}}\n{{#is_warning}}More than 5% of proxied upload parts failed over 30 minutes.{{/is_warning}}\nThe rate is failed parts over all parts, with the total floored at 20, so a handful of parts cannot trip it. Split `cyanotype.uploads.parts{outcome:error}` by `reason`: `client_aborted` and `body_too_short` are browsers or networks dropping mid-part (a flaky link, or a gateway timeout shorter than a slow upload), `storage_error` is the bucket refusing parts, `other` is everything else. The matching warn logs are `service:cyanotype-assets \"part upload failed\"` with `upload_id`, `part`, `reason`, `bytes_received`, `bytes_expected` and `elapsed_ms`.",
+  "tags": [
+    "team:cyanotype",
+    "app:cyanotype",
+    "service:cyanotype-assets"
+  ],
+  "priority": null,
+  "options": {
+    "thresholds": {
+      "critical": 0.25,
+      "warning": 0.05
+    },
+    "notify_no_data": false,
+    "include_tags": true,
+    "notify_audit": false,
+    "require_full_window": false,
+    "renotify_interval": 0
+  }
+}

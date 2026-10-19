@@ -30,4 +30,5 @@ uuid.workspace = true
 [dev-dependencies]
 tower.workspace = true
 sha2.workspace = true
+http-body = "1"
 time = { workspace = true, features = ["macros"] }
