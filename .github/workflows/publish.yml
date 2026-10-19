@@ -1,7 +1,8 @@
 name: Publish images
-# Builds the five images with one `docker buildx bake` (the workspace compiles once) and pushes them to
-# GHCR. Runs only for pushes to main and for v* tags; pull requests never reach this workflow (CI's
-# `images` job builds without pushing). Uses the built-in GITHUB_TOKEN, no stored secrets.
+# Builds the images with `docker buildx bake` (the workspace compiles once) and pushes them to GHCR. The web image carries
+# the downloadable CLI (/cli/*), built and signed by the first job, which is the only one that can read the release key.
+# Runs only for pushes to main and for v* tags; pull requests never reach this workflow (CI's
+# `images` job builds without pushing). Uses the built-in GITHUB_TOKEN; the one stored secret is the CLI release key.
 #
 # Tags per image (ghcr.io/<owner>/cyanotype-<svc>):
 #   every run   sha-<short>
@@ -21,8 +22,74 @@ permissions:
   contents: read
 
 jobs:
+  # The CLI downloads for every platform, signed with the release key. The key is a secret of the `release` environment
+  # (Settings -> Environments; restrict it to main and v* tags) and only this job runs in that environment. It reaches
+  # BuildKit as a secret mount (--set ...secrets=id=cli_release_key,env=CLI_RELEASE_KEY): never a build arg, never in a layer,
+  # never printed. Without it (not configured yet) the dist is built unsigned and marked as such.
+  cli-dist:
+    name: Build and sign the CLI downloads
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    environment: release
+    permissions:
+      contents: read
+      actions: read # wait-for-cli-tag.sh reads the tag workflow's run
+    env:
+      CACHE: gha
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # The CLI version is the newest cli-vX.Y.Z tag reachable from this commit. The tag for THIS commit is created by the
+      # "CLI release tag" workflow, which runs on the same push: wait for it (main pushes), then read the tags.
+      # Deterministic by construction: same commit, same tag set, same version; the build never guesses a version.
+      - name: Wait for the CLI tag job (main)
+        if: github.ref_type == 'branch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: scripts/wait-for-cli-tag.sh "$GITHUB_SHA"
+
+      - name: CLI version of this commit
+        id: ver
+        run: |
+          set -euo pipefail
+          git fetch --tags --force --quiet origin
+          version="$(python3 -I scripts/cli_release.py current "$GITHUB_SHA")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "CLI version for ${GITHUB_SHA::7}: ${version:-none yet (development build)}"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      # Exposes ACTIONS_CACHE_URL / ACTIONS_RUNTIME_TOKEN to `docker buildx bake` for type=gha.
+      - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3.1.0
+
+      - name: Bake the CLI dist (signed when the release key is configured)
+        env:
+          CLI_VERSION: ${{ steps.ver.outputs.version }}
+          REVISION: ${{ github.sha }}
+          CLI_RELEASE_KEY: ${{ secrets.CLI_RELEASE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "$CLI_VERSION" ] && [ -n "$CLI_RELEASE_KEY" ]; then
+            docker buildx bake -f docker-bake.hcl cli-dist --set 'cli-dist.secrets=id=cli_release_key,env=CLI_RELEASE_KEY'
+          else
+            echo "::warning::building an UNSIGNED CLI dist (version='${CLI_VERSION}', release key configured: $([ -n "$CLI_RELEASE_KEY" ] && echo yes || echo no)); 'cyanotype update' will refuse it"
+            docker buildx bake -f docker-bake.hcl cli-dist
+          fi
+          ls -l cli-dist-out
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-dist
+          path: cli-dist-out
+          retention-days: 1
+          if-no-files-found: error
+
   publish:
     name: Build and push to GHCR
+    needs: cli-dist
     runs-on: ubuntu-latest
     # Belt and braces: the triggers above already exclude pull requests.
     if: github.event_name == 'push'
@@ -68,9 +135,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The signed CLI downloads from the first job go into the web image as a local build context (this job never sees the key).
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cli-dist
+          path: cli-dist-out
+
       - name: Bake and push
         env:
           REGISTRY: ${{ steps.meta.outputs.registry }}
           TAGS: ${{ steps.meta.outputs.tags }}
           REVISION: ${{ github.sha }}
-        run: docker buildx bake -f docker-bake.hcl --push
+        run: docker buildx bake -f docker-bake.hcl --push --set 'web.contexts.cli-dist-ctx=cli-dist-out'

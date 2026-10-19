@@ -6,10 +6,38 @@ is resumable, idempotent and uses a small, fixed amount of memory.
 
 ## 1. Install
 
+Your Cyanotype server hands out the program itself. On macOS and Linux (x86_64 and aarch64):
+
+```sh
+curl -fsSL https://photos.example.com/cli/install.sh | sh                  # ~/.local/bin
+curl -fsSL https://photos.example.com/cli/install.sh | sh -s -- --system   # /usr/local/bin (asks for sudo if needed)
+```
+
+On Windows (PowerShell, 64-bit):
+
+```powershell
+irm https://photos.example.com/cli/install.ps1 | iex
+```
+
+Use your own server's address (the page Settings, "API keys", shows these commands for your server and your OS). The
+script picks the right build for your system, downloads it and `SHA256SUMS` from the same server, checks the checksum (and
+the signature when `ssh-keygen` is installed), installs it, warns if the folder is not on your `PATH` and prints the next
+step, `cyanotype login <your server>`. It changes nothing else.
+
+Keep it current with `cyanotype update` (`--check` only reports; `--version X` installs a version the server offers). The
+CLI also mentions a newer version at most once a day after `login`, `import` and `status`
+(`CYANOTYPE_NO_UPDATE_CHECK=1` turns that off), and `import` refuses a CLI older than the server's minimum with a message
+saying to update. How the downloads are built and signed: [`releases.md`](releases.md).
+
+From source (a developer, or a platform without a build):
+
 ```sh
 cargo install --path apps/cli --locked      # installs the `cyanotype` binary
 # or from a checkout: cargo run --release -p cyanotype-cli -- <command>   (also: `just import <paths>`)
 ```
+
+A source build includes the operator commands (`migrate`, `reindex`, `manifest`) that the downloadable build leaves out,
+and reports itself as a development build (`0.0.1-dev`), which `cyanotype update` will not overwrite.
 
 ## 2. Create an API key and log in
 

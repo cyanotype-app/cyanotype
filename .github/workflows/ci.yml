@@ -131,6 +131,15 @@ jobs:
       - name: Dockerfile builds with the pinned Rust version
         run: scripts/check-rust-pin.sh
       - run: just check
+      # The downloadable CLI is built without the server tools (Dockerfile stage cli-dist): it must compile, pass lint and its tests.
+      - name: CLI without the server tools (clippy, tests)
+        run: |
+          cargo clippy -p cyanotype-cli --no-default-features --all-targets -- -D warnings
+          cargo test -p cyanotype-cli --no-default-features
+      - name: CLI release tooling (tag decisions, dist assembly and signing)
+        run: |
+          python3 -I -m unittest discover -s scripts -p 'test_cli_release.py'
+          scripts/test-cli-dist.sh
       - name: deploy.sh against a fake ssh (regression test)
         run: scripts/test-deploy.sh
       - name: Migrations apply cleanly (the one-shot migrate step services depend on)
@@ -167,8 +176,11 @@ jobs:
       # Exposes ACTIONS_CACHE_URL / ACTIONS_RUNTIME_TOKEN to `docker buildx bake` for type=gha.
       - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3.1.0
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.0.0
-      # One bake = one shared builder stage = the workspace compiles once for all the Rust images.
+      # One bake = one shared builder stage = the workspace compiles once for all the Rust images. It also builds the
+      # CLI downloads (cross-compiled, own cache scope cyanotype-cli-dist) into the web image; no signing key here, so unsigned.
       - run: just images
+      - name: CLI downloads (all targets, install scripts, served by the web Caddyfile)
+        run: scripts/test-cli-dist.sh --docker
 
   compose:
     name: Compose and gateway config
