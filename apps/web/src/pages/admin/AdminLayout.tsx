@@ -10,6 +10,7 @@ export function AdminLayout() {
     <div className="admin">
       <h1>Administration</h1>
       <nav className="admin-nav" aria-label="Administration">
+        <NavLink to="/admin/accounts">Accounts</NavLink>
         <NavLink to="/admin/invites">Invites</NavLink>
       </nav>
       <Outlet />

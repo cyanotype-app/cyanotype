@@ -1,3 +1,4 @@
+mod admin;
 mod budget;
 mod burst;
 mod embed;
@@ -127,6 +128,7 @@ async fn main() -> Result<()> {
     // Instant pickup: a dedicated LISTEN connection (not from the pool) wakes the loop below.
     let waker = jobs::JobWaker::spawn(&db_cfg.url);
     tokio::spawn(sample_gauges(ctx.clone()));
+    admin::spawn(ctx.clone());
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
     loop {

@@ -52,6 +52,100 @@ export interface IssuedInvite {
   path: string;
 }
 
+/** GET /assets/usage: what the caller stores and uploaded lately. */
+export interface MyUsage {
+  originals_bytes: number;
+  trash_bytes: number;
+  /** originals + trash: what counts toward a quota (derived images do not). */
+  stored_bytes: number;
+  derived_bytes: number;
+  /** False while some thumbnails have not been measured yet: `derived_bytes` is then a lower bound. */
+  derived_complete: boolean;
+  photo_count: number;
+  raw_count: number;
+  file_count: number;
+  trash_count: number;
+  uploads: { count_24h: number; bytes_24h: number; count_30d: number; bytes_30d: number };
+}
+
+/** An entry of GET /assets/admin/accounts: counts and sizes only. */
+export interface AdminAccount {
+  id: string;
+  email: string;
+  role: "admin" | "member";
+  created_at: string;
+  last_active: string | null;
+  originals_bytes: number;
+  trash_bytes: number;
+  derived_bytes: number;
+  photo_count: number;
+  raw_count: number;
+  file_count: number;
+  trash_count: number;
+  derived_files: number;
+  uploads_24h_count: number;
+  uploads_24h_bytes: number;
+  uploads_30d_count: number;
+  uploads_30d_bytes: number;
+  albums: number;
+  shares: number;
+  api_keys: number;
+}
+
+export interface AdminTask<R = unknown> {
+  id: number;
+  kind: string;
+  state: "queued" | "running" | "done" | "failed";
+  result: R | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+/** The result of a bucket check task. */
+export interface BucketReport {
+  finished_at: string;
+  versioned: boolean;
+  objects: number;
+  current_bytes: number;
+  originals_bytes: number;
+  derived_bytes: number;
+  manifests_bytes: number;
+  edits_bytes: number;
+  other_bytes: number;
+  noncurrent_versions: number;
+  noncurrent_bytes: number;
+  delete_markers: number;
+  db_originals_bytes: number;
+  db_derived_bytes: number;
+  db_derived_files: number;
+  db_files: number;
+  unknown_account_bytes: number;
+  mismatched: { user_id: string; email: string; bucket_originals_bytes: number; db_originals_bytes: number }[];
+}
+
+/** GET /assets/admin/accounts */
+export interface AdminAccounts {
+  items: AdminAccount[];
+  totals: {
+    accounts: number;
+    originals_bytes: number;
+    trash_bytes: number;
+    derived_bytes: number;
+    derived_complete: boolean;
+    photo_count: number;
+    raw_count: number;
+    uploads_24h_count: number;
+    uploads_24h_bytes: number;
+    uploads_30d_count: number;
+    uploads_30d_bytes: number;
+  };
+  /** The last nightly reconcile (null before the first). */
+  reconcile: { at: string; users_checked: number; drifted_users: number; drift_bytes: number } | null;
+  bucket_check: AdminTask<BucketReport> | null;
+}
+
 export interface NewInvite {
   note?: string;
   expires_in_days?: number;
@@ -678,6 +772,12 @@ export const api = {
       "/auth/invites/check",
       json({ token }),
     ),
+  usage: () => request<MyUsage>("/assets/usage"),
+  adminAccounts: () => request<AdminAccounts>("/assets/admin/accounts"),
+  /** Queue the bucket listing (the worker runs it). */
+  startBucketCheck: () =>
+    request<{ task: AdminTask<BucketReport>; already_running: boolean }>("/assets/admin/bucket-check", { method: "POST" }),
+  bucketCheck: () => request<{ task: AdminTask<BucketReport> | null }>("/assets/admin/bucket-check"),
   listInvites: () => request<{ items: Invite[] }>("/auth/admin/invites"),
   createInvite: (body: NewInvite) => request<IssuedInvite>("/auth/admin/invites", json(body)),
   /** A fresh link for an unused invite; the previous link stops working. */

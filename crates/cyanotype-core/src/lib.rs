@@ -1,3 +1,4 @@
+pub mod admin_tasks;
 pub mod bursts;
 pub mod config;
 pub mod db;
@@ -14,3 +15,4 @@ pub mod reindex;
 pub mod scan;
 pub mod storage;
 pub mod telemetry;
+pub mod usage;

@@ -2956,3 +2956,150 @@ body:has(.selection-bar) .scrubber {
     min-width: 0;
   }
 }
+
+/* Storage page and the admin accounts page (docs/admin.md). */
+.settings-nav {
+  max-width: 44rem;
+  margin: 0.5rem auto 0;
+  padding-inline: 1rem;
+}
+.storage-total {
+  margin: 1rem 0 0.5rem;
+  font-size: 1.6rem;
+}
+.usage-bar {
+  display: flex;
+  height: 0.9rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+.usage-photos {
+  background: var(--pb-500);
+}
+.usage-trash {
+  background: color-mix(in srgb, var(--danger) 70%, var(--surface-2));
+}
+.usage-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.875rem;
+}
+.swatch {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  margin-right: 0.3rem;
+  border-radius: 50%;
+}
+.storage h2 {
+  margin: 1.5rem 0 0.25rem;
+  font-size: 1.1rem;
+}
+.usage-list {
+  display: grid;
+  grid-template-columns: minmax(0, 11rem) minmax(0, 1fr);
+  gap: 0.5rem 1rem;
+  margin: 0;
+}
+.usage-list dt {
+  color: var(--muted);
+}
+.usage-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+  gap: 0.5rem;
+  margin: 1rem 0 0.5rem;
+}
+.stat {
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--surface);
+}
+.stat dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.stat dd {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.account-list {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.account {
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  background: var(--surface);
+}
+.account-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  align-items: center;
+}
+.account-email {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.account-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+}
+.account-stats .stat {
+  background: var(--bg);
+}
+.badge-role-admin {
+  background: color-mix(in srgb, var(--pb-500) 28%, var(--surface));
+}
+.bucket-check {
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+.bucket-check h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+.mismatch-list {
+  padding-left: 1.2rem;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .settings-nav {
+    padding-inline: max(1rem, env(safe-area-inset-left));
+  }
+  .usage-list {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .usage-list dd {
+    margin-bottom: 0.6rem;
+  }
+  .stat-grid,
+  .account-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

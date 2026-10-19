@@ -64,6 +64,9 @@ mod timeline_tests;
 mod trash;
 #[cfg(test)]
 mod upload_meta_tests;
+mod usage;
+#[cfg(test)]
+mod usage_tests;
 
 use crate::AppState;
 use cyanotype_service::{ApiError, ApiResult, AuthUser};
@@ -110,6 +113,12 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/places", get(edits::places))
         .route("/assets/processing", get(processing::status))
         .route("/assets/processing/retry", post(processing::retry))
+        .route("/assets/usage", get(usage::mine))
+        .route("/assets/admin/accounts", get(usage::accounts))
+        .route(
+            "/assets/admin/bucket-check",
+            get(usage::bucket_check).post(usage::start_bucket_check),
+        )
         .route("/assets/trash", get(trash::list).post(trash::trash))
         .route("/assets/trash/empty", post(trash::empty))
         .route("/assets/restore", post(trash::restore))
@@ -571,6 +580,13 @@ async fn register_asset(db: &sqlx::PgPool, owner: Uuid, upload_id: &str, up: &Up
     }
     sqlx::query("DELETE FROM uploads WHERE upload_id = $1")
         .bind(upload_id)
+        .execute(&mut *tx)
+        .await?;
+    // The bytes were uploaded whether the content was new or a trashed copy came back: this feeds "uploaded in the last
+    // 24 hours / 30 days" (the storage counters follow the `assets` row itself, by trigger).
+    sqlx::query("INSERT INTO upload_log (owner_id, bytes) VALUES ($1, $2)")
+        .bind(owner)
+        .bind(up.size_bytes.max(0))
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
