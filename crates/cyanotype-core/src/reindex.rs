@@ -123,7 +123,7 @@ pub struct Report {
     pub manifest_users: u64,
     pub manifest_files: u64,
     pub manifest_bad_lines: u64,
-    /// Accounts in the newest account manifest.
+    /// Users listed in the newest account manifest.
     pub users_in_manifest: u64,
     /// Recreated (or that would be): the database lacked them. Their passwords are locked: `cyanotype reset-link`.
     pub users_restored: u64,
@@ -405,7 +405,7 @@ pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Repor
     );
 
     // First: the accounts, because the photos' keys name their owners and an owner without an account is skipped.
-    restore_accounts(&mut cx).await?;
+    restore_users(&mut cx).await?;
     let derived = scan_derived(storage).await?;
     let seen = scan_originals(&mut cx).await?;
     check_rows(&mut cx, &seen, &derived).await?;
@@ -424,13 +424,13 @@ pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Repor
     Ok(cx.report)
 }
 
-/// Accounts and server settings from the newest account manifest (`identity`): recreate the accounts the database lacks (with a
+/// Users and server settings from the newest account manifest (`identity`): recreate the accounts the database lacks (with a
 /// locked password) so their photos have owners. Nothing that exists is changed. Skipped with `--no-manifest`.
-async fn restore_accounts(cx: &mut Ctx<'_>) -> Result<()> {
+async fn restore_users(cx: &mut Ctx<'_>) -> Result<()> {
     if !cx.opts.use_manifests {
         return Ok(());
     }
-    let accounts = match identity::load_newest(cx.storage).await {
+    let roster = match identity::load_newest(cx.storage).await {
         Ok(Some(a)) => a,
         Ok(None) => return Ok(()),
         Err(e) => {
@@ -439,9 +439,9 @@ async fn restore_accounts(cx: &mut Ctx<'_>) -> Result<()> {
             return Ok(());
         }
     };
-    cx.report.users_in_manifest = accounts.users.len() as u64;
-    cx.report.manifest_bad_lines += accounts.bad_lines as u64;
-    let out = match identity::restore(cx.db, &accounts, cx.opts.apply).await {
+    cx.report.users_in_manifest = roster.users.len() as u64;
+    cx.report.manifest_bad_lines += roster.bad_lines as u64;
+    let out = match identity::restore(cx.db, &roster, cx.opts.apply).await {
         Ok(o) => o,
         Err(e) => {
             cx.report.errors += 1;

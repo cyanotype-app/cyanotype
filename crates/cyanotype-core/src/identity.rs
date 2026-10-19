@@ -75,7 +75,7 @@ pub struct SettingLine {
 
 /// The newest account manifest, parsed.
 #[derive(Debug, Default)]
-pub struct Accounts {
+pub struct Roster {
     pub key: String,
     pub users: Vec<UserLine>,
     pub settings: Vec<SettingLine>,
@@ -171,13 +171,13 @@ fn accounts_key_date(key: &str) -> Option<&str> {
 }
 
 /// The newest account manifest, if the bucket has one.
-pub async fn load_newest(storage: &Storage) -> Result<Option<Accounts>> {
+pub async fn load_newest(storage: &Storage) -> Result<Option<Roster>> {
     let Some(key) = list(storage).await?.into_iter().next() else {
         return Ok(None);
     };
     let bytes = storage.get_bytes_limited(&key, MAX_BYTES).await?;
     let (lines, bad_lines) = parse(&bytes);
-    let mut a = Accounts {
+    let mut a = Roster {
         key,
         bad_lines,
         ..Default::default()
@@ -237,9 +237,9 @@ pub fn locked_password_hash() -> Result<String> {
 
 #[derive(Debug, Default)]
 pub struct RestoreOutcome {
-    /// Accounts created (or that would be, in a dry run).
+    /// Users created (or that would be, in a dry run).
     pub restored: Vec<Uuid>,
-    /// Accounts that already exist (same id).
+    /// Users that already exist (same id).
     pub present: u64,
     /// The email is taken by an account with another id (e.g. someone registered again before the reindex): left alone.
     pub conflicts: Vec<Uuid>,
@@ -248,9 +248,9 @@ pub struct RestoreOutcome {
 
 /// Recreate the accounts (and settings) the database does not have. Nothing existing is changed. With `apply` false it only
 /// reports. Restored accounts have a locked password.
-pub async fn restore(db: &PgPool, accounts: &Accounts, apply: bool) -> Result<RestoreOutcome> {
+pub async fn restore(db: &PgPool, roster: &Roster, apply: bool) -> Result<RestoreOutcome> {
     let mut out = RestoreOutcome::default();
-    for u in &accounts.users {
+    for u in &roster.users {
         let by_id: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)")
             .bind(u.id)
             .fetch_one(db)
@@ -295,7 +295,7 @@ pub async fn restore(db: &PgPool, accounts: &Accounts, apply: bool) -> Result<Re
         }
         out.restored.push(u.id);
     }
-    for s in &accounts.settings {
+    for s in &roster.settings {
         if apply {
             let done =
                 sqlx::query("INSERT INTO server_state (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING")

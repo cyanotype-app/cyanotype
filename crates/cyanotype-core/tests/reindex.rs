@@ -825,8 +825,7 @@ async fn edits_come_back_with_a_rebuilt_database() {
     assert_eq!(
         (dry.orphans, dry.edits_objects, dry.edits_restored),
         (2, 4, 0),
-        "{}",
-        dry.text()
+        "unexpected reindex counters"
     );
     assert_eq!(fx.count("assets").await, 0);
 
@@ -834,8 +833,7 @@ async fn edits_come_back_with_a_rebuilt_database() {
     assert_eq!(
         (r.orphans_recreated, r.edits_objects, r.edits_restored, r.errors),
         (2, 4, 1, 0),
-        "{}",
-        r.text()
+        "unexpected reindex counters"
     );
     assert_eq!(
         (r.edits_without_photo, r.edits_bad),
@@ -1009,6 +1007,16 @@ async fn a_bucket_only_rebuild_brings_back_accounts_roles_limits_defaults_and_sh
     let r = fx.run(|o| o.apply = true).await;
     assert_eq!((r.users_restored, r.orphans_recreated, r.errors), (2, 2, 0));
     assert_eq!((r.albums_restored, r.shares_restored, r.settings_restored), (1, 2, 1));
+    // The report (printed, and sent as JSON by the CLI) carries counts and ids only: no hash, token, email or password.
+    let shown = format!("{}\n{}", r.text(), serde_json::to_string(&r).unwrap());
+    for (label, planted) in [
+        ("a password hash", "argon2"),
+        ("a share token", "open-token-"),
+        ("a share token", "locked-token-"),
+        ("an email", "@example.com"),
+    ] {
+        assert!(!shown.contains(planted), "the report leaks {label}");
+    }
 
     // Identity, role, limits, disabled flag: same ids as before.
     let (role, quota, daily, max_file, disabled): (String, Option<i64>, Option<i64>, Option<i64>, bool) =
