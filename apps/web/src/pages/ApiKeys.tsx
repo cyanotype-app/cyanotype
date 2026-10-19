@@ -1,7 +1,30 @@
 import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
 import { api, type ApiKey, type CreatedApiKey } from "../api";
+import { detectOs, installCommands, OS_LABEL, type CliOs } from "../cliInstall";
 
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never");
+
+/** The one-line install of the command line from this server, for the visitor's OS first. */
+function InstallCli() {
+  const cmds = installCommands(window.location.origin);
+  const mine = detectOs(navigator.userAgent);
+  const order: CliOs[] = mine === "windows" ? ["windows", "unix"] : ["unix", "windows"];
+  return (
+    <section className="install-cli" aria-label="Install the command line">
+      <h2>Install the command line</h2>
+      {order.map((os, i) => (
+        <div key={os} className={i === 0 ? undefined : "muted"}>
+          <div className="small">{OS_LABEL[os]}</div>
+          <code>{cmds[os]}</code>
+        </div>
+      ))}
+      <p className="muted small">
+        Then run <code>cyanotype login {window.location.origin}</code>. Later, <code>cyanotype update</code> keeps it
+        current.
+      </p>
+    </section>
+  );
+}
 
 /** Create, copy (shown once), list and revoke API keys, e.g. for `cyanotype login --api-key`. */
 export function ApiKeys() {
@@ -69,6 +92,8 @@ export function ApiKeys() {
         Keys let the <code>cyanotype</code> command line import photos without your password. Run{" "}
         <code>cyanotype login --server {window.location.origin} --api-key …</code>.
       </p>
+
+      <InstallCli />
 
       <form className="key-form" onSubmit={create}>
         <div>

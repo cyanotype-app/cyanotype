@@ -1,0 +1,74 @@
+name: CLI release tag
+# Tags a new CLI release (cli-vX.Y.Z) when a push to main changes the CLI. docs/releases.md.
+#
+# "Changes the CLI" = a file under apps/cli or under a workspace crate the CLI depends on (computed with
+# `cargo metadata`), or a Cargo.lock/Cargo.toml change that alters what the CLI is built from
+# (scripts/cli_release.py). The bump comes from the merged pull request: a `release:major|minor|patch|none`
+# label, or a line `Release: minor` in its description; the default is patch, `none` skips the release.
+#
+# A tag pushed with GITHUB_TOKEN does not start other workflows, so nothing is triggered by it. The Publish
+# workflow does not depend on that: it waits for this workflow's run for the same commit and then reads the tag
+# (scripts/wait-for-cli-tag.sh). Runs are serialised so two quick merges get consecutive versions.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: cli-tag
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: Tag a CLI release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag
+      pull-requests: read # read the merged PR's labels and description
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Decide and tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          # A re-run for a commit that already has its tag does nothing.
+          existing="$(git tag --points-at "$SHA" --list 'cli-v*')"
+          if [ -n "$existing" ]; then echo "$SHA is already tagged: $existing"; exit 0; fi
+
+          before="$BEFORE"
+          if [ -z "$before" ] || [ "${before//0/}" = "" ] || ! git cat-file -e "$before^{commit}" 2>/dev/null; then
+            before="$(git rev-parse "$SHA^")"
+          fi
+          changed="$(python3 -I scripts/cli_release.py changed "$before" "$SHA")"
+          echo "CLI changed between ${before::7} and ${SHA::7}: $changed"
+          if [ "$changed" != true ]; then echo "No CLI release for this push." >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
+
+          # The pull request this commit came from (merge, squash or rebase all list it).
+          labels=""; body_file="$(mktemp)"
+          pr="$(gh api "repos/$GH_REPO/commits/$SHA/pulls" --jq '.[0] // empty' || true)"
+          if [ -n "$pr" ]; then
+            labels="$(jq -r '[.labels[].name] | join(",")' <<<"$pr")"
+            jq -r '.body // ""' <<<"$pr" > "$body_file"
+            echo "Pull request #$(jq -r .number <<<"$pr"), labels: ${labels:-none}"
+          else
+            echo "No pull request found for $SHA (direct push): default bump."
+          fi
+          bump="$(python3 -I scripts/cli_release.py bump "$labels" "$body_file")"
+          if [ "$bump" = none ]; then
+            echo "release:none: no CLI release for this change." | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          version="$(python3 -I scripts/cli_release.py next "$bump")"
+          echo "Tagging cli-v$version ($bump)"
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/cli-v$version" -f sha="$SHA" --silent
+          echo "Tagged cli-v$version ($bump) at ${SHA::7}." | tee -a "$GITHUB_STEP_SUMMARY"

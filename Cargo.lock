@@ -1121,6 +1121,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "clap",
  "cyanotype-core",
  "flate2",
@@ -1128,6 +1129,7 @@ dependencies = [
  "globset",
  "indicatif",
  "reqwest",
+ "ring",
  "rpassword",
  "serde",
  "serde_json",

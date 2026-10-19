@@ -464,6 +464,11 @@ cache scope). Caching headers: `/static/*` (Vite's hashed output; `build.assetsD
 `/assets/*` is the API) is `immutable` for a year, everything else, `index.html` included, is `no-cache`, and
 unknown paths fall back to `index.html` for client-side routes. `/static/*` misses stay real 404s.
 
+The image also carries the downloadable CLI under `/srv/cli` (`/cli/*`): bake builds the Dockerfile's `cli-dist` stage
+(cross-compiled with zig + cargo-zigbuild, five targets, signed when a BuildKit secret is given) and hands it to the web
+Dockerfile as the named context `cli-dist-ctx`. `docker buildx bake cli-dist` writes it to `./cli-dist-out`. See
+[`releases.md`](releases.md) for targets, signing, tags and the cache scope (`cyanotype-cli-dist`).
+
 ## Web app
 
 `apps/web`: React 19, TypeScript, Vite, React Router, plain CSS (no UI kit), `thumbhash` for placeholders.
@@ -493,7 +498,9 @@ Versions are pinned by `pnpm-lock.yaml` and `packageManager` in `package.json`.
 `.github/workflows/publish.yml` runs on push to main and `v*` tags (never on pull requests). One
 `docker buildx bake --push` (gha cache) pushes `ghcr.io/<owner>/cyanotype-{auth,assets,worker,cli,backup,web}`
 with tags `sha-<short>`, `latest` (main) and `X.Y.Z`/`X.Y`/`X` (tags), authenticated with `GITHUB_TOKEN`
-(`packages: write`). `REGISTRY`, `TAGS` and `REVISION` are bake variables. `.github/workflows/deploy.yml`
+(`packages: write`). A first job (`cli-dist`, environment `release`) builds and signs the CLI downloads with the release
+key and the second job passes them to the web image as a build context (`docs/releases.md`). `REGISTRY`, `TAGS` and
+`REVISION` are bake variables. `.github/workflows/deploy.yml`
 then deploys a version to the VPS; see `docs/deploy.md`.
 
 ## Tasks

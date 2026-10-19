@@ -13,3 +13,4 @@ apps/web/playwright-report/
 /models/clip/
 /models/siglip2/
 /models/eval/
+/cli-dist-out/

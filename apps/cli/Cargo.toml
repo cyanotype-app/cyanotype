@@ -10,14 +10,22 @@ repository.workspace = true
 name = "cyanotype"
 path = "src/main.rs"
 
+# `server-tools` (on by default) adds the operator commands that talk to Postgres and the bucket directly
+# (migrate, reindex, manifest). The downloadable CLI is built with --no-default-features (Dockerfile, stage
+# cli-dist): it pulls in neither sqlx nor the AWS SDK, so it cross-compiles cleanly and stays small.
+[features]
+default = ["server-tools"]
+server-tools = ["dep:cyanotype-core", "dep:sqlx"]
+
 [dependencies]
-cyanotype-core.workspace = true
+cyanotype-core = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
 anyhow.workspace = true
+base64.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-sqlx.workspace = true
 time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -27,6 +35,8 @@ flate2 = "1"
 futures-util = "0.3"
 globset = "0.4"
 indicatif = "0.17"
+# Already in the lock file through rustls (Ed25519 verification of release signatures); no new crate.
+ring = "0.17"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 rpassword = "7"
 tokio-util = { version = "0.7", features = ["io"] }
