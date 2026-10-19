@@ -991,8 +991,8 @@ async fn a_bucket_only_rebuild_brings_back_accounts_roles_limits_defaults_and_sh
     let dry = fx.run(|_| {}).await;
     assert_eq!(
         (
-            dry.accounts_in_manifest,
-            dry.accounts_restored,
+            dry.users_in_manifest,
+            dry.users_restored,
             dry.orphans_recreated,
             dry.orphans_unknown_user
         ),
@@ -1007,7 +1007,7 @@ async fn a_bucket_only_rebuild_brings_back_accounts_roles_limits_defaults_and_sh
     );
 
     let r = fx.run(|o| o.apply = true).await;
-    assert_eq!((r.accounts_restored, r.orphans_recreated, r.errors), (2, 2, 0));
+    assert_eq!((r.users_restored, r.orphans_recreated, r.errors), (2, 2, 0));
     assert_eq!((r.albums_restored, r.shares_restored, r.settings_restored), (1, 2, 1));
 
     // Identity, role, limits, disabled flag: same ids as before.
@@ -1072,8 +1072,8 @@ async fn a_bucket_only_rebuild_brings_back_accounts_roles_limits_defaults_and_sh
     let again = fx.run(|o| o.apply = true).await;
     assert_eq!(
         (
-            again.accounts_restored,
-            again.accounts_present,
+            again.users_restored,
+            again.users_present,
             again.orphans,
             again.shares_restored
         ),
@@ -1179,7 +1179,7 @@ async fn old_manifests_without_share_or_account_lines_still_reindex() {
             r.orphans_recreated,
             r.albums_restored,
             r.favorites_restored,
-            r.accounts_in_manifest,
+            r.users_in_manifest,
             r.shares_restored,
             r.errors
         ),
@@ -1206,7 +1206,7 @@ async fn an_email_taken_by_a_new_account_is_not_overwritten_and_an_empty_databas
     sqlx::query("DELETE FROM users").execute(&fx.pool).await.unwrap();
     let fresh = make_user(&fx.pool, "OWNER@example.com").await;
     let r = fx.run(|o| o.apply = true).await;
-    assert_eq!((r.accounts_restored, r.accounts_conflict, r.errors), (0, 1, 0));
+    assert_eq!((r.users_restored, r.users_conflict, r.errors), (0, 1, 0));
     assert_eq!(
         (r.orphans_unknown_user, r.orphans_recreated),
         (1, 0),

@@ -112,15 +112,15 @@ A row is judged by comparing every row of the table (hashed important columns) b
 
 ### Path A: `reindex` dry run after the dump restore
 
-`scanned_objects=18, present=18, orphans=0, orphans_recreated=0, orphans_unknown_user=0, orphans_reassigned=0, missing_originals=0, accounts_restored=0, accounts_present=2, accounts_conflict=0, albums_restored=0, album_items_restored=0, pairs_restored=0, favorites_restored=0, trashed_restored=0, shares_restored=0, edits_objects=2, edits_restored=0, manifest_users=2, manifest_files=2, errors=0`
+`scanned_objects=18, present=18, orphans=0, orphans_recreated=0, orphans_unknown_user=0, orphans_reassigned=0, missing_originals=0, users_restored=0, users_present=2, users_conflict=0, albums_restored=0, album_items_restored=0, pairs_restored=0, favorites_restored=0, trashed_restored=0, shares_restored=0, edits_objects=2, edits_restored=0, manifest_users=2, manifest_files=2, errors=0`
 
 ### Path B: `reindex` dry run on the empty database
 
-`scanned_objects=18, present=0, orphans=18, orphans_recreated=18, orphans_unknown_user=0, orphans_reassigned=0, missing_originals=0, accounts_restored=2, accounts_present=0, accounts_conflict=0, albums_restored=3, album_items_restored=8, pairs_restored=1, favorites_restored=3, trashed_restored=1, shares_restored=2, edits_objects=2, edits_restored=0, manifest_users=2, manifest_files=2, errors=0`
+`scanned_objects=18, present=0, orphans=18, orphans_recreated=18, orphans_unknown_user=0, orphans_reassigned=0, missing_originals=0, users_restored=2, users_present=0, users_conflict=0, albums_restored=3, album_items_restored=8, pairs_restored=1, favorites_restored=3, trashed_restored=1, shares_restored=2, edits_objects=2, edits_restored=0, manifest_users=2, manifest_files=2, errors=0`
 
 ### Path B: `reindex --apply`
 
-`scanned_objects=18, present=0, orphans=18, orphans_recreated=18, orphans_unknown_user=0, orphans_reassigned=0, missing_originals=0, accounts_restored=2, accounts_present=0, accounts_conflict=0, albums_restored=3, album_items_restored=8, pairs_restored=1, favorites_restored=3, trashed_restored=1, shares_restored=2, edits_objects=2, edits_restored=2, manifest_users=2, manifest_files=2, errors=0`
+`scanned_objects=18, present=0, orphans=18, orphans_recreated=18, orphans_unknown_user=0, orphans_reassigned=0, missing_originals=0, users_restored=2, users_present=0, users_conflict=0, albums_restored=3, album_items_restored=8, pairs_restored=1, favorites_restored=3, trashed_restored=1, shares_restored=2, edits_objects=2, edits_restored=2, manifest_users=2, manifest_files=2, errors=0`
 
 ## Timings
 

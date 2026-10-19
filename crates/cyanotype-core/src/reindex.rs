@@ -124,13 +124,13 @@ pub struct Report {
     pub manifest_files: u64,
     pub manifest_bad_lines: u64,
     /// Accounts in the newest account manifest.
-    pub accounts_in_manifest: u64,
+    pub users_in_manifest: u64,
     /// Recreated (or that would be): the database lacked them. Their passwords are locked: `cyanotype reset-link`.
-    pub accounts_restored: u64,
+    pub users_restored: u64,
     /// Already in the database (same id).
-    pub accounts_present: u64,
+    pub users_present: u64,
     /// The email is taken by an account with another id: left alone (their photos need `--assign-to`).
-    pub accounts_conflict: u64,
+    pub users_conflict: u64,
     /// Server settings (default limits) put back.
     pub settings_restored: u64,
     pub albums_restored: u64,
@@ -250,16 +250,16 @@ impl Report {
             s,
             "  accounts in manifest / {} / have  {} / {} / {}",
             w("restored", "to restore"),
-            self.accounts_in_manifest,
-            self.accounts_restored,
-            self.accounts_present
+            self.users_in_manifest,
+            self.users_restored,
+            self.users_present
         );
         let _ = writeln!(
             s,
             "    email taken by another account   {}  (settings restored: {})",
-            self.accounts_conflict, self.settings_restored
+            self.users_conflict, self.settings_restored
         );
-        if self.accounts_restored > 0 && apply {
+        if self.users_restored > 0 && apply {
             let _ = writeln!(
                 s,
                 "    restored accounts have LOCKED passwords: run `cyanotype reset-link --email ...` for each owner"
@@ -439,7 +439,7 @@ async fn restore_accounts(cx: &mut Ctx<'_>) -> Result<()> {
             return Ok(());
         }
     };
-    cx.report.accounts_in_manifest = accounts.users.len() as u64;
+    cx.report.users_in_manifest = accounts.users.len() as u64;
     cx.report.manifest_bad_lines += accounts.bad_lines as u64;
     let out = match identity::restore(cx.db, &accounts, cx.opts.apply).await {
         Ok(o) => o,
@@ -449,9 +449,9 @@ async fn restore_accounts(cx: &mut Ctx<'_>) -> Result<()> {
             return Ok(());
         }
     };
-    cx.report.accounts_restored = out.restored.len() as u64;
-    cx.report.accounts_present = out.present;
-    cx.report.accounts_conflict = out.conflicts.len() as u64;
+    cx.report.users_restored = out.restored.len() as u64;
+    cx.report.users_present = out.present;
+    cx.report.users_conflict = out.conflicts.len() as u64;
     cx.report.settings_restored = out.settings_restored;
     for id in &out.restored {
         // In a dry run too: the photos of an account that would be recreated are not "owner unknown".

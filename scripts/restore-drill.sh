@@ -240,7 +240,7 @@ timed "B: lose the database (drop volume, new empty Postgres)" drop_db
 timed "B: migrate" migrate_db
 timed "B: reindex dry run" reindex_to "$work/b_dry.json"
 dry="$(cat "$work/b_dry.json")"
-log "dry run: orphans $(jget "$dry" orphans), recreated $(jget "$dry" orphans_recreated), skipped (owner unknown) $(jget "$dry" orphans_unknown_user), accounts to restore $(jget "$dry" accounts_restored)"
+log "dry run: orphans $(jget "$dry" orphans), recreated $(jget "$dry" orphans_recreated), skipped (owner unknown) $(jget "$dry" orphans_unknown_user), accounts to restore $(jget "$dry" users_restored)"
 assign=()
 if [ "$(jget "$dry" orphans_unknown_user)" != 0 ]; then
   log "no accounts in the bucket: the documented fallback (register the owner again, then --assign-to)"

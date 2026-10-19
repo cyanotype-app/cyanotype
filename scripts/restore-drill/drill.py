@@ -683,7 +683,7 @@ def cmd_report(a):
                 continue
             keep = [
                 "scanned_objects", "present", "orphans", "orphans_recreated", "orphans_unknown_user", "orphans_reassigned",
-                "missing_originals", "accounts_restored", "accounts_present", "accounts_conflict", "albums_restored",
+                "missing_originals", "users_restored", "users_present", "users_conflict", "albums_restored",
                 "album_items_restored", "pairs_restored", "favorites_restored", "trashed_restored", "shares_restored",
                 "edits_objects", "edits_restored", "manifest_users", "manifest_files", "errors",
             ]
@@ -813,7 +813,7 @@ def cmd_report_real(a):
     w("")
     w("## What `reindex --apply` did in the scratch database")
     w("")
-    for k in ("accounts_restored", "accounts_conflict", "orphans_recreated", "orphans_unknown_user", "albums_restored", "album_items_restored", "shares_restored", "favorites_restored", "trashed_restored", "pairs_restored", "edits_restored", "errors"):
+    for k in ("users_restored", "users_conflict", "orphans_recreated", "orphans_unknown_user", "albums_restored", "album_items_restored", "shares_restored", "favorites_restored", "trashed_restored", "pairs_restored", "edits_restored", "errors"):
         if k in apply_:
             w(f"- {k}: {apply_[k]}")
     w("")
