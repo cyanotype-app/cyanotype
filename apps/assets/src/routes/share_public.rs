@@ -101,6 +101,11 @@ impl ShareState {
             Some("false" | "0" | "no" | "off") => false,
             Some(other) => anyhow::bail!("COOKIE_SECURE must be true or false (got {other:?})"),
         };
+        if !cookie_secure {
+            tracing::warn!(
+                "COOKIE_SECURE=false: share unlock cookies are sent without the Secure attribute; use only for local http"
+            );
+        }
         Ok(Self::new(
             cookie_secure,
             parse_proxies(get("TRUSTED_PROXIES").as_deref())?,
@@ -361,6 +366,21 @@ struct UnlockBody {
     password: String,
 }
 
+/// The cookie that remembers a correct share password. `Secure` is on unless `COOKIE_SECURE=false` was set
+/// explicitly (plain-http local dev); the setting defaults to true.
+fn unlock_cookie(name: String, value: String, token: &str, secure: bool) -> Cookie<'static> {
+    let mut cookie = Cookie::build((name, value))
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Lax)
+        .path(format!("/assets/public/s/{token}"))
+        .max_age(time::Duration::hours(UNLOCK_HOURS))
+        .build();
+    if !secure {
+        cookie.set_secure(false);
+    }
+    cookie
+}
 async fn unlock(
     State(s): State<AppState>,
     Extension(st): Extension<ShareState>,
@@ -412,13 +432,7 @@ async fn unlock(
         .execute(&s.db)
         .await?;
     // Scoped to this one link: the cookie is only sent to its own API prefix.
-    let cookie = Cookie::build((share.cookie_name(), value))
-        .http_only(true)
-        .secure(st.cookie_secure)
-        .same_site(SameSite::Lax)
-        .path(format!("/assets/public/s/{token}"))
-        .max_age(time::Duration::hours(UNLOCK_HOURS))
-        .build();
+    let cookie = unlock_cookie(share.cookie_name(), value, &token, st.cookie_secure);
     tracing::info!(share_id = %share.id, "share unlocked");
     Ok((jar.add(cookie), StatusCode::NO_CONTENT))
 }
@@ -700,4 +714,20 @@ async fn download(
         [(header::LOCATION, url), (header::CACHE_CONTROL, "no-store".to_string())],
     )
         .into_response())
+}
+
+#[cfg(test)]
+mod cookie_tests {
+    use super::unlock_cookie;
+
+    #[test]
+    fn unlock_cookie_is_secure_unless_switched_off() {
+        let on = unlock_cookie("n".into(), "v".into(), "tok", true).to_string();
+        assert!(
+            on.contains("Secure") && on.contains("HttpOnly") && on.contains("Path=/assets/public/s/tok"),
+            "{on}"
+        );
+        let off = unlock_cookie("n".into(), "v".into(), "tok", false).to_string();
+        assert!(!off.contains("Secure") && off.contains("HttpOnly"), "{off}");
+    }
 }

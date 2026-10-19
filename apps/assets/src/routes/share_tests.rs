@@ -952,7 +952,7 @@ async fn nothing_that_identifies_the_owner_or_the_location_is_exposed() {
         "email",
         "password_hash",
     ] {
-        assert!(!all.contains(secret), "a visitor can see {secret:?}:\n{all}");
+        assert!(!all.contains(secret), "a visitor can see one of the private values");
     }
     // What a visitor does see.
     let (_, _, v) = get(&app, &format!("{}/items/{a}", base(&token))).await;

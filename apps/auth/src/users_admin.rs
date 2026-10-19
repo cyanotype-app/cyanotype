@@ -15,7 +15,7 @@ use axum::{
     http::StatusCode,
     routing::{delete, get, post},
 };
-use axum_extra::extract::cookie::{Cookie, CookieJar};
+use axum_extra::extract::cookie::CookieJar;
 use cyanotype_core::admin_tasks;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -422,7 +422,7 @@ async fn revoke_all(
         .await?
         .rows_affected();
     Ok((
-        jar.remove(Cookie::build(SESSION_COOKIE).path("/").build()),
+        jar.remove(crate::routes::session_removal_cookie(st.cfg.cookie_secure)),
         Json(json!({"revoked": n})),
     ))
 }

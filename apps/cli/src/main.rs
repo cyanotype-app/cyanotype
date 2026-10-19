@@ -146,14 +146,17 @@ fn default_key_name() -> String {
 
 async fn login(a: LoginArgs) -> Result<()> {
     let server = config::normalize_server(&a.server)?;
-    let (key, who) = match a.api_key {
-        Some(key) => {
-            let key = key.trim().to_string();
+    // Kept apart from the key so that what is printed below (who) is never derived from the secret.
+    let key: String;
+    let who: String;
+    match a.api_key {
+        Some(given) => {
+            key = given.trim().to_string();
             let me = api::Api::new(&server, Some(&key))?
                 .me()
                 .await
                 .map_err(|e| anyhow::anyhow!("that API key was not accepted by {server}: {e}"))?;
-            (key, me.email)
+            who = me.email;
         }
         None => {
             let email = match a.email {
@@ -175,9 +178,10 @@ async fn login(a: LoginArgs) -> Result<()> {
             let created = api.create_api_key(&cookie, &name).await;
             // The session was only a means to mint the key; do not leave it around.
             api.logout(&cookie).await;
-            (created.map_err(|e| anyhow::anyhow!("creating API key: {e}"))?, email)
+            key = created.map_err(|e| anyhow::anyhow!("creating API key: {e}"))?;
+            who = email;
         }
-    };
+    }
     let path = config::config_path()?;
     config::save_to(
         &path,

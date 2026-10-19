@@ -83,6 +83,31 @@ struct Credentials {
     password: String,
 }
 
+/// The session cookie. It is built `Secure`; that is turned off only when `COOKIE_SECURE=false` was set
+/// explicitly (plain-http local dev). The setting defaults to true and production pins it.
+fn session_cookie(token: String, secure: bool) -> Cookie<'static> {
+    let mut cookie = Cookie::build((COOKIE, token))
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Lax)
+        .path("/")
+        .max_age(time::Duration::days(SESSION_DAYS))
+        .build();
+    if !secure {
+        cookie.set_secure(false);
+    }
+    cookie
+}
+
+/// Removal cookie for the session, carrying the same `Secure` attribute as the cookie it replaces.
+pub(crate) fn session_removal_cookie(secure: bool) -> Cookie<'static> {
+    let mut cookie = Cookie::build(COOKIE).http_only(true).secure(true).path("/").build();
+    if !secure {
+        cookie.set_secure(false);
+    }
+    cookie
+}
+
 async fn start_session(db: &PgPool, cfg: &AuthConfig, jar: CookieJar, user_id: Uuid) -> ApiResult<CookieJar> {
     let token = random_token();
     sqlx::query(
@@ -93,13 +118,7 @@ async fn start_session(db: &PgPool, cfg: &AuthConfig, jar: CookieJar, user_id: U
     .bind(SESSION_DAYS as i32)
     .execute(db)
     .await?;
-    let cookie = Cookie::build((COOKIE, token))
-        .http_only(true)
-        .secure(cfg.cookie_secure)
-        .same_site(SameSite::Lax)
-        .path("/")
-        .max_age(time::Duration::days(SESSION_DAYS))
-        .build();
+    let cookie = session_cookie(token, cfg.cookie_secure);
     Ok(jar.add(cookie))
 }
 
@@ -271,7 +290,7 @@ async fn login(
     Ok((jar, Json(json!({"id": id}))))
 }
 
-async fn logout(State(db): State<PgPool>, jar: CookieJar) -> ApiResult<(CookieJar, StatusCode)> {
+async fn logout(State(AppState { db, cfg }): State<AppState>, jar: CookieJar) -> ApiResult<(CookieJar, StatusCode)> {
     if let Some(c) = jar.get(COOKIE) {
         sqlx::query("DELETE FROM sessions WHERE token_hash = $1")
             .bind(sha256(c.value().as_bytes()))
@@ -279,7 +298,7 @@ async fn logout(State(db): State<PgPool>, jar: CookieJar) -> ApiResult<(CookieJa
             .await?;
     }
     Ok((
-        jar.remove(Cookie::build(COOKIE).path("/").build()),
+        jar.remove(session_removal_cookie(cfg.cookie_secure)),
         StatusCode::NO_CONTENT,
     ))
 }
@@ -525,6 +544,17 @@ mod tests {
         assert_eq!(status(&app, reg("b@example.com")).await, StatusCode::CREATED);
         assert_eq!(status(&app, reg("a@example.com")).await, StatusCode::CONFLICT);
         t.teardown().await;
+    }
+
+    #[test]
+    fn session_cookies_carry_secure_unless_switched_off() {
+        for secure in [true, false] {
+            for c in [session_cookie("t".into(), secure), session_removal_cookie(secure)] {
+                let c = c.to_string();
+                assert_eq!(c.contains("Secure"), secure, "{c}");
+                assert!(c.contains("HttpOnly") && c.contains("Path=/"), "{c}");
+            }
+        }
     }
 
     #[tokio::test]

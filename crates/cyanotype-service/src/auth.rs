@@ -13,6 +13,8 @@ use crate::error::ApiError;
 
 pub const SESSION_COOKIE: &str = "cyanotype_session";
 
+/// Digest used to look up session tokens and API keys. Those are 256-bit random values, so a fast hash is the right
+/// tool (nothing to brute-force); passwords are never passed here, they go through argon2.
 pub fn sha256(data: &[u8]) -> Vec<u8> {
     Sha256::digest(data).to_vec()
 }
