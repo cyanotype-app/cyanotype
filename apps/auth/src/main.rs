@@ -33,6 +33,11 @@ async fn main() -> Result<()> {
         trusted_proxies = cfg.trusted_proxies.len(),
         "auth settings"
     );
+    if !cfg.cookie_secure {
+        tracing::warn!(
+            "COOKIE_SECURE=false: session cookies are sent without the Secure attribute; use only for local http"
+        );
+    }
     let state = routes::AppState {
         db: pool,
         cfg: Arc::new(cfg),

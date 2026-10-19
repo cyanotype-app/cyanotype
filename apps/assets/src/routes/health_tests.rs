@@ -129,8 +129,12 @@ async fn the_health_card_reports_the_queue_failures_workers_and_sizes_without_na
     assert!(h["storage"]["bucket_check"].is_null());
     // No file names, no owners, no job ids of anyone's file beyond the queue's own.
     let text = h.to_string();
-    for private in [secret, "second.jpg", "alice", "asset_id", "original_name"] {
-        assert!(!text.contains(private), "{private} leaked into the health card");
+    for (i, private) in [secret, "second.jpg", "alice", "asset_id", "original_name"]
+        .into_iter()
+        .enumerate()
+    {
+        // The planted value is not echoed: only which entry of the list leaked.
+        assert!(!text.contains(private), "entry {i} leaked into the health card");
     }
     // A finished bucket check shows up in the sizes.
     sqlx::query(

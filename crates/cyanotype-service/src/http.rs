@@ -148,15 +148,19 @@ mod tests {
         assert_eq!(res.headers()["x-request-id"], "req-abc");
 
         let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
-        for secret in [
+        for (i, secret) in [
             "QUERYSECRET",
             "SIGSECRET",
             "BEARERSECRET",
             "COOKIESECRET",
             "a@b.co",
             "0b6e",
-        ] {
-            assert!(!out.contains(secret), "log leaked {secret}: {out}");
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // Report which planted value leaked by position, not the value itself.
+            assert!(!out.contains(secret), "log leaked planted value #{i}");
         }
         let line: Value = serde_json::from_str(out.lines().last().unwrap()).unwrap();
         assert_eq!(line["path"], "/assets/{id}");

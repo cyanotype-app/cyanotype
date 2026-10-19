@@ -46,7 +46,7 @@ fn explore_samples() {
         let kind = formats::sniff(&bytes, &name);
         match raw::inspect(&bytes, LIMITS) {
             Ok(h) => eprintln!(
-                "{name}: kind={kind:?} sensor={:?} display={}x{} orient={} make={:?} model={:?} lens={:?} taken={:?} gps={:?},{:?} plan={:?} cost={}MB json_keys={} ({:?})",
+                "{name}: kind={kind:?} sensor={:?} display={}x{} orient={} make={:?} model={:?} lens={:?} taken={:?} has_gps={} plan={:?} cost={}MB json_keys={} ({:?})",
                 h.sensor,
                 h.width,
                 h.height,
@@ -55,8 +55,7 @@ fn explore_samples() {
                 h.exif.camera_model,
                 h.exif.lens_model,
                 h.exif.taken_at,
-                h.exif.latitude,
-                h.exif.longitude,
+                h.exif.latitude.is_some() && h.exif.longitude.is_some(),
                 h.plan,
                 h.cost_bytes() >> 20,
                 h.exif.json.as_ref().and_then(|j| j.as_object()).map_or(0, |o| o.len()),
