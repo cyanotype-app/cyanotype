@@ -541,7 +541,9 @@ main {
   border: 1px solid var(--border);
   border-radius: 0.8rem;
   box-shadow: var(--shadow);
-  overflow: hidden;
+  overflow-x: hidden;
+  /* The limit notices can make it taller than 60vh: scroll it rather than cut off the reason or the button. */
+  overflow-y: auto;
 }
 .tray-head {
   display: flex;
@@ -3102,4 +3104,99 @@ body:has(.selection-bar) .scrubber {
   .account-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+/* Limits: the meters on the Storage page, the upload tray's notices and the admin's limit editing (docs/admin.md). */
+.meter {
+  height: 0.6rem;
+  margin-bottom: 0.25rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+.meter > span {
+  display: block;
+  height: 100%;
+  background: var(--pb-500);
+}
+.meter.level-warn > span {
+  background: #c98a00;
+}
+.meter.level-critical > span,
+.meter.level-full > span {
+  background: var(--danger);
+}
+.limit-warning {
+  margin: 1rem 0 0;
+  padding: 0.6rem 0.9rem;
+  border-radius: 0.6rem;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, #c98a00 18%, var(--surface));
+  overflow-wrap: anywhere;
+}
+.limit-warning.level-critical,
+.limit-warning.level-full {
+  background: color-mix(in srgb, var(--danger) 16%, var(--surface));
+}
+.level-text.level-warn {
+  color: #a06d00;
+}
+.level-text.level-critical,
+.level-text.level-full {
+  color: var(--danger);
+}
+@media (prefers-color-scheme: dark) {
+  .level-text.level-warn {
+    color: #f0b429;
+  }
+}
+.tray-limits,
+.tray-warning {
+  margin: 0;
+  padding: 0.35rem 0.75rem 0;
+  overflow-wrap: anywhere;
+}
+.tray-block {
+  margin: 0.4rem 0.75rem 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.6rem;
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  overflow-wrap: anywhere;
+}
+.tray-block .btn {
+  margin-top: 0.4rem;
+}
+.tray-stopped .tray-status {
+  color: var(--muted);
+}
+.account-limits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+.account-limits > .limits-form {
+  flex: 1 1 100%;
+}
+.default-limits {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  background: var(--surface);
+}
+.default-limits h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+.default-limits p {
+  margin: 0.25rem 0;
+  overflow-wrap: anywhere;
+}
+.limits-form .invite-actions {
+  margin-top: 0.5rem;
 }

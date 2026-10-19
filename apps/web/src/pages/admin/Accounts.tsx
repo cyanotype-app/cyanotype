@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type AdminAccount, type AdminAccounts, type AdminTask, type BucketReport } from "../../api";
+import { api, type AdminAccount, type AdminAccounts, type AdminTask, type BucketReport, type Limits } from "../../api";
+import { LimitsForm } from "../../components/LimitsForm";
+import { levelOf, limitsWords, percentOf } from "../../limitsText";
 import { bytesLabel } from "../../adminText";
 import { ago, bucketTaskLine, countLabel, derivedLabel, mismatchLine, reconcileLine } from "../../storageText";
 
@@ -71,9 +73,13 @@ export function Accounts() {
         <>
           <Totals totals={data.totals} />
           <p className="muted small">{reconcileLine(data.reconcile)}</p>
+          <DefaultLimits
+            limits={data.default_limits ?? { quota_bytes: null, daily_upload_bytes: null, max_file_bytes: null }}
+            onSaved={() => load()}
+          />
           <ul className="account-list">
             {data.items.map((a) => (
-              <AccountCard key={a.id} a={a} />
+              <AccountCard key={a.id} a={a} onSaved={() => load()} />
             ))}
           </ul>
           <BucketCheck task={task} busy={starting || open} onStart={() => void startCheck()} />
@@ -117,7 +123,47 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
   );
 }
 
-function AccountCard({ a }: { a: AdminAccount }) {
+function DefaultLimits({ limits, onSaved }: { limits: Limits; onSaved: () => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  return (
+    <section className="default-limits" aria-labelledby="default-limits-title">
+      <h3 id="default-limits-title">Limits for new accounts</h3>
+      <p className="muted small">
+        Accounts created from now on start with these (an invite can preset its own). Existing accounts are not changed, and the
+        first account, the administrator, starts without limits.
+      </p>
+      {editing ? (
+        <LimitsForm
+          initial={limits}
+          saveLabel="Save defaults"
+          onCancel={() => setEditing(false)}
+          onSave={async (l) => {
+            await api.setDefaultLimits(l);
+            setEditing(false);
+            await onSaved();
+          }}
+        />
+      ) : (
+        <p>
+          {limitsWords(limits)}{" "}
+          <button type="button" className="btn btn-quiet" onClick={() => setEditing(true)}>
+            Edit defaults
+          </button>
+        </p>
+      )}
+    </section>
+  );
+}
+
+function AccountCard({ a, onSaved }: { a: AdminAccount; onSaved: () => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const limits: Limits = {
+    quota_bytes: a.quota_bytes ?? null,
+    daily_upload_bytes: a.daily_upload_bytes ?? null,
+    max_file_bytes: a.max_file_bytes ?? null,
+  };
+  const stored = a.originals_bytes + a.trash_bytes;
+  const level = limits.quota_bytes ? levelOf(stored, limits.quota_bytes) : "ok";
   return (
     <li className="account">
       <div className="account-head">
@@ -137,6 +183,29 @@ function AccountCard({ a }: { a: AdminAccount }) {
         <Stat label="Shares" value={a.shares.toLocaleString("en-US")} />
         <Stat label="API keys" value={a.api_keys.toLocaleString("en-US")} />
       </dl>
+      <div className="account-limits">
+        {editing ? (
+          <LimitsForm
+            initial={limits}
+            onCancel={() => setEditing(false)}
+            onSave={async (l) => {
+              await api.setAccountLimits(a.id, l);
+              setEditing(false);
+              await onSaved();
+            }}
+          />
+        ) : (
+          <>
+            <span className={`small level-text level-${level}`}>
+              {limitsWords(limits)}
+              {limits.quota_bytes ? ` · ${percentOf(stored, limits.quota_bytes)}% of storage used` : ""}
+            </span>
+            <button type="button" className="btn btn-quiet" aria-label={`Edit limits of ${a.email}`} onClick={() => setEditing(true)}>
+              Edit limits
+            </button>
+          </>
+        )}
+      </div>
     </li>
   );
 }

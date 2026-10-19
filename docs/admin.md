@@ -3,7 +3,7 @@
 Cyanotype is multi-user. One or more accounts are **admins**; everyone else is a **member**. Admins manage who may
 join. They never see other people's photos: the admin area deals in accounts, invites and counts, not library content.
 
-This page describes what exists so far: roles, invites, the audit log, and storage usage with the accounts page. It grows with the portal.
+This page describes what exists so far: roles, invites, the audit log, storage usage with the accounts page, and per-account limits. It grows with the portal.
 
 ## Roles
 
@@ -124,3 +124,57 @@ originals in the bucket differ from the database's originals plus trash. A photo
 run it again before acting on a difference.
 
 Audit entries added by this part: `storage.bucket_check`.
+
+## Limits
+
+Each account may have three limits (migration 0018, columns on `users`). **NULL is unlimited**, and nothing is set by the
+migration: the owner and every existing account stay unlimited until an admin sets a limit.
+
+| Limit | Meaning |
+|---|---|
+| `quota_bytes` | what the account may store: originals **plus trash** (a trashed photo counts until it is purged; thumbnails do not) |
+| `daily_upload_bytes` | what it may upload in any rolling 24 hours |
+| `max_file_bytes` | the largest single file |
+
+**Who gets what.** An account created from now on starts with the *server default* (Admin > Accounts > "Limits for new
+accounts", stored as `default_limits` in `server_state`), with an invite's presets in front of it, field by field: a field the
+invite leaves empty takes the default. The first account of an instance, the admin, gets neither and is unlimited. Changing the
+default never changes existing accounts. An admin edits any account's limits on its card on the accounts page
+(`PUT /assets/admin/accounts/{id}/limits`; a field left out or null is unlimited, zero is refused) and the defaults with
+`PUT /assets/admin/default-limits`. Both are audited (`account.limits`, `settings.default_limits`) with the old and new values.
+
+**Enforcement at upload creation** (`POST /assets/check`, so the web uploader and `cyanotype import` alike):
+
+| Case | Status and `code` |
+|---|---|
+| larger than the largest file | 413 `file_too_large` |
+| larger than the whole daily cap (it could never fit) | 413 `file_exceeds_daily_cap` |
+| would pass the storage quota | 413 `quota_exceeded` (with `quota_bytes`, `stored_bytes`, `reserved_bytes`, `remaining_bytes`) |
+| would pass the daily cap | 429 `daily_cap_exceeded` (with `used_bytes`, `retry_at` and `retry_after_secs`, also as `Retry-After`) |
+
+Bodies are `{"error": "<a sentence a person can read>", "code": "...", ...}`. "Exactly at the limit" is allowed; one byte more is
+not. The daily window is rolling: `retry_at` is when enough of the oldest uploads have left the last 24 hours for this file to
+fit. Re-uploading content that is in the trash revives it and adds nothing to what is stored, so the quota does not refuse it
+(the daily cap still counts the bytes).
+
+**Concurrent uploads.** Creation runs under a per-account advisory lock, and what an account has declared but not finished yet
+(its `uploads` rows, at their declared size) is *reserved* against the quota and the daily cap, so uploads racing each other
+cannot each fit while together passing a limit (a test fires twelve at once against a quota that fits three). A reservation
+lasts while the upload shows signs of life; one idle for 24 hours stops counting (the janitor aborts it after 7 days).
+
+**Parts must match what was declared.** The size an upload may have is what it declared and had checked. The proxy
+(`PUT /assets/uploads/{id}/parts/{n}`) accepts only a part of exactly the layout's length, so it cannot exceed it. Presigned
+direct parts are signed for their exact length (a store that verifies signatures against the real request, such as AWS S3,
+refuses any other; the SeaweedFS the tests use does not, so that is not shown by a test), and `POST /assets/complete` lists the
+parts that reached storage and, if they add up to more than was declared, aborts the multipart upload, deletes the pending row
+and answers 413 `upload_larger_than_declared` before the object exists. A test uploads 500 bytes against a declared 10.
+
+**What users see.** Settings > Storage shows each limit as a meter with its percentage, and warns at 80 % ("You have used 82% of
+your storage"), 95 % ("almost full") and when full; it says when the first part of the daily window frees up. The web upload tray
+shows the limits (`Storage 4.0 GB of 5.0 GB · last 24 h ...`), the same warnings, and, when the quota or the daily cap refuses a
+file, **stops**: the files not started are marked "Not started", the reason is shown with, for the daily cap, when uploads can
+resume, and "Try again" queues them again. A single file over the largest-file limit fails alone and the rest carry on.
+`cyanotype import` does the same (see `docs/import.md`).
+
+Metric: `cyanotype.uploads.refused{reason}` counts refusals (`quota_exceeded`, `daily_cap_exceeded`, `file_too_large`,
+`file_exceeds_daily_cap`, `larger_than_declared`).

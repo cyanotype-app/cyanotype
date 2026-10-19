@@ -1,8 +1,13 @@
 //! Storage usage: the caller's own numbers (`GET /assets/usage`, Settings > Storage) and the admin's view of every account
 //! (`GET /assets/admin/accounts`, the bucket check). Admins get counts and sizes, never anyone's photos or file names.
+use axum::extract::Path;
 use axum::{Json, extract::State};
-use cyanotype_core::{admin_tasks, usage};
-use cyanotype_service::{AdminUser, ApiResult, AuthUser, audit};
+use cyanotype_core::{
+    admin_tasks,
+    limits::{self, Limits},
+    usage,
+};
+use cyanotype_service::{AdminUser, ApiError, ApiResult, AuthUser, audit};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -52,6 +57,13 @@ pub(super) async fn mine(State(s): State<AppState>, user: AuthUser) -> ApiResult
     let up = uploads_of(&s.db, user.id).await?;
     let mut body = usage_json(&u);
     body["uploads"] = serde_json::to_value(up).map_err(anyhow::Error::from)?;
+    // The account's limits (null: none) and the rolling day as the daily cap counts it.
+    body["limits"] = serde_json::to_value(limits::of(&s.db, user.id).await?).map_err(anyhow::Error::from)?;
+    let (used, resumes) = limits::daily_state(&s.db, user.id).await?;
+    body["daily"] = json!({
+        "used_bytes": used,
+        "oldest_rolls_out_at": resumes.map(|t| t.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()),
+    });
     Ok(Json(body))
 }
 
@@ -80,6 +92,9 @@ struct Account {
     albums: i64,
     shares: i64,
     api_keys: i64,
+    quota_bytes: Option<i64>,
+    daily_upload_bytes: Option<i64>,
+    max_file_bytes: Option<i64>,
 }
 
 /// `GET /assets/admin/accounts`: every account with its numbers, the server totals, the last reconcile and the last bucket check.
@@ -99,7 +114,8 @@ pub(super) async fn accounts(State(s): State<AppState>, _admin: AdminUser) -> Ap
                 (SELECT coalesce(sum(bytes), 0)::bigint FROM upload_log WHERE owner_id = u.id AND at > now() - interval '30 days') AS uploads_30d_bytes,
                 (SELECT count(*) FROM albums WHERE owner_id = u.id) AS albums,
                 (SELECT count(*) FROM shares WHERE owner_id = u.id) AS shares,
-                (SELECT count(*) FROM api_keys WHERE user_id = u.id) AS api_keys
+                (SELECT count(*) FROM api_keys WHERE user_id = u.id) AS api_keys,
+                u.quota_bytes, u.daily_upload_bytes, u.max_file_bytes
          FROM users u LEFT JOIN user_usage m ON m.user_id = u.id
          ORDER BY u.created_at, u.id",
     )
@@ -136,7 +152,69 @@ pub(super) async fn accounts(State(s): State<AppState>, _admin: AdminUser) -> Ap
         "totals": totals,
         "reconcile": reconcile,
         "bucket_check": bucket,
+        "default_limits": limits::server_default(&s.db).await?,
     })))
+}
+
+fn bad(e: anyhow::Error) -> ApiError {
+    ApiError::BadRequest(e.to_string())
+}
+
+/// `PUT /assets/admin/accounts/{id}/limits`: set an account's limits (a field left out or null is unlimited). Audited
+/// with the old and new values.
+pub(super) async fn set_limits(
+    State(s): State<AppState>,
+    admin: AdminUser,
+    Path(id): Path<Uuid>,
+    Json(new): Json<Limits>,
+) -> ApiResult<Json<Limits>> {
+    new.validate().map_err(bad)?;
+    let before: Option<(String,)> = sqlx::query_as("SELECT email FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&s.db)
+        .await?;
+    let Some((email,)) = before else {
+        return Err(ApiError::NotFound);
+    };
+    let old = limits::of(&s.db, id).await?;
+    limits::set(&s.db, id, new).await?;
+    audit::record(
+        &s.db,
+        Some(admin.id),
+        "account.limits",
+        Some("user"),
+        Some(&id.to_string()),
+        json!({"email": email, "before": old, "after": new}),
+    )
+    .await?;
+    Ok(Json(new))
+}
+
+/// `GET /assets/admin/default-limits`.
+pub(super) async fn default_limits(State(s): State<AppState>, _admin: AdminUser) -> ApiResult<Json<Limits>> {
+    Ok(Json(limits::server_default(&s.db).await?))
+}
+
+/// `PUT /assets/admin/default-limits`: the limits accounts created from now on start with (invites may preset their own in
+/// front of it; the first account of an instance gets none). Existing accounts are not changed. Audited.
+pub(super) async fn set_default_limits(
+    State(s): State<AppState>,
+    admin: AdminUser,
+    Json(new): Json<Limits>,
+) -> ApiResult<Json<Limits>> {
+    new.validate().map_err(bad)?;
+    let old = limits::server_default(&s.db).await?;
+    limits::set_server_default(&s.db, new).await?;
+    audit::record(
+        &s.db,
+        Some(admin.id),
+        "settings.default_limits",
+        None,
+        None,
+        json!({"before": old, "after": new}),
+    )
+    .await?;
+    Ok(Json(new))
 }
 
 /// `POST /assets/admin/bucket-check`: queue the bucket listing (the worker runs it). Returns the task; if one is already

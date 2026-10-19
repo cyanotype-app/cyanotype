@@ -22,7 +22,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::sync::Semaphore;
 
 use crate::{
-    api::{Api, ApiError, ByteCb, CheckRequest, CheckResponse, DonePart},
+    api::{Api, ApiError, ByteCb, CheckRequest, CheckResponse, DonePart, LimitInfo},
     cache::{self, HashCache},
     config,
     walk::{self, Candidate, WalkOptions},
@@ -90,6 +90,8 @@ struct Ctx {
     bar: ProgressBar,
     verbose: bool,
     cancelled: AtomicBool,
+    /// Why the run stopped early, when the account's quota or daily cap refused an upload (the first refusal).
+    stopped: std::sync::Mutex<Option<LimitInfo>>,
     /// Content hashes already handled (or in flight) in this run, so identical files are sent once.
     seen: std::sync::Mutex<std::collections::HashSet<String>>,
 }
@@ -224,6 +226,13 @@ async fn process(ctx: &Arc<Ctx>, f: &Candidate) -> Outcome {
         Ok(true) => Outcome::Uploaded,
         Ok(false) => Outcome::Existing,
         Err(ApiError::Fatal(m)) if m == CANCELLED => Outcome::Cancelled,
+        // The quota or the daily cap is reached: every further upload would be refused, so stop starting new ones (parts
+        // already on their way finish) and say why at the end. A single file that is too big is just that file's failure.
+        Err(ApiError::Limit(l)) if l.stops_import() => {
+            ctx.stopped.lock().unwrap().get_or_insert(l);
+            ctx.cancelled.store(true, Ordering::Relaxed);
+            Outcome::Cancelled
+        }
         Err(e) => Outcome::Failed(e.to_string()),
     }
 }
@@ -429,6 +438,7 @@ pub async fn run(args: ImportArgs) -> Result<bool> {
         bar: bar.clone(),
         verbose: args.verbose,
         cancelled: AtomicBool::new(false),
+        stopped: Default::default(),
         seen: Default::default(),
     });
 
@@ -492,7 +502,21 @@ pub async fn run(args: ImportArgs) -> Result<bool> {
     );
     println!("  already present:  {existing} files");
     println!("  failed:           {}", failed + scan.errors.len() as u64);
-    if cancelled > 0 {
+    let stopped = ctx.stopped.lock().unwrap().clone();
+    if let Some(l) = &stopped {
+        println!("  not started:      {cancelled} files");
+        println!();
+        println!("Stopped: {}", l.message);
+        match (l.code.as_str(), &l.retry_at) {
+            ("daily_cap_exceeded", Some(at)) => {
+                println!("Run the same command again after {at} to carry on where it stopped.")
+            }
+            ("daily_cap_exceeded", None) => println!("Run the same command again later to carry on where it stopped."),
+            _ => println!(
+                "Free up space (delete photos and empty the trash) or ask the administrator for more, then run the same command again."
+            ),
+        }
+    } else if cancelled > 0 {
         println!("  not started:      {cancelled} files (interrupted; run the same command again to resume)");
     }
     for (p, why) in failures.iter().take(20) {
@@ -631,18 +655,31 @@ mod pipeline_tests {
         pre_uploaded: Vec<i32>,
         /// complete answers 404 once (reply lost on a previous attempt)
         complete_404_once: bool,
+        /// `check` answers this status and body (and a `Retry-After: 0` header) this many times before it works.
+        refuse: Option<(u16, Value, u32)>,
     }
 
     type Shared = Arc<Mutex<Fake>>;
     const PART: i64 = 4;
 
-    async fn check(State(f): State<Shared>, Json(req): Json<Value>) -> Json<Value> {
+    async fn check(State(f): State<Shared>, Json(req): Json<Value>) -> (StatusCode, HeaderMap, Json<Value>) {
         let mut f = f.lock().unwrap();
         f.checks += 1;
+        if let Some((code, body, times)) = f.refuse.clone().filter(|r| r.2 > 0) {
+            f.refuse = Some((code, body.clone(), times - 1));
+            let mut h = HeaderMap::new();
+            h.insert(header::RETRY_AFTER, "0".parse().unwrap());
+            return (StatusCode::from_u16(code).unwrap(), h, Json(body));
+        }
+        let (code, body) = check_ok(&mut f, &req);
+        (code, HeaderMap::new(), body)
+    }
+
+    fn check_ok(f: &mut Fake, req: &Value) -> (StatusCode, Json<Value>) {
         let size = req["size_bytes"].as_i64().unwrap();
         // A real server would not offer upload URLs again for a finished upload.
         if f.complete_404_once && f.checks > 1 && f.completes.len() == 1 {
-            return Json(json!({"status": "exists", "asset_id": "a"}));
+            return (StatusCode::OK, Json(json!({"status": "exists", "asset_id": "a"})));
         }
         let n_parts = ((size + PART - 1) / PART) as i32;
         let done: Vec<i32> = f
@@ -660,7 +697,12 @@ mod pipeline_tests {
             .iter()
             .map(|n| json!({"number": n, "etag": format!("\"etag{n}\"")}))
             .collect();
-        Json(json!({"status": "upload", "upload_id": "u1", "part_size": PART, "parts": parts, "uploaded": uploaded}))
+        (
+            StatusCode::OK,
+            Json(
+                json!({"status": "upload", "upload_id": "u1", "part_size": PART, "parts": parts, "uploaded": uploaded}),
+            ),
+        )
     }
 
     async fn put_part(
@@ -727,6 +769,7 @@ mod pipeline_tests {
             bar: ProgressBar::hidden(),
             verbose: false,
             cancelled: AtomicBool::new(false),
+            stopped: Default::default(),
             seen: Default::default(),
         })
     }
@@ -841,5 +884,124 @@ mod pipeline_tests {
             ..a
         };
         assert!(matches!(process(&ctx, &gone).await, Outcome::Failed(_)));
+    }
+
+    fn refusal(code: &str, message: &str, retry_at: Option<&str>) -> Value {
+        let mut v = json!({"error": message, "code": code});
+        if let Some(t) = retry_at {
+            v["retry_at"] = json!(t);
+        }
+        v
+    }
+
+    #[tokio::test]
+    async fn a_quota_refusal_stops_the_import_without_retrying() {
+        let dir = tempfile::tempdir().unwrap();
+        let msg = "Not enough storage: this file needs 10 B and your account has 0 B left of 5 B.";
+        let (fake, base) = serve(Fake {
+            refuse: Some((413, refusal("quota_exceeded", msg, None), 100)),
+            ..Default::default()
+        })
+        .await;
+        let ctx = ctx(&base);
+        let out = process(&ctx, &candidate(dir.path(), b"0123456789")).await;
+        assert!(matches!(out, Outcome::Cancelled), "{out:?}");
+        assert_eq!(fake.lock().unwrap().checks, 1, "asked once, not again");
+        assert!(ctx.cancelled.load(Ordering::Relaxed), "no new file is started");
+        assert_eq!(ctx.stopped.lock().unwrap().as_ref().unwrap().message, msg);
+        // The next file is not even sent to the server.
+        let other = Candidate {
+            path: dir.path().join("two.cr3"),
+            ..candidate(dir.path(), b"other bytes")
+        };
+        std::fs::write(&other.path, b"other bytes").unwrap();
+        assert!(matches!(process(&ctx, &other).await, Outcome::Cancelled));
+        assert_eq!(fake.lock().unwrap().checks, 1);
+    }
+
+    #[tokio::test]
+    async fn the_daily_cap_429_is_not_retried_and_keeps_the_reset_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fake, base) = serve(Fake {
+            refuse: Some((
+                429,
+                refusal(
+                    "daily_cap_exceeded",
+                    "Daily upload limit reached.",
+                    Some("2030-01-02T03:04:05Z"),
+                ),
+                100,
+            )),
+            ..Default::default()
+        })
+        .await;
+        let ctx = ctx(&base);
+        let out = process(&ctx, &candidate(dir.path(), b"0123456789")).await;
+        assert!(matches!(out, Outcome::Cancelled), "{out:?}");
+        assert_eq!(
+            fake.lock().unwrap().checks,
+            1,
+            "a daily cap is not congestion: no retry"
+        );
+        let l = ctx.stopped.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            (l.code.as_str(), l.retry_at.as_deref()),
+            ("daily_cap_exceeded", Some("2030-01-02T03:04:05Z"))
+        );
+        assert!(l.stops_import());
+    }
+
+    #[tokio::test]
+    async fn a_file_over_the_size_limit_fails_alone_and_the_import_goes_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let msg = "This file is 10 B and the largest file your account may upload is 5 B.";
+        let (fake, base) = serve(Fake {
+            refuse: Some((413, refusal("file_too_large", msg, None), 1)),
+            ..Default::default()
+        })
+        .await;
+        let ctx = ctx(&base);
+        match process(&ctx, &candidate(dir.path(), b"0123456789")).await {
+            Outcome::Failed(why) => assert_eq!(why, msg),
+            other => panic!("{other:?}"),
+        }
+        assert!(!ctx.cancelled.load(Ordering::Relaxed));
+        assert!(ctx.stopped.lock().unwrap().is_none());
+        // The next file (the server accepts again) uploads.
+        let next = Candidate {
+            path: dir.path().join("small.cr3"),
+            ..candidate(dir.path(), b"tiny")
+        };
+        std::fs::write(&next.path, b"tiny").unwrap();
+        assert!(matches!(process(&ctx, &next).await, Outcome::Uploaded));
+        assert_eq!(fake.lock().unwrap().checks, 2);
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_429_is_still_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        let (fake, base) = serve(Fake {
+            refuse: Some((429, json!({"error": "too many requests"}), 1)),
+            ..Default::default()
+        })
+        .await;
+        let ctx = ctx(&base);
+        assert!(matches!(
+            process(&ctx, &candidate(dir.path(), b"0123456789")).await,
+            Outcome::Uploaded
+        ));
+        assert_eq!(fake.lock().unwrap().checks, 2);
+        assert!(ctx.stopped.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn limit_bodies_are_recognised_and_other_errors_are_not() {
+        let l = LimitInfo::from_body(r#"{"error":"x","code":"quota_exceeded","remaining_bytes":0}"#).unwrap();
+        assert!(l.stops_import());
+        let l = LimitInfo::from_body(r#"{"error":"x","code":"file_too_large"}"#).unwrap();
+        assert!(!l.stops_import());
+        assert!(LimitInfo::from_body(r#"{"error":"x"}"#).is_none());
+        assert!(LimitInfo::from_body(r#"{"error":"x","code":"something_else"}"#).is_none());
+        assert!(LimitInfo::from_body("not json").is_none());
     }
 }

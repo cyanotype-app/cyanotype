@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
+use cyanotype_core::limits::Limits;
 use cyanotype_service::{AdminUser, ApiError, ApiResult, audit, auth::sha256};
 
 use crate::routes::{AppState, random_token, rfc3339};
@@ -251,6 +252,8 @@ async fn revoke(State(st): State<AppState>, admin: AdminUser, Path(id): Path<Uui
 /// What a registration takes from an invite.
 pub struct Consumed {
     pub id: Uuid,
+    /// The starting limits the invite presets (unset fields: the server default applies).
+    pub limits: Limits,
 }
 
 /// Why a token cannot be used, for the message shown to the person holding the link.
@@ -272,14 +275,29 @@ pub async fn refusal(tx: &mut Transaction<'_, Postgres>, token: &str) -> ApiResu
 /// Claims the invite for the registration in `tx`: marks it used if it is unused, unrevoked and unexpired. The row lock
 /// makes two registrations with one token race safely (the second finds it used). `None` if it cannot be used.
 pub async fn consume(tx: &mut Transaction<'_, Postgres>, token: &str) -> ApiResult<Option<Consumed>> {
-    let row: Option<(Uuid,)> = sqlx::query_as(
+    #[derive(sqlx::FromRow)]
+    struct Claimed {
+        id: Uuid,
+        quota_bytes: Option<i64>,
+        daily_upload_bytes: Option<i64>,
+        max_file_bytes: Option<i64>,
+    }
+    let row: Option<Claimed> = sqlx::query_as(
         "UPDATE invites SET used_at = now() \
-         WHERE token_hash = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > now() RETURNING id",
+         WHERE token_hash = $1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at > now() \
+         RETURNING id, quota_bytes, daily_upload_bytes, max_file_bytes",
     )
     .bind(sha256(token.trim().as_bytes()))
     .fetch_optional(&mut **tx)
     .await?;
-    Ok(row.map(|(id,)| Consumed { id }))
+    Ok(row.map(|c| Consumed {
+        id: c.id,
+        limits: Limits {
+            quota_bytes: c.quota_bytes,
+            daily_upload_bytes: c.daily_upload_bytes,
+            max_file_bytes: c.max_file_bytes,
+        },
+    }))
 }
 
 /// `POST /auth/invites/check` body.

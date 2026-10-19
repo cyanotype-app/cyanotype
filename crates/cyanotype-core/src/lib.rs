@@ -6,6 +6,7 @@ pub mod edits;
 pub mod embeddings;
 pub mod jobs;
 pub mod keys;
+pub mod limits;
 pub mod manifest;
 pub mod metrics;
 pub mod objmeta;

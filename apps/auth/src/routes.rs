@@ -24,6 +24,8 @@ use cyanotype_service::{
 };
 use sqlx::PgPool;
 
+use cyanotype_core::limits::{self, Limits};
+
 use crate::invites;
 use crate::settings::{AuthConfig, RegistrationMode};
 
@@ -163,14 +165,25 @@ async fn register(
             RegistrationMode::Closed => unreachable!("refused above"),
         }
     }
-    // The first account of an instance is its admin.
+    // The first account of an instance is its admin, and unlimited. Every later account starts with the server default
+    // limits, with an invite's presets in front of them (docs/admin.md, "Limits").
     let role = if any { "member" } else { "admin" };
+    let limits = if any {
+        let preset = invite.as_ref().map(|i| i.limits).unwrap_or_default();
+        preset.or(limits::server_default(&mut *tx).await?)
+    } else {
+        Limits::default()
+    };
     let row: Option<(Uuid,)> = sqlx::query_as(
-        "INSERT INTO users (email, password_hash, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING id",
+        "INSERT INTO users (email, password_hash, role, quota_bytes, daily_upload_bytes, max_file_bytes)
+         VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING RETURNING id",
     )
     .bind(&email)
     .bind(hash)
     .bind(role)
+    .bind(limits.quota_bytes)
+    .bind(limits.daily_upload_bytes)
+    .bind(limits.max_file_bytes)
     .fetch_optional(&mut *tx)
     .await?;
     // A taken address rolls everything back, so the invite is not spent.

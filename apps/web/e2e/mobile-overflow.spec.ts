@@ -493,6 +493,9 @@ const ACCOUNT = (n: number, over: Record<string, unknown> = {}) => ({
   albums: 321,
   shares: 45,
   api_keys: 6,
+  quota_bytes: n === 1 ? null : 1000 * GB,
+  daily_upload_bytes: n === 1 ? null : 100 * GB,
+  max_file_bytes: n === 1 ? null : 2 * GB,
   ...over,
 });
 const BUCKET_DONE = {
@@ -525,6 +528,9 @@ const BUCKET_DONE = {
   },
 };
 let bucketTask: unknown = null;
+// How full the mocked account is against its limits: "warn" (82 %), "critical" (96 %), "full" or "none" (no limits).
+let usageLevel: "warn" | "critical" | "full" | "none" = "warn";
+const LIMITS = { quota_bytes: 1000 * GB, daily_upload_bytes: 100 * GB, max_file_bytes: 2 * GB };
 
 async function mockUsage(page: Page) {
   const json = (body: unknown, status = 200) => ({ status, contentType: "application/json", body: JSON.stringify(body) });
@@ -533,14 +539,20 @@ async function mockUsage(page: Page) {
     async (route) => {
       const p = new URL(route.request().url()).pathname;
       const m = route.request().method();
-      if (p === "/assets/usage")
+      if (p === "/assets/usage") {
+        const stored = { warn: 824, critical: 962, full: 1000, none: 824 }[usageLevel] * GB;
+        const daily = { warn: 55, critical: 97, full: 100, none: 55 }[usageLevel] * GB;
         return route.fulfill(
           json({
-            originals_bytes: 812 * GB, trash_bytes: 12 * GB, stored_bytes: 824 * GB, derived_bytes: 31 * GB, derived_complete: false,
+            originals_bytes: stored - 12 * GB, trash_bytes: 12 * GB, stored_bytes: stored, derived_bytes: 31 * GB, derived_complete: false,
             photo_count: 123456, raw_count: 23456, file_count: 146912, trash_count: 1234,
-            uploads: { count_24h: 4321, bytes_24h: 55 * GB, count_30d: 98765, bytes_30d: 1234 * GB },
+            uploads: { count_24h: 4321, bytes_24h: daily, count_30d: 98765, bytes_30d: 1234 * GB },
+            limits: usageLevel === "none" ? { quota_bytes: null, daily_upload_bytes: null, max_file_bytes: null } : LIMITS,
+            daily: { used_bytes: daily, oldest_rolls_out_at: new Date(Date.now() + 5 * 3_600_000).toISOString() },
           }),
         );
+      }
+      if (/^\/assets\/admin\/(accounts\/[^/]+\/limits|default-limits)$/.test(p) && m === "PUT") return route.fulfill(json(LIMITS));
       if (p === "/assets/admin/accounts")
         return route.fulfill(
           json({
@@ -552,6 +564,7 @@ async function mockUsage(page: Page) {
             },
             reconcile: { at: new Date(Date.now() - 3 * 3_600_000).toISOString(), users_checked: 2, drifted_users: 1, drift_bytes: 1024 },
             bucket_check: bucketTask,
+            default_limits: { quota_bytes: 50 * GB, daily_upload_bytes: 5 * GB, max_file_bytes: null },
           }),
         );
       if (p === "/assets/admin/bucket-check" && m === "POST") {
@@ -1056,16 +1069,51 @@ for (const { width, scheme } of RUNS) {
       bucketTask = null;
       memberView = false;
       await page.goto("/admin");
-      await page.getByRole("heading", { name: "Accounts" }).waitFor();
+      await page.getByRole("heading", { name: "Accounts", exact: true }).waitFor();
       await page.getByText(LONG_EMAIL).first().waitFor();
       await check("accounts");
       await page.getByRole("button", { name: "Check bucket size" }).click();
       await page.getByText(/Finished/).waitFor({ timeout: 10_000 });
       await check("accounts-bucket-check");
-      await page.goto("/settings/storage");
-      await page.getByRole("heading", { name: "Storage" }).waitFor();
-      await page.getByText("1,234 files").first().waitFor();
-      await check("storage");
+      await page.getByRole("button", { name: /^Edit limits of/ }).first().click();
+      await page.getByLabel("Storage (GB)").first().waitFor();
+      await check("accounts-edit-limits");
+      await page.getByRole("button", { name: "Cancel" }).click();
+      await page.getByRole("button", { name: "Edit defaults" }).click();
+      await page.getByLabel("Storage (GB)").first().waitFor();
+      await check("accounts-edit-defaults");
+      await page.getByRole("button", { name: "Cancel" }).click();
+      for (const level of ["warn", "critical", "full", "none"] as const) {
+        usageLevel = level;
+        await page.goto("/settings/storage");
+        await page.getByRole("heading", { name: "Storage" }).waitFor();
+        await page.getByText("1,234 files").first().waitFor();
+        await check(`storage-${level}`);
+      }
+      usageLevel = "warn";
+      // The tray after the daily cap refused the first file: the reason, when uploads resume, the files not started.
+      await page.route("**/assets/check", (r) =>
+        r.fulfill({
+          status: 429,
+          contentType: "application/json",
+          headers: { "retry-after": "18000" },
+          body: JSON.stringify({
+            error: "Daily upload limit reached: 100 GB of 100 GB used in the last 24 hours. Uploads can resume at a time far in the future.",
+            code: "daily_cap_exceeded",
+            retry_at: new Date(Date.now() + 5 * 3_600_000).toISOString(),
+          }),
+        }),
+      );
+      await page.goto("/library");
+      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
+      await page.locator('input[aria-label="Choose photos"]').setInputFiles([
+        { name: LONG_NAME, mimeType: "image/jpeg", buffer: Buffer.from("x") },
+        { name: "second.jpg", mimeType: "image/jpeg", buffer: Buffer.from("y") },
+        { name: "third.jpg", mimeType: "image/jpeg", buffer: Buffer.from("z") },
+      ]);
+      await page.getByText(/Uploads can resume at/).first().waitFor();
+      await page.getByText("Uploads stopped").waitFor();
+      await check("upload-tray-daily-cap");
       await page.goto("/admin/invites");
       await page.getByRole("heading", { name: "Invites" }).waitFor();
       await page.getByText("Used by " + LONG_EMAIL).waitFor();

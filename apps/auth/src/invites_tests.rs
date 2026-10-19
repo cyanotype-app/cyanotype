@@ -645,3 +645,65 @@ async fn audit_log_records_create_reissue_and_revoke_with_the_actor() {
     assert!(!dump.contains(created["token"].as_str().unwrap()));
     t.teardown().await;
 }
+
+async fn limits_of(pool: &PgPool, email: &str) -> (Option<i64>, Option<i64>, Option<i64>) {
+    sqlx::query_as("SELECT quota_bytes, daily_upload_bytes, max_file_bytes FROM users WHERE lower(email) = lower($1)")
+        .bind(email)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+fn app_for(t: &TestDb, mode: RegistrationMode) -> Router {
+    app(t.pool.clone(), |c| c.registration = mode)
+}
+
+#[tokio::test]
+async fn new_accounts_start_with_the_server_default_and_invite_presets_and_the_first_admin_is_unlimited() {
+    let Some(t) = TestDb::new().await else { return };
+    let default = cyanotype_core::limits::Limits {
+        quota_bytes: Some(10_000),
+        daily_upload_bytes: Some(1_000),
+        max_file_bytes: None,
+    };
+    // A server default set before anybody registered does not limit the first account, the admin.
+    cyanotype_core::limits::set_server_default(&t.pool, default).await.unwrap();
+    let (app, admin) = invite_app(&t).await;
+    assert_eq!(limits_of(&t.pool, "admin@example.com").await, (None, None, None));
+
+    // An invite without presets: the default.
+    let plain = make_invite(&app, &admin, "{}").await;
+    assert_eq!(status(&app, reg_with("plain@example.com", plain["token"].as_str())).await, StatusCode::CREATED);
+    assert_eq!(limits_of(&t.pool, "plain@example.com").await, (Some(10_000), Some(1_000), None));
+
+    // Presets win field by field; a field the invite leaves out takes the default.
+    let preset = make_invite(&app, &admin, r#"{"quota_bytes":50,"max_file_bytes":20}"#).await;
+    assert_eq!(status(&app, reg_with("preset@example.com", preset["token"].as_str())).await, StatusCode::CREATED);
+    assert_eq!(limits_of(&t.pool, "preset@example.com").await, (Some(50), Some(1_000), Some(20)));
+
+    // Open mode, no invite: the default too.
+    let open = app_for(&t, RegistrationMode::Open);
+    assert_eq!(status(&open, reg("walkin@example.com")).await, StatusCode::CREATED);
+    assert_eq!(limits_of(&t.pool, "walkin@example.com").await, (Some(10_000), Some(1_000), None));
+
+    // Changing the default later does not touch existing accounts; with none set, a new member is unlimited.
+    cyanotype_core::limits::set_server_default(&t.pool, cyanotype_core::limits::Limits::default())
+        .await
+        .unwrap();
+    assert_eq!(limits_of(&t.pool, "plain@example.com").await, (Some(10_000), Some(1_000), None));
+    assert_eq!(status(&open, reg("free@example.com")).await, StatusCode::CREATED);
+    assert_eq!(limits_of(&t.pool, "free@example.com").await, (None, None, None));
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn the_limits_migration_leaves_existing_accounts_unlimited() {
+    let Some(t) = TestDb::new_at(17).await else { return };
+    sqlx::query("INSERT INTO users (email, password_hash) VALUES ('owner@example.com', 'x')")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    db::MIGRATOR.run(&t.pool).await.unwrap();
+    assert_eq!(limits_of(&t.pool, "owner@example.com").await, (None, None, None));
+    t.teardown().await;
+}
