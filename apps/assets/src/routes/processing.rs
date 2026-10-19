@@ -15,7 +15,7 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 use crate::AppState;
-use cyanotype_service::{ApiResult, AuthUser};
+use cyanotype_service::{ApiResult, AuthUser, ImportUser};
 
 /// Failures listed (newest first); the counts always cover all of them.
 const RECENT_FAILURES: i64 = 20;
@@ -87,7 +87,7 @@ fn truncate(s: &str) -> String {
     out
 }
 
-pub(super) async fn status(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<Processing>> {
+pub(super) async fn status(State(s): State<AppState>, user: ImportUser) -> ApiResult<Json<Processing>> {
     let by_kind: Vec<KindCounts> = sqlx::query_as(
         "SELECT j.kind,
                 count(*) FILTER (WHERE j.state = 'queued') AS queued,

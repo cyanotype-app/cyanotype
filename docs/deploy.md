@@ -22,6 +22,7 @@ You create the server, Cloud Firewall and DNS yourself; this runbook says what t
 |---|---|---|
 | `REGISTRATION_MODE` | `invite` | `invite`: the first account registers freely (and becomes the admin); every later one needs a single-use invite link made by an admin ([`admin.md`](admin.md)), otherwise 403. `open`: anyone may register. `first_user`: sign-up works only while the `users` table is empty, so the owner claims the instance and registration then closes (403). `closed`: `POST /auth/register` always returns 403. Every value an older deployment may set keeps its meaning. |
 | `COOKIE_SECURE` | `true` | `Secure` attribute on the session cookie. Local compose sets it to `false` (plain http); the prod override pins `true`. |
+| `AUTH_TOTP_KEY` | unset | Server key that seals two-factor (TOTP) secrets and keys the hash of recovery codes: 32 random bytes as base64 or 64 hex characters. **Unset: two-factor authentication is switched off** (nobody can enrol, the admin page says so, and an account that already has it cannot sign in until the key is back). A malformed value stops the service at startup. See "Upgrading: two-factor authentication" below. |
 | `AUTH_RATE_LIMIT_BURST` / `AUTH_RATE_LIMIT_PER_MINUTE` | `10` / `10` | Token bucket per client IP for `POST /auth/login` and `/auth/register` (they share one bucket). Over the limit: `429` with `Retry-After`. |
 | `AUTH_RATE_LIMIT_MAX_KEYS` | `10000` | Upper bound on tracked client IPs (memory is bounded; stale entries are evicted first). IPv6 clients are keyed by /64. |
 | `TRUSTED_PROXIES` | loopback + private ranges | Peers allowed to supply `X-Forwarded-For`. `none` disables forwarded headers. |
@@ -37,6 +38,23 @@ table is empty and inserts, so concurrent sign-ups produce exactly one first acc
 invite registers exactly one person (covered by tests that fire 10 to 12 at once). The local compose stack sets
 `REGISTRATION_MODE=open` by default so `just e2e` can register a throwaway user on every run; production defaults to
 `invite`.
+
+**Upgrading: two-factor authentication and API key scopes (migration 0021).** One migration, no job queued, nothing rewritten:
+it adds three empty tables (2FA secrets, recovery codes, sign-in challenges), a flag on sessions, and `scope` and `expires_at` on
+`api_keys` (every existing key becomes `full` with no expiry, so no CLI or script stops working). To let people turn on two-factor
+authentication, generate a key once and give it to the auth service:
+
+```sh
+# on your machine or the server; prints 44 characters, no newline issues
+openssl rand -base64 32
+# add to ~/cyanotype/.env.prod (the deploy never overwrites it):
+#   AUTH_TOTP_KEY=<the value printed above>
+dc up -d auth        # recreate the auth service so it reads the new value
+```
+
+Back the key up with your other secrets, apart from the database dump. Changing or losing it makes every enrolled secret unreadable:
+those accounts then see "ask the administrator", and an administrator resets them (Admin > Security; audit-logged) and they enrol
+again. Deploying without the key is safe: the feature is simply off, and the admin Security page shows a warning.
 
 **Upgrading an existing instance (administration, migrations 0016 and 0017).** Migration 0016 makes the earliest-created account
 an admin, so a single-owner instance upgrades with its owner as admin and nobody locked out (one row is updated, no

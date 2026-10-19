@@ -914,7 +914,19 @@ async fn a_bucket_only_rebuild_brings_back_accounts_roles_limits_defaults_and_sh
         .execute(&fx.pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO server_state (key, value) VALUES ('default_limits', '{\"quota_bytes\":7,\"daily_upload_bytes\":null,\"max_file_bytes\":null}'), ('worker:abc', '{}')")
+    sqlx::query("INSERT INTO server_state (key, value) VALUES ('default_limits', '{\"quota_bytes\":7,\"daily_upload_bytes\":null,\"max_file_bytes\":null}'), ('require_2fa', '{\"required\":true}'), ('worker:abc', '{}')")
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    // Two-factor state must NOT travel (docs/recovery.md): it would be worthless without the password hash it belongs with,
+    // and a secret or recovery-code hash in the bucket is a credential. Only the admin's "require 2FA" setting does.
+    sqlx::query("INSERT INTO user_totp (user_id, secret_enc, confirmed_at) VALUES ($1, '\\x01', now())")
+        .bind(fx.user)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO totp_recovery_codes (user_id, code_hash) VALUES ($1, '\\x02')")
+        .bind(fx.user)
         .execute(&fx.pool)
         .await
         .unwrap();
@@ -997,7 +1009,7 @@ async fn a_bucket_only_rebuild_brings_back_accounts_roles_limits_defaults_and_sh
         (2, 2, 2, 0),
         "a dry run counts the accounts it would recreate and does not treat their photos as ownerless"
     );
-    assert_eq!((dry.shares_restored, dry.settings_restored), (2, 1));
+    assert_eq!((dry.shares_restored, dry.settings_restored), (2, 2));
     assert_eq!(
         (fx.count("users").await, fx.count("shares").await),
         (0, 0),
@@ -1006,7 +1018,7 @@ async fn a_bucket_only_rebuild_brings_back_accounts_roles_limits_defaults_and_sh
 
     let r = fx.run(|o| o.apply = true).await;
     assert_eq!((r.users_restored, r.orphans_recreated, r.errors), (2, 2, 0));
-    assert_eq!((r.albums_restored, r.shares_restored, r.settings_restored), (1, 2, 1));
+    assert_eq!((r.albums_restored, r.shares_restored, r.settings_restored), (1, 2, 2));
     // The report (printed, and sent as JSON by the CLI) carries counts and ids only: no hash, token, email or password.
     let shown = format!("{}\n{}", r.text(), serde_json::to_string(&r).unwrap());
     for (label, planted) in [
@@ -1043,7 +1055,21 @@ async fn a_bucket_only_rebuild_brings_back_accounts_roles_limits_defaults_and_sh
         .await
         .unwrap();
     assert_eq!(defaults["quota_bytes"], 7);
-    assert_eq!(fx.count("server_state").await, 1);
+    let require: serde_json::Value = sqlx::query_scalar("SELECT value FROM server_state WHERE key = 'require_2fa'")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert_eq!(require["required"], true);
+    assert_eq!(fx.count("server_state").await, 2);
+    assert_eq!(
+        (
+            fx.count("user_totp").await,
+            fx.count("totp_recovery_codes").await,
+            fx.count("login_challenges").await
+        ),
+        (0, 0, 0),
+        "2FA secrets and recovery codes are not in the bucket"
+    );
 
     // Credentials: a locked password nobody can use, and no API key or session came back.
     let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")

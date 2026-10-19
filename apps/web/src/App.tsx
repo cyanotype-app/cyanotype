@@ -7,6 +7,8 @@ import { Albums } from "./pages/Albums";
 import { ApiKeys } from "./pages/ApiKeys";
 import { AdminLayout } from "./pages/admin/AdminLayout";
 import { Accounts } from "./pages/admin/Accounts";
+import { TwoFactorAdmin } from "./pages/admin/TwoFactorAdmin";
+import { Security } from "./pages/Security";
 import { AuditPage } from "./pages/admin/AuditPage";
 import { HealthPage } from "./pages/admin/HealthPage";
 import { Invites } from "./pages/admin/Invites";
@@ -55,6 +57,7 @@ export function App() {
           <Route index element={<Navigate to="storage" replace />} />
           <Route path="storage" element={<Storage />} />
           <Route path="sessions" element={<Sessions />} />
+          <Route path="security" element={<Security />} />
           <Route path="api-keys" element={<ApiKeys />} />
           <Route path="*" element={<NotFound />} />
         </Route>
@@ -62,6 +65,7 @@ export function App() {
           <Route index element={<Navigate to="accounts" replace />} />
           <Route path="accounts" element={<Accounts />} />
           <Route path="invites" element={<Invites />} />
+          <Route path="security" element={<TwoFactorAdmin />} />
           <Route path="health" element={<HealthPage />} />
           <Route path="audit" element={<AuditPage />} />
           <Route path="*" element={<NotFound />} />
@@ -77,6 +81,10 @@ function RequireAuth() {
   const loc = useLocation();
   if (state.status === "loading") return <p className="center muted" role="status">Loading…</p>;
   if (state.status === "anonymous") return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
+  // The administrator requires 2FA and this account has none: the server refuses everything else, so go and enrol.
+  if (state.user.mfa_enrol_required && loc.pathname !== "/settings/security") {
+    return <Navigate to="/settings/security" replace />;
+  }
   return (
     <UploadProvider>
     <div className="shell">

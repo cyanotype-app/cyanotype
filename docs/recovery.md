@@ -61,6 +61,15 @@ defaults. This change closes those gaps and keeps what must stay out of the buck
 
 ### Decisions: what is in the bucket, and what deliberately is not
 
+**Two-factor authentication.** Following the decision on password hashes below: *no 2FA secret and no recovery code is written to the
+bucket*. A secret next to nothing it can be used with is pointless (the password hash is not there either), and a copy of the bucket
+must never be a credential. So after a bucket-only rebuild (path B) every account has 2FA **off** and a locked password; the owner
+signs in with a `cyanotype reset-link` password and enrols again. Path A (the Postgres dump) keeps secrets and recovery codes, but they
+can only be read with the same `AUTH_TOTP_KEY`: keep it with your other secrets. The one piece of 2FA state the manifest does carry is
+the admin's setting **Require 2FA** (`server_state` key `require_2fa`, the `settings` lines of the account manifest, additive: older
+manifests simply lack it), so a rebuild does not silently relax the policy; it is not enforced while the server has no key.
+API keys and their scopes are credentials and are not in the bucket either.
+
 * **Passwords are not stored in the bucket.** The alternative was an owner-only manifest of argon2 hashes. Reading the bucket already
   gives every photo, so a leaked bucket key is the worst case anyway, but a hash in it would additionally let whoever copies the
   bucket (a leaked key, a bucket-listing tool, a backup of it) crack the owner's password offline, and people reuse passwords; the

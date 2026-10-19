@@ -4,6 +4,7 @@ use std::str::FromStr;
 
 use anyhow::{Result, bail};
 
+use crate::totp::TotpKey;
 use cyanotype_service::ratelimit::{Cidr, RateLimitConfig, parse_proxies};
 
 /// Who may create accounts (`REGISTRATION_MODE`).
@@ -41,6 +42,10 @@ pub struct AuthConfig {
     pub rate_limit: RateLimitConfig,
     /// Peers whose `X-Forwarded-For` is believed (`TRUSTED_PROXIES`).
     pub trusted_proxies: Vec<Cidr>,
+    /// The server key that seals TOTP secrets (`AUTH_TOTP_KEY`). Unset: two-factor enrolment is off.
+    pub totp_key: Option<TotpKey>,
+    /// Seconds since the epoch; a field so tests can fix the time of a code.
+    pub clock: fn() -> u64,
 }
 
 impl AuthConfig {
@@ -72,6 +77,8 @@ impl AuthConfig {
             cookie_secure: get("COOKIE_SECURE").map_or(Ok(true), |v| parse_bool("COOKIE_SECURE", &v))?,
             rate_limit,
             trusted_proxies: parse_proxies(get("TRUSTED_PROXIES").as_deref())?,
+            totp_key: get("AUTH_TOTP_KEY").map(|v| TotpKey::parse(&v)).transpose()?,
+            clock: crate::twofactor::unix_now,
         })
     }
 }
@@ -143,5 +150,13 @@ mod tests {
         assert!(cfg(&[("COOKIE_SECURE", "maybe")]).is_err());
         assert!(cfg(&[("AUTH_RATE_LIMIT_BURST", "0")]).is_err());
         assert!(cfg(&[("TRUSTED_PROXIES", "10.0.0.0/99")]).is_err());
+        // A malformed 2FA key fails startup; it never silently turns 2FA off.
+        assert!(cfg(&[("AUTH_TOTP_KEY", "not a key")]).is_err());
+    }
+
+    #[test]
+    fn totp_key_is_optional_and_parsed() {
+        assert!(cfg(&[]).unwrap().totp_key.is_none());
+        assert!(cfg(&[("AUTH_TOTP_KEY", &"ab".repeat(32))]).unwrap().totp_key.is_some());
     }
 }

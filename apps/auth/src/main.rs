@@ -2,6 +2,8 @@
 mod invites;
 mod routes;
 mod settings;
+mod totp;
+mod twofactor;
 mod users_admin;
 
 use std::sync::Arc;
@@ -30,9 +32,15 @@ async fn main() -> Result<()> {
         registration = ?cfg.registration,
         cookie_secure = cfg.cookie_secure,
         rate_limit = ?cfg.rate_limit,
+        two_factor = cfg.totp_key.is_some(),
         trusted_proxies = cfg.trusted_proxies.len(),
         "auth settings"
     );
+    if cfg.totp_key.is_none() {
+        tracing::warn!(
+            "AUTH_TOTP_KEY is not set: two-factor authentication cannot be set up, and accounts that already have it cannot sign in. See docs/deploy.md"
+        );
+    }
     if !cfg.cookie_secure {
         tracing::warn!(
             "COOKIE_SECURE=false: session cookies are sent without the Secure attribute; use only for local http"

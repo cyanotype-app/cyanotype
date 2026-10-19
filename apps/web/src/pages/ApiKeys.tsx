@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
-import { api, type ApiKey, type CreatedApiKey } from "../api";
+import { api, type ApiKey, type ApiKeyScope, type CreatedApiKey } from "../api";
+import { EXPIRY_CHOICES, expiryLine, SCOPE_HELP, SCOPE_LABEL } from "../twoFactorText";
 import { detectOs, installCommands, OS_LABEL, type CliOs } from "../cliInstall";
 
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never");
@@ -29,8 +30,12 @@ function InstallCli() {
 /** Create, copy (shown once), list and revoke API keys, e.g. for `cyanotype login --api-key`. */
 export function ApiKeys() {
   const nameId = useId();
+  const scopeId = useId();
+  const expiryId = useId();
   const [keys, setKeys] = useState<ApiKey[] | null>(null);
   const [name, setName] = useState("");
+  const [scope, setScope] = useState<ApiKeyScope>("import");
+  const [expiry, setExpiry] = useState<number | null>(null);
   const [created, setCreated] = useState<CreatedApiKey | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +57,7 @@ export function ApiKeys() {
     setBusy(true);
     setError(null);
     try {
-      setCreated(await api.createApiKey(name.trim()));
+      setCreated(await api.createApiKey(name.trim(), scope, expiry ?? undefined));
       setCopied(false);
       setName("");
       await load();
@@ -107,10 +112,35 @@ export function ApiKeys() {
             onChange={(e) => setName(e.target.value)}
           />
         </div>
+        <div>
+          <label htmlFor={scopeId}>Can do</label>
+          <select id={scopeId} value={scope} onChange={(e) => setScope(e.target.value as ApiKeyScope)}>
+            {(Object.keys(SCOPE_LABEL) as ApiKeyScope[]).map((s) => (
+              <option key={s} value={s}>
+                {SCOPE_LABEL[s]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor={expiryId}>Expires</label>
+          <select
+            id={expiryId}
+            value={expiry === null ? "" : String(expiry)}
+            onChange={(e) => setExpiry(e.target.value === "" ? null : Number(e.target.value))}
+          >
+            {EXPIRY_CHOICES.map((c) => (
+              <option key={c.label} value={c.days === null ? "" : String(c.days)}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        </div>
         <button type="submit" className="btn btn-primary" disabled={busy || name.trim() === ""}>
           Create key
         </button>
       </form>
+      <p className="muted small">{SCOPE_HELP[scope]}</p>
 
       <div role="alert" className="form-error">
         {error}
@@ -142,7 +172,8 @@ export function ApiKeys() {
               <div>
                 <strong>{k.name}</strong> <code>{k.prefix}…</code>
                 <div className="muted small">
-                  Created {when(k.created_at)} · last used {when(k.last_used_at)}
+                  {SCOPE_LABEL[k.scope] ?? k.scope} · {expiryLine(k)} · created {when(k.created_at)} · last used{" "}
+                  {when(k.last_used_at)}
                 </div>
               </div>
               <button type="button" className="btn btn-quiet" onClick={() => void revoke(k)}>

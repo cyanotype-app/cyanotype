@@ -12,6 +12,7 @@ export function AdminLayout() {
       <nav className="admin-nav" aria-label="Administration">
         <NavLink to="/admin/accounts">Accounts</NavLink>
         <NavLink to="/admin/invites">Invites</NavLink>
+        <NavLink to="/admin/security">Security</NavLink>
         <NavLink to="/admin/health">Health</NavLink>
         <NavLink to="/admin/audit">Audit log</NavLink>
       </nav>

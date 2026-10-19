@@ -71,6 +71,12 @@ struct LoginArgs {
     /// Name for the new API key (default: "cli on <hostname>").
     #[arg(long)]
     name: Option<String>,
+    /// What the new key may do: `import` (upload and status only; the default), `read` or `full`.
+    #[arg(long, value_parser = ["import", "read", "full"], default_value = "import")]
+    scope: String,
+    /// Two-factor code (or a recovery code), when the account has two-factor authentication (prompted when omitted).
+    #[arg(long)]
+    code: Option<String>,
 }
 
 #[tokio::main]
@@ -179,9 +185,18 @@ async fn login(a: LoginArgs) -> Result<()> {
                 rpassword::prompt_password("Password: ").context("reading password")?
             };
             let api = api::Api::new(&server, None)?;
-            let cookie = api.login(&email, &password).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+            let cookie = match api.login(&email, &password).await.map_err(|e| anyhow::anyhow!("{e}"))? {
+                api::LoginOutcome::Session(c) => c,
+                api::LoginOutcome::Challenge(ch) => {
+                    let code = match a.code {
+                        Some(c) => c,
+                        None => prompt("Two-factor code")?,
+                    };
+                    api.login_code(&ch, &code).await.map_err(|e| anyhow::anyhow!("{e}"))?
+                }
+            };
             let name = a.name.unwrap_or_else(default_key_name);
-            let created = api.create_api_key(&cookie, &name).await;
+            let created = api.create_api_key(&cookie, &name, &a.scope).await;
             // The session was only a means to mint the key; do not leave it around.
             api.logout(&cookie).await;
             key = created.map_err(|e| anyhow::anyhow!("creating API key: {e}"))?;
@@ -213,6 +228,9 @@ async fn status() -> Result<()> {
     );
     let me = api.me().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("User:    {} ({})", me.email, me.id);
+    if let Some(scope) = &me.scope {
+        println!("Scope:   {scope}");
+    }
     let n = api.asset_count().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("Assets:  {n}");
     Ok(())

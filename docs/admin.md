@@ -58,6 +58,29 @@ expired or a new `expires_in_days` is given.
 Other actions: list with status (`pending`, `used`, `expired`, `revoked`) and who used each one; **revoke**
 (`DELETE /auth/admin/invites/{id}`, final, idempotent, not allowed once used).
 
+## Two-factor authentication
+
+People turn it on themselves in **Settings > Security**: scan a QR code (or type the key) into an authenticator app, confirm with a
+6-digit code, and save the ten single-use recovery codes (shown once, with a download). Sign-in then asks for a code after the
+password; a recovery code works in its place, once. Turning it off needs the password and a code. TOTP is RFC 6238: HMAC-SHA1, 30
+second steps, 6 digits, one step of clock drift either side; a code is accepted once.
+
+**Admin > Security** shows:
+
+- whether the server key is set. Without `AUTH_TOTP_KEY` ([`deploy.md`](deploy.md)) two-factor authentication is switched off and the
+  page says so in red; accounts that already have it cannot sign in until the key is back (the check fails closed, never open);
+- **Require two-factor authentication for every account.** You need it on your own account first. Accounts without it are sent to
+  Settings > Security right after they sign in and can do nothing else (every service refuses their session, not only the web app)
+  until they have enrolled. Live sessions are caught at once. Not enforced while the server has no key;
+- who has it on (and how many recovery codes they have left; never a secret), and **Reset** for someone who lost their phone and
+  their codes: it removes their 2FA, signs them out everywhere and is written to the audit log (`account.2fa_reset`). Requiring
+  or releasing it is logged too (`2fa.require`, `2fa.unrequire`).
+
+How it is protected: secrets are sealed with AES-256-GCM under a key derived from `AUTH_TOTP_KEY` (bound to the account), recovery
+codes are stored only as an HMAC under another derived key, so a copy of the database alone cannot be brute-forced. Wrong codes are
+throttled per account (five in a row lock the second factor for 15 minutes, even against the right code) and per client address.
+A correct password gives only a five-minute challenge, never a session.
+
 ## Audit log
 
 `audit_log` records admin actions: when, the actor (id and email, kept after the account is deleted), an action name, the

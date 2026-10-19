@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use cyanotype_service::{
-    ApiError, ApiResult, AuthUser, SessionUser, audit,
+    AnyCaller, ApiError, ApiResult, Scope, SessionUser, audit,
     auth::{SESSION_COOKIE as COOKIE, sha256},
     ratelimit::{self, LimitState, RateLimiter},
 };
@@ -27,7 +27,7 @@ use sqlx::PgPool;
 use cyanotype_core::limits::{self, Limits};
 
 use crate::settings::{AuthConfig, RegistrationMode};
-use crate::{invites, users_admin};
+use crate::{invites, twofactor, users_admin};
 
 const SESSION_DAYS: i64 = 30;
 /// Serialises first-user registration across all auth replicas (transaction-scoped advisory lock).
@@ -61,6 +61,9 @@ pub fn routes(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(limit, ratelimit::limit));
     Router::new()
         .merge(limited)
+        .merge(twofactor::login_routes(&state))
+        .merge(twofactor::routes(&state))
+        .merge(twofactor::admin_routes())
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
         .route("/auth/hidden", get(hidden_status).delete(hidden_lock))
@@ -110,14 +113,23 @@ pub(crate) fn session_removal_cookie(secure: bool) -> Cookie<'static> {
     cookie
 }
 
-async fn start_session(db: &PgPool, cfg: &AuthConfig, jar: CookieJar, user_id: Uuid) -> ApiResult<CookieJar> {
+/// `needs_mfa_enrol`: the administrator requires 2FA and this account has none, so the session may only enrol.
+pub(crate) async fn start_session(
+    db: &PgPool,
+    cfg: &AuthConfig,
+    jar: CookieJar,
+    user_id: Uuid,
+    needs_mfa_enrol: bool,
+) -> ApiResult<CookieJar> {
     let token = random_token();
     sqlx::query(
-        "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, now() + make_interval(days => $3))",
+        "INSERT INTO sessions (token_hash, user_id, expires_at, needs_mfa_enrol)
+         VALUES ($1, $2, now() + make_interval(days => $3), $4)",
     )
     .bind(sha256(token.as_bytes()))
     .bind(user_id)
     .bind(SESSION_DAYS as i32)
+    .bind(needs_mfa_enrol)
     .execute(db)
     .await?;
     let cookie = session_cookie(token, cfg.cookie_secure);
@@ -231,11 +243,12 @@ async fn register(
         .await?;
     }
     tx.commit().await?;
-    let jar = start_session(&db, &cfg, jar, id).await?;
+    let pending = twofactor::enforced(&db, &cfg).await?;
+    let jar = start_session(&db, &cfg, jar, id, pending).await?;
     Ok((
         StatusCode::CREATED,
         jar,
-        Json(json!({"id": id, "email": email, "role": role})),
+        Json(json!({"id": id, "email": email, "role": role, "mfa_enrol_required": pending})),
     ))
 }
 
@@ -288,8 +301,14 @@ async fn login(
             retry_after_secs: None,
         });
     }
-    let jar = start_session(&db, &cfg, jar, id).await?;
-    Ok((jar, Json(json!({"id": id}))))
+    // A correct password is not a session yet when the account has a second factor: it earns a challenge to answer with a code.
+    if twofactor::has_2fa(&db, id).await? {
+        let body = twofactor::begin_challenge(&db, &cfg, id).await?;
+        return Ok((jar, body));
+    }
+    let pending = twofactor::enforced(&db, &cfg).await?;
+    let jar = start_session(&db, &cfg, jar, id, pending).await?;
+    Ok((jar, Json(json!({"id": id, "mfa_enrol_required": pending}))))
 }
 
 #[derive(Deserialize)]
@@ -386,12 +405,19 @@ async fn logout(State(AppState { db, cfg }): State<AppState>, jar: CookieJar) ->
     ))
 }
 
-async fn me(State(db): State<PgPool>, user: AuthUser) -> ApiResult<Json<Value>> {
+/// Who am I: open to every scope (it is how `cyanotype status` checks a key) and to a session that still has to enrol in
+/// 2FA (the web app reads `mfa_enrol_required` here and sends it to the enrolment page).
+async fn me(State(db): State<PgPool>, AnyCaller(c): AnyCaller) -> ApiResult<Json<Value>> {
     let (email, role): (String, String) = sqlx::query_as("SELECT email, role FROM users WHERE id = $1")
-        .bind(user.id)
+        .bind(c.id)
         .fetch_one(&db)
         .await?;
-    Ok(Json(json!({"id": user.id, "email": email, "role": role})))
+    let two_factor = twofactor::has_2fa(&db, c.id).await?;
+    Ok(Json(json!({
+        "id": c.id, "email": email, "role": role,
+        "two_factor": two_factor, "mfa_enrol_required": c.mfa_pending,
+        "scope": c.scope.as_str(),
+    })))
 }
 
 /// Plaintext API keys look like `cyk_<64 hex>` (32 random bytes). Only the sha256 is stored.
@@ -407,7 +433,15 @@ fn new_api_key() -> String {
 #[derive(Deserialize)]
 struct NewApiKey {
     name: String,
+    /// `import`, `read` or `full`. Absent means `full`, what keys were before scopes existed.
+    #[serde(default)]
+    scope: Option<String>,
+    /// Days until the key stops working (1 to 3650). Absent: it does not expire.
+    #[serde(default)]
+    expires_in_days: Option<i64>,
 }
+
+const MAX_KEY_DAYS: i64 = 3650;
 
 /// Session only: a leaked API key must not be able to mint more keys.
 async fn create_api_key(
@@ -428,41 +462,74 @@ async fn create_api_key(
             "at most {MAX_API_KEYS_PER_USER} API keys; revoke one first"
         )));
     }
+    let scope = match req.scope.as_deref() {
+        None => Scope::Full,
+        Some(s) => Scope::parse(s).ok_or_else(|| ApiError::BadRequest("scope must be import, read or full".into()))?,
+    };
+    if let Some(d) = req.expires_in_days
+        && !(1..=MAX_KEY_DAYS).contains(&d)
+    {
+        return Err(ApiError::BadRequest(format!(
+            "expires_in_days must be between 1 and {MAX_KEY_DAYS}"
+        )));
+    }
     let key = new_api_key();
     let hint = format!("{API_KEY_PREFIX}{}", &key[API_KEY_PREFIX.len()..][..API_KEY_HINT_LEN]);
-    let (id, created_at): (Uuid, time::OffsetDateTime) = sqlx::query_as(
-        "INSERT INTO api_keys (user_id, name, key_hash, prefix) VALUES ($1, $2, $3, $4) RETURNING id, created_at",
+    let (id, created_at, expires_at): (Uuid, time::OffsetDateTime, Option<time::OffsetDateTime>) = sqlx::query_as(
+        "INSERT INTO api_keys (user_id, name, key_hash, prefix, scope, expires_at)
+         VALUES ($1, $2, $3, $4, $5, CASE WHEN $6::int IS NULL THEN NULL ELSE now() + make_interval(days => $6::int) END)
+         RETURNING id, created_at, expires_at",
     )
     .bind(user.id)
     .bind(name)
     .bind(sha256(key.as_bytes()))
     .bind(&hint)
+    .bind(scope.as_str())
+    .bind(req.expires_in_days.map(|d| d as i32))
     .fetch_one(&db)
     .await?;
     let created_at = rfc3339(created_at);
     // The only time the plaintext key is ever returned.
     Ok((
         StatusCode::CREATED,
-        Json(json!({"id": id, "name": name, "prefix": hint, "created_at": created_at, "key": key})),
+        Json(json!({
+            "id": id, "name": name, "prefix": hint, "created_at": created_at, "key": key,
+            "scope": scope.as_str(), "expires_at": expires_at.map(rfc3339),
+        })),
     ))
 }
 
 async fn list_api_keys(State(db): State<PgPool>, user: SessionUser) -> ApiResult<Json<Value>> {
-    let rows: Vec<(Uuid, String, String, time::OffsetDateTime, Option<time::OffsetDateTime>)> = sqlx::query_as(
-        "SELECT id, name, prefix, created_at, last_used_at FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC",
+    type Row = (
+        Uuid,
+        String,
+        String,
+        time::OffsetDateTime,
+        Option<time::OffsetDateTime>,
+        String,
+        Option<time::OffsetDateTime>,
+        bool,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, name, prefix, created_at, last_used_at, scope, expires_at,
+                COALESCE(expires_at <= now(), false)
+         FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC",
     )
     .bind(user.id)
     .fetch_all(&db)
     .await?;
     let items: Vec<Value> = rows
         .into_iter()
-        .map(|(id, name, prefix, created_at, last_used_at)| {
-            json!({
-                "id": id, "name": name, "prefix": prefix,
-                "created_at": rfc3339(created_at),
-                "last_used_at": last_used_at.map(rfc3339),
-            })
-        })
+        .map(
+            |(id, name, prefix, created_at, last_used_at, scope, expires_at, expired)| {
+                json!({
+                    "id": id, "name": name, "prefix": prefix,
+                    "created_at": rfc3339(created_at),
+                    "last_used_at": last_used_at.map(rfc3339),
+                    "scope": scope, "expires_at": expires_at.map(rfc3339), "expired": expired,
+                })
+            },
+        )
         .collect();
     Ok(Json(json!({"items": items})))
 }
@@ -1001,4 +1068,5 @@ mod tests {
     }
 
     include!("invites_tests.rs");
+    include!("twofactor_tests.rs");
 }

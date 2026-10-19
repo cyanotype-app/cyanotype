@@ -63,6 +63,21 @@ which is handy in CI. `cyanotype status` shows the server, the account and the a
 (Settings, "API keys", or `DELETE /auth/api-keys/{id}`) and it stops working immediately. API keys cannot
 create, list or revoke keys; only a login session can.
 
+### Key scopes and expiry
+
+Every API key has a **scope**, and optionally an expiry (Settings > API keys, or `POST /auth/api-keys {name, scope, expires_in_days}`):
+
+| Scope | May do |
+|---|---|
+| `import` | Upload and see status: `/assets/check`, the upload parts, `/assets/complete`, `/assets/count`, `/assets/processing`, `/auth/me`. Cannot list, view, download, change or delete anything. |
+| `read` | Everything a `GET` reaches (library, search, downloads). Cannot upload or change anything. |
+| `full` | Everything a session can do except what is session-only: managing keys, two-factor authentication, sessions and the whole admin portal (those refuse every key). |
+
+`cyanotype login` makes an **`import`** key by default; ask for another with `--scope read` or `--scope full`. Keys that existed before
+scopes are `full` with no expiry. An expired key is refused like a revoked one (401) and is listed as expired. The scope is checked
+by the server on every route (a key with too small a scope gets `403` with `code: insufficient_scope`), not by the client. If your
+account uses two-factor authentication, `cyanotype login` asks for the code after the password (`--code`, or a recovery code).
+
 ## 3. Import
 
 ```sh

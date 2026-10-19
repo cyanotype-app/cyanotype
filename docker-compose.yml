@@ -129,6 +129,7 @@ services:
       # so relax the service defaults (Secure cookie, invite). Production overrides both.
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       REGISTRATION_MODE: ${REGISTRATION_MODE:-open}
+      AUTH_TOTP_KEY: ${AUTH_TOTP_KEY:-}
     labels:
       com.datadoghq.ad.logs: '[{"source":"rust","service":"cyanotype-auth"}]'
     depends_on:

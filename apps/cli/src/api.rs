@@ -69,6 +69,15 @@ struct CompleteRequest<'a> {
 pub struct Me {
     pub id: String,
     pub email: String,
+    /// What this key may do (`import`, `read`, `full`); absent from servers older than key scopes.
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+/// What a correct password earned: a session, or (the account has two-factor authentication) a challenge to answer with a code.
+pub enum LoginOutcome {
+    Session(String),
+    Challenge(String),
 }
 
 /// How a request failed, as far as the caller's control flow cares.
@@ -415,7 +424,7 @@ impl Api {
     // ---- login helpers (cookie session, used once to mint an API key)
 
     /// Log in with email + password; returns the session cookie (`name=value`).
-    pub async fn login(&self, email: &str, password: &str) -> ApiResult<String> {
+    pub async fn login(&self, email: &str, password: &str) -> ApiResult<LoginOutcome> {
         let res = self
             .send(|| {
                 self.req(Method::POST, "/auth/login")
@@ -425,6 +434,41 @@ impl Api {
         let status = res.status();
         if status == StatusCode::UNAUTHORIZED {
             return Err(ApiError::Fatal("wrong email or password".into()));
+        }
+        if !status.is_success() {
+            return Err(ApiError::Fatal(snippet(res).await));
+        }
+        let cookie = res
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .find_map(|c| c.split(';').next().filter(|kv| kv.starts_with("cyanotype_session=")))
+            .map(str::to_string);
+        if let Some(c) = cookie {
+            return Ok(LoginOutcome::Session(c));
+        }
+        #[derive(Deserialize)]
+        struct Mfa {
+            challenge: Option<String>,
+        }
+        match self.json::<Mfa>(res).await.ok().and_then(|m| m.challenge) {
+            Some(ch) => Ok(LoginOutcome::Challenge(ch)),
+            None => Err(ApiError::Fatal("server did not start a session".into())),
+        }
+    }
+
+    /// The second step of a login with two-factor authentication: a 6-digit code or a recovery code. Returns the session cookie.
+    pub async fn login_code(&self, challenge: &str, code: &str) -> ApiResult<String> {
+        let res = self
+            .send(|| {
+                self.req(Method::POST, "/auth/login/2fa")
+                    .json(&serde_json::json!({"challenge": challenge, "code": code}))
+            })
+            .await?;
+        let status = res.status();
+        if status == StatusCode::UNAUTHORIZED {
+            return Err(ApiError::Fatal("that code was not accepted".into()));
         }
         if !status.is_success() {
             return Err(ApiError::Fatal(snippet(res).await));
@@ -439,7 +483,7 @@ impl Api {
     }
 
     /// Mint an API key with a session cookie. Returns the plaintext key (shown once by the server).
-    pub async fn create_api_key(&self, cookie: &str, name: &str) -> ApiResult<String> {
+    pub async fn create_api_key(&self, cookie: &str, name: &str, scope: &str) -> ApiResult<String> {
         #[derive(Deserialize)]
         struct Created {
             key: String,
@@ -448,7 +492,7 @@ impl Api {
             .send(|| {
                 self.req(Method::POST, "/auth/api-keys")
                     .header(header::COOKIE, cookie)
-                    .json(&serde_json::json!({"name": name}))
+                    .json(&serde_json::json!({"name": name, "scope": scope}))
             })
             .await?;
         Ok(self.json::<Created>(res).await?.key)
