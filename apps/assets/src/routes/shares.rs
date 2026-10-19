@@ -167,11 +167,11 @@ async fn fetch(db: &sqlx::PgPool, owner: Uuid, id: Option<Uuid>) -> ApiResult<Ve
                 CASE WHEN s.kind = 'album' THEN
                     (SELECT count(*) FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
                      WHERE aa.album_id = s.album_id AND x.owner_id = s.owner_id
-                       AND x.deleted_at IS NULL AND x.primary_id IS NULL)
+                       AND x.deleted_at IS NULL AND x.primary_id IS NULL AND NOT x.hidden)
                 ELSE
                     (SELECT count(*) FROM share_assets sa JOIN assets x ON x.id = sa.asset_id
                      WHERE sa.share_id = s.id AND x.owner_id = s.owner_id
-                       AND x.deleted_at IS NULL AND x.primary_id IS NULL)
+                       AND x.deleted_at IS NULL AND x.primary_id IS NULL AND NOT x.hidden)
                 END AS item_count,
                 s.view_count, s.last_viewed_at, s.created_at, s.updated_at
          FROM shares s LEFT JOIN albums a ON a.id = s.album_id
@@ -246,8 +246,12 @@ async fn create(
             if req.except.len() > MAX_EXCEPT {
                 return Err(ApiError::BadRequest(format!("at most {MAX_EXCEPT} except ids")));
             }
+            // Never unlocked: a link cannot be made from the Hidden view (nor from hidden photos in the trash).
+            if scope == Scope::Hidden {
+                return Err(ApiError::BadRequest("hidden photos cannot be shared".into()));
+            }
             let mut conn = s.db.acquire().await?;
-            let ids = scope::resolve(&mut conn, user.id, &scope, &req.except).await?;
+            let ids = scope::resolve(&mut conn, user.id, &scope, &req.except, false).await?;
             if ids.is_empty() {
                 return Err(ApiError::BadRequest("choose at least one photo to share".into()));
             }
@@ -292,7 +296,8 @@ async fn create(
         let added = sqlx::query(
             "INSERT INTO share_assets (share_id, asset_id)
              SELECT DISTINCT $1, p.id FROM assets a JOIN assets p ON p.id = coalesce(a.primary_id, a.id)
-             WHERE a.id = ANY($3) AND a.owner_id = $2 AND p.owner_id = $2 AND p.deleted_at IS NULL AND p.purging_at IS NULL",
+             WHERE a.id = ANY($3) AND a.owner_id = $2 AND p.owner_id = $2 AND p.deleted_at IS NULL AND p.purging_at IS NULL
+               AND NOT p.hidden",
         )
         .bind(id)
         .bind(user.id)

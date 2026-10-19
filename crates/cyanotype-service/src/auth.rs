@@ -135,3 +135,59 @@ where
         }
     }
 }
+
+/// How long the Hidden view stays open after the account password was entered again.
+pub const HIDDEN_UNLOCK_MINUTES: i32 = 10;
+
+/// Whether this request's login session has the Hidden view unlocked (`sessions.hidden_unlocked_until`, set by
+/// `POST /auth/hidden/unlock`). Never rejects: a request that is not unlocked simply gets `Unlock(false)`.
+///
+/// Always false for an API key (the CLI has no way to unlock) and for a request with an `Authorization` header, so the rule
+/// is "the session cookie, unlocked, and nothing else". The check is one indexed lookup of the session row on every request,
+/// so it is enforced by the server and never trusted from the client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Unlock(pub bool);
+
+impl<S> FromRequestParts<S> for Unlock
+where
+    S: Send + Sync,
+    PgPool: FromRef<S>,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, ApiError> {
+        if parts.headers.contains_key(header::AUTHORIZATION) {
+            return Ok(Unlock(false));
+        }
+        let db = PgPool::from_ref(state);
+        let jar = CookieJar::from_headers(&parts.headers);
+        let Some(token) = jar.get(SESSION_COOKIE) else {
+            return Ok(Unlock(false));
+        };
+        let open: Option<bool> = sqlx::query_scalar(
+            "SELECT coalesce(s.hidden_unlocked_until > now(), false) FROM sessions s JOIN users u ON u.id = s.user_id \
+             WHERE s.token_hash = $1 AND s.expires_at > now() AND u.disabled_at IS NULL",
+        )
+        .bind(sha256(token.value().as_bytes()))
+        .fetch_optional(&db)
+        .await?;
+        Ok(Unlock(open.unwrap_or(false)))
+    }
+}
+
+impl Unlock {
+    /// `403 hidden_locked` unless the Hidden view is unlocked. For the endpoints that exist only for the Hidden view.
+    pub fn require(self) -> Result<(), ApiError> {
+        if self.0 {
+            Ok(())
+        } else {
+            Err(ApiError::Limited {
+                status: axum::http::StatusCode::FORBIDDEN,
+                code: "hidden_locked",
+                message: "The Hidden view is locked. Enter your password to open it.".into(),
+                details: serde_json::json!({}),
+                retry_after_secs: None,
+            })
+        }
+    }
+}

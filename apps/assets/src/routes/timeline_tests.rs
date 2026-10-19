@@ -158,7 +158,15 @@ async fn day_counts_are_an_index_only_scan_of_the_timeline_index() {
         .await
         .unwrap();
     sqlx::query("VACUUM assets").execute(&t.pool).await.unwrap(); // visibility map: index-only scans need it
-    for (favorite, index) in [(false, "assets_timeline_idx"), (true, "assets_favorites_idx")] {
+    use super::visibility::{Sort, view_sql};
+    let unlocked = cyanotype_service::Unlock(true);
+    for (favorite, archived, hidden, sort, index) in [
+        (false, false, false, Sort::Taken, "assets_timeline_idx"),
+        (true, false, false, Sort::Taken, "assets_favorites_idx"),
+        (false, false, false, Sort::Added, "assets_added_idx"),
+        (false, true, false, Sort::Taken, "assets_archived_idx"),
+        (false, false, true, Sort::Taken, "assets_hidden_idx"),
+    ] {
         let mut tx = t.pool.begin().await.unwrap();
         sqlx::query("SET LOCAL enable_seqscan = off")
             .execute(&mut *tx)
@@ -166,7 +174,8 @@ async fn day_counts_are_an_index_only_scan_of_the_timeline_index() {
             .unwrap();
         let plan: Vec<(String,)> = sqlx::query_as(&format!(
             "EXPLAIN {}",
-            super::timeline::days_sql(favorite).replace("$1", &format!("'{uid}'"))
+            super::timeline::days_sql(sort, &view_sql(favorite, archived, hidden, unlocked).unwrap())
+                .replace("$1", &format!("'{uid}'"))
         ))
         .fetch_all(&mut *tx)
         .await

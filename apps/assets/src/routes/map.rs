@@ -162,7 +162,7 @@ pub(super) async fn clusters(
                 min(latitude) AS min_lat, max(latitude) AS max_lat, min(longitude) AS min_lon, max(longitude) AS max_lon,
                 (array_agg(id))[1] AS id, (array_agg(thumbhash))[1] AS thumbhash
          FROM assets
-         WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL{fav}{bbox}
+         WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL AND NOT hidden AND NOT archived{fav}{bbox}
          GROUP BY floor((longitude + 180) / $2), floor((latitude + 90) / $2)
          ORDER BY count(*) DESC
          LIMIT $3",

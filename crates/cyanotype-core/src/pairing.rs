@@ -238,6 +238,25 @@ pub async fn pair_asset(pool: &PgPool, id: Uuid) -> Result<Paired> {
         .bind(primary)
         .execute(&mut *tx)
         .await?;
+    // Hidden and archived are the pair's, carried by the visible photo: a RAW that was hidden or archived on its own hides or
+    // archives the pair (never the other way round: a hidden photo does not become visible because a file joined it), and the
+    // RAW takes the primary's state so that separating them later keeps it.
+    sqlx::query(
+        "UPDATE assets SET hidden = hidden OR (SELECT hidden FROM assets WHERE id = $1),
+                           archived = archived OR (SELECT archived FROM assets WHERE id = $1) WHERE id = $2",
+    )
+    .bind(raw)
+    .bind(primary)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE assets SET hidden = (SELECT hidden FROM assets WHERE id = $2),
+                           archived = (SELECT archived FROM assets WHERE id = $2) WHERE id = $1",
+    )
+    .bind(raw)
+    .bind(primary)
+    .execute(&mut *tx)
+    .await?;
     // Albums reference the visible photo: move the RAW's memberships and cover choice onto the primary.
     sqlx::query(
         "INSERT INTO album_assets (album_id, asset_id, added_at)

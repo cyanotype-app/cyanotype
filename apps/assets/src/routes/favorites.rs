@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::scope::Selector;
 use crate::AppState;
-use cyanotype_service::{ApiResult, AuthUser};
+use cyanotype_service::{ApiResult, AuthUser, Unlock};
 
 #[derive(Deserialize)]
 pub(super) struct FavoriteRequest {
@@ -27,9 +27,10 @@ pub(super) struct Count {
 pub(super) async fn set(
     State(s): State<AppState>,
     user: AuthUser,
+    unlock: Unlock,
     Json(req): Json<FavoriteRequest>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.pick.validated()?;
+    let pick = req.pick.validated(unlock)?;
     let mut tx = s.db.begin().await?;
     let ids: Vec<Uuid> = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();
     let done = sqlx::query(

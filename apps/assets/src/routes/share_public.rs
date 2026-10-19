@@ -266,7 +266,9 @@ impl ShareRow {
     }
 }
 
-const VISIBLE: &str = "x.owner_id = $1 AND x.deleted_at IS NULL AND x.primary_id IS NULL";
+/// A hidden photo is in no public link, even when it is a member of the shared album or was picked for the selection before it was
+/// hidden (every query of this module goes through this predicate).
+const VISIBLE: &str = "x.owner_id = $1 AND x.deleted_at IS NULL AND x.primary_id IS NULL AND NOT x.hidden";
 
 /// The link for `token`, or the one `404` every dead token gets. Each miss spends from the caller's miss budget.
 async fn find(s: &AppState, st: &ShareState, ip: IpAddr, token: &str) -> PubResult<ShareRow> {

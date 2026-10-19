@@ -3,8 +3,8 @@
 //! Object metadata (`objmeta`) makes each original self-describing from its upload on, but it is write-once: it
 //! cannot say that a photo was later trashed, favorited or put in an album, and objects uploaded before it existed
 //! have none. The manifest carries that state. Once a day the assets service writes, per user, one JSON object per
-//! line: a `meta` header, every `asset` (not mid-purge) with its id, hash, name, timestamps, trash state, favorite
-//! flag and RAW/JPEG partner, and every `album` with its photos by hash. `reindex` reads them to restore what object
+//! line: a `meta` header, every `asset` (not mid-purge) with its id, hash, name, timestamps, trash state, favorite,
+//! hidden and archived flags and RAW/JPEG partner, and every `album` with its photos by hash. `reindex` reads them to restore what object
 //! keys and metadata alone cannot.
 //!
 //! Dated files, not one rolling file, on purpose: if the database is restored from an old dump and the assets
@@ -71,6 +71,12 @@ pub struct AssetLine {
     /// Hash of the JPEG/HEIC this RAW is stacked behind.
     #[serde(default)]
     pub pair_primary: Option<String>,
+    /// Hidden (migration 0020). Absent in older manifests (not hidden). A rebuild that lost this would show the photo again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
+    /// Archived (migration 0020). Absent in older manifests (not archived).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -159,7 +165,8 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
     let rows = sqlx::query(
         "SELECT a.id, a.sha256, a.original_key, a.original_name, a.content_type, a.size_bytes, a.created_at,
                 a.file_modified_at, a.taken_at, a.deleted_at,
-                (to_jsonb(a) ->> 'favorite')::boolean AS favorite, p.sha256 AS pair_primary
+                (to_jsonb(a) ->> 'favorite')::boolean AS favorite, p.sha256 AS pair_primary,
+                (to_jsonb(a) ->> 'hidden')::boolean AS hidden, (to_jsonb(a) ->> 'archived')::boolean AS archived
          FROM assets a LEFT JOIN assets p ON p.id = a.primary_id
          WHERE a.owner_id = $1 AND a.purging_at IS NULL ORDER BY a.created_at, a.id",
     )
@@ -183,6 +190,8 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
             deleted_at: r.try_get("deleted_at")?,
             favorite: r.try_get("favorite")?,
             pair_primary: pair.map(|p| keys::hex(&p)),
+            hidden: r.try_get("hidden")?,
+            archived: r.try_get("archived")?,
         }));
     }
     let n_assets = rows.len() as u64;
@@ -476,6 +485,8 @@ mod tests {
             deleted_at: None,
             favorite: Some(true),
             pair_primary: None,
+            hidden: Some(true),
+            archived: None,
         };
         let mut buf = serde_json::to_vec(&Line::Asset(a.clone())).unwrap();
         buf.extend_from_slice(b"\n\nnot json\n{\"t\":\"from_the_future\"}\n");

@@ -31,7 +31,7 @@ use super::search::{
     decode_rank_cursor, ranked_rows, respond_ranked,
 };
 use crate::AppState;
-use cyanotype_service::{ApiError, ApiResult, AuthUser};
+use cyanotype_service::{ApiError, ApiResult, AuthUser, Unlock};
 
 /// The filters of `GET /assets/search` and its paging, without `q` (and without `skip`, which only turns off the
 /// reading of a query).
@@ -40,6 +40,7 @@ pub(super) struct SimilarQuery {
     from: Option<String>,
     to: Option<String>,
     favorite: Option<bool>,
+    include_archived: Option<bool>,
     camera: Option<String>,
     lens: Option<String>,
     place: Option<String>,
@@ -60,6 +61,7 @@ impl SimilarQuery {
             from: self.from.clone(),
             to: self.to.clone(),
             favorite: self.favorite,
+            include_archived: self.include_archived,
             camera: self.camera.clone(),
             lens: self.lens.clone(),
             place: self.place.clone(),
@@ -74,11 +76,18 @@ impl SimilarQuery {
 pub(super) async fn similar(
     State(s): State<AppState>,
     user: AuthUser,
+    unlock: Unlock,
     Path(id): Path<Uuid>,
     Query(q): Query<SimilarQuery>,
 ) -> ApiResult<Json<SearchResponse>> {
     let started = std::time::Instant::now();
-    let result = run(&s, user.id, id, &q).await;
+    // A hidden photo is not a starting point for anyone who has not unlocked the Hidden view (the results never hold hidden
+    // photos either way: that is in `Filters::push_where`).
+    let result = if unlock.0 || !is_hidden(&s.db, user.id, id).await? {
+        run(&s, user.id, id, &q).await
+    } else {
+        Err(ApiError::NotFound)
+    };
     let m = metrics::global();
     let (outcome, plan) = match &result {
         Ok((_, plan)) => ("ok", plan.name()),
@@ -96,6 +105,17 @@ pub(super) async fn similar(
         m.count("search.model", 1, &[("model", model)]);
     }
     result.map(|(r, _)| Json(r))
+}
+
+async fn is_hidden(db: &sqlx::PgPool, owner: Uuid, id: Uuid) -> ApiResult<bool> {
+    Ok(
+        sqlx::query_scalar("SELECT hidden FROM assets WHERE id = $1 AND owner_id = $2")
+            .bind(id)
+            .bind(owner)
+            .fetch_optional(db)
+            .await?
+            .unwrap_or(false),
+    )
 }
 
 /// pgvector's text form (`[0.1,0.2,...]`) back to numbers.

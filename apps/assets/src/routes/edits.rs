@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use super::{scope::Selector, trash::MAX_IDS};
 use crate::{AppState, details};
-use cyanotype_service::{ApiError, ApiResult, AuthUser};
+use cyanotype_service::{ApiError, ApiResult, AuthUser, Unlock};
 
 /// Edits written at once (each is one object write and one transaction).
 const CONCURRENCY: usize = 8;
@@ -293,10 +293,11 @@ impl Plan {
 pub(super) async fn edit(
     State(s): State<AppState>,
     user: AuthUser,
+    unlock: Unlock,
     Json(req): Json<EditRequest>,
 ) -> ApiResult<Json<EditResult>> {
     let plan = std::sync::Arc::new(Plan::from(&req)?);
-    let pick = req.pick.validated()?;
+    let pick = req.pick.validated(unlock)?;
     let mut tx = s.db.begin().await?;
     let ids: Vec<Uuid> = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();
     tx.commit().await?;
@@ -366,7 +367,7 @@ pub(super) async fn places(
         "SELECT place_city AS city, place_region AS region, place_country AS country, place_country_code AS country_code,
                 avg(latitude) AS latitude, avg(longitude) AS longitude, count(*) AS count
          FROM assets
-         WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL AND place_city IS NOT NULL
+         WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL AND NOT hidden AND place_city IS NOT NULL
            AND latitude IS NOT NULL AND longitude IS NOT NULL
            AND ($2 = '' OR place_city ILIKE $3 OR place_city ILIKE $4 OR place_region ILIKE $3 OR place_region ILIKE $4
                 OR place_country ILIKE $3 OR place_country ILIKE $4)
