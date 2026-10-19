@@ -111,6 +111,10 @@ configuration in Datadog (distributions would need percentile aggregation enable
 | `cyanotype.bursts.regroup_ms` | histogram (ms) | | Wall time of one `burst` job (the regroup of a photo's neighbourhood). |
 | `cyanotype.bursts.window_photos` | histogram | | Photos of the camera in the window a regroup looked at: usually a handful, large for a library with thousands of photos a minute. |
 | `cyanotype.bursts.photos_changed` | count | | Photos whose burst or computed mark a regroup wrote (a backfill shows as a long run of this; a steady state is near the upload rate). |
+| `cyanotype.usage.reconcile.drifted_users` | gauge | | Accounts whose maintained storage counters differed from the files at the last nightly reconcile (0 is healthy; any other value means a code path changed `assets` without the trigger seeing it, which is a bug to find). |
+| `cyanotype.usage.reconcile.drift_bytes` | gauge | | Bytes those counters were off by, summed over accounts. |
+| `cyanotype.usage.bytes` | gauge | `kind` (`originals`, `trash`, `derived`) | Server totals of what accounts store, sampled at each reconcile. |
+| `cyanotype.usage.photos` | gauge | | Photos in all libraries, at the same time. |
 | `cyanotype.uploads.completed` / `.bytes` | count | `family` | Uploads completed (browser and CLI) and their bytes. |
 | `cyanotype.uploads.parts` | count | `outcome` (`ok`, `timeout` = HTTP 408, `error`) | Proxied (browser) part uploads. |
 | `cyanotype.uploads.part_latency_ms` | histogram | | Time to receive a part from the browser and relay it to the bucket (successful parts). |

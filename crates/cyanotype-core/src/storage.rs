@@ -69,6 +69,16 @@ pub struct ObjectVersion {
     pub version_id: Option<String>,
 }
 
+/// One entry of [`Storage::walk_versions`]: a stored version (with its size) or a delete marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionEntry {
+    pub key: String,
+    pub size: i64,
+    /// The version a plain GET returns (a delete marker can be the latest).
+    pub is_latest: bool,
+    pub delete_marker: bool,
+}
+
 /// `DeleteObjects` accepts at most this many keys per request.
 pub const DELETE_BATCH: usize = 1000;
 
@@ -415,6 +425,96 @@ impl Storage {
                 }
             } else {
                 return Ok(out);
+            }
+        }
+    }
+
+    /// Walks every stored version and delete marker under `prefix` with its size, page by page (nothing is kept in memory
+    /// but the page), calling `f` for each. Returns whether the store listed versions: on one that cannot (HTTP 501), this
+    /// walks a plain listing instead and every object is reported as the latest version.
+    pub async fn walk_versions(&self, prefix: &str, mut f: impl FnMut(VersionEntry)) -> Result<bool> {
+        let mut key_marker: Option<String> = None;
+        let mut version_marker: Option<String> = None;
+        let mut first = true;
+        loop {
+            let res = self
+                .client
+                .list_object_versions()
+                .bucket(&self.bucket)
+                .prefix(prefix)
+                .set_key_marker(key_marker.clone())
+                .set_version_id_marker(version_marker.clone())
+                .send()
+                .await;
+            let page = match res {
+                Ok(p) => p,
+                Err(e) => {
+                    let status = e.raw_response().map(|r| r.status().as_u16());
+                    let code = e.as_service_error().and_then(|s| s.meta().code());
+                    if first && is_unsupported(status, code) {
+                        self.walk_unversioned(prefix, &mut f).await?;
+                        return Ok(false);
+                    }
+                    return Err(e).context("list_object_versions");
+                }
+            };
+            first = false;
+            for v in page.versions() {
+                if let Some(key) = v.key() {
+                    f(VersionEntry {
+                        key: key.to_string(),
+                        size: v.size().unwrap_or(0),
+                        is_latest: v.is_latest().unwrap_or(false),
+                        delete_marker: false,
+                    });
+                }
+            }
+            for m in page.delete_markers() {
+                if let Some(key) = m.key() {
+                    f(VersionEntry {
+                        key: key.to_string(),
+                        size: 0,
+                        is_latest: m.is_latest().unwrap_or(false),
+                        delete_marker: true,
+                    });
+                }
+            }
+            if page.is_truncated == Some(true)
+                && (page.next_key_marker.is_some() || page.next_version_id_marker.is_some())
+            {
+                key_marker = page.next_key_marker;
+                version_marker = page.next_version_id_marker;
+            } else {
+                return Ok(true);
+            }
+        }
+    }
+
+    async fn walk_unversioned(&self, prefix: &str, f: &mut impl FnMut(VersionEntry)) -> Result<()> {
+        let mut token: Option<String> = None;
+        loop {
+            let page = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.bucket)
+                .prefix(prefix)
+                .set_continuation_token(token.clone())
+                .send()
+                .await
+                .context("list_objects_v2")?;
+            for o in page.contents() {
+                if let Some(k) = o.key() {
+                    f(VersionEntry {
+                        key: k.to_string(),
+                        size: o.size().unwrap_or(0),
+                        is_latest: true,
+                        delete_marker: false,
+                    });
+                }
+            }
+            match (page.is_truncated, page.next_continuation_token) {
+                (Some(true), Some(t)) => token = Some(t),
+                _ => return Ok(()),
             }
         }
     }

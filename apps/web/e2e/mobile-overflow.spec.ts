@@ -471,6 +471,99 @@ async function mockAdmin(page: Page) {
   );
 }
 
+const GB = 1024 ** 3;
+const ACCOUNT = (n: number, over: Record<string, unknown> = {}) => ({
+  id: `acc${n}`,
+  email: n === 1 ? "someone.with.a.long.address@example-photo-library.org" : LONG_EMAIL,
+  role: n === 1 ? "admin" : "member",
+  created_at: "2024-01-01T00:00:00Z",
+  last_active: n === 1 ? new Date().toISOString() : null,
+  originals_bytes: 812 * GB,
+  trash_bytes: 12 * GB,
+  derived_bytes: 31 * GB,
+  photo_count: 123456,
+  raw_count: 23456,
+  file_count: 146912,
+  trash_count: 1234,
+  derived_files: 100000,
+  uploads_24h_count: 4321,
+  uploads_24h_bytes: 55 * GB,
+  uploads_30d_count: 98765,
+  uploads_30d_bytes: 1234 * GB,
+  albums: 321,
+  shares: 45,
+  api_keys: 6,
+  ...over,
+});
+const BUCKET_DONE = {
+  id: 7,
+  kind: "bucket_check",
+  state: "done",
+  error: null,
+  created_at: "2024-06-01T00:00:00Z",
+  started_at: "2024-06-01T00:00:01Z",
+  finished_at: new Date().toISOString(),
+  result: {
+    finished_at: new Date().toISOString(),
+    versioned: true,
+    objects: 987654,
+    current_bytes: 900 * GB,
+    originals_bytes: 840 * GB,
+    derived_bytes: 40 * GB,
+    manifests_bytes: GB,
+    edits_bytes: 0,
+    other_bytes: 20 * GB,
+    noncurrent_versions: 12345,
+    noncurrent_bytes: 55 * GB,
+    delete_markers: 10,
+    db_originals_bytes: 824 * GB,
+    db_derived_bytes: 31 * GB,
+    db_derived_files: 100000,
+    db_files: 146912,
+    unknown_account_bytes: 3 * GB,
+    mismatched: [{ user_id: "acc2", email: LONG_EMAIL, bucket_originals_bytes: 16 * GB, db_originals_bytes: 0 }],
+  },
+};
+let bucketTask: unknown = null;
+
+async function mockUsage(page: Page) {
+  const json = (body: unknown, status = 200) => ({ status, contentType: "application/json", body: JSON.stringify(body) });
+  await page.route(
+    (u) => /^\/assets\/(usage|admin\/)/.test(u.pathname),
+    async (route) => {
+      const p = new URL(route.request().url()).pathname;
+      const m = route.request().method();
+      if (p === "/assets/usage")
+        return route.fulfill(
+          json({
+            originals_bytes: 812 * GB, trash_bytes: 12 * GB, stored_bytes: 824 * GB, derived_bytes: 31 * GB, derived_complete: false,
+            photo_count: 123456, raw_count: 23456, file_count: 146912, trash_count: 1234,
+            uploads: { count_24h: 4321, bytes_24h: 55 * GB, count_30d: 98765, bytes_30d: 1234 * GB },
+          }),
+        );
+      if (p === "/assets/admin/accounts")
+        return route.fulfill(
+          json({
+            items: [ACCOUNT(1), ACCOUNT(2)],
+            totals: {
+              accounts: 2, originals_bytes: 1624 * GB, trash_bytes: 24 * GB, derived_bytes: 62 * GB, derived_complete: false,
+              photo_count: 246912, raw_count: 46912, uploads_24h_count: 8642, uploads_24h_bytes: 110 * GB,
+              uploads_30d_count: 197530, uploads_30d_bytes: 2468 * GB,
+            },
+            reconcile: { at: new Date(Date.now() - 3 * 3_600_000).toISOString(), users_checked: 2, drifted_users: 1, drift_bytes: 1024 },
+            bucket_check: bucketTask,
+          }),
+        );
+      if (p === "/assets/admin/bucket-check" && m === "POST") {
+        bucketTask = BUCKET_DONE;
+        return route.fulfill(json({ task: { ...BUCKET_DONE, state: "queued", result: null }, already_running: false }, 202));
+      }
+      if (p === "/assets/admin/bucket-check") return route.fulfill(json({ task: bucketTask }));
+      return route.fallback();
+    },
+  );
+}
+
 /** Assert that nothing sticks out of the viewport (and, with SHOT_DIR, save a screenshot named `<prefix>-<name>.png`). */
 function makeCheck(page: Page, prefix: string, problems: string[]) {
   return async function check(name: string) {
@@ -959,8 +1052,21 @@ for (const { width, scheme } of RUNS) {
       const check = makeCheck(page, `${width}${scheme === "dark" ? "-dark" : ""}-admin`, problems);
       await mock(page);
       await mockAdmin(page);
+      await mockUsage(page);
+      bucketTask = null;
       memberView = false;
       await page.goto("/admin");
+      await page.getByRole("heading", { name: "Accounts" }).waitFor();
+      await page.getByText(LONG_EMAIL).first().waitFor();
+      await check("accounts");
+      await page.getByRole("button", { name: "Check bucket size" }).click();
+      await page.getByText(/Finished/).waitFor({ timeout: 10_000 });
+      await check("accounts-bucket-check");
+      await page.goto("/settings/storage");
+      await page.getByRole("heading", { name: "Storage" }).waitFor();
+      await page.getByText("1,234 files").first().waitFor();
+      await check("storage");
+      await page.goto("/admin/invites");
       await page.getByRole("heading", { name: "Invites" }).waitFor();
       await page.getByText("Used by " + LONG_EMAIL).waitFor();
       await check("invites");

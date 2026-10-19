@@ -6,6 +6,7 @@ import { AlbumPage } from "./pages/Album";
 import { Albums } from "./pages/Albums";
 import { ApiKeys } from "./pages/ApiKeys";
 import { AdminLayout } from "./pages/admin/AdminLayout";
+import { Accounts } from "./pages/admin/Accounts";
 import { Invites } from "./pages/admin/Invites";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
@@ -14,7 +15,9 @@ import { NotFound } from "./pages/NotFound";
 import { Register } from "./pages/Register";
 import { ShareView } from "./pages/ShareView";
 import { SearchPage } from "./pages/Search";
+import { SettingsLayout } from "./pages/SettingsLayout";
 import { SharedLinks } from "./pages/SharedLinks";
+import { Storage } from "./pages/Storage";
 import { Trash } from "./pages/Trash";
 import { UploadProvider } from "./upload/UploadProvider";
 import { UploadTray } from "./upload/UploadTray";
@@ -37,9 +40,15 @@ export function App() {
         <Route path="/albums/:id" element={<AlbumPage />} />
         <Route path="/shared" element={<SharedLinks />} />
         <Route path="/trash" element={<Trash />} />
-        <Route path="/settings/api-keys" element={<ApiKeys />} />
+        <Route path="/settings" element={<SettingsLayout />}>
+          <Route index element={<Navigate to="storage" replace />} />
+          <Route path="storage" element={<Storage />} />
+          <Route path="api-keys" element={<ApiKeys />} />
+          <Route path="*" element={<NotFound />} />
+        </Route>
         <Route path="/admin" element={<AdminLayout />}>
-          <Route index element={<Navigate to="invites" replace />} />
+          <Route index element={<Navigate to="accounts" replace />} />
+          <Route path="accounts" element={<Accounts />} />
           <Route path="invites" element={<Invites />} />
           <Route path="*" element={<NotFound />} />
         </Route>
@@ -69,8 +78,8 @@ function RequireAuth() {
           <Link to="/trash" className="btn btn-quiet">
             Trash
           </Link>
-          <Link to="/settings/api-keys" className="btn btn-quiet">
-            API keys
+          <Link to="/settings" className="btn btn-quiet">
+            Settings
           </Link>
           {state.user.role === "admin" && (
             <Link to="/admin" className="btn btn-quiet">

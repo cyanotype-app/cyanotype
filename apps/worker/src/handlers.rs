@@ -237,17 +237,21 @@ async fn share_copy(
     .await
     .context("share copy task panicked")?
     .map_err(|e| anyhow::Error::from(Permanent(format!("{e:#}"))))?;
+    let share_bytes = stripped.len() as i64;
     ctx.storage
         .put_bytes(&keys::share_copy(asset.owner_id, job.asset_id), stripped, "image/jpeg")
         .await?;
     // Same publish rule as thumbnails: a purge that started while this ran has removed (or will remove) derived
     // objects, so take back what was just written.
-    let published = sqlx::query("UPDATE assets SET share_copy_at = now() WHERE id = $1 AND purging_at IS NULL")
-        .bind(job.asset_id)
-        .execute(&ctx.db)
-        .await
-        .context("mark share copy")?
-        .rows_affected();
+    let published = sqlx::query(
+        "UPDATE assets SET share_copy_at = now(), share_copy_bytes = $2 WHERE id = $1 AND purging_at IS NULL",
+    )
+    .bind(job.asset_id)
+    .bind(share_bytes)
+    .execute(&ctx.db)
+    .await
+    .context("mark share copy")?
+    .rows_affected();
     if published == 0 {
         ctx.storage
             .delete_prefix_all_versions(&keys::derived_prefix(asset.owner_id, job.asset_id))
@@ -407,6 +411,8 @@ async fn thumbnail(
     };
     tracing::debug!(width = d.width, height = d.height, "derived images ready");
 
+    // Their sizes are recorded with the thumbhash below (the usage counters, docs/admin.md).
+    let derived_bytes = (d.thumb_webp.len() + d.preview_webp.len()) as i64;
     ctx.storage
         .put_bytes(&keys::thumb(asset.owner_id, job.asset_id), d.thumb_webp, "image/webp")
         .await?;
@@ -421,13 +427,15 @@ async fn thumbnail(
     // rendering has already removed (or is about to remove) the derived objects; whatever we just wrote would be
     // orphaned, so take it back out. (`purging_at` is set before the purge deletes anything, so either this
     // check sees it, or the purge's listing sees our objects.)
-    let published = sqlx::query("UPDATE assets SET thumbhash = $2 WHERE id = $1 AND purging_at IS NULL")
-        .bind(job.asset_id)
-        .bind(&d.thumbhash)
-        .execute(&ctx.db)
-        .await
-        .context("update thumbhash")?
-        .rows_affected();
+    let published =
+        sqlx::query("UPDATE assets SET thumbhash = $2, derived_bytes = $3 WHERE id = $1 AND purging_at IS NULL")
+            .bind(job.asset_id)
+            .bind(&d.thumbhash)
+            .bind(derived_bytes)
+            .execute(&ctx.db)
+            .await
+            .context("update thumbhash")?
+            .rows_affected();
     if published == 0 {
         ctx.storage
             .delete_prefix_all_versions(&keys::derived_prefix(asset.owner_id, job.asset_id))

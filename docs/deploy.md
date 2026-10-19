@@ -38,12 +38,14 @@ invite registers exactly one person (covered by tests that fire 10 to 12 at once
 `REGISTRATION_MODE=open` by default so `just e2e` can register a throwaway user on every run; production defaults to
 `invite`.
 
-**Upgrading an existing instance (administration, migration 0016).** The migration makes the earliest-created account
+**Upgrading an existing instance (administration, migrations 0016 and 0017).** Migration 0016 makes the earliest-created account
 an admin, so a single-owner instance upgrades with its owner as admin and nobody locked out (one row is updated, no
 job is queued). If your `.env.prod` sets `REGISTRATION_MODE=first_user` or `closed` explicitly it keeps working as
 before; to let the admin invite people, change it to `invite` and recreate the auth service (`dc up -d auth`). Without
 a setting the default is now `invite`, which differs from the old default only in that an admin can open the door with
-invite links. If the admin account is ever lost, promote one by SQL:
+invite links. Migration 0017 adds the usage counters: one grouped pass over `assets` fills them (seconds at 50,000 photos), triggers
+keep them current, and no job is queued. The worker then measures the sizes of the existing thumbnails a couple of thousand a
+night (`USAGE_MEASURE_PER_RUN`, default 2000, optional). If the admin account is ever lost, promote one by SQL:
 `UPDATE users SET role = 'admin' WHERE lower(email) = lower('you@example.com');`.
 
 **Client-IP trust model.** The rate limiter keys on the socket peer. If, and only if, the peer is inside

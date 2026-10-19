@@ -175,6 +175,53 @@ pub async fn send(
     )
 }
 
+/// A user with a login session of the given role; returns `(user id, cookie header value)`.
+pub async fn session(pool: &PgPool, email: &str, role: &str) -> (Uuid, String) {
+    let (uid,): (Uuid,) =
+        sqlx::query_as("INSERT INTO users (email, password_hash, role) VALUES ($1,'x',$2) RETURNING id")
+            .bind(email)
+            .bind(role)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let token = Uuid::new_v4().simple().to_string();
+    sqlx::query("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1,$2, now() + interval '1 day')")
+        .bind(cyanotype_service::auth::sha256(token.as_bytes()))
+        .bind(uid)
+        .execute(pool)
+        .await
+        .unwrap();
+    (uid, format!("{}={token}", cyanotype_service::auth::SESSION_COOKIE))
+}
+
+/// Like [`send`], with a session cookie instead of an API key (`None`: no credentials at all).
+pub async fn send_cookie(
+    app: &Router,
+    method: &str,
+    path: &str,
+    cookie: Option<&str>,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, serde_json::Value) {
+    let mut b = Request::builder().method(method).uri(path);
+    if let Some(c) = cookie {
+        b = b.header(header::COOKIE, c);
+    }
+    let body = match body {
+        Some(v) => {
+            b = b.header(header::CONTENT_TYPE, "application/json");
+            Body::from(v.to_string())
+        }
+        None => Body::empty(),
+    };
+    let res = app.clone().oneshot(b.body(body).unwrap()).await.unwrap();
+    let status = res.status();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
 pub fn ids(v: &[Uuid]) -> serde_json::Value {
     serde_json::json!({"ids": v})
 }
