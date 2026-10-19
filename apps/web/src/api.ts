@@ -275,6 +275,10 @@ export interface AssetSummary {
   sort_time: string;
   /** Favorited. Absent on older servers (treated as false). */
   favorite?: boolean;
+  /** In the archive: off the timeline and the map; shown with a badge in search and albums. Absent on older servers. */
+  archived?: boolean;
+  /** Hidden: only the unlocked Hidden view lists such a photo. Absent on older servers. */
+  hidden?: boolean;
 }
 
 /** The other file of a RAW + JPEG pair: the RAW stacked behind a visible photo. */
@@ -386,6 +390,8 @@ export interface SearchParams {
   from?: string;
   to?: string;
   favorite?: boolean;
+  /** `false` leaves archived photos out. The server's default is to include them. */
+  include_archived?: boolean;
   /** A camera as `facets().cameras` lists it. */
   camera?: string;
   /** A lens as `facets().lenses` lists it (the EXIF lens model). */
@@ -496,6 +502,8 @@ export interface Album {
   title: string;
   description: string | null;
   photo_count: number;
+  /** Members that are hidden: still in the album, listed nowhere in it. Absent on older servers. */
+  hidden_count?: number;
   /** Null while the album is empty. */
   cover: AlbumCover | null;
   /** RFC 3339 times of the earliest and latest photo; null while empty. */
@@ -802,9 +810,13 @@ function putPart(
 export type Scope =
   | "library"
   | "favorites"
+  | "archive"
+  /** The Hidden view: refused unless the session has unlocked it. */
+  | "hidden"
   | "trash"
   | { album: string }
   | { trash_batch: string }
+  | { archive_batch: string }
   /** Every photo a filter-only search lists (no text query: a ranked search selects what it loaded). */
   | { search: Omit<SearchParams, "q"> };
 export interface ScopeTarget {
@@ -846,13 +858,14 @@ export function searchQuery(
   // (`similar` is part of the path of "More like this", and that endpoint takes neither `q` nor `skip`.)
   const keys = (
     params.similar
-      ? ["from", "to", "favorite", "camera", "lens", "place", "type", "album", "has_location"]
-      : ["q", "from", "to", "favorite", "camera", "lens", "place", "type", "album", "has_location", "skip"]
+      ? ["from", "to", "favorite", "include_archived", "camera", "lens", "place", "type", "album", "has_location"]
+      : ["q", "from", "to", "favorite", "include_archived", "camera", "lens", "place", "type", "album", "has_location", "skip"]
   ) as readonly (keyof SearchParams)[];
   for (const k of keys) {
     const v = params[k];
     // `favorite: false` means "no filter"; `has_location: false` is a real filter ("photos without a location").
-    if (v === undefined || v === "" || (k === "favorite" && v === false)) continue;
+    // `include_archived: true` is the server's default, so only `false` is sent.
+    if (v === undefined || v === "" || (k === "favorite" && v === false) || (k === "include_archived" && v === true)) continue;
     q.set(k, String(v));
   }
   if (opts.limit !== undefined) q.set("limit", String(opts.limit));
@@ -861,7 +874,75 @@ export function searchQuery(
   return q.toString();
 }
 
+/** Which photos a library list or its day counts are about (the server's views). */
+export interface LibraryView {
+  favorite?: boolean;
+  archived?: boolean;
+  hidden?: boolean;
+  /** `taken` (default) or `added` (upload time). */
+  sort?: "taken" | "added";
+}
+
+function viewQuery(v: LibraryView, q: URLSearchParams) {
+  if (v.favorite) q.set("favorite", "true");
+  if (v.archived) q.set("archived", "true");
+  if (v.hidden) q.set("hidden", "true");
+  if (v.sort === "added") q.set("sort", "added");
+}
+
+/** A photo of "On this day" (GET /assets/memories). */
+export interface MemoryYear {
+  year: number;
+  years_ago: number;
+  /** Photos of that year on this day, bursts collapsed (the strip carries only the first few). */
+  count: number;
+  items: AssetListItem[];
+}
+export interface Memories {
+  /** The strip is switched on in the user's settings. */
+  enabled: boolean;
+  /** `MM-DD`. */
+  day: string;
+  years: MemoryYear[];
+}
+
+/** The per-user switches (GET/PUT /assets/prefs). */
+export interface Prefs {
+  memories_enabled: boolean;
+  library_sort: "taken" | "added";
+}
+
+/** Whether this session has the Hidden view open (GET /auth/hidden). */
+export interface HiddenState {
+  unlocked: boolean;
+  expires_at: string | null;
+}
+
+/** Today's date in the user's own zone, `YYYY-MM-DD` (the day "On this day" looks up). */
+export function localToday(now: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;
+}
+
 export const api = {
+  /** Open the Hidden view for ten minutes with the account password: 403 `wrong_password` otherwise. */
+  unlockHidden: (password: string) => request<HiddenState>("/auth/hidden/unlock", json({ password })),
+  hiddenState: () => request<HiddenState>("/auth/hidden"),
+  lockHidden: () => request<void>("/auth/hidden", { method: "DELETE" }),
+  /** Hide or unhide photos. Unhiding needs the Hidden view unlocked. */
+  hideAssets: (target: Target, hidden: boolean) => bulk("/assets/hide", target, { hidden }),
+  /** Archive or restore photos. A scope-based archive answers a `batch` for its Undo. */
+  archiveAssets: (target: Target, archived: boolean) => bulk("/assets/archive", target, { archived }),
+  memories: (opts: { all?: boolean; date?: string } = {}) => {
+    const q = new URLSearchParams({ date: opts.date ?? localToday() });
+    if (opts.all) q.set("all", "true");
+    return request<Memories>(`/assets/memories?${q}`);
+  },
+  /** "Not this one" (a photo of a burst takes its burst along); `dismissed: false` takes it back. */
+  dismissMemories: (ids: readonly string[], dismissed = true) =>
+    request<{ count: number }>("/assets/memories/dismiss", json({ ids, dismissed })),
+  prefs: () => request<Prefs>("/assets/prefs"),
+  setPrefs: (patch: Partial<Prefs>) => request<Prefs>("/assets/prefs", { method: "PUT", body: JSON.stringify(patch) }),
   me: () => request<Me>("/auth/me"),
   login: (email: string, password: string) => request<{ id: string }>("/auth/login", json({ email, password })),
   /** 403 when registration is closed (REGISTRATION_MODE=closed, or first_user with an owner already present). */
@@ -936,20 +1017,24 @@ export const api = {
   createApiKey: (name: string) => request<CreatedApiKey>("/auth/api-keys", json({ name })),
   revokeApiKey: (id: string) => request<void>(`/auth/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" }),
   listAssets: (
-    opts: { cursor?: string | null; before?: string | null; limit?: number; favorite?: boolean; bbox?: string } = {},
+    opts: { cursor?: string | null; before?: string | null; limit?: number; bbox?: string } & LibraryView = {},
   ) => {
     const q = new URLSearchParams();
     if (opts.bbox) q.set("bbox", opts.bbox);
     if (opts.limit !== undefined) q.set("limit", String(opts.limit));
-    if (opts.favorite) q.set("favorite", "true");
+    viewQuery(opts, q);
     if (opts.cursor) q.set("cursor", opts.cursor);
     else if (opts.before) q.set("before", opts.before);
     const qs = q.toString();
     return request<AssetList>(`/assets${qs ? `?${qs}` : ""}`);
   },
   /** Photos per day, newest first (the library's layout; `favorite` limits it to favorites). */
-  timeline: (opts: { favorite?: boolean } = {}) =>
-    request<Timeline>(`/assets/timeline${opts.favorite ? "?favorite=true" : ""}`),
+  timeline: (opts: LibraryView = {}) => {
+    const q = new URLSearchParams();
+    viewQuery(opts, q);
+    const qs = q.toString();
+    return request<Timeline>(`/assets/timeline${qs ? `?${qs}` : ""}`);
+  },
   /** The geotagged photos in `bbox` (`west,south,east,north`) as markers for a map at `zoom`. */
   mapClusters: (bbox: string, zoom: number, signal?: AbortSignal) =>
     request<MapResponse>(`/assets/map?bbox=${encodeURIComponent(bbox)}&zoom=${zoom}`, { signal }),

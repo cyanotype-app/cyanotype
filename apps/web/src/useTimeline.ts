@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, api, type AssetListItem } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ApiError, api, type AssetListItem, type LibraryView } from "./api";
 import { useAuth } from "./auth";
 import {
   addPage,
@@ -36,7 +36,10 @@ const initial: TimelineState = { status: "loading", error: null, index: buildInd
  * range the view reports with `ensure`. Pages are keyed by global index, so a jump to any date loads just the page
  * there. `keep` returns ids that must not be evicted (the selection).
  */
-export function useTimeline({ favorite, keep }: { favorite: boolean; keep: () => ReadonlySet<string> }) {
+export function useTimeline({ view, keep }: { view: LibraryView; keep: () => ReadonlySet<string> }) {
+  // A view is a handful of flags: key the callbacks on their values, not on the object a caller makes anew each render.
+  const { favorite, archived, hidden, sort } = view;
+  const v = useMemo<LibraryView>(() => ({ favorite, archived, hidden, sort }), [favorite, archived, hidden, sort]);
   const { setAnonymous } = useAuth();
   const [state, setState] = useState<TimelineState>(initial);
   const stateRef = useRef(state);
@@ -59,6 +62,7 @@ export function useTimeline({ favorite, keep }: { favorite: boolean; keep: () =>
   const fail = useCallback(
     (e: unknown, fallback: string) => {
       if (e instanceof ApiError && e.status === 401) setAnonymous();
+      else if (e instanceof ApiError && e.code === "hidden_locked") commit({ ...stateRef.current, status: "error", error: "hidden_locked" });
       else commit({ ...stateRef.current, status: stateRef.current.status === "ready" ? "ready" : "error", error: e instanceof Error ? e.message : fallback });
     },
     [setAnonymous, commit],
@@ -68,13 +72,13 @@ export function useTimeline({ favorite, keep }: { favorite: boolean; keep: () =>
   const load = useCallback(async () => {
     gen.current++;
     try {
-      const t = await api.timeline({ favorite });
+      const t = await api.timeline(v);
       stale.current = 0;
       commit({ status: "ready", error: null, index: buildIndex(t.days), loaded: emptyLoaded });
     } catch (e) {
       fail(e, "Could not load your photos.");
     }
-  }, [favorite, commit, fail]);
+  }, [v, commit, fail]);
 
   const pump = useCallback(async () => {
     if (inFlight.current) return;
@@ -88,7 +92,7 @@ export function useTimeline({ favorite, keep }: { favorite: boolean; keep: () =>
     const myGen = gen.current;
     let again = true;
     try {
-      const page = await api.listAssets({ cursor: req.cursor, before: req.before, limit: PAGE, favorite });
+      const page = await api.listAssets({ cursor: req.cursor, before: req.before, limit: PAGE, ...v });
       if (myGen !== gen.current) return;
       const cur = stateRef.current;
       if (cur.index !== st.index) return; // counts changed under us (a removal): the next pump starts clean
@@ -114,7 +118,7 @@ export function useTimeline({ favorite, keep }: { favorite: boolean; keep: () =>
       inFlight.current = false;
       if (again) pumpRef.current();
     }
-  }, [favorite, load, commit, fail]);
+  }, [v, load, commit, fail]);
 
   useEffect(() => {
     pumpRef.current = () => void pump();
@@ -163,14 +167,14 @@ export function useTimeline({ favorite, keep }: { favorite: boolean; keep: () =>
     const myGen = ++gen.current;
     for (let attempt = 0; attempt < MAX_STALE; attempt++) {
       try {
-        const t = await api.timeline({ favorite });
+        const t = await api.timeline(v);
         const index = buildIndex(t.days);
         const at = Math.min(Math.max(0, range.current.from), Math.max(0, index.total - 1));
         let loaded = emptyLoaded;
         if (index.total > 0) {
           const req = requestFor(index, emptyLoaded, at);
           if (!req) return;
-          const page = await api.listAssets({ before: req.before, limit: PAGE, favorite });
+          const page = await api.listAssets({ before: req.before, limit: PAGE, ...v });
           const added = addPage(index, emptyLoaded, req.base, page.items, page.next_cursor);
           if (added.stale || page.items.length === 0) continue;
           loaded = added.loaded;
@@ -183,7 +187,7 @@ export function useTimeline({ favorite, keep }: { favorite: boolean; keep: () =>
         return; // keep what is shown; the next change will try again
       }
     }
-  }, [favorite, commit]);
+  }, [v, commit]);
 
   /** Drop photos from the view at once (trashed, or no longer favorites) and close the gaps. Returns what was removed. */
   const remove = useCallback(

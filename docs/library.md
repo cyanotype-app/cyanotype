@@ -1181,3 +1181,115 @@ bucket is never touched** and a download is byte-identical to what was uploaded;
   coordinates, caption, errors and retrying only the failed photos), `LightboxEdit.test.tsx` (the editors from the panel, refresh after a
   save, the caption under the photo, Escape order), and the edit states of `e2e/mobile-overflow.spec.ts` (the three editors in the viewer,
   the selection bar's Edit, its menu and the shift dialog) at 320 to 1280 px, light and dark.
+
+# Hidden, archive, memories and recently added
+
+Four small library features (migration 0020): photos you can **hide** behind your password, an **archive** for photos you keep
+but do not want in the timeline, **On this day**, and a **Recently added** order. Everything about hidden photos is enforced by
+the server, in every query that can return a photo; the web app only decides what to draw.
+
+## What the user sees
+
+- **Hidden.** *Hide* in the viewer's menu and in the selection bar (*Unhide* inside the Hidden view). A hidden photo is in no
+  other view: not the timeline, Favorites, Recently added, the Archive, search results and their facets and place suggestions, the
+  map, albums (it stays a member: the album says "N hidden" to its owner and never uses it as the cover), memories, "More like
+  this", burst covers, day counts and the scrubber, and **never in a share link**, even one made from an album it is in. *More*
+  (the fourth pill of the library header, "..." on a narrow phone) opens *Hidden*, which asks for the **account password**; the
+  view then stays open for **10 minutes** with a "Lock now" button, and asks again when the time is up.
+- **Archive.** *Archive* in the viewer menu and the selection bar, with an **Undo** toast (a whole-view archive is undone as the batch
+  it was, as in the trash). Archived photos leave the timeline, the map and memories, and stay in albums, Favorites, search (with an
+  "Archived" badge) and the *Archive* view, where *Restore* puts them back. Search has an **Include archived** filter, on by default
+  (off shows a "Without archived" chip).
+- **On this day.** A strip at the top of All photos, one card per earlier year ("3 years ago", with the count); a tap opens the page
+  with all of them, a section per year. *Select* there, then *Not this one*, takes photos out of memories (with Undo); the strip has
+  *Hide* (turn it off; the page has the switch to turn it on again). Nothing for today: **no strip at all**.
+- **Recently added.** *More*, *Recently added*: the library by **upload time**, with day headers of the day of upload. The header of
+  All photos has a **Date taken | Date added** toggle, remembered per user. (Which import batch a photo came from is not shown: nothing
+  records a batch, and grouping by upload time would only guess.)
+
+## How it works
+
+- **Columns.** `assets.hidden`, `assets.archived` (+ `archived_at`, the batch of a bulk archive), `assets.memory_dismissed`,
+  `sessions.hidden_unlocked_until`, and the table `user_prefs (memories_enabled, library_sort)`. The visible photo of a RAW + JPEG
+  pair carries both flags and the hidden RAW takes the pair's (pairing carries a RAW's own flag to its JPEG, never the other way
+  round), so separating a pair keeps the state.
+- **One place says which photos a view shows**: `visibility::view_sql`, used by the list *and* by its day counts, so they always
+  agree (timeline: not hidden, not archived; favorites: not hidden; archive: archived, not hidden; hidden: hidden, unlock needed).
+  Search and everything built on it go through `Filters::push_where`, which always has `NOT a.hidden` (the ranked plans, the
+  timeline-order list, caption matches, counts, facets, "More like this", scopes that select by search). Albums, the map, places, the
+  trash, shares (`share_public::VISIBLE`) and the album and share counts have the predicate in their own SQL.
+- **The unlock lives on the login session** (`sessions.hidden_unlocked_until`). `POST /auth/hidden/unlock {password}` checks the
+  password with argon2 (like a login, behind the same per-IP rate limiter; a wrong one is `403 wrong_password`) and sets
+  now + 10 minutes on **this session's row**; `GET /auth/hidden` reads it and `DELETE /auth/hidden` closes it. The assets service reads
+  the row on every request (`Unlock`): other sessions of the same user, other users and **API keys never have it** (the CLI cannot
+  list or open hidden photos). The browser holds nothing that could be forged or extended; a request without the unlock is refused
+  `403 hidden_locked`, and a photo's own endpoints (`GET /assets/{id}`, `/details`, `/download`, `/similar`) answer `404` for a
+  hidden photo to a locked session.
+- **What needs the unlock:** `GET /assets?hidden=true`, `GET /assets/timeline?hidden=true`, `scope: "hidden"` in any bulk request,
+  **unhiding**, and reading a hidden photo by id. **Hiding does not** (you can hide from anywhere), nor does trashing, favoriting or
+  adding to an album by id (nothing is read). A hidden photo that is trashed is in the trash view, and in "restore everything",
+  only for an unlocked session.
+- **Shares.** A new link refuses hidden photos (`400` when nothing is left; a mixed selection keeps the visible ones; `scope:
+  "hidden"` is refused); an existing link (album or selection) stops showing a photo the moment it is hidden, and shows it again
+  when it is unhidden. The owner's link list counts only what visitors can see.
+- **Audit log.** Every hide and unhide writes `photos.hide` / `photos.unhide` with `{count}` and **no photo id or name**, so an
+  administrator sees that it happened and how many, never what (as on the accounts page, counts only).
+- **Which date memories use.** The photo's own local date: `taken_at` read in the zone the camera recorded (the EXIF `OffsetTime*`
+  tag; the same rule as the details panel) or, for an edited date, in the zone the edit chose (edits overwrite `taken_at`, so they
+  are honoured); with no zone known the clock reads as UTC. A photo without a capture time is never a memory. The server looks one
+  UTC window (14 h before to 36 h after midnight) up per earlier year in `assets_timeline_idx`, then does the zone arithmetic on the
+  few rows in the windows. The browser sends its own local date (`?date=`), so the strip follows the user's day. Excluded: hidden,
+  archived, trashed, dismissed, the RAW of a pair; a burst counts once (a favorite, else its first photo); a 29 February only looks at
+  leap years. Dismissing a photo of a burst dismisses the burst.
+- **Recently added** is `sort=added` on the same list and day counts: `created_at` instead of the timeline time, with its own
+  index. Nothing else changes (selection, "Select all", the scrubber).
+- **Recovery.** Hidden and archived are in the daily manifest, one optional field each on an `asset` line (`hidden`, `archived`;
+  absent in older manifests, which read as "not hidden"; an older reader skips them), and `reindex` puts them back **in the same
+  transaction that recreates the photo's row**, so there is no moment at which a restored photo is visible. A manifest only knows
+  what was true when it was written, and hiding is a privacy promise, so a hide, unhide or archive also writes the owner's manifest
+  about 30 seconds later (one write for a burst of changes; best effort, the daily pass still runs). Memory dismissals, the strip
+  and sort settings are not in the bucket (they come back as defaults after a bucket-only rebuild). See `docs/recovery.md`.
+- **Indexes** (50,000 photos, one owner, `EXPLAIN ANALYZE`): the timeline's first page and a page at 2012 are an index scan of
+  `assets_timeline_idx` (0.3 ms), the same for Recently added (`assets_added_idx`, 0.1 ms), Archive and Hidden (small partial
+  indexes, 0.2 to 0.3 ms), Favorites (0.2 ms), memories (20 windows, 0.9 ms). `assets_timeline_idx` is now partial on `NOT hidden`
+  and carries `archived` and the three timestamps of the sort expression (`INCLUDE`), so `NOT archived` is evaluated in the index
+  and the day counts can be an index-only scan (5 MB at 50,000 photos). The day counts themselves read every photo's day, about 50 ms
+  at 50,000 photos before and after (the sort of 46,000 dates, not the scan, is the cost); the web app reads them once per view.
+
+## Not done
+
+Hiding a photo that is in the trash; per-album "hidden" counts for people other than the owner (albums are not shared); a hidden
+view inside search; showing the import batch of a photo; memories for photos without a capture time; keeping the strip setting and
+dismissals in the bucket.
+
+## API (assets service, owner-scoped; unlock endpoints on the auth service)
+
+| Request | Effect |
+|---|---|
+| `POST /auth/hidden/unlock {password}` | Open Hidden for this session for 10 minutes: `{unlocked, expires_at}`; `403 wrong_password`; not for API keys. |
+| `GET /auth/hidden`, `DELETE /auth/hidden` | Is it open (and until when); close it now. |
+| `POST /assets/hide {ids \| scope+except, hidden}` | Hide or unhide (`403 hidden_locked` to unhide while locked). `{count}`. |
+| `POST /assets/archive {ids \| scope+except, archived}` | Archive or restore. A scope-based archive also returns `batch`; `{"scope": {"archive_batch": batch}}` restores exactly it. |
+| `GET /assets?archived=true`, `?hidden=true`, `?sort=added` | The Archive view, the Hidden view (`403 hidden_locked`), the library by upload time (`sort_time` is then the upload time). `/assets/timeline` takes the same. Items carry `archived` and `hidden`. |
+| `GET /assets/search?include_archived=false` | Leave archived photos out (the default keeps them). |
+| `GET /assets/memories?date=YYYY-MM-DD&all=true` | `{enabled, day, years: [{year, years_ago, count, items}]}`; the strip form is a few photos per year and empty when the strip is off; `all` is the page. |
+| `POST /assets/memories/dismiss {ids, dismissed?}` | "Not this one" (a burst goes along); `dismissed: false` takes it back. |
+| `GET\|PUT /assets/prefs` | `{memories_enabled, library_sort: "taken" \| "added"}`. |
+| Albums | `hidden_count` beside `photo_count`; the album's list leaves hidden photos out. |
+
+## Tests
+
+- `apps/assets/src/routes/visibility_tests.rs` (Postgres): the **every-endpoint test** (a photo that is hidden everywhere it could
+  leak from, then 50 requests to the lists, timeline, search in both plans, facets, places, map, albums, shares, public share
+  links, similar, memories, details and downloads; neither its id, its caption, its place nor its camera is in any response),
+  unlock on the session (locked, unlocked, another session, an API key, another user, expiry, unhide only when open), new shares,
+  pairs, the trash, select-all, audit rows with counts only, archive everywhere (and undo by batch), recently added, prefs, and
+  memories (local date and zones, edits, exclusions, bursts, dismissals, off, empty, leap days). `timeline_tests.rs`: the EXPLAIN
+  check for all five indexes.
+- `apps/auth` (`routes.rs`): unlock with the password, wrong password, ten minutes, this session only, API keys refused, lock.
+- `crates/cyanotype-core/tests/reindex.rs`: hidden and archived (and pairs) restored from the manifest, in a dry run and an apply,
+  idempotently; manifests without the fields hide nothing.
+- Web: `visibility.test.tsx` (words, API requests, the strip, sort, archive and hide from the bar and the viewer, undo, the
+  Archive and Hidden views, the password prompt, lock and expiry); `e2e/mobile-overflow.spec.ts` ("library views") at 320 to 1280 px,
+  light and dark: strip, More menu, selection actions, viewer menu, memories, recent, archive, the unlock prompt with its error,
+  the Hidden view, album counts, the search filter.

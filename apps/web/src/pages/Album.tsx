@@ -9,7 +9,7 @@ import { SelectionBar } from "../components/SelectionBar";
 import { ShareDialog, type ShareTarget } from "../components/ShareDialog";
 import { useToast } from "../components/Toast";
 import { similarUrl } from "../searchText";
-import { dateRange, photoCount } from "../albumText";
+import { dateRange, hiddenNote, photoCount } from "../albumText";
 import { useSelection } from "../selection";
 import { useAssetPages } from "../useAssetPages";
 
@@ -229,7 +229,7 @@ function AlbumView({ id }: { id: string }) {
             <h1>{album.title}</h1>
             {album.description && <p className="album-description">{album.description}</p>}
             <p className="muted small">
-              {[photoCount(album.photo_count), dateRange(album.first_at, album.last_at)].filter(Boolean).join(" · ")}
+              {[photoCount(album.photo_count), hiddenNote(album.hidden_count), dateRange(album.first_at, album.last_at)].filter(Boolean).join(" · ")}
             </p>
           </div>
           <div className="album-head-actions">

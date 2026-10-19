@@ -150,6 +150,14 @@ export function FilterSheet({ value, onApply, onClose, load = defaultLoad }: Pro
             <input type="checkbox" checked={draft.favorite === true} onChange={(e) => set({ favorite: e.target.checked || undefined })} />
             <span>Favorites only{facets ? ` (${n(facets.favorites)})` : ""}</span>
           </label>
+          <label className="sheet-check">
+            <input
+              type="checkbox"
+              checked={draft.include_archived !== false}
+              onChange={(e) => set({ include_archived: e.target.checked ? undefined : false })}
+            />
+            <span>Include archived</span>
+          </label>
           <div className="sheet-field">
             <label htmlFor={`${id}-camera`}>Camera</label>
             <select id={`${id}-camera`} className="text-input" value={draft.camera ?? ""} onChange={(e) => set({ camera: e.target.value })}>
