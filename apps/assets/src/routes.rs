@@ -63,6 +63,9 @@ mod shares;
 mod similar;
 #[cfg(test)]
 mod similar_tests;
+mod takeout;
+#[cfg(test)]
+mod takeout_tests;
 mod tiles;
 #[cfg(test)]
 mod tiles_tests;
@@ -107,6 +110,10 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .merge(share_public::routes(share_state))
         .route("/assets/check", post(check))
         .route("/assets/complete", post(complete))
+        .route(
+            "/assets/takeout/plan",
+            post(takeout::make_plan).layer(takeout::body_limit()),
+        )
         .route(
             "/assets/uploads/{upload_id}/parts/{number}",
             put(put_part).layer(DefaultBodyLimit::max(PART_SIZE as usize + BODY_LIMIT_MARGIN)),
@@ -176,6 +183,10 @@ struct CheckRequest {
     /// How the client will send parts. Absent means `direct` (presigned S3 URLs, the CLI).
     #[serde(default)]
     transport: Transport,
+    /// Google Takeout metadata for this file (the sidecar's text and the album folder), held by hash until the photo has been
+    /// processed and then applied as an edit (docs/import.md). Absent for ordinary imports.
+    #[serde(default)]
+    takeout: Option<cyanotype_core::takeout::Request>,
 }
 
 #[derive(Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -392,7 +403,16 @@ async fn check(
             .bind(&sha[..])
             .fetch_optional(&s.db)
             .await?;
+    // Takeout metadata is held first, whatever follows (a limit refusal, a resumed upload): it is keyed by the hash, so it
+    // applies whenever the photo is, or already was, in the library.
+    let held = req.takeout.as_ref().and_then(cyanotype_core::takeout::payload_of);
+    if let Some(p) = &held {
+        cyanotype_core::takeout::record(&s.db, user.id, &sha[..], p).await?;
+    }
     if let Some((asset_id,)) = existing {
+        if held.is_some() {
+            cyanotype_core::takeout::enqueue_for_asset(&s.db, asset_id).await?;
+        }
         return Ok(Json(CheckResponse::Exists { asset_id }));
     }
 

@@ -31,8 +31,18 @@ use crate::{
 #[derive(Args, Debug)]
 pub struct ImportArgs {
     /// Files and/or directories to import (directories are walked recursively).
-    #[arg(required = true)]
+    #[arg(required_unless_present = "takeout")]
     pub paths: Vec<PathBuf>,
+    /// An unzipped Google Takeout folder: photos are paired with their JSON sidecars (capture time, location, caption, favourite)
+    /// and named folders become albums. Videos are skipped. Safe to re-run.
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["paths", "include", "exclude"])]
+    pub takeout: Option<PathBuf>,
+    /// With --takeout: do not create albums from folders.
+    #[arg(long, requires = "takeout")]
+    pub takeout_no_albums: bool,
+    /// With --takeout: do not import the favourite flag.
+    #[arg(long, requires = "takeout")]
+    pub takeout_no_favorites: bool,
     /// Files uploaded in parallel.
     #[arg(short, long, default_value_t = 4, value_parser = clap::value_parser!(u32).range(1..=64))]
     pub jobs: u32,
@@ -94,6 +104,11 @@ struct Ctx {
     stopped: std::sync::Mutex<Option<LimitInfo>>,
     /// Content hashes already handled (or in flight) in this run, so identical files are sent once.
     seen: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// `--takeout`: what to send with each file's check call (the sidecar text, the album), by path.
+    takeout: std::collections::HashMap<PathBuf, crate::api::TakeoutField>,
+    /// `--takeout`: other copies of a photo already handled in this run (Takeout repeats a photo in its year folder and in
+    /// every album). Their album still has to reach the server, so they are checked once the first copies are done.
+    repeats: std::sync::Mutex<Vec<(Candidate, String, u64)>>,
 }
 
 impl Ctx {
@@ -205,8 +220,11 @@ async fn process(ctx: &Arc<Ctx>, f: &Candidate) -> Outcome {
         }
     };
     if !ctx.seen.lock().unwrap().insert(sha.clone()) {
-        // Same content as another file in this run (a copy): nothing more to send.
+        // Same content as another file in this run (a copy): nothing more to send, except a Takeout copy's album.
         ctx.add(f.size as i64);
+        if ctx.takeout.contains_key(&f.path) {
+            ctx.repeats.lock().unwrap().push((f.clone(), sha, size));
+        }
         return Outcome::Existing;
     }
     // Bytes this file has contributed to the bar so far, so the total can be settled exactly at the end.
@@ -240,14 +258,30 @@ async fn process(ctx: &Arc<Ctx>, f: &Candidate) -> Outcome {
 const CANCELLED: &str = "interrupted";
 
 /// Ok(true) when bytes were uploaded, Ok(false) when the server already had the file.
-async fn upload_file(ctx: &Ctx, f: &Candidate, sha: &str, size: u64, cb: &ByteCb) -> Result<bool, ApiError> {
-    let req = CheckRequest {
+fn check_request(ctx: &Ctx, f: &Candidate, sha: &str, size: u64) -> CheckRequest {
+    CheckRequest {
         sha256: sha.to_string(),
         size_bytes: size as i64,
         filename: file_name(&f.path),
         content_type: walk::content_type(&f.path).to_string(),
         file_modified_at: mtime_hint(f.mtime, SystemTime::now()),
-    };
+        takeout: ctx.takeout.get(&f.path).cloned(),
+    }
+}
+
+/// Send the Takeout metadata of the copies of a photo that were not uploaded themselves (the server holds it by hash, so only
+/// the check call matters; whatever it answers, the first copy's upload is what puts the photo in the library).
+async fn send_repeats(ctx: &Ctx) {
+    let repeats = std::mem::take(&mut *ctx.repeats.lock().unwrap());
+    for (f, sha, size) in repeats {
+        if let Err(e) = ctx.api.check(&check_request(ctx, &f, &sha, size)).await {
+            eprintln!("warning: could not send the album of {}: {e}", f.path.display());
+        }
+    }
+}
+
+async fn upload_file(ctx: &Ctx, f: &Candidate, sha: &str, size: u64, cb: &ByteCb) -> Result<bool, ApiError> {
+    let req = check_request(ctx, f, sha, size);
     let mut chk = ctx.api.check(&req).await?;
     // Held for the whole upload (including re-checks), released when this returns.
     let mut slot = None;
@@ -387,9 +421,18 @@ pub async fn run(args: ImportArgs) -> Result<bool> {
         videos: args.videos && !args.no_videos,
         follow_symlinks: args.follow_symlinks,
     };
-    let scan = {
-        let roots = args.paths.clone();
-        tokio::task::spawn_blocking(move || walk::scan(&roots, &opts)).await??
+    let (scan, takeout_fields) = match &args.takeout {
+        Some(dir) => {
+            let (dir, albums, favorites) = (dir.clone(), !args.takeout_no_albums, !args.takeout_no_favorites);
+            let found = tokio::task::spawn_blocking(move || crate::takeout::scan(&dir, albums, favorites)).await??;
+            found.summary.print(albums);
+            (found.scan, found.fields)
+        }
+        None => {
+            let roots = args.paths.clone();
+            let scan = tokio::task::spawn_blocking(move || walk::scan(&roots, &opts)).await??;
+            (scan, Default::default())
+        }
     };
     print_scan_summary(&scan);
     let mut failures: Vec<(PathBuf, String)> = scan.errors.clone();
@@ -442,6 +485,8 @@ pub async fn run(args: ImportArgs) -> Result<bool> {
         cancelled: AtomicBool::new(false),
         stopped: Default::default(),
         seen: Default::default(),
+        takeout: takeout_fields,
+        repeats: Default::default(),
     });
 
     tokio::spawn({
@@ -493,6 +538,7 @@ pub async fn run(args: ImportArgs) -> Result<bool> {
         ));
     }
     drop(results);
+    send_repeats(&ctx).await;
     bar.finish_and_clear();
 
     let secs = started.elapsed().as_secs_f64().max(0.001);
@@ -773,6 +819,8 @@ mod pipeline_tests {
             cancelled: AtomicBool::new(false),
             stopped: Default::default(),
             seen: Default::default(),
+            takeout: Default::default(),
+            repeats: Default::default(),
         })
     }
 

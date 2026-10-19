@@ -1,0 +1,18 @@
+{
+  "title": "x",
+  "description": "Tram 28",
+  "photoTakenTime": {
+    "timestamp": "1562000000",
+    "formatted": "synthetic"
+  },
+  "geoData": {
+    "latitude": 38.7139,
+    "longitude": -9.1334,
+    "altitude": 0.0
+  },
+  "geoDataExif": {
+    "latitude": 0.0,
+    "longitude": 0.0
+  },
+  "favorited": false
+}

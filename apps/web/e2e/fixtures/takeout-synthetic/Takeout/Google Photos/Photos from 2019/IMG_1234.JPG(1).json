@@ -1,0 +1,18 @@
+{
+  "title": "x",
+  "description": "The second one",
+  "photoTakenTime": {
+    "timestamp": "1561982400",
+    "formatted": "synthetic"
+  },
+  "geoData": {
+    "latitude": 0.0,
+    "longitude": 0.0,
+    "altitude": 0.0
+  },
+  "geoDataExif": {
+    "latitude": 0.0,
+    "longitude": 0.0
+  },
+  "favorited": false
+}

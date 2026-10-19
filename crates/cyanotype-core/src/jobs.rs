@@ -24,6 +24,10 @@ pub const KIND_PAIR: &str = "pair";
 /// Write the location-free JPEG that share links serve for downloads (`derived/{user}/{asset}/share.jpg`).
 /// Enqueued when a share that allows downloads is created or viewed, never for every upload.
 pub const KIND_SHARE_COPY: &str = "share_copy";
+/// Apply the Google Takeout metadata held for an asset (`takeout`): an edit, a favourite, an album. Database and one small
+/// bucket write, no download. Queued by the metadata job when it finishes, by the check call for a photo that already exists,
+/// and by the worker's sweep; one row per held revision.
+pub const KIND_TAKEOUT: &str = "takeout";
 
 /// Jobs enqueued for every new asset. Later pipeline stages are enqueued by earlier ones
 /// or by the milestones that implement them.

@@ -29,6 +29,19 @@ pub struct CheckRequest {
     /// RFC 3339 mtime hint; omitted when it looks bogus.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_modified_at: Option<String>,
+    /// Google Takeout metadata for this file (`import --takeout`), held by the server until the photo is processed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub takeout: Option<TakeoutField>,
+}
+
+/// The `takeout` field of a check call: the sidecar's text and the album folder.
+#[derive(Debug, Clone, Serialize)]
+pub struct TakeoutField {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sidecar: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    pub favorites: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

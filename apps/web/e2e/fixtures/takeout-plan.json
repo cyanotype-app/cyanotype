@@ -1,0 +1,49 @@
+{
+  "photos": [
+    {
+      "path": "Takeout/Google Photos/Photos from 2019/IMG_1234(1).JPG",
+      "sidecar": "Takeout/Google Photos/Photos from 2019/IMG_1234.JPG(1).json",
+      "album": null,
+      "edited": false
+    },
+    {
+      "path": "Takeout/Google Photos/Photos from 2019/IMG_1234-edited.JPG",
+      "sidecar": "Takeout/Google Photos/Photos from 2019/IMG_1234.JPG.supplemental-metadata.json",
+      "album": null,
+      "edited": true
+    },
+    {
+      "path": "Takeout/Google Photos/Photos from 2019/IMG_1234.JPG",
+      "sidecar": "Takeout/Google Photos/Photos from 2019/IMG_1234.JPG.supplemental-metadata.json",
+      "album": null,
+      "edited": false
+    },
+    {
+      "path": "Takeout/Google Photos/Photos from 2019/no_sidecar.jpg",
+      "sidecar": null,
+      "album": null,
+      "edited": false
+    },
+    {
+      "path": "Takeout/Google Photos/Trip to Lisbon/2019-05-12_a_very_long_file_name_that_goes_on_forever_and_ever.jpg",
+      "sidecar": "Takeout/Google Photos/Trip to Lisbon/2019-05-12_a_very_long_file_name_that_goes_on_.json",
+      "album": "Trip to Lisbon",
+      "edited": false
+    },
+    {
+      "path": "Takeout/Google Photos/Trip to Lisbon/IMG_5678.jpg",
+      "sidecar": "Takeout/Google Photos/Trip to Lisbon/IMG_5678.jpg.json",
+      "album": "Trip to Lisbon",
+      "edited": false
+    }
+  ],
+  "videos": [
+    "Takeout/Google Photos/Photos from 2019/clip.mp4"
+  ],
+  "other": [],
+  "trashed": [],
+  "albums": {
+    "Trip to Lisbon": 2
+  },
+  "unused_sidecars": []
+}

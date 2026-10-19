@@ -1,0 +1,18 @@
+{
+  "title": "x",
+  "description": "Dinner by the river",
+  "photoTakenTime": {
+    "timestamp": "1561896000",
+    "formatted": "synthetic"
+  },
+  "geoData": {
+    "latitude": 38.7223,
+    "longitude": -9.1393,
+    "altitude": 0.0
+  },
+  "geoDataExif": {
+    "latitude": 0.0,
+    "longitude": 0.0
+  },
+  "favorited": true
+}
