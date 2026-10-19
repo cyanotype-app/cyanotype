@@ -20,7 +20,7 @@ You create the server, Cloud Firewall and DNS yourself; this runbook says what t
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `REGISTRATION_MODE` | `first_user` | `open`: anyone may register. `first_user`: sign-up works only while the `users` table is empty, so the owner claims the instance and registration then closes (403). `closed`: `POST /auth/register` always returns 403. |
+| `REGISTRATION_MODE` | `invite` | `invite`: the first account registers freely (and becomes the admin); every later one needs a single-use invite link made by an admin ([`admin.md`](admin.md)), otherwise 403. `open`: anyone may register. `first_user`: sign-up works only while the `users` table is empty, so the owner claims the instance and registration then closes (403). `closed`: `POST /auth/register` always returns 403. Every value an older deployment may set keeps its meaning. |
 | `COOKIE_SECURE` | `true` | `Secure` attribute on the session cookie. Local compose sets it to `false` (plain http); the prod override pins `true`. |
 | `AUTH_RATE_LIMIT_BURST` / `AUTH_RATE_LIMIT_PER_MINUTE` | `10` / `10` | Token bucket per client IP for `POST /auth/login` and `/auth/register` (they share one bucket). Over the limit: `429` with `Retry-After`. |
 | `AUTH_RATE_LIMIT_MAX_KEYS` | `10000` | Upper bound on tracked client IPs (memory is bounded; stale entries are evicted first). IPv6 clients are keyed by /64. |
@@ -32,10 +32,19 @@ Invalid values stop the service at startup instead of falling back to something 
 deleted permanently. Trash, restore and permanent deletion (including old object versions on this versioned
 bucket) are described in [`library.md`](library.md).
 
-`first_user` is race-safe: registration takes a transaction-scoped Postgres advisory lock, checks that the
-table is empty and inserts, so concurrent sign-ups produce exactly one account (covered by a test that fires
-12 at once). The local compose stack sets `REGISTRATION_MODE=open` by default so `just e2e` can register a
-throwaway user on every run; production defaults to `first_user`.
+Registration is race-safe in every mode: it takes a transaction-scoped Postgres advisory lock, checks whether the
+table is empty and inserts, so concurrent sign-ups produce exactly one first account (the admin) and a single-use
+invite registers exactly one person (covered by tests that fire 10 to 12 at once). The local compose stack sets
+`REGISTRATION_MODE=open` by default so `just e2e` can register a throwaway user on every run; production defaults to
+`invite`.
+
+**Upgrading an existing instance (administration, migration 0016).** The migration makes the earliest-created account
+an admin, so a single-owner instance upgrades with its owner as admin and nobody locked out (one row is updated, no
+job is queued). If your `.env.prod` sets `REGISTRATION_MODE=first_user` or `closed` explicitly it keeps working as
+before; to let the admin invite people, change it to `invite` and recreate the auth service (`dc up -d auth`). Without
+a setting the default is now `invite`, which differs from the old default only in that an admin can open the door with
+invite links. If the admin account is ever lost, promote one by SQL:
+`UPDATE users SET role = 'admin' WHERE lower(email) = lower('you@example.com');`.
 
 **Client-IP trust model.** The rate limiter keys on the socket peer. If, and only if, the peer is inside
 `TRUSTED_PROXIES` (the Caddy container on the private compose network, which is the only thing that can
@@ -316,14 +325,14 @@ dc ps
 curl -fsS https://photos-dev.cyanotype.app/healthz
 ```
 
-Register the owner account right away (first_user mode lets the first caller claim the instance):
+Register the owner account right away (with `first_user` or `invite` the first caller claims the instance and becomes its admin):
 
 ```sh
 curl -fsS -c /dev/null -H 'content-type: application/json' \
   -d '{"email":"you@example.com","password":"a long passphrase"}' https://photos-dev.cyanotype.app/auth/register
 ```
 
-A second registration now returns 403. Then run the smoke test from your machine against the instance:
+A second registration without an invite now returns 403. Then run the smoke test from your machine against the instance:
 `E2E_EMAIL=... E2E_PASSWORD=... BASE_URL=https://photos-dev.cyanotype.app just e2e` (note: browser-style
 direct uploads are subject to the CORS caveat below; the script uploads with curl, which is fine).
 
@@ -565,7 +574,7 @@ Downloads through presigned GET URLs in `<img>` tags are not affected by CORS.
 - [ ] Cloudflare mode: SSL/TLS Full (strict), Origin CA cert in `certs/` (chmod 600), `CADDY_TLS_MODE=cloudflare-origin`; gateway log `client_ip` is your real IP.
 - [ ] `PermitRootLogin no`, `PasswordAuthentication no`; unattended-upgrades active; Docker log rotation set.
 - [ ] `.env.prod` is `chmod 600`, not in git, has a generated `POSTGRES_PASSWORD` and a bucket-scoped access key.
-- [ ] `REGISTRATION_MODE=first_user` (or `closed` after creating your account); verify a second registration returns 403.
+- [ ] `REGISTRATION_MODE=invite` (or `first_user` / `closed` after creating your account); verify a second registration without an invite returns 403.
 - [ ] DNS resolves to the server; `https://<hostname>/healthz` works with a valid certificate; http redirects to https.
 - [ ] Session cookie has `Secure; HttpOnly; SameSite=Lax` (check in browser devtools or `curl -i`).
 - [ ] Repeated bad logins return 429 (`for i in $(seq 15); do curl -s -o /dev/null -w '%{http_code}\n' -XPOST -H 'content-type: application/json' -d '{"email":"x@x.x","password":"nope"}' https://HOST/auth/login; done`).

@@ -6,6 +6,58 @@
 export interface Me {
   id: string;
   email: string;
+  /** Absent on older servers (treated as member). */
+  role?: "admin" | "member";
+}
+
+/** GET /auth/registration: what the register page may offer. */
+export interface RegistrationInfo {
+  mode: "open" | "first_user" | "invite" | "closed";
+  /** The instance has no account yet: the first one registers freely and becomes the admin. */
+  first_account: boolean;
+  /** Anyone may register right now without an invite. */
+  open: boolean;
+  invite_required: boolean;
+}
+
+export type InviteStatus = "pending" | "used" | "expired" | "revoked";
+
+/** Limits an invite presets on the new account (null: none). */
+export interface InviteLimits {
+  quota_bytes: number | null;
+  daily_upload_bytes: number | null;
+  max_file_bytes: number | null;
+}
+
+/** An entry of GET /auth/admin/invites. The token is never listed. */
+export interface Invite {
+  id: string;
+  note: string | null;
+  status: InviteStatus;
+  created_at: string;
+  created_by: string | null;
+  expires_at: string;
+  revoked_at: string | null;
+  used_at: string | null;
+  /** The address that used it. */
+  used_by: string | null;
+  limits: InviteLimits;
+}
+
+/** POST /auth/admin/invites and .../reissue: the link exists in this response only. */
+export interface IssuedInvite {
+  invite: Invite;
+  token: string;
+  /** `/register?invite=<token>`: prefix it with the site origin. */
+  path: string;
+}
+
+export interface NewInvite {
+  note?: string;
+  expires_in_days?: number;
+  quota_bytes?: number;
+  daily_upload_bytes?: number;
+  max_file_bytes?: number;
 }
 
 /** An entry of GET /auth/api-keys. The secret is never listed. */
@@ -617,7 +669,24 @@ export const api = {
   me: () => request<Me>("/auth/me"),
   login: (email: string, password: string) => request<{ id: string }>("/auth/login", json({ email, password })),
   /** 403 when registration is closed (REGISTRATION_MODE=closed, or first_user with an owner already present). */
-  register: (email: string, password: string) => request<Me>("/auth/register", json({ email, password })),
+  register: (email: string, password: string, invite?: string) =>
+    request<Me>("/auth/register", json(invite ? { email, password, invite } : { email, password })),
+  registrationInfo: () => request<RegistrationInfo>("/auth/registration"),
+  /** Whether an invite token can still be used (always 200). */
+  checkInvite: (token: string) =>
+    request<{ valid: boolean; reason?: "unknown" | "used" | "revoked" | "expired"; expires_at?: string }>(
+      "/auth/invites/check",
+      json({ token }),
+    ),
+  listInvites: () => request<{ items: Invite[] }>("/auth/admin/invites"),
+  createInvite: (body: NewInvite) => request<IssuedInvite>("/auth/admin/invites", json(body)),
+  /** A fresh link for an unused invite; the previous link stops working. */
+  reissueInvite: (id: string, expiresInDays?: number) =>
+    request<IssuedInvite>(
+      `/auth/admin/invites/${encodeURIComponent(id)}/reissue`,
+      json(expiresInDays === undefined ? {} : { expires_in_days: expiresInDays }),
+    ),
+  revokeInvite: (id: string) => request<void>(`/auth/admin/invites/${encodeURIComponent(id)}`, { method: "DELETE" }),
   logout: () => request<void>("/auth/logout", { method: "POST" }),
   listApiKeys: () => request<{ items: ApiKey[] }>("/auth/api-keys"),
   createApiKey: (name: string) => request<CreatedApiKey>("/auth/api-keys", json({ name })),

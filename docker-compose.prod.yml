@@ -83,7 +83,7 @@ services:
     environment:
       <<: *prod-env
       COOKIE_SECURE: "true"
-      REGISTRATION_MODE: ${REGISTRATION_MODE:-first_user}
+      REGISTRATION_MODE: ${REGISTRATION_MODE:-invite}
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3001 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && head -n1 <&3 | grep -q ' 200'"]
       <<: *probe

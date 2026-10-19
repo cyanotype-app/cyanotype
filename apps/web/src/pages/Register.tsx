@@ -1,15 +1,60 @@
-import { useState } from "react";
-import { Link, Navigate, useNavigate } from "react-router-dom";
-import { api, ApiError } from "../api";
+import { useEffect, useId, useState } from "react";
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import { api, ApiError, type RegistrationInfo } from "../api";
 import { useAuth } from "../auth";
 import { AuthForm } from "../components/AuthForm";
-import { markRegistrationClosed, registrationKnownClosed } from "../registration";
+import { markRegistrationClosed, parseInviteToken, registrationKnownClosed } from "../registration";
+
+type InviteState = "unknown" | "checking" | "valid" | "used" | "revoked" | "expired" | "invalid";
+
+const INVITE_PROBLEM: Record<string, string> = {
+  used: "This invite link was already used. Ask for a new one.",
+  revoked: "This invite link was revoked. Ask for a new one.",
+  expired: "This invite link has expired. Ask for a new one.",
+  invalid: "This invite link is not valid. Check that you copied all of it, or ask for a new one.",
+};
 
 export function Register() {
   const { state, refresh } = useAuth();
   const navigate = useNavigate();
+  const inviteId = useId();
+  const [params] = useSearchParams();
+  const linked = parseInviteToken(params.get("invite") ?? "");
+  const [pasted, setPasted] = useState("");
   const [closed, setClosed] = useState(registrationKnownClosed());
+  const [info, setInfo] = useState<RegistrationInfo | null>(null);
+  const [inviteState, setInviteState] = useState<InviteState>(linked ? "checking" : "unknown");
+  const token = linked || parseInviteToken(pasted);
+
+  useEffect(() => {
+    let live = true;
+    api
+      .registrationInfo()
+      .then((i) => live && setInfo(i))
+      .catch(() => undefined); // an older server: fall back to learning from the 403
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // A link in the address bar is checked up front, so a spent or expired one says so before the form is filled in.
+  useEffect(() => {
+    if (!linked) return;
+    let live = true;
+    api
+      .checkInvite(linked)
+      .then((r) => live && setInviteState(r.valid ? "valid" : r.reason === "unknown" || !r.reason ? "invalid" : r.reason))
+      .catch(() => live && setInviteState("unknown"));
+    return () => {
+      live = false;
+    };
+  }, [linked]);
+
   if (state.status === "authenticated") return <Navigate to="/library" replace />;
+
+  const needsInvite = info?.invite_required === true && !linked;
+  const refused = closed || (info !== null && !info.open && !info.invite_required);
+  const problem = inviteState in INVITE_PROBLEM ? INVITE_PROBLEM[inviteState] : null;
 
   return (
     <AuthForm
@@ -18,18 +63,57 @@ export function Register() {
       passwordAutocomplete="new-password"
       hint="At least 8 characters."
       notice={
-        closed && (
-          <p className="notice" role="status">
-            Registration is closed on this server. By default only the first account can be created; ask the owner to
-            add you, or sign in if you already have an account.
-          </p>
+        <>
+          {info?.first_account && info.open && (
+            <p className="notice" role="status">
+              This server has no accounts yet. The first one becomes the administrator.
+            </p>
+          )}
+          {problem && (
+            <p className="notice" role="alert">
+              {problem}
+            </p>
+          )}
+          {inviteState === "valid" && (
+            <p className="notice notice-ok" role="status">
+              You have been invited. Create your account below.
+            </p>
+          )}
+          {refused && !problem && (
+            <p className="notice" role="status">
+              {info?.mode === "first_user" || info === null
+                ? "Registration is closed on this server. Ask the owner to add you, or sign in if you already have an account."
+                : "Registration is closed on this server. Sign in if you already have an account."}
+            </p>
+          )}
+        </>
+      }
+      extra={
+        needsInvite && (
+          <>
+            <label htmlFor={inviteId}>Invite link or code</label>
+            <input
+              id={inviteId}
+              name="invite"
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              required
+              value={pasted}
+              placeholder="Paste the link you were sent"
+              onChange={(e) => setPasted(e.target.value)}
+            />
+            <p className="muted small">This server is invite-only. Ask its administrator for a link.</p>
+          </>
         )
       }
       onSubmit={async (email, password) => {
         try {
-          await api.register(email, password);
+          await api.register(email, password, token || undefined);
         } catch (e) {
           if (e instanceof ApiError && e.status === 403) {
+            // An invite problem has its own message; anything else means the door is shut.
+            if (/invite/i.test(e.message)) throw new Error(sentence(e.message), { cause: e });
             markRegistrationClosed();
             setClosed(true);
             throw new Error("Registration is closed.", { cause: e });
@@ -49,3 +133,6 @@ export function Register() {
     />
   );
 }
+
+/** "this invite link was revoked" as a sentence for the form's error line. */
+const sentence = (m: string): string => m.charAt(0).toUpperCase() + m.slice(1) + (m.endsWith(".") ? "" : ".");

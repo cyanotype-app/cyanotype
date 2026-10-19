@@ -102,6 +102,8 @@ const REINDEXING = {
     model: "siglip2-b16", percent: 40, reindexing: true, switch_at_percent: 95, serving_model: "clip-b32",
   },
 };
+let memberView = false;
+let anonymous = false;
 let processing: typeof IDLE | typeof BUSY | typeof INDEXING | typeof REINDEXING = IDLE;
 
 // Search: the mock answers by what the query says. "nothing" matches no photo, "unavailable" is a server without the
@@ -227,7 +229,8 @@ async function mock(page: Page) {
         const whole = u.searchParams.get("bbox") === "-180,-90,180,90";
         return route.fulfill(json({ clusters: whole ? MAP_MARKERS : MAP_MARKERS.slice(0, 4), total: whole ? 12632 : 12600, truncated: false }));
       }
-      if (p === "/auth/me") return route.fulfill(json({ id: "u1", email: "someone.with.a.long.address@example-photo-library.org" }));
+      if (p === "/auth/me" && anonymous) return route.fulfill({ status: 401, contentType: "application/json", body: '{"error":"unauthorized"}' });
+      if (p === "/auth/me") return route.fulfill(json({ id: "u1", email: "someone.with.a.long.address@example-photo-library.org", role: memberView ? "member" : "admin" }));
       if (p === "/auth/api-keys" && m === "GET")
         return route.fulfill(
           json({
@@ -419,6 +422,51 @@ async function mockShares(page: Page) {
       }
       if (rest === "/items") return route.fulfill(json({ items: PUBLIC_ITEMS, next_cursor: null }));
       return route.fulfill(json({ error: "not mocked" }, 404));
+    },
+  );
+}
+
+// The admin area: the invite list with every state and a long note, a long address and long limits, the link shown after
+// creating one, the register page with an invite in the address bar (valid or not) and without one on an invite-only
+// server, and what a member sees at /admin.
+const LONG_EMAIL = "an.extraordinarily.long.address.for.a.guest@a-very-long-domain-name-for-photos.example.org";
+const LONG_TOKEN = "0123456789abcdef".repeat(4);
+const inv = (n: number, over: Record<string, unknown> = {}) => ({
+  id: `i${n}`,
+  note: null,
+  status: "pending",
+  created_at: "2024-06-01T00:00:00Z",
+  created_by: "someone.with.a.long.address@example-photo-library.org",
+  expires_at: new Date(Date.now() + 5 * 86_400_000).toISOString(),
+  revoked_at: null,
+  used_at: null,
+  used_by: null,
+  limits: { quota_bytes: null, daily_upload_bytes: null, max_file_bytes: null },
+  ...over,
+});
+const INVITES = [
+  inv(1, { note: "For Sam, " + "who_has_a_really_long_unbroken_note_".repeat(3), limits: { quota_bytes: 5_497_558_138_880, daily_upload_bytes: 1_073_741_824, max_file_bytes: 214_748_364_800 } }),
+  inv(2, { status: "used", used_at: "2024-06-02T00:00:00Z", used_by: LONG_EMAIL, note: "Used" }),
+  inv(3, { status: "expired", note: "Expired", expires_at: "2024-06-05T00:00:00Z" }),
+  inv(4, { status: "revoked", note: "Revoked", revoked_at: "2024-06-03T00:00:00Z" }),
+];
+let inviteCheck: { valid: boolean; reason?: string } = { valid: true };
+const registration = { mode: "invite", first_account: false, open: false, invite_required: true };
+
+async function mockAdmin(page: Page) {
+  const json = (body: unknown, status = 200) => ({ status, contentType: "application/json", body: JSON.stringify(body) });
+  await page.route(
+    (u) => /^\/auth\/(admin|invites|registration)/.test(u.pathname),
+    async (route) => {
+      const p = new URL(route.request().url()).pathname;
+      const m = route.request().method();
+      if (p === "/auth/registration") return route.fulfill(json(registration));
+      if (p === "/auth/invites/check") return route.fulfill(json(inviteCheck));
+      if (p === "/auth/admin/invites" && m === "GET") return route.fulfill(json({ items: INVITES }));
+      if (p === "/auth/admin/invites" && m === "POST")
+        return route.fulfill(json({ invite: INVITES[0], token: LONG_TOKEN, path: `/register?invite=${LONG_TOKEN}` }, 201));
+      if (/reissue$/.test(p)) return route.fulfill(json({ invite: INVITES[0], token: LONG_TOKEN, path: `/register?invite=${LONG_TOKEN}` }));
+      return route.fulfill(json({}, 204));
     },
   );
 }
@@ -900,6 +948,49 @@ for (const { width, scheme } of RUNS) {
       await page.goto("/search?similar=6f1c2b0e-0000-4000-8000-00000000dead");
       await page.getByRole("heading", { name: "This photo is still being indexed" }).waitFor();
       await check("similar-not-indexed");
+
+      expect(problems, problems.join("\n")).toEqual([]);
+    });
+
+    test(`admin: invites and the invite-only register page fit`, async ({ page }) => {
+      test.setTimeout(90_000);
+      if (SHOT_DIR) mkdirSync(SHOT_DIR, { recursive: true });
+      const problems: string[] = [];
+      const check = makeCheck(page, `${width}${scheme === "dark" ? "-dark" : ""}-admin`, problems);
+      await mock(page);
+      await mockAdmin(page);
+      memberView = false;
+      await page.goto("/admin");
+      await page.getByRole("heading", { name: "Invites" }).waitFor();
+      await page.getByText("Used by " + LONG_EMAIL).waitFor();
+      await check("invites");
+      await page.getByText("Starting limits (optional)").click();
+      await page.getByLabel(/Note/).fill("For Sam, " + "who_has_a_really_long_unbroken_note_".repeat(3));
+      await page.getByLabel("Storage (GB)").fill("5120.5");
+      await check("invites-form");
+      await page.getByRole("button", { name: "Create invite" }).click();
+      await page.getByText("Copy this link now").waitFor();
+      await check("invites-new-link");
+
+      anonymous = true;
+      inviteCheck = { valid: true };
+      await page.goto(`/register?invite=${LONG_TOKEN}`);
+      await page.getByText("You have been invited").waitFor();
+      await check("register-invited");
+      inviteCheck = { valid: false, reason: "expired" };
+      await page.goto(`/register?invite=${LONG_TOKEN}`);
+      await page.getByText(/has expired/).waitFor();
+      await check("register-invite-expired");
+      await page.goto("/register");
+      await page.getByLabel("Invite link or code").waitFor();
+      await check("register-needs-invite");
+      anonymous = false;
+
+      memberView = true;
+      await page.goto("/admin");
+      await page.getByRole("heading", { name: "Page not found" }).waitFor();
+      await check("admin-member-404");
+      memberView = false;
 
       expect(problems, problems.join("\n")).toEqual([]);
     });

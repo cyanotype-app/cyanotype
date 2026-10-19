@@ -5,9 +5,12 @@ import { Logo } from "./components/Logo";
 import { AlbumPage } from "./pages/Album";
 import { Albums } from "./pages/Albums";
 import { ApiKeys } from "./pages/ApiKeys";
+import { AdminLayout } from "./pages/admin/AdminLayout";
+import { Invites } from "./pages/admin/Invites";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { MapPage } from "./pages/MapPage";
+import { NotFound } from "./pages/NotFound";
 import { Register } from "./pages/Register";
 import { ShareView } from "./pages/ShareView";
 import { SearchPage } from "./pages/Search";
@@ -35,6 +38,11 @@ export function App() {
         <Route path="/shared" element={<SharedLinks />} />
         <Route path="/trash" element={<Trash />} />
         <Route path="/settings/api-keys" element={<ApiKeys />} />
+        <Route path="/admin" element={<AdminLayout />}>
+          <Route index element={<Navigate to="invites" replace />} />
+          <Route path="invites" element={<Invites />} />
+          <Route path="*" element={<NotFound />} />
+        </Route>
       </Route>
       <Route path="*" element={<Navigate to="/library" replace />} />
     </Routes>
@@ -64,6 +72,11 @@ function RequireAuth() {
           <Link to="/settings/api-keys" className="btn btn-quiet">
             API keys
           </Link>
+          {state.user.role === "admin" && (
+            <Link to="/admin" className="btn btn-quiet">
+              Admin
+            </Link>
+          )}
           <span className="muted email">{state.user.email}</span>
           <button type="button" className="btn btn-quiet" onClick={() => void signOut()}>
             Sign out

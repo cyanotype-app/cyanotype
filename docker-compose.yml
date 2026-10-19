@@ -126,7 +126,7 @@ services:
       DD_SERVICE: cyanotype-auth
       AUTH_BIND_ADDR: 0.0.0.0:3001
       # Local dev runs over plain http and re-registers a throwaway user on every `just e2e`,
-      # so relax the service defaults (Secure cookie, first_user). Production overrides both.
+      # so relax the service defaults (Secure cookie, invite). Production overrides both.
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       REGISTRATION_MODE: ${REGISTRATION_MODE:-open}
     labels:

@@ -18,12 +18,13 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use cyanotype_service::{
-    ApiError, ApiResult, AuthUser, SessionUser,
+    ApiError, ApiResult, AuthUser, SessionUser, audit,
     auth::{SESSION_COOKIE as COOKIE, sha256},
     ratelimit::{self, LimitState, RateLimiter},
 };
 use sqlx::PgPool;
 
+use crate::invites;
 use crate::settings::{AuthConfig, RegistrationMode};
 
 const SESSION_DAYS: i64 = 30;
@@ -51,17 +52,20 @@ pub fn routes(state: AppState) -> Router {
     let limited = Router::new()
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
+        .route("/auth/invites/check", post(invites::check))
         .route_layer(middleware::from_fn_with_state(limit, ratelimit::limit));
     Router::new()
         .merge(limited)
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
+        .route("/auth/registration", get(registration_info))
+        .merge(invites::admin_routes())
         .route("/auth/api-keys", get(list_api_keys).post(create_api_key))
         .route("/auth/api-keys/{id}", delete(revoke_api_key))
         .with_state(state)
 }
 
-fn random_token() -> String {
+pub(crate) fn random_token() -> String {
     let mut b = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut b);
     cyanotype_core::keys::hex(&b)
@@ -93,10 +97,19 @@ async fn start_session(db: &PgPool, cfg: &AuthConfig, jar: CookieJar, user_id: U
     Ok(jar.add(cookie))
 }
 
+#[derive(Deserialize)]
+struct RegisterReq {
+    email: String,
+    password: String,
+    /// The invite token (from the link's `?invite=`); needed in `invite` mode once the instance has an owner.
+    #[serde(default)]
+    invite: Option<String>,
+}
+
 async fn register(
     State(AppState { db, cfg }): State<AppState>,
     jar: CookieJar,
-    Json(c): Json<Credentials>,
+    Json(c): Json<RegisterReq>,
 ) -> ApiResult<(StatusCode, CookieJar, Json<Value>)> {
     if cfg.registration == RegistrationMode::Closed {
         return Err(ApiError::Forbidden("registration is closed".into()));
@@ -112,32 +125,103 @@ async fn register(
         .map_err(|e| anyhow::anyhow!("hash: {e}"))?
         .to_string();
     let mut tx = db.begin().await?;
-    if cfg.registration == RegistrationMode::FirstUser {
-        // The lock makes check-then-insert atomic: a concurrent registrant waits here until the
-        // first commits, then sees a non-empty table. Released automatically at commit/rollback.
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(REGISTER_LOCK_KEY)
-            .execute(&mut *tx)
-            .await?;
-        let (any,): (bool,) = sqlx::query_as("SELECT EXISTS (SELECT 1 FROM users)")
-            .fetch_one(&mut *tx)
-            .await?;
-        if any {
-            return Err(ApiError::Forbidden(
-                "registration is closed: this instance already has an owner".into(),
-            ));
+    // The lock makes check-then-insert atomic: a concurrent registrant waits here until the first commits, then sees a
+    // non-empty table (so exactly one account becomes the admin). Released automatically at commit/rollback.
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(REGISTER_LOCK_KEY)
+        .execute(&mut *tx)
+        .await?;
+    let (any,): (bool,) = sqlx::query_as("SELECT EXISTS (SELECT 1 FROM users)")
+        .fetch_one(&mut *tx)
+        .await?;
+    let token = c.invite.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    let mut invite = None;
+    if any {
+        match cfg.registration {
+            RegistrationMode::FirstUser => {
+                return Err(ApiError::Forbidden(
+                    "registration is closed: this instance already has an owner".into(),
+                ));
+            }
+            RegistrationMode::Invite => {
+                let Some(token) = token else {
+                    return Err(ApiError::Forbidden(
+                        "registration needs an invite link from the administrator".into(),
+                    ));
+                };
+                match invites::consume(&mut tx, token).await? {
+                    Some(i) => invite = Some(i),
+                    None => return Err(invites::refusal(&mut tx, token).await?),
+                }
+            }
+            // Open: anyone, and a valid invite still gets recorded as used.
+            RegistrationMode::Open => {
+                if let Some(token) = token {
+                    invite = invites::consume(&mut tx, token).await?;
+                }
+            }
+            RegistrationMode::Closed => unreachable!("refused above"),
         }
     }
-    let row: Option<(Uuid,)> =
-        sqlx::query_as("INSERT INTO users (email, password_hash) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING id")
-            .bind(&email)
-            .bind(hash)
-            .fetch_optional(&mut *tx)
-            .await?;
+    // The first account of an instance is its admin.
+    let role = if any { "member" } else { "admin" };
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "INSERT INTO users (email, password_hash, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING id",
+    )
+    .bind(&email)
+    .bind(hash)
+    .bind(role)
+    .fetch_optional(&mut *tx)
+    .await?;
+    // A taken address rolls everything back, so the invite is not spent.
     let (id,) = row.ok_or_else(|| ApiError::Conflict("email already registered".into()))?;
+    if let Some(i) = invite {
+        sqlx::query("UPDATE invites SET used_by = $2, used_email = $3 WHERE id = $1")
+            .bind(i.id)
+            .bind(id)
+            .bind(&email)
+            .execute(&mut *tx)
+            .await?;
+        audit::record(
+            &mut *tx,
+            Some(id),
+            "invite.use",
+            Some("invite"),
+            Some(&i.id.to_string()),
+            json!({"email": email}),
+        )
+        .await?;
+    }
     tx.commit().await?;
     let jar = start_session(&db, &cfg, jar, id).await?;
-    Ok((StatusCode::CREATED, jar, Json(json!({"id": id, "email": email}))))
+    Ok((
+        StatusCode::CREATED,
+        jar,
+        Json(json!({"id": id, "email": email, "role": role})),
+    ))
+}
+
+/// What the register page needs to know without trying to register: the mode, and whether the instance still has no
+/// account (the first one registers without an invite and becomes the admin).
+async fn registration_info(State(AppState { db, cfg }): State<AppState>) -> ApiResult<Json<Value>> {
+    let (any,): (bool,) = sqlx::query_as("SELECT EXISTS (SELECT 1 FROM users)")
+        .fetch_one(&db)
+        .await?;
+    let mode = match cfg.registration {
+        RegistrationMode::Open => "open",
+        RegistrationMode::FirstUser => "first_user",
+        RegistrationMode::Invite => "invite",
+        RegistrationMode::Closed => "closed",
+    };
+    let (open, invite_required) = match cfg.registration {
+        RegistrationMode::Closed => (false, false),
+        RegistrationMode::Open => (true, false),
+        RegistrationMode::FirstUser => (!any, false),
+        RegistrationMode::Invite => (!any, any),
+    };
+    Ok(Json(
+        json!({"mode": mode, "first_account": !any, "open": open, "invite_required": invite_required}),
+    ))
 }
 
 async fn login(
@@ -174,11 +258,11 @@ async fn logout(State(db): State<PgPool>, jar: CookieJar) -> ApiResult<(CookieJa
 }
 
 async fn me(State(db): State<PgPool>, user: AuthUser) -> ApiResult<Json<Value>> {
-    let (email,): (String,) = sqlx::query_as("SELECT email FROM users WHERE id = $1")
+    let (email, role): (String, String) = sqlx::query_as("SELECT email, role FROM users WHERE id = $1")
         .bind(user.id)
         .fetch_one(&db)
         .await?;
-    Ok(Json(json!({"id": user.id, "email": email})))
+    Ok(Json(json!({"id": user.id, "email": email, "role": role})))
 }
 
 /// Plaintext API keys look like `cyk_<64 hex>` (32 random bytes). Only the sha256 is stored.
@@ -254,7 +338,7 @@ async fn list_api_keys(State(db): State<PgPool>, user: SessionUser) -> ApiResult
     Ok(Json(json!({"items": items})))
 }
 
-fn rfc3339(t: time::OffsetDateTime) -> String {
+pub(crate) fn rfc3339(t: time::OffsetDateTime) -> String {
     t.format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default()
 }
@@ -660,4 +744,6 @@ mod tests {
         }
         assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
     }
+
+    include!("invites_tests.rs");
 }
