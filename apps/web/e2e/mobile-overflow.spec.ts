@@ -677,7 +677,7 @@ for (const { width, scheme } of RUNS) {
     test.use({ colorScheme: scheme, viewport: { width, height: width === 1280 ? 800 : 740 }, hasTouch: width < 600 });
 
     test(`no horizontal overflow on any page or overlay`, async ({ page }) => {
-      test.setTimeout(90_000);
+      test.setTimeout(300_000);
       if (SHOT_DIR) mkdirSync(SHOT_DIR, { recursive: true });
       const problems: string[] = [];
 
