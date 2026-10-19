@@ -30,6 +30,11 @@ function "tags" {
   result = [for t in split(",", TAGS != "" ? TAGS : TAG) : "${REGISTRY}cyanotype-${name}:${t}"]
 }
 
+# Version of the downloadable CLI (the cli-vX.Y.Z tag, without the prefix; docs/releases.md). Empty = a development build.
+variable "CLI_VERSION" {
+  default = ""
+}
+
 # Set CACHE=gha in CI (GitHub Actions cache; needs ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN, which
 # docker/build-push-action-style runners or crazy-max/ghaction-github-runtime export).
 # Set CACHE=local to keep a portable cache in ./.buildcache (useful for CI that cannot use gha).
@@ -107,4 +112,21 @@ target "web" {
   # The shared Rust cache scope is not useful here (and would be clobbered by mode=max).
   cache-from = CACHE == "gha" ? ["type=gha,scope=cyanotype-web"] : CACHE == "local" ? ["type=local,src=.buildcache-web"] : []
   cache-to   = CACHE == "gha" ? ["type=gha,scope=cyanotype-web,mode=max"] : CACHE == "local" ? ["type=local,dest=.buildcache-web,mode=max"] : []
+  # The CLI downloads the server hands out (/cli/*) are built by the cli-dist target and copied in.
+  contexts = { "cli-dist-ctx" = "target:cli-dist" }
+  args     = { CLI_DIST = "cli-dist-ctx" }
+}
+
+# The downloadable CLI for every platform (Dockerfile stage cli-dist; docs/releases.md). Cross-compiled, so it has its own
+# cache scope: a change to the server crates that the CLI does not use never invalidates it, and vice versa.
+#   docker buildx bake cli-dist     # unsigned dist into ./cli-dist-out
+# Signing: pass the release key as a BuildKit secret, never as an argument:
+#   CLI_RELEASE_KEY=... docker buildx bake cli-dist --set '*.secrets=id=cli_release_key,env=CLI_RELEASE_KEY'
+target "cli-dist" {
+  inherits   = ["_common"]
+  target     = "cli-dist"
+  output     = ["type=local,dest=cli-dist-out"]
+  args       = { CYANOTYPE_CLI_VERSION = CLI_VERSION, CYANOTYPE_GIT_SHA = REVISION }
+  cache-from = CACHE == "gha" ? ["type=gha,scope=cyanotype-cli-dist"] : CACHE == "local" ? ["type=local,src=.buildcache-cli"] : []
+  cache-to   = CACHE == "gha" ? ["type=gha,scope=cyanotype-cli-dist,mode=max"] : CACHE == "local" ? ["type=local,dest=.buildcache-cli,mode=max"] : []
 }

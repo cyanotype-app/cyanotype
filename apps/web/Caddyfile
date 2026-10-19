@@ -31,6 +31,23 @@
 		file_server
 	}
 
+	# The downloadable CLI (docs/releases.md): programs, SHA256SUMS(.sig), latest.json and the install scripts, built into the
+	# image under /srv/cli. A missing file is a real 404, never the SPA shell (a script piped into `sh` must not get HTML).
+	# The metadata files change with every release and are tiny: always revalidate. The programs are named by target, not
+	# by version, so they revalidate too (an ETag makes that cheap). The install scripts get the server's own address
+	# filled in from the Host the browser used (the gateway forwards it as Host / X-Forwarded-Host).
+	handle /cli/* {
+		@scripts path /cli/install.sh /cli/install.ps1
+		header @scripts Content-Type "text/plain; charset=utf-8"
+		templates @scripts
+		@meta path /cli/latest.json /cli/SHA256SUMS /cli/SHA256SUMS.sig /cli/UNSIGNED
+		header @meta Content-Type "text/plain; charset=utf-8"
+		header /cli/latest.json Content-Type "application/json"
+		header Cache-Control "no-cache"
+		header X-Robots-Tag "noindex"
+		file_server
+	}
+
 	# Share links (/s/<token>): the address is the secret, so keep these pages out of search engines and out of
 	# Referer headers. The page itself is the SPA shell; the API answers with the same headers.
 	@share path /s /s/*

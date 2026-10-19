@@ -447,6 +447,30 @@ main {
 .settings h1 {
   font-size: 1.4rem;
 }
+.install-cli {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.install-cli h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+}
+.install-cli code {
+  display: block;
+  margin: 0.15rem 0 0.6rem;
+  padding: 0.5rem;
+  overflow-wrap: anywhere;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+.install-cli p code {
+  display: inline;
+  margin: 0;
+  padding: 0.1rem 0.3rem;
+}
 .key-form {
   display: flex;
   gap: 0.5rem;

@@ -26,6 +26,14 @@ describe("ApiKeys", () => {
     expect(screen.getAllByRole("button", { name: "Revoke" })).toHaveLength(2);
   });
 
+  it("shows how to install the command line from this server", async () => {
+    vi.spyOn(api, "listApiKeys").mockResolvedValue({ items: [] });
+    render(<ApiKeys />);
+    await screen.findByText("No API keys yet.");
+    expect(screen.getByText(`curl -fsSL ${window.location.origin}/cli/install.sh | sh`)).toBeInTheDocument();
+    expect(screen.getByText(`irm ${window.location.origin}/cli/install.ps1 | iex`)).toBeInTheDocument();
+  });
+
   it("creates a key, shows the secret once, and refreshes the list", async () => {
     const list = vi
       .spyOn(api, "listApiKeys")

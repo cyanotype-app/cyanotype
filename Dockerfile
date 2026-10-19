@@ -118,3 +118,93 @@ ENTRYPOINT ["/usr/local/bin/app"]
 FROM runtime AS cli
 COPY --from=builder /out/cyanotype-cli /usr/local/bin/app
 ENTRYPOINT ["/usr/local/bin/app"]
+
+# ==== cli-dist: the downloadable `cyanotype` CLI for every platform (docs/releases.md) ===================================
+# The web image serves the result under /cli/. Cross-compiled with cargo-zigbuild (zig is the C compiler and linker, so one
+# Linux builder produces Linux musl, macOS and Windows programs; no per-OS runners, no Apple SDK: the CLI links only libSystem
+# on macOS because reqwest uses rustls with bundled roots, not Security.framework). The CLI is built with
+# --no-default-features: no sqlx, no AWS SDK, no image decoding, nothing native besides rustls' ring.
+#
+#   docker buildx bake cli-dist                                   # unsigned dist (marked UNSIGNED), into ./cli-dist-out
+#   CLI_RELEASE_KEY="$(cat release_key)" docker buildx bake cli-dist --set '*.secrets=id=cli_release_key,env=CLI_RELEASE_KEY'
+#
+# The signing key only ever exists as a BuildKit secret mount in the last RUN of cli-dist-assemble: not in a layer, a build arg
+# or a log. Builds without it (pull requests, local) produce an unsigned dist that `cyanotype update` refuses.
+
+# Pinned build tools (released more than 14 days before they were pinned), each verified against a sha256 below.
+#   zig 0.16.0:        https://ziglang.org/download/index.json  (x86_64-linux)
+#   cargo-zigbuild:    https://github.com/rust-cross/cargo-zigbuild/releases/tag/v0.23.4  (x86_64-unknown-linux-musl)
+# The cross-compilation standard libraries come from rustup (verified by rustup against the signed Rust manifest).
+FROM chef AS cli-tools
+ARG ZIG_VERSION=0.16.0
+ARG ZIG_SHA256=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+ARG ZIGBUILD_VERSION=0.23.4
+ARG ZIGBUILD_SHA256=9e3cf73485edbd45905c8aadbc0fdf869c7ddc3848f0c898229f2680db52e44b
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl xz-utils \
+ && rm -rf /var/lib/apt/lists/* \
+ && test "$(uname -m)" = x86_64 || { echo "cli-dist is built on x86_64 hosts" >&2; exit 1; }
+RUN set -eux; \
+    curl -fsSL -o /tmp/zig.tar.xz "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"; \
+    echo "${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum -c -; \
+    mkdir /opt/zig; tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1; rm /tmp/zig.tar.xz; \
+    curl -fsSL -o /tmp/zb.tar.xz "https://github.com/rust-cross/cargo-zigbuild/releases/download/v${ZIGBUILD_VERSION}/cargo-zigbuild-x86_64-unknown-linux-musl.tar.xz"; \
+    echo "${ZIGBUILD_SHA256}  /tmp/zb.tar.xz" | sha256sum -c -; \
+    tar -xJf /tmp/zb.tar.xz -C /usr/local/bin --strip-components=1 cargo-zigbuild-x86_64-unknown-linux-musl/cargo-zigbuild; rm /tmp/zb.tar.xz
+ENV PATH="/opt/zig:${PATH}" ZIG_GLOBAL_CACHE_DIR=/zig-cache
+RUN rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-gnu \
+ && zig version && cargo zigbuild --help >/dev/null
+
+# Dependencies per target, one layer each (cache-friendly, and only one target compiles at a time, which bounds memory).
+# CARGO_BUILD_JOBS keeps a small builder from running out of memory; raise it on a big one.
+FROM cli-tools AS cli-deps
+ARG CARGO_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
+COPY --from=planner /src/recipe.json recipe.json
+RUN cargo chef cook --profile dist --zigbuild --locked --no-default-features -p cyanotype-cli --target x86_64-unknown-linux-musl --recipe-path recipe.json
+RUN cargo chef cook --profile dist --zigbuild --locked --no-default-features -p cyanotype-cli --target aarch64-unknown-linux-musl --recipe-path recipe.json
+RUN cargo chef cook --profile dist --zigbuild --locked --no-default-features -p cyanotype-cli --target x86_64-apple-darwin --recipe-path recipe.json
+RUN cargo chef cook --profile dist --zigbuild --locked --no-default-features -p cyanotype-cli --target aarch64-apple-darwin --recipe-path recipe.json
+RUN cargo chef cook --profile dist --zigbuild --locked --no-default-features -p cyanotype-cli --target x86_64-pc-windows-gnu --recipe-path recipe.json
+
+# The CLI itself, stamped with its version (the cli-vX.Y.Z tag) and commit. No version = a development build.
+FROM cli-deps AS cli-build
+ARG CYANOTYPE_CLI_VERSION=""
+ARG CYANOTYPE_GIT_SHA=""
+ENV CYANOTYPE_CLI_VERSION=${CYANOTYPE_CLI_VERSION} CYANOTYPE_GIT_SHA=${CYANOTYPE_GIT_SHA}
+COPY . .
+# COPY keeps the files' own (older) mtimes; without the touch cargo would keep the cook layer's dummy build script and
+# stub sources as "fresh" and the build.rs stamps (version, sha, target) would never be produced.
+RUN set -eux; \
+    find apps/cli crates -name '*.rs' -exec touch {} +; \
+    for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-gnu; do \
+      cargo zigbuild --profile dist --locked --no-default-features -p cyanotype-cli --target "$t"; \
+      bin=cyanotype; case "$t" in *windows*) bin=cyanotype.exe ;; esac; \
+      mkdir -p "/out/$t"; \
+      cp "target/$t/dist/$bin" "/out/$t/"; \
+    done; \
+    ls -lR /out
+
+# Archives, latest.json, SHA256SUMS and (when the secret is present) its signature.
+FROM debian:trixie-slim AS cli-dist-assemble
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-client \
+ && rm -rf /var/lib/apt/lists/*
+ARG CYANOTYPE_CLI_VERSION=""
+ARG CYANOTYPE_GIT_SHA=""
+WORKDIR /w
+COPY --from=cli-build /out /w/bin
+COPY apps/cli/dist /w/dist
+COPY apps/cli/min-cli-version apps/cli/release-key.pub /w/
+COPY Cargo.toml /w/Cargo.toml
+# `mode=0600`: ssh-keygen refuses a key file others could read. `required=false`: no secret = unsigned dist.
+RUN --mount=type=secret,id=cli_release_key,mode=0600,required=false \
+    set -eu; \
+    version="${CYANOTYPE_CLI_VERSION#cli-v}"; \
+    if [ -z "$version" ]; then version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)-dev"; fi; \
+    key=""; if [ -s /run/secrets/cli_release_key ]; then key=/run/secrets/cli_release_key; fi; \
+    bash dist/make-dist.sh --bin-dir bin --out /dist --version "$version" --sha "${CYANOTYPE_GIT_SHA:-unknown}" \
+      --min-cli "$(tr -d ' \n' < min-cli-version)" --key "$key" --pubkey release-key.pub
+
+FROM scratch AS cli-dist
+COPY --from=cli-dist-assemble /dist /
