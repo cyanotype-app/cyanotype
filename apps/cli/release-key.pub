@@ -1,3 +1,4 @@
 # Public half of the release signing key (an SSH Ed25519 public key, one line). Compiled into the CLI:
 # `cyanotype update` only installs builds whose SHA256SUMS is signed by this key.
 # While this file holds no key line, `cyanotype update` refuses everything. Setup: docs/releases.md.
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMxFd2kaxohHivk7pehLWHrSK5834yrieu1YjRn/fSXv cyanotype-cli-release
