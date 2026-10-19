@@ -160,7 +160,7 @@ fn hash_file(path: &Path) -> std::io::Result<(String, u64)> {
         h.update(&buf[..r]);
         n += r as u64;
     }
-    Ok((cyanotype_core::keys::hex(&h.finalize()), n))
+    Ok((format!("{:x}", h.finalize()), n))
 }
 
 async fn file_hash(ctx: &Ctx, f: &Candidate) -> Result<(String, u64), String> {
@@ -403,6 +403,8 @@ pub async fn run(args: ImportArgs) -> Result<bool> {
     }
 
     let creds = config::credentials()?;
+    // The server may require a newer CLI than this one; say so before doing any work.
+    crate::update::enforce_minimum(&creds.server, &crate::release::Version::parse(crate::release::VERSION)?).await?;
     let api = Api::new(&creds.server, Some(&creds.api_key))?;
     // Fail fast on a bad key or unreachable server instead of once per file.
     let me = api.me().await.map_err(|e| anyhow::anyhow!("{}: {e}", creds.server))?;
@@ -604,7 +606,7 @@ mod tests {
         std::fs::write(&p, &data).unwrap();
         let (h, n) = hash_file(&p).unwrap();
         assert_eq!(n, data.len() as u64);
-        assert_eq!(h, cyanotype_core::keys::hex(&Sha256::digest(&data)));
+        assert_eq!(h, format!("{:x}", Sha256::digest(&data)));
         let e = d.path().join("e");
         std::fs::write(&e, b"abc").unwrap();
         assert_eq!(

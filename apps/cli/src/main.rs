@@ -2,8 +2,12 @@ mod api;
 mod cache;
 mod config;
 mod import;
+#[cfg(feature = "server-tools")]
 mod places;
+#[cfg(feature = "server-tools")]
 mod reindex;
+mod release;
+mod update;
 mod walk;
 
 use std::io::{BufRead, IsTerminal, Write};
@@ -11,13 +15,14 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+#[cfg(feature = "server-tools")]
 use cyanotype_core::{
     config::{DatabaseConfig, redact_url},
     db, telemetry,
 };
 
 #[derive(Parser)]
-#[command(name = "cyanotype", version, about = "Cyanotype command-line tools")]
+#[command(name = "cyanotype", version = release::LONG_VERSION, about = "Cyanotype command-line tools")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -27,10 +32,13 @@ struct Cli {
 enum Command {
     /// Apply database migrations and load the bundled places dataset. The only place migrations run; services never
     /// do it on boot.
+    #[cfg(feature = "server-tools")]
     Migrate,
     /// Rebuild or repair the asset index from the bucket (disaster recovery). Dry run unless --apply.
+    #[cfg(feature = "server-tools")]
     Reindex(reindex::ReindexArgs),
     /// Write today's per-user recovery manifests to the bucket now (the assets service also does this daily).
+    #[cfg(feature = "server-tools")]
     Manifest,
     /// Log in to a Cyanotype server and store an API key for the other commands.
     Login(LoginArgs),
@@ -38,6 +46,8 @@ enum Command {
     Import(import::ImportArgs),
     /// Show the server, who you are logged in as, and how many assets it holds.
     Status,
+    /// Update this program to the version your Cyanotype server offers (checksum and signature verified).
+    Update(update::UpdateArgs),
 }
 
 #[derive(clap::Args)]
@@ -71,7 +81,21 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<ExitCode> {
-    match Cli::parse().command {
+    let command = Cli::parse().command;
+    // The once-a-day "a newer version exists" hint: started alongside the commands a person runs by hand, printed
+    // after them, and never allowed to slow or fail them.
+    let hint = match command {
+        Command::Login(_) | Command::Import(_) | Command::Status => update::BackgroundCheck::start(),
+        _ => update::BackgroundCheck::none(),
+    };
+    let code = dispatch(command).await;
+    hint.finish().await;
+    code
+}
+
+async fn dispatch(command: Command) -> Result<ExitCode> {
+    match command {
+        #[cfg(feature = "server-tools")]
         Command::Migrate => {
             telemetry::init("cyanotype-cli");
             let cfg = DatabaseConfig::from_env()?;
@@ -81,8 +105,11 @@ async fn run() -> Result<ExitCode> {
             tracing::info!("migrations applied");
             places::load_bundled(&pool).await?;
         }
+        #[cfg(feature = "server-tools")]
         Command::Reindex(a) => return reindex::run(a).await,
+        #[cfg(feature = "server-tools")]
         Command::Manifest => reindex::write_manifests().await?,
+        Command::Update(a) => update::run(a).await?,
         Command::Login(a) => login(a).await?,
         Command::Status => status().await?,
         Command::Import(a) => {

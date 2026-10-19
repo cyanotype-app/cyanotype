@@ -45,6 +45,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
+# The downloadable CLI (Dockerfile, stage cli-dist): release optimisations, symbols stripped.
+[profile.dist]
+inherits = "release"
+strip = "symbols"
+
 # The worker's tests decode and encode multi-megapixel images. Optimise just the pixel-pushing dependencies in the
 # dev/test profiles (the workspace crates stay unoptimised); a 3000x2000 decode drops from seconds to milliseconds.
 [profile.dev.package.jpeg-decoder]
