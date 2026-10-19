@@ -24,8 +24,7 @@ cyanotype-service = { path = "crates/cyanotype-service" }
 
 anyhow = "1"
 argon2 = "0.5"
-aws-config = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-s3 = "1"
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio", "http-1x"] }
 base64 = "0.22"
 bytes = "1"
 http-body-util = "0.1"
