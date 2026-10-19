@@ -117,7 +117,7 @@ configuration in Datadog (distributions would need percentile aggregation enable
 | `cyanotype.usage.photos` | gauge | | Photos in all libraries, at the same time. |
 | `cyanotype.uploads.refused` | count | `reason` (`quota_exceeded`, `daily_cap_exceeded`, `file_too_large`, `file_exceeds_daily_cap`, `larger_than_declared`) | Uploads an account's limits refused (docs/admin.md, "Limits"). A steady trickle is people at their limits; a burst from one client is worth a look. |
 | `cyanotype.uploads.completed` / `.bytes` | count | `family` | Uploads completed (browser and CLI) and their bytes. |
-| `cyanotype.uploads.parts` | count | `outcome` (`ok`, `timeout` = HTTP 408, `error`) | Proxied (browser) part uploads. |
+| `cyanotype.uploads.parts` | count | `outcome` (`ok`, `timeout` = HTTP 408, `error`), `reason` on failures (`client_aborted` = the body broke mid-part, `body_too_short`, `timeout`, `storage_error`, `other`) | Proxied (browser) part uploads. A failed part is also logged at warn (`part upload failed`: `upload_id`, `part`, `reason`, `bytes_received`, `bytes_expected`, `elapsed_ms`; never the file name, owner or a URL). |
 | `cyanotype.uploads.part_latency_ms` | histogram | | Time to receive a part from the browser and relay it to the bucket (successful parts). |
 | `cyanotype.uploads.part_bytes` | count | | Bytes relayed. |
 | `cyanotype.shares.views` | count | `kind` (`album`, `selection`) | Share link opened (the public page's info request, once a password link is unlocked). Logs carry `share_id`, never the token. |
@@ -163,9 +163,11 @@ automatically; import them yourself:
   (application key with monitors_write). Re-running creates duplicates; update existing ones with `PUT /api/v1/monitor/{id}`.
 
 Monitors: job failures spike (more than 25 in 15 min), oldest queued job older than 30 min, worker container
-crash-looping (uptime under 2 min for 15 min), worker OOM kill, and no job completing for 30 min while work is queued.
+crash-looping (uptime under 2 min for 15 min), worker OOM kill, no job completing for 30 min while work is queued, and
+upload parts failing (warning above 5% of parts over 30 min, critical above 25%; the total is floored at 20 parts so a few
+parts cannot trip it).
 They have no notification handle: add `@you@example.com` (or a channel) to each `message` before importing. The queries
-use `{*}`; add `env:dev` inside the braces to scope them. The query syntax of all five was checked with Datadog's
+use `{*}`; add `env:dev` inside the braces to scope them. The query syntax of all six was checked with Datadog's
 monitor validator; the metric names do not exist in Datadog until the first deploy that emits them, so a new monitor
 may show "no data" until then (they are set not to alert on no data).
 

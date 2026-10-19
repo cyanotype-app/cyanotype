@@ -579,18 +579,85 @@ fn validate_part(number: i32, size_bytes: i64, part_size: i64, content_length: O
     Ok(expected)
 }
 
+/// Where a proxied part got to, so a failure can say what went wrong without the error type carrying it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct PartProgress {
+    stage: PartStage,
+    /// Bytes of the body received so far.
+    received: u64,
+    /// The size this part must have, once the request has been validated.
+    expected: Option<u64>,
+    /// The body stream itself failed (the client went away or the connection broke), as opposed to ending early.
+    body_errored: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum PartStage {
+    #[default]
+    Validating,
+    Receiving,
+    Storing,
+    Recording,
+}
+
+/// Why a proxied part failed. A small fixed set: it is the `reason` tag of `uploads.parts` and a field of the warn
+/// log, so it must never grow with user input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PartFailure {
+    /// The body stream broke before the part was complete: the browser or the connection went away mid-part.
+    ClientAborted,
+    /// The body ended cleanly, with fewer bytes than the declared `Content-Length`.
+    BodyTooShort,
+    /// Nothing complete arrived within `PART_READ_TIMEOUT`.
+    Timeout,
+    /// The bucket refused or failed the relayed part.
+    StorageError,
+    /// Anything else: a bad part number or length, an unknown upload, a longer body, the database.
+    Other,
+}
+
+impl PartFailure {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ClientAborted => "client_aborted",
+            Self::BodyTooShort => "body_too_short",
+            Self::Timeout => "timeout",
+            Self::StorageError => "storage_error",
+            Self::Other => "other",
+        }
+    }
+
+    fn classify(err: &ApiError, progress: &PartProgress) -> Self {
+        match (err, progress.stage) {
+            (ApiError::RequestTimeout(_), _) => Self::Timeout,
+            (_, PartStage::Receiving) if progress.body_errored => Self::ClientAborted,
+            (_, PartStage::Receiving) if progress.expected.is_some_and(|e| progress.received < e) => Self::BodyTooShort,
+            (ApiError::BadGateway(_), PartStage::Storing) => Self::StorageError,
+            _ => Self::Other,
+        }
+    }
+}
+
 /// Read exactly `expected` bytes of `req`'s body into one buffer (never more than `expected` is allocated).
-async fn read_part_body(req: Request, expected: usize) -> ApiResult<Bytes> {
+async fn read_part_body(req: Request, expected: usize, progress: &mut PartProgress) -> ApiResult<Bytes> {
     let mut body = req.into_body();
     let mut buf = BytesMut::with_capacity(expected);
+    progress.stage = PartStage::Receiving;
+    progress.expected = Some(expected as u64);
     let read = async {
         while let Some(frame) = body.frame().await {
-            let frame = frame.map_err(|_| ApiError::BadRequest("upload interrupted".into()))?;
+            let frame = frame.map_err(|_| {
+                progress.body_errored = true;
+                ApiError::BadRequest("upload interrupted".into())
+            })?;
             if let Some(data) = frame.data_ref() {
                 if buf.len() + data.len() > expected {
+                    // More than declared: count it, so it is not mistaken for a short body.
+                    progress.received = (buf.len() + data.len()) as u64;
                     return Err(ApiError::BadRequest("body is longer than Content-Length".into()));
                 }
                 buf.extend_from_slice(data);
+                progress.received = buf.len() as u64;
             }
         }
         Ok(())
@@ -605,8 +672,10 @@ async fn read_part_body(req: Request, expected: usize) -> ApiResult<Bytes> {
 }
 
 /// Browser upload transport: relay one part to S3 and return its ETag (what `complete` needs).
-/// Emits `uploads.parts{outcome}` (`ok`, `timeout` = the 408 a stalled client gets, `error`) and, for relayed
-/// parts, `uploads.part_latency_ms` (time from the request starting to the ETag, including the client's upload).
+/// Emits `uploads.parts{outcome}` (`ok`, `timeout` = the 408 a stalled client gets, `error`; failures also carry a
+/// `reason` tag, see [`PartFailure`]) and, for relayed parts, `uploads.part_latency_ms` (time from the request starting
+/// to the ETag, including the client's upload). A failed part is also logged at warn, with ids and sizes only: never
+/// the file name, the owner or a URL.
 async fn put_part(
     state: State<AppState>,
     user: AuthUser,
@@ -614,16 +683,34 @@ async fn put_part(
     req: Request,
 ) -> ApiResult<Json<serde_json::Value>> {
     let started = std::time::Instant::now();
-    let result = relay_part(state, user, path, req).await;
+    let upload_id = path.0.0.clone();
+    let number = path.0.1;
+    let mut progress = PartProgress::default();
+    let result = relay_part(state, user, path, req, &mut progress).await;
     let m = metrics::global();
-    let outcome = match &result {
-        Ok(_) => "ok",
-        Err(ApiError::RequestTimeout(_)) => "timeout",
-        Err(_) => "error",
-    };
-    m.count("uploads.parts", 1, &[("outcome", outcome)]);
-    if outcome == "ok" {
-        m.histogram("uploads.part_latency_ms", started.elapsed().as_secs_f64() * 1000.0, &[]);
+    match &result {
+        Ok(_) => {
+            m.count("uploads.parts", 1, &[("outcome", "ok")]);
+            m.histogram("uploads.part_latency_ms", started.elapsed().as_secs_f64() * 1000.0, &[]);
+        }
+        Err(e) => {
+            let reason = PartFailure::classify(e, &progress);
+            let outcome = if reason == PartFailure::Timeout {
+                "timeout"
+            } else {
+                "error"
+            };
+            m.count("uploads.parts", 1, &[("outcome", outcome), ("reason", reason.as_str())]);
+            tracing::warn!(
+                upload_id = %upload_id,
+                part = number,
+                reason = reason.as_str(),
+                bytes_received = progress.received,
+                bytes_expected = progress.expected,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "part upload failed"
+            );
+        }
     }
     result
 }
@@ -633,6 +720,7 @@ async fn relay_part(
     user: AuthUser,
     Path((upload_id, number)): Path<(String, i32)>,
     req: Request,
+    progress: &mut PartProgress,
 ) -> ApiResult<Json<serde_json::Value>> {
     // Unknown id and someone else's id are both 404, so ids can't be probed.
     let up: PartTarget =
@@ -650,7 +738,8 @@ async fn relay_part(
     let expected = validate_part(number, up.size_bytes, up.part_size, content_length)? as usize;
 
     let _permit = PROXY_PARTS.acquire().await.map_err(|e| ApiError::Internal(e.into()))?;
-    let body = read_part_body(req, expected).await?;
+    let body = read_part_body(req, expected, progress).await?;
+    progress.stage = PartStage::Storing;
     let etag = s
         .storage
         .upload_part(&up.key, &upload_id, number, body)
@@ -659,6 +748,7 @@ async fn relay_part(
             tracing::warn!(error = ?e, part = number, "proxied part upload to storage failed");
             ApiError::BadGateway("storage rejected the part".into())
         })?;
+    progress.stage = PartStage::Recording;
     // Keep an upload that is actively receiving parts away from the stale-upload janitor.
     sqlx::query("UPDATE uploads SET created_at = now() WHERE upload_id = $1")
         .bind(&upload_id)
@@ -1740,5 +1830,137 @@ mod tests {
         assert_eq!(v["sort_time"], "1970-01-01T00:00:00Z");
         assert_eq!(v["thumbhash"], "AQ==");
         assert!(v["thumb_url"].is_null() && v.get("thumb_url").is_some());
+    }
+
+    /// A request body that yields scripted frames, then either ends or fails like a connection that went away.
+    struct ScriptedBody {
+        chunks: std::collections::VecDeque<Bytes>,
+        then_fail: bool,
+    }
+
+    impl http_body::Body for ScriptedBody {
+        type Data = Bytes;
+        type Error = std::io::Error;
+
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<http_body::Frame<Bytes>, std::io::Error>>> {
+            std::task::Poll::Ready(match self.chunks.pop_front() {
+                Some(c) => Some(Ok(http_body::Frame::data(c))),
+                None if self.then_fail => {
+                    self.then_fail = false;
+                    Some(Err(std::io::Error::other("connection reset")))
+                }
+                None => None,
+            })
+        }
+    }
+
+    fn scripted(chunks: &[&'static [u8]], then_fail: bool) -> axum::extract::Request {
+        let body = ScriptedBody {
+            chunks: chunks.iter().map(|c| Bytes::from_static(c)).collect(),
+            then_fail,
+        };
+        Request::builder().body(Body::new(body)).unwrap()
+    }
+
+    /// Run `read_part_body` and classify what it returned, as `put_part` does.
+    async fn read_and_classify(req: axum::extract::Request, expected: usize) -> (PartFailure, PartProgress) {
+        let mut progress = PartProgress::default();
+        let err = read_part_body(req, expected, &mut progress).await.unwrap_err();
+        (PartFailure::classify(&err, &progress), progress)
+    }
+
+    #[tokio::test]
+    async fn a_body_that_breaks_mid_part_is_a_client_abort() {
+        let (reason, p) = read_and_classify(scripted(&[b"abc", b"de"], true), 10).await;
+        assert_eq!(reason, PartFailure::ClientAborted);
+        assert_eq!((p.received, p.expected), (5, Some(10)));
+    }
+
+    #[tokio::test]
+    async fn a_body_that_ends_early_is_too_short() {
+        let (reason, p) = read_and_classify(scripted(&[b"abc"], false), 10).await;
+        assert_eq!(reason, PartFailure::BodyTooShort);
+        assert_eq!((p.received, p.expected), (3, Some(10)));
+        // Nothing at all before the end is still a short body, not an abort.
+        assert_eq!(
+            read_and_classify(scripted(&[], false), 10).await.0,
+            PartFailure::BodyTooShort
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_that_is_too_long_or_complete_is_not_a_short_body() {
+        let (reason, _) = read_and_classify(scripted(&[b"abcdef"], false), 4).await;
+        assert_eq!(reason, PartFailure::Other);
+        let mut progress = PartProgress::default();
+        let got = read_part_body(scripted(&[b"ab", b"cd"], false), 4, &mut progress)
+            .await
+            .unwrap();
+        assert_eq!((&got[..], progress.received), (&b"abcd"[..], 4));
+    }
+
+    #[test]
+    fn part_failures_are_classified_by_stage_and_error() {
+        let bad = || ApiError::BadRequest("x".into());
+        let at = |stage, received, expected, body_errored| PartProgress {
+            stage,
+            received,
+            expected,
+            body_errored,
+        };
+        let c = PartFailure::classify;
+
+        // Before the body is touched: validation, ownership, unknown upload.
+        assert_eq!(c(&bad(), &PartProgress::default()), PartFailure::Other);
+        assert_eq!(c(&ApiError::NotFound, &PartProgress::default()), PartFailure::Other);
+        // While receiving.
+        assert_eq!(
+            c(&bad(), &at(PartStage::Receiving, 5, Some(10), true)),
+            PartFailure::ClientAborted
+        );
+        assert_eq!(
+            c(&bad(), &at(PartStage::Receiving, 5, Some(10), false)),
+            PartFailure::BodyTooShort
+        );
+        assert_eq!(
+            c(&bad(), &at(PartStage::Receiving, 10, Some(10), false)),
+            PartFailure::Other
+        );
+        assert_eq!(
+            c(
+                &ApiError::RequestTimeout("t".into()),
+                &at(PartStage::Receiving, 5, Some(10), false)
+            ),
+            PartFailure::Timeout
+        );
+        // Relaying to the bucket: only the gateway error is a storage error.
+        let storing = at(PartStage::Storing, 10, Some(10), false);
+        assert_eq!(
+            c(&ApiError::BadGateway("s".into()), &storing),
+            PartFailure::StorageError
+        );
+        assert_eq!(c(&bad(), &storing), PartFailure::Other);
+        // After it, a bad gateway can only be something else.
+        let recording = at(PartStage::Recording, 10, Some(10), false);
+        assert_eq!(c(&ApiError::BadGateway("s".into()), &recording), PartFailure::Other);
+    }
+
+    #[test]
+    fn failure_reasons_are_a_fixed_set_of_tag_safe_names() {
+        let all = [
+            PartFailure::ClientAborted,
+            PartFailure::BodyTooShort,
+            PartFailure::Timeout,
+            PartFailure::StorageError,
+            PartFailure::Other,
+        ];
+        let names: Vec<_> = all.iter().map(|r| r.as_str()).collect();
+        assert_eq!(
+            names,
+            ["client_aborted", "body_too_short", "timeout", "storage_error", "other"]
+        );
     }
 }
