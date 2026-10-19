@@ -189,9 +189,19 @@ today).
 
 ## Build time and size
 
-See the numbers in the pull request that introduced this and in [`build.md`](build.md) ("Web image"). The cold cross-compile
-of five targets is dominated by compiling `reqwest`/`rustls`/`tokio` once per target; with the layer cache a source-only
-change costs five incremental builds of the one crate.
+Measured on a shared 4-CPU host with the builder capped at 2 CPUs, 2.5 GB and `CARGO_BUILD_JOBS=2`:
+
+| | time |
+|---|---|
+| cold, everything (tools, five dependency layers, five CLI builds, assembly) | 17 min (dependency layers 190 + 183 + 124 + 128 + 254 s, the five CLI builds 83 s) |
+| warm dependency layers, a source change | 2 min 50 s |
+| peak memory of the builder container | 2.4 GiB, page cache included (the cap was 2.5 GB and not hit); the compilers themselves need far less |
+
+Each program is 6.7 MB (3 MB gzipped); the dist adds 15.5 MB to the web image. The cold cross-compile of five targets is
+dominated by compiling `reqwest`/`rustls`/`tokio` once per target; with the layer cache a source-only change costs five
+incremental builds of the one crate. The builder's cache for the five targets is several GB, which counts against the
+10 GB GitHub Actions cache budget shared with the server images; if it ever evicts the Rust cache, drop `mode=max` for the
+`cli-dist` target's `cache-to` in `docker-bake.hcl`.
 
 ## Checks
 
