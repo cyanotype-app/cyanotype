@@ -3200,3 +3200,132 @@ body:has(.selection-bar) .scrubber {
 .limits-form .invite-actions {
   margin-top: 0.5rem;
 }
+
+/* Account actions, health, audit log, sessions and the reset page (docs/admin.md). */
+.account-manage {
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+.account-manage > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.account-manage .invite-actions {
+  margin-top: 0.5rem;
+}
+.account-panel {
+  margin-top: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.6rem;
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+.account-panel p {
+  margin: 0 0 0.5rem;
+}
+.account-panel .new-key {
+  margin: 0.5rem 0;
+}
+.account-delete input {
+  width: 100%;
+}
+.session-list {
+  margin: 0 0 0.5rem;
+  padding-left: 1.1rem;
+}
+.health-card {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+.health-card h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+.health-card p {
+  margin: 0.25rem 0;
+}
+.health-queue,
+.failed-jobs,
+.audit-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+.health-queue li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.1rem 0.75rem;
+  justify-content: space-between;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.failed-jobs li {
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.health-bad {
+  color: var(--danger);
+}
+.audit-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.6rem;
+  align-items: end;
+  margin-top: 1rem;
+}
+.audit-filters > * {
+  min-width: 0;
+}
+.audit-filter-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+.audit-list li {
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.audit-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.75rem;
+  justify-content: space-between;
+}
+.audit-list + .btn {
+  margin-top: 0.75rem;
+}
+@media (max-width: 600px) {
+  .audit-filters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .audit-filter-actions .btn {
+    flex: 1 1 0;
+  }
+}
+
+/* A long address in an auth page wraps instead of widening the card. */
+.auth-card p,
+.auth-card h1,
+.auth-card label {
+  overflow-wrap: anywhere;
+}
+.auth-card {
+  min-width: 0;
+}
+
+/* Rows of several actions: buttons keep their words and wrap onto new lines. */
+@media (max-width: 600px) {
+  .account-manage .invite-actions .btn,
+  .health-card .invite-actions .btn {
+    flex: 1 1 9rem;
+    min-width: 0;
+    white-space: normal;
+    line-height: 1.2;
+    padding-block: 0.4rem;
+  }
+}

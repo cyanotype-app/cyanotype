@@ -229,7 +229,7 @@ async fn sample_gauges(ctx: Arc<Ctx>) {
 }
 
 /// This process's resident set, from /proc (Linux); None elsewhere.
-fn rss_bytes() -> Option<u64> {
+pub(crate) fn rss_bytes() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let kb: u64 = status
         .lines()

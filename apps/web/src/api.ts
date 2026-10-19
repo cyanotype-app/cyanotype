@@ -104,6 +104,84 @@ export interface AdminAccount {
   quota_bytes?: number | null;
   daily_upload_bytes?: number | null;
   max_file_bytes?: number | null;
+  /** RFC 3339 when the account was disabled (it cannot sign in and its API keys are refused), else null. */
+  disabled_at?: string | null;
+  /** The latest deletion of this account, if one was requested: queued, running or failed. */
+  deletion?: "queued" | "running" | "failed" | null;
+  deletion_error?: string | null;
+}
+
+/** A session as listed (never its token). */
+export interface SessionInfo {
+  id: string;
+  created_at: string;
+  expires_at: string;
+  /** Only in the person's own list: this browser's session. */
+  current?: boolean;
+}
+
+/** POST /auth/admin/users/{id}/reset-link: the link exists in this response only. */
+export interface ResetLink {
+  token: string;
+  /** `/reset-password?token=<token>`: prefix it with the site origin. */
+  path: string;
+  email: string;
+  expires_at: string;
+}
+
+export interface AuditEntry {
+  id: number;
+  at: string;
+  actor_id: string | null;
+  actor_email: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  detail: Record<string, unknown>;
+}
+
+export interface AuditQuery {
+  action?: string;
+  actor?: string;
+  target?: string;
+  /** `YYYY-MM-DD`. */
+  from?: string;
+  to?: string;
+  before?: number;
+  limit?: number;
+}
+
+/** GET /auth/admin/audit */
+export interface AuditPage {
+  items: AuditEntry[];
+  /** Pass as `before` for the next (older) page; null on the last. */
+  next_before: number | null;
+  /** Every action name in the log, for the filter. */
+  actions: string[];
+}
+
+/** GET /assets/admin/health */
+export interface Health {
+  version: { assets: string; workers: { host: string; version: string | null; reporting: boolean }[] };
+  queue: { kind: string; queued: number; running: number; failed: number; oldest_queued_age_secs: number }[];
+  stalled_seconds: number;
+  failed_jobs: { id: number; kind: string; attempts: number; last_error: string | null; finished_at: string | null }[];
+  workers: {
+    host: string;
+    reporting: boolean;
+    at: string;
+    version: string | null;
+    rss_bytes: number | null;
+    budget_used_bytes: number | null;
+    budget_total_bytes: number | null;
+  }[];
+  backup: { prefix: string; count?: number; last_at?: string | null; last_size_bytes?: number | null; error?: string };
+  storage: {
+    database_bytes: number;
+    stored_bytes: number;
+    derived_bytes: number;
+    bucket_check: { at: string | null; current_bytes: number | null; noncurrent_bytes: number | null; objects: number | null } | null;
+  };
 }
 
 export interface AdminTask<R = unknown> {
@@ -806,6 +884,44 @@ export const api = {
   startBucketCheck: () =>
     request<{ task: AdminTask<BucketReport>; already_running: boolean }>("/assets/admin/bucket-check", { method: "POST" }),
   bucketCheck: () => request<{ task: AdminTask<BucketReport> | null }>("/assets/admin/bucket-check"),
+  health: () => request<Health>("/assets/admin/health"),
+  /** Requeue failed jobs of every account (one `kind`, or all). */
+  retryAllFailedJobs: (kind?: string) =>
+    request<{ requeued: number }>("/assets/admin/jobs/retry", json(kind ? { kind } : {})),
+  disableAccount: (id: string) =>
+    request<{ disabled: boolean; changed: boolean }>(`/auth/admin/users/${encodeURIComponent(id)}/disable`, { method: "POST" }),
+  enableAccount: (id: string) =>
+    request<{ disabled: boolean; changed: boolean }>(`/auth/admin/users/${encodeURIComponent(id)}/enable`, { method: "POST" }),
+  setAccountRole: (id: string, role: "admin" | "member") =>
+    request<{ role: string; changed: boolean }>(`/auth/admin/users/${encodeURIComponent(id)}/role`, json({ role })),
+  accountResetLink: (id: string) =>
+    request<ResetLink>(`/auth/admin/users/${encodeURIComponent(id)}/reset-link`, { method: "POST" }),
+  accountSessions: (id: string) => request<{ items: SessionInfo[] }>(`/auth/admin/users/${encodeURIComponent(id)}/sessions`),
+  revokeAccountSessions: (id: string) =>
+    request<{ revoked: number }>(`/auth/admin/users/${encodeURIComponent(id)}/sessions`, { method: "DELETE" }),
+  /** Step two of deleting an account: `confirmEmail` is the address the admin typed. Runs in the background. */
+  deleteAccount: (id: string, confirmEmail: string) =>
+    request<{ deleting: boolean; already_requested: boolean }>(
+      `/auth/admin/users/${encodeURIComponent(id)}/delete`,
+      json({ confirm_email: confirmEmail }),
+    ),
+  auditLog: (q: AuditQuery = {}) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== "") p.set(k, String(v));
+    const qs = p.toString();
+    return request<AuditPage>(`/auth/admin/audit${qs ? `?${qs}` : ""}`);
+  },
+  mySessions: () => request<{ items: SessionInfo[] }>("/auth/sessions"),
+  revokeOtherSessions: () => request<{ revoked: number }>("/auth/sessions/revoke-others", { method: "POST" }),
+  revokeAllSessions: () => request<{ revoked: number }>("/auth/sessions/revoke-all", { method: "POST" }),
+  revokeSession: (id: string) => request<void>(`/auth/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  resetCheck: (token: string) =>
+    request<{ valid: boolean; email?: string; reason?: "unknown" | "used" | "expired" | "disabled" }>(
+      "/auth/reset-password/check",
+      json({ token }),
+    ),
+  resetPassword: (token: string, password: string) =>
+    request<void>("/auth/reset-password", json({ token, password })),
   listInvites: () => request<{ items: Invite[] }>("/auth/admin/invites"),
   createInvite: (body: NewInvite) => request<IssuedInvite>("/auth/admin/invites", json(body)),
   /** A fresh link for an unused invite; the previous link stops working. */

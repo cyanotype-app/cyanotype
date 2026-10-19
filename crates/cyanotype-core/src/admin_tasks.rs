@@ -6,6 +6,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 pub const KIND_BUCKET_CHECK: &str = "bucket_check";
+/// Deleting an account for good (`accounts::delete_account`); `params` are `{"user_id", "email"}`.
+pub const KIND_DELETE_ACCOUNT: &str = "delete_account";
 
 /// A task `running` for longer than this is taken to belong to a worker that died, and is claimed again.
 pub const STALE_AFTER_MINUTES: i32 = 120;

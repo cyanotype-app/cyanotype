@@ -1,4 +1,6 @@
+pub mod accounts;
 pub mod admin_tasks;
+pub mod audit;
 pub mod bursts;
 pub mod config;
 pub mod db;
