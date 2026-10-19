@@ -16,3 +16,7 @@ apps/web/playwright-report/
 /cli-dist-out/
 # Reports written by scripts/restore-drill.sh (the real-data mode's report describes a real library: never commit it)
 /.restore-drill/
+
+# Python bytecode
+__pycache__/
+*.py[cod]

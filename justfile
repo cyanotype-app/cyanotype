@@ -115,7 +115,7 @@ backup-now:
 # paths (nightly dump; `cyanotype reindex` from the bucket alone) with a report of what each loses. Fully local. --keep leaves the
 # stack up, --report FILE chooses the file; `--source real` is the read-only drill against your real bucket (docs/recovery.md).
 restore-drill *args:
-    scripts/restore-drill.sh {{args}}
+    PYTHONDONTWRITEBYTECODE=1 scripts/restore-drill.sh {{args}}
 
 # ---- Production (single VPS; see docs/deploy.md) ----------------------------------------------
 # DEPLOY_HOST=deploy@203.0.113.10 (user@host, key auth; use the origin IP or a DNS-only name, not a Cloudflare-proxied

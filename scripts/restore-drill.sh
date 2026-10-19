@@ -29,6 +29,7 @@
 #
 # Needs: docker compose, python3, curl. Credentials of the throwaway stack are generated per run and never printed.
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
@@ -143,9 +144,9 @@ drop_db() { dc stop -t 5 postgres >/dev/null; dc rm -f postgres >/dev/null; dock
 reindex_to() { local out="$1"; shift; dc --profile tools run --rm -T cli reindex --min-age-secs 0 "$@" --json | tail -n 1 > "$out"; }
 reindex_real_to() { local out="$1"; shift; dc --profile real run --rm -T cli-real reindex --min-age-secs "${DRILL_MIN_AGE_SECS:-600}" "$@" --json | tail -n 1 > "$out"; }
 jget() { python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(d.get(sys.argv[2], 0))' "$1" "$2"; }
-settle() { python3 "$helper" settle --state "$state" --timeout "$SETTLE_TIMEOUT" || log "WARNING: the worker had not finished; the snapshot is of what exists"; }
-snap() { python3 "$helper" snapshot --state "$state" --out "$work/$1.json" --bucket "$work/$1.bucket.json"; }
-bucket_snap() { python3 "$helper" bucket --env DRILL_LOCAL_S3 --out "$work/$1.bucket.json"; }
+settle() { python3 -B "$helper" settle --state "$state" --timeout "$SETTLE_TIMEOUT" || log "WARNING: the worker had not finished; the snapshot is of what exists"; }
+snap() { python3 -B "$helper" snapshot --state "$state" --out "$work/$1.json" --bucket "$work/$1.bucket.json"; }
+bucket_snap() { python3 -B "$helper" bucket --env DRILL_LOCAL_S3 --out "$work/$1.bucket.json"; }
 
 # ------------------------------------------------------------------------------------------------ real-data mode
 
@@ -159,7 +160,7 @@ run_real() {
   log "disk: $(free_gb) GB free (real mode aborts below 10 GB)"
 
   log "guard: the key must be READ-ONLY (a PUT of a tiny object under drill-probe/ must be denied)"
-  python3 "$helper" probe --env DRILL_S3 || die "the read-only guard refused this key (see above). Nothing was restored or read."
+  python3 -B "$helper" probe --env DRILL_S3 || die "the read-only guard refused this key (see above). Nothing was restored or read."
 
   build_images
   log "starting the local scratch Postgres (nothing else: no services, no worker, no local bucket)"
@@ -169,7 +170,7 @@ run_real() {
   dc --profile real run --rm -T backup-real list | tail -n 3 | sed 's/^/    dump: /' >&2
   timed "real: restore the newest dump" dc --profile real run --rm -T -e CONFIRM=yes backup-real restore
   timed "real: migrate" dc run --rm -T migrate >/dev/null
-  python3 "$helper" snapshot --no-api --out "$work/real_dump.json"
+  python3 -B "$helper" snapshot --no-api --out "$work/real_dump.json"
 
   log "reindex DRY RUN against the real bucket (reads only; compares the restored dump with the bucket)"
   timed "real: reindex dry run" reindex_real_to "$work/real_dry.json"
@@ -181,9 +182,9 @@ run_real() {
   dc run --rm -T -e DATABASE_URL="$DRILL_DATABASE_URL" migrate >/dev/null
   timed "real: reindex --apply into the scratch rebuild" reindex_real_to "$work/real_apply.json" --apply
   DRILL_PSQL="docker compose -p $PROJECT -f $compose_file exec -T postgres psql -U cyanotype -d cyanotype_rebuild" \
-    python3 "$helper" snapshot --no-api --out "$work/real_rebuild.json"
+    python3 -B "$helper" snapshot --no-api --out "$work/real_rebuild.json"
 
-  python3 "$helper" report-real --dump "$work/real_dump.json" --rebuild "$work/real_rebuild.json" --dry "$work/real_dry.json" \
+  python3 -B "$helper" report-real --dump "$work/real_dump.json" --rebuild "$work/real_rebuild.json" --dry "$work/real_dry.json" \
     --apply "$work/real_apply.json" --timings "$timings" --out "$REPORT" --commit "$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   log "report written to $REPORT (it describes a real library: do not commit it)"
 }
@@ -203,7 +204,7 @@ timed "start services (auth, assets, worker, gateway)" start_services
 
 log "seeding a realistic library through the real APIs"
 raw_cache="${DRILL_RAW_CACHE:-$repo/models/eval/raw}"
-timed "seed through the APIs" python3 "$helper" seed --state "$state" --cache "$raw_cache"
+timed "seed through the APIs" python3 -B "$helper" seed --state "$state" --cache "$raw_cache"
 timed "wait for the worker (thumbnails, EXIF, embeddings, geocode, bursts)" settle
 
 log "the nightly manifest job (what the assets service writes once a day)"
@@ -256,7 +257,7 @@ timed "B: reindex --apply" reindex_to "$work/b_apply.json" --apply ${assign[@]+"
 timed "B: start services" start_services
 if [ "${#assign[@]}" = 0 ]; then
   log "accounts came back with locked passwords: owner steps = one reset link per account (cyanotype reset-link)"
-  timed "B: password reset links (cyanotype reset-link + set the password)" python3 "$helper" reset-passwords --state "$state" --compose "docker compose -p $PROJECT -f $compose_file --profile tools run --rm -T cli"
+  timed "B: password reset links (cyanotype reset-link + set the password)" python3 -B "$helper" reset-passwords --state "$state" --compose "docker compose -p $PROJECT -f $compose_file --profile tools run --rm -T cli"
 fi
 timed "B: wait for the worker (thumbnails, EXIF, embeddings, places, bursts)" settle
 bucket_snap path_b
@@ -264,16 +265,16 @@ snap path_b
 
 # ---- the guard of the real-data mode, against the local bucket ----------------------------------------------------
 log "self-test of the real-data mode's read-only guard against the local bucket"
-if DRILL_S3_ENDPOINT="$DRILL_LOCAL_S3_URL" DRILL_S3_BUCKET=cyanotype DRILL_S3_ACCESS_KEY_ID="$DRILL_LOCAL_S3_ACCESS_KEY" DRILL_S3_SECRET_ACCESS_KEY="$DRILL_LOCAL_S3_SECRET_KEY" python3 "$helper" probe --env DRILL_S3 2>"$work/guard_rw.txt"; then
+if DRILL_S3_ENDPOINT="$DRILL_LOCAL_S3_URL" DRILL_S3_BUCKET=cyanotype DRILL_S3_ACCESS_KEY_ID="$DRILL_LOCAL_S3_ACCESS_KEY" DRILL_S3_SECRET_ACCESS_KEY="$DRILL_LOCAL_S3_SECRET_KEY" python3 -B "$helper" probe --env DRILL_S3 2>"$work/guard_rw.txt"; then
   die "guard self-test FAILED: a writable key was accepted"
 fi
 log "writable key refused: $(head -c 120 "$work/guard_rw.txt")..."
-DRILL_S3_ENDPOINT="$DRILL_LOCAL_S3_URL" DRILL_S3_BUCKET=cyanotype DRILL_S3_ACCESS_KEY_ID="$DRILL_LOCAL_S3_RO_ACCESS_KEY" DRILL_S3_SECRET_ACCESS_KEY="$DRILL_LOCAL_S3_RO_SECRET_KEY" python3 "$helper" probe --env DRILL_S3 \
+DRILL_S3_ENDPOINT="$DRILL_LOCAL_S3_URL" DRILL_S3_BUCKET=cyanotype DRILL_S3_ACCESS_KEY_ID="$DRILL_LOCAL_S3_RO_ACCESS_KEY" DRILL_S3_SECRET_ACCESS_KEY="$DRILL_LOCAL_S3_RO_SECRET_KEY" python3 -B "$helper" probe --env DRILL_S3 \
   || die "guard self-test FAILED: the read-only key was refused"
 
 log "report"
 commit="$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-python3 "$helper" report --before "$work/before.json" --path-a "$work/path_a.json" --path-b "$work/path_b.json" \
+python3 -B "$helper" report --before "$work/before.json" --path-a "$work/path_a.json" --path-b "$work/path_b.json" \
   --timings "$timings" --out "$REPORT" --commit "$commit" --title "$TITLE" \
   --a-reindex "$work/a_reindex.json" --b-dry "$work/b_dry.json" --b-apply "$work/b_apply.json"
 log "report written to $REPORT"
