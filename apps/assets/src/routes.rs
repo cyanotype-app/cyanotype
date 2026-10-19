@@ -34,6 +34,9 @@ mod edits;
 mod edits_tests;
 mod favorites;
 mod group;
+mod health;
+#[cfg(test)]
+mod health_tests;
 #[cfg(test)]
 mod limits_tests;
 mod map;
@@ -116,6 +119,8 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/processing", get(processing::status))
         .route("/assets/processing/retry", post(processing::retry))
         .route("/assets/usage", get(usage::mine))
+        .route("/assets/admin/health", get(health::health))
+        .route("/assets/admin/jobs/retry", post(health::retry_failed))
         .route("/assets/admin/accounts", get(usage::accounts))
         .route("/assets/admin/accounts/{id}/limits", put(usage::set_limits))
         .route(

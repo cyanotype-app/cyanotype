@@ -38,20 +38,26 @@ where
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
         {
-            let id: Option<(Uuid,)> =
-                sqlx::query_as("UPDATE api_keys SET last_used_at = now() WHERE key_hash = $1 RETURNING user_id")
-                    .bind(sha256(key.as_bytes()))
-                    .fetch_optional(&db)
-                    .await?;
+            // A disabled account's keys are refused (and not stamped as used): they come back when it is enabled.
+            let id: Option<(Uuid,)> = sqlx::query_as(
+                "UPDATE api_keys SET last_used_at = now() WHERE key_hash = $1 \
+                 AND EXISTS (SELECT 1 FROM users u WHERE u.id = api_keys.user_id AND u.disabled_at IS NULL) \
+                 RETURNING user_id",
+            )
+            .bind(sha256(key.as_bytes()))
+            .fetch_optional(&db)
+            .await?;
             return id.map(|(id,)| AuthUser { id }).ok_or(ApiError::Unauthorized);
         }
         let jar = CookieJar::from_headers(&parts.headers);
         let token = jar.get(SESSION_COOKIE).ok_or(ApiError::Unauthorized)?;
-        let id: Option<(Uuid,)> =
-            sqlx::query_as("SELECT user_id FROM sessions WHERE token_hash = $1 AND expires_at > now()")
-                .bind(sha256(token.value().as_bytes()))
-                .fetch_optional(&db)
-                .await?;
+        let id: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT s.user_id FROM sessions s JOIN users u ON u.id = s.user_id \
+             WHERE s.token_hash = $1 AND s.expires_at > now() AND u.disabled_at IS NULL",
+        )
+        .bind(sha256(token.value().as_bytes()))
+        .fetch_optional(&db)
+        .await?;
         id.map(|(id,)| AuthUser { id }).ok_or(ApiError::Unauthorized)
     }
 }
@@ -80,11 +86,13 @@ where
         let db = PgPool::from_ref(state);
         let jar = CookieJar::from_headers(&parts.headers);
         let token = jar.get(SESSION_COOKIE).ok_or(ApiError::Unauthorized)?;
-        let id: Option<(Uuid,)> =
-            sqlx::query_as("SELECT user_id FROM sessions WHERE token_hash = $1 AND expires_at > now()")
-                .bind(sha256(token.value().as_bytes()))
-                .fetch_optional(&db)
-                .await?;
+        let id: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT s.user_id FROM sessions s JOIN users u ON u.id = s.user_id \
+             WHERE s.token_hash = $1 AND s.expires_at > now() AND u.disabled_at IS NULL",
+        )
+        .bind(sha256(token.value().as_bytes()))
+        .fetch_optional(&db)
+        .await?;
         id.map(|(id,)| SessionUser { id }).ok_or(ApiError::Unauthorized)
     }
 }
@@ -113,7 +121,7 @@ where
         let token = jar.get(SESSION_COOKIE).ok_or(ApiError::Unauthorized)?;
         let row: Option<(Uuid, String)> = sqlx::query_as(
             "SELECT u.id, u.role FROM sessions s JOIN users u ON u.id = s.user_id \
-             WHERE s.token_hash = $1 AND s.expires_at > now()",
+             WHERE s.token_hash = $1 AND s.expires_at > now() AND u.disabled_at IS NULL",
         )
         .bind(sha256(token.value().as_bytes()))
         .fetch_optional(&db)

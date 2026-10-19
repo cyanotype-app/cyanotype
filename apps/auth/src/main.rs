@@ -2,6 +2,7 @@
 mod invites;
 mod routes;
 mod settings;
+mod users_admin;
 
 use std::sync::Arc;
 

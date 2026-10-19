@@ -49,3 +49,8 @@ export function useAuth(): AuthValue {
   if (!v) throw new Error("useAuth outside AuthProvider");
   return v;
 }
+
+/** Like [`useAuth`], but null outside an `AuthProvider` (a page that only wants to know who is looking). */
+export function useAuthOptional(): AuthValue | null {
+  return useContext(AuthContext);
+}

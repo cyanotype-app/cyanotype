@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type AdminAccount, type AdminAccounts, type AdminTask, type BucketReport, type Limits } from "../../api";
+import { AccountActions } from "../../components/AccountActions";
+import { useAuthOptional } from "../../auth";
 import { LimitsForm } from "../../components/LimitsForm";
 import { levelOf, limitsWords, percentOf } from "../../limitsText";
 import { bytesLabel } from "../../adminText";
@@ -157,6 +159,8 @@ function DefaultLimits({ limits, onSaved }: { limits: Limits; onSaved: () => Pro
 
 function AccountCard({ a, onSaved }: { a: AdminAccount; onSaved: () => Promise<void> }) {
   const [editing, setEditing] = useState(false);
+  const me = useAuthOptional();
+  const meId = me?.state.status === "authenticated" ? me.state.user.id : undefined;
   const limits: Limits = {
     quota_bytes: a.quota_bytes ?? null,
     daily_upload_bytes: a.daily_upload_bytes ?? null,
@@ -169,6 +173,9 @@ function AccountCard({ a, onSaved }: { a: AdminAccount; onSaved: () => Promise<v
       <div className="account-head">
         <strong className="account-email">{a.email}</strong>
         <span className={`badge badge-role-${a.role}`}>{a.role}</span>
+        {a.disabled_at && <span className="badge badge-revoked">disabled</span>}
+        {a.deletion && <span className="badge badge-expired">deleting</span>}
+        {meId === a.id && <span className="badge">you</span>}
       </div>
       <div className="muted small">
         Joined {new Date(a.created_at).toLocaleDateString()} · last active {ago(a.last_active)}
@@ -183,6 +190,7 @@ function AccountCard({ a, onSaved }: { a: AdminAccount; onSaved: () => Promise<v
         <Stat label="Shares" value={a.shares.toLocaleString("en-US")} />
         <Stat label="API keys" value={a.api_keys.toLocaleString("en-US")} />
       </dl>
+      <AccountActions account={a} meId={meId} onChanged={onSaved} />
       <div className="account-limits">
         {editing ? (
           <LimitsForm

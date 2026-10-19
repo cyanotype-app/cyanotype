@@ -451,16 +451,52 @@ const INVITES = [
   inv(4, { status: "revoked", note: "Revoked", revoked_at: "2024-06-03T00:00:00Z" }),
 ];
 let inviteCheck: { valid: boolean; reason?: string } = { valid: true };
+let resetCheck: { valid: boolean; reason?: string; email?: string } = { valid: true, email: LONG_EMAIL };
+const SESSIONS = [
+  { id: "0123456789abcdef", created_at: "2024-06-01T10:00:00Z", expires_at: "2024-07-01T10:00:00Z", current: true },
+  { id: "fedcba9876543210", created_at: "2024-06-02T10:00:00Z", expires_at: "2024-07-02T10:00:00Z", current: false },
+];
+const AUDIT = {
+  items: [
+    { id: 9, at: "2024-06-03T10:00:00Z", actor_id: "u1", actor_email: LONG_EMAIL, action: "account.limits", target_type: "user", target_id: "u2", detail: { email: LONG_EMAIL, before: { quota_bytes: null, daily_upload_bytes: null, max_file_bytes: null }, after: { quota_bytes: 5_497_558_138_880, daily_upload_bytes: 1_073_741_824, max_file_bytes: null } } },
+    { id: 8, at: "2024-06-03T09:00:00Z", actor_id: "u1", actor_email: "someone.with.a.long.address@example-photo-library.org", action: "account.role", target_type: "user", target_id: "u2", detail: { email: LONG_EMAIL, from: "member", to: "admin" } },
+    { id: 7, at: "2024-06-03T08:00:00Z", actor_id: null, actor_email: null, action: "something.unknown_to_this_version_of_the_web_app_with_a_long_name", target_type: null, target_id: null, detail: { a_long_key_name_for_a_value: "x".repeat(90) } },
+  ],
+  next_before: 7,
+  actions: ["account.limits", "account.role", "invite.create"],
+};
+const HEALTH = {
+  version: { assets: "sha-0123abc", workers: [{ host: "a-worker-container-with-a-long-hostname-1234567890", version: "sha-0123abc", reporting: true }] },
+  queue: [
+    { kind: "thumbnail", queued: 41234, running: 2, failed: 12, oldest_queued_age_secs: 7300 },
+    { kind: "metadata", queued: 0, running: 0, failed: 3, oldest_queued_age_secs: 0 },
+    { kind: "embed", queued: 20617, running: 1, failed: 0, oldest_queued_age_secs: 86400 * 3 },
+  ],
+  stalled_seconds: 0,
+  failed_jobs: [
+    { id: 1, kind: "thumbnail", attempts: 5, last_error: "decode refused: original is 187 MB, which does not fit the worker memory budget of 640 MB (a-very-long-unbroken-error-token-" + "x".repeat(120) + ")", finished_at: "2024-06-03T09:00:00Z" },
+    { id: 2, kind: "metadata", attempts: 1, last_error: null, finished_at: null },
+  ],
+  workers: [{ host: "a-worker-container-with-a-long-hostname-1234567890", reporting: true, at: "2024-06-03T09:00:00Z", version: "sha-0123abc", rss_bytes: 612 * 1024 ** 2, budget_used_bytes: 100 * 1024 ** 2, budget_total_bytes: 640 * 1024 ** 2 }],
+  backup: { prefix: "backups/postgres", count: 14, last_at: new Date(Date.now() - 50 * 3_600_000).toISOString(), last_size_bytes: 3 * 1024 ** 3 },
+  storage: { database_bytes: 3 * 1024 ** 3, stored_bytes: 824 * 1024 ** 3, derived_bytes: 31 * 1024 ** 3, bucket_check: { at: "2024-06-03T09:00:00Z", current_bytes: 900 * 1024 ** 3, noncurrent_bytes: 55 * 1024 ** 3, objects: 987654 } },
+};
 const registration = { mode: "invite", first_account: false, open: false, invite_required: true };
 
 async function mockAdmin(page: Page) {
   const json = (body: unknown, status = 200) => ({ status, contentType: "application/json", body: JSON.stringify(body) });
   await page.route(
-    (u) => /^\/auth\/(admin|invites|registration)/.test(u.pathname),
+    (u) => /^\/auth\/(admin|invites|registration|reset-password|sessions)/.test(u.pathname),
     async (route) => {
       const p = new URL(route.request().url()).pathname;
       const m = route.request().method();
       if (p === "/auth/registration") return route.fulfill(json(registration));
+      if (p === "/auth/reset-password/check") return route.fulfill(json(resetCheck));
+      if (p === "/auth/sessions" && m === "GET") return route.fulfill(json({ items: SESSIONS }));
+      if (/^\/auth\/admin\/users\/[^/]+\/sessions$/.test(p) && m === "GET") return route.fulfill(json({ items: SESSIONS.map((x) => ({ ...x, current: undefined })) }));
+      if (/^\/auth\/admin\/users\/[^/]+\/reset-link$/.test(p))
+        return route.fulfill(json({ token: LONG_TOKEN, path: `/reset-password?token=${LONG_TOKEN}`, email: LONG_EMAIL, expires_at: "2099-01-01T00:00:00Z" }));
+      if (p === "/auth/admin/audit") return route.fulfill(json(AUDIT));
       if (p === "/auth/invites/check") return route.fulfill(json(inviteCheck));
       if (p === "/auth/admin/invites" && m === "GET") return route.fulfill(json({ items: INVITES }));
       if (p === "/auth/admin/invites" && m === "POST")
@@ -556,7 +592,7 @@ async function mockUsage(page: Page) {
       if (p === "/assets/admin/accounts")
         return route.fulfill(
           json({
-            items: [ACCOUNT(1), ACCOUNT(2)],
+            items: [ACCOUNT(1), ACCOUNT(2, { disabled_at: "2024-06-02T00:00:00Z", deletion: "failed", deletion_error: "jobs for this account's files are still running; try again in a few minutes" })],
             totals: {
               accounts: 2, originals_bytes: 1624 * GB, trash_bytes: 24 * GB, derived_bytes: 62 * GB, derived_complete: false,
               photo_count: 246912, raw_count: 46912, uploads_24h_count: 8642, uploads_24h_bytes: 110 * GB,
@@ -572,6 +608,7 @@ async function mockUsage(page: Page) {
         return route.fulfill(json({ task: { ...BUCKET_DONE, state: "queued", result: null }, already_running: false }, 202));
       }
       if (p === "/assets/admin/bucket-check") return route.fulfill(json({ task: bucketTask }));
+      if (p === "/assets/admin/health") return route.fulfill(json(HEALTH));
       return route.fallback();
     },
   );
@@ -1075,6 +1112,21 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: "Check bucket size" }).click();
       await page.getByText(/Finished/).waitFor({ timeout: 10_000 });
       await check("accounts-bucket-check");
+      // Account actions: the manage panel, a reset link, sessions and the two-step delete (on the second account, which
+      // is disabled and has a failed deletion).
+      await page.getByText("Manage").nth(1).click();
+      await page.getByText(/last attempt to delete this account failed/).waitFor();
+      await page.getByRole("button", { name: "Reset password" }).click();
+      await page.getByRole("button", { name: "Make a reset link" }).click();
+      await page.getByText("Copy this link now. It is not shown again.").waitFor();
+      await check("accounts-manage-reset");
+      await page.getByRole("button", { name: "Sessions" }).click();
+      await page.getByText(/Signed in/).first().waitFor();
+      await check("accounts-manage-sessions");
+      await page.getByRole("button", { name: "Delete account…" }).click();
+      await page.getByLabel("Type the email address to confirm").fill(LONG_EMAIL);
+      await check("accounts-manage-delete");
+      await page.getByText("Manage").nth(1).click();
       await page.getByRole("button", { name: /^Edit limits of/ }).first().click();
       await page.getByLabel("Storage (GB)").first().waitFor();
       await check("accounts-edit-limits");
@@ -1091,6 +1143,16 @@ for (const { width, scheme } of RUNS) {
         await check(`storage-${level}`);
       }
       usageLevel = "warn";
+      await page.goto("/admin/health");
+      await page.getByRole("heading", { name: "Job queue" }).waitFor();
+      await page.getByRole("button", { name: "Retry all failed jobs" }).waitFor();
+      await check("health");
+      await page.goto("/admin/audit");
+      await page.getByRole("list").getByText("Changed an account's limits").waitFor();
+      await check("audit");
+      await page.goto("/settings/sessions");
+      await page.getByText("This browser").waitFor();
+      await check("sessions");
       // The tray after the daily cap refused the first file: the reason, when uploads resume, the files not started.
       await page.route("**/assets/check", (r) =>
         r.fulfill({
@@ -1139,6 +1201,16 @@ for (const { width, scheme } of RUNS) {
       await page.getByLabel("Invite link or code").waitFor();
       await check("register-needs-invite");
       anonymous = false;
+
+      resetCheck = { valid: true, email: LONG_EMAIL };
+      await page.goto(`/reset-password?token=${LONG_TOKEN}`);
+      await page.getByText("Choose a new password").waitFor();
+      await page.getByLabel("New password").waitFor();
+      await check("reset-password");
+      resetCheck = { valid: false, reason: "expired" };
+      await page.goto(`/reset-password?token=${LONG_TOKEN}`);
+      await page.getByText(/has expired/).waitFor();
+      await check("reset-password-expired");
 
       memberView = true;
       await page.goto("/admin");

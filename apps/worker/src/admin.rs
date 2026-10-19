@@ -1,7 +1,8 @@
 //! The worker's admin-side background work: the nightly usage reconcile and the tasks an admin queues (`admin_tasks`).
 use std::{sync::Arc, time::Duration};
 
-use cyanotype_core::{admin_tasks, usage};
+use cyanotype_core::audit;
+use cyanotype_core::{accounts, admin_tasks, usage};
 use sqlx::PgPool;
 
 use crate::handlers::Ctx;
@@ -19,7 +20,47 @@ const RECONCILE_LOCK: i64 = 0x6379_616e_6f75_7367; // "cyanousg"
 
 pub fn spawn(ctx: Arc<Ctx>) {
     tokio::spawn(reconcile_loop(ctx.clone()));
+    tokio::spawn(publish_loop(ctx.clone()));
     tokio::spawn(task_loop(ctx));
+}
+
+/// How often the worker writes its own numbers where the admin health card reads them.
+const PUBLISH_EVERY: Duration = Duration::from_secs(60);
+
+/// What this worker says about itself: the values the gauges already carry (resident memory and the decode budget), and its
+/// version. One row per worker (`worker:<host>` in `server_state`), so the admin page needs no metrics backend.
+pub async fn publish(ctx: &Ctx) -> anyhow::Result<()> {
+    let host = std::env::var("HOSTNAME")
+        .ok()
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "worker".into());
+    let version = std::env::var("DD_VERSION")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    sqlx::query(
+        "INSERT INTO server_state (key, value) VALUES ($1, $2)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+    )
+    .bind(format!("worker:{host}"))
+    .bind(serde_json::json!({
+        "version": version,
+        "rss_bytes": crate::rss_bytes(),
+        "budget_used_bytes": ctx.budget.used_bytes(),
+        "budget_total_bytes": ctx.budget.total_bytes(),
+    }))
+    .execute(&ctx.db)
+    .await?;
+    Ok(())
+}
+
+async fn publish_loop(ctx: Arc<Ctx>) {
+    loop {
+        if let Err(e) = publish(&ctx).await {
+            tracing::warn!(error = %format!("{e:#}"), "could not publish worker stats");
+        }
+        tokio::time::sleep(PUBLISH_EVERY).await;
+    }
 }
 
 async fn due(db: &PgPool) -> anyhow::Result<bool> {
@@ -95,7 +136,8 @@ async fn task_loop(ctx: Arc<Ctx>) {
 
 /// Claims and runs one admin task. Returns whether there was one.
 pub async fn run_one(ctx: &Ctx) -> anyhow::Result<bool> {
-    let Some(task) = admin_tasks::claim(&ctx.db, &[admin_tasks::KIND_BUCKET_CHECK]).await? else {
+    let kinds = [admin_tasks::KIND_BUCKET_CHECK, admin_tasks::KIND_DELETE_ACCOUNT];
+    let Some(task) = admin_tasks::claim(&ctx.db, &kinds).await? else {
         return Ok(false);
     };
     tracing::info!(task = task.id, kind = %task.kind, "admin task started");
@@ -105,6 +147,7 @@ pub async fn run_one(ctx: &Ctx) -> anyhow::Result<bool> {
             Ok(r) => serde_json::to_value(r).map_err(|e| e.to_string()),
             Err(e) => Err(format!("{e:#}")),
         },
+        admin_tasks::KIND_DELETE_ACCOUNT => delete_account(ctx, &task).await,
         other => Err(format!("unknown task kind {other}")),
     };
     if let Err(e) = &outcome {
@@ -119,6 +162,42 @@ pub async fn run_one(ctx: &Ctx) -> anyhow::Result<bool> {
         "admin task finished"
     );
     Ok(true)
+}
+
+/// How long a deletion waits for jobs already running on the account's files before it gives up (and an admin retries).
+const WAIT_FOR_JOBS: Duration = Duration::from_secs(600);
+
+/// The `delete_account` task: removes the account's objects and rows (`accounts::delete_account`) and records it.
+async fn delete_account(ctx: &Ctx, task: &admin_tasks::Task) -> Result<serde_json::Value, String> {
+    let user: uuid::Uuid = task
+        .params
+        .get("user_id")
+        .and_then(|v| v.as_str())
+        .and_then(|v| v.parse().ok())
+        .ok_or("the task has no valid user_id")?;
+    let email = task
+        .params
+        .get("email")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let report = accounts::delete_account(&ctx.db, &ctx.storage, user, WAIT_FOR_JOBS)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    audit::record(
+        &ctx.db,
+        task.requested_by,
+        "account.delete.finished",
+        Some("user"),
+        Some(&user.to_string()),
+        serde_json::json!({
+            "email": email, "files": report.files,
+            "objects_deleted": report.objects_deleted, "uploads_aborted": report.uploads_aborted,
+        }),
+    )
+    .await
+    .map_err(|e| format!("{e:#}"))?;
+    serde_json::to_value(report).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -236,6 +315,113 @@ mod tests {
         let r = t.result.unwrap();
         assert!(r["finished_at"].is_string() && r["versioned"].is_boolean());
         assert!(!run_one(&ctx).await.unwrap(), "done tasks are not run again");
+        drop_db(ctx, admin_url, name).await;
+    }
+
+    #[tokio::test]
+    async fn a_queued_account_deletion_is_run_audited_and_leaves_other_accounts_alone() {
+        let Some((ctx, admin_url, name, real)) = ctx().await else {
+            return;
+        };
+        if !real {
+            drop_db(ctx, admin_url, name).await;
+            return;
+        }
+        let user = |email: &'static str| {
+            let db = ctx.db.clone();
+            async move {
+                sqlx::query_scalar::<_, Uuid>("INSERT INTO users (email, password_hash) VALUES ($1,'x') RETURNING id")
+                    .bind(email)
+                    .fetch_one(&db)
+                    .await
+                    .unwrap()
+            }
+        };
+        let (admin, gone, kept) = (
+            user("admin@example.com").await,
+            user("gone@example.com").await,
+            user("kept@example.com").await,
+        );
+        let (gone_key, kept_key) = (
+            format!("originals/{gone}/aa/x.jpg"),
+            format!("originals/{kept}/aa/y.jpg"),
+        );
+        for (owner, key) in [(gone, &gone_key), (kept, &kept_key)] {
+            ctx.storage
+                .put_bytes(key, b"bytes".to_vec(), "image/jpeg")
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO assets (owner_id, sha256, original_key, original_name, content_type, size_bytes) VALUES ($1, sha256($2::bytea), $2, 'x.jpg', 'image/jpeg', 5)")
+                .bind(owner)
+                .bind(key.as_bytes())
+                .execute(&ctx.db)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO admin_tasks (kind, requested_by, params) VALUES ('delete_account', $1, $2)")
+            .bind(admin)
+            .bind(serde_json::json!({"user_id": gone, "email": "gone@example.com"}))
+            .execute(&ctx.db)
+            .await
+            .unwrap();
+        assert!(run_one(&ctx).await.unwrap());
+        let (state, result): (String, Option<serde_json::Value>) =
+            sqlx::query_as("SELECT state, result FROM admin_tasks WHERE kind = 'delete_account'")
+                .fetch_one(&ctx.db)
+                .await
+                .unwrap();
+        assert_eq!(state, "done");
+        assert_eq!(result.unwrap()["files"], 1);
+        let (users,): (i64,) = sqlx::query_as("SELECT count(*) FROM users WHERE id = $1")
+            .bind(gone)
+            .fetch_one(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(users, 0);
+        assert!(ctx.storage.head_size(&gone_key).await.unwrap().is_none());
+        assert!(
+            ctx.storage.head_size(&kept_key).await.unwrap().is_some(),
+            "another account's object is untouched"
+        );
+        let (kept_files,): (i64,) = sqlx::query_as("SELECT count(*) FROM assets WHERE owner_id = $1")
+            .bind(kept)
+            .fetch_one(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(kept_files, 1);
+        let (actor, detail): (Option<Uuid>, serde_json::Value) =
+            sqlx::query_as("SELECT actor_id, detail FROM audit_log WHERE action = 'account.delete.finished'")
+                .fetch_one(&ctx.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            (actor, detail["email"].as_str()),
+            (Some(admin), Some("gone@example.com"))
+        );
+        ctx.storage.delete_all_versions(&[kept_key]).await.unwrap();
+        drop_db(ctx, admin_url, name).await;
+    }
+
+    #[tokio::test]
+    async fn the_worker_publishes_its_memory_and_version_for_the_health_card() {
+        let Some((ctx, admin_url, name, _)) = ctx().await else {
+            return;
+        };
+        publish(&ctx).await.unwrap();
+        let (value,): (serde_json::Value,) = sqlx::query_as("SELECT value FROM server_state WHERE key LIKE 'worker:%'")
+            .fetch_one(&ctx.db)
+            .await
+            .unwrap();
+        assert!(value["version"].is_string());
+        assert_eq!(value["budget_total_bytes"], 64 << 20);
+        assert_eq!(value["budget_used_bytes"], 0);
+        assert!(value["rss_bytes"].as_u64().unwrap_or(1) > 0);
+        publish(&ctx).await.unwrap(); // again: one row, replaced
+        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM server_state WHERE key LIKE 'worker:%'")
+            .fetch_one(&ctx.db)
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
         drop_db(ctx, admin_url, name).await;
     }
 }

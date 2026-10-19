@@ -26,8 +26,8 @@ use sqlx::PgPool;
 
 use cyanotype_core::limits::{self, Limits};
 
-use crate::invites;
 use crate::settings::{AuthConfig, RegistrationMode};
+use crate::{invites, users_admin};
 
 const SESSION_DAYS: i64 = 30;
 /// Serialises first-user registration across all auth replicas (transaction-scoped advisory lock).
@@ -55,6 +55,8 @@ pub fn routes(state: AppState) -> Router {
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
         .route("/auth/invites/check", post(invites::check))
+        .route("/auth/reset-password/check", post(users_admin::reset_check))
+        .route("/auth/reset-password", post(users_admin::reset_password))
         .route_layer(middleware::from_fn_with_state(limit, ratelimit::limit));
     Router::new()
         .merge(limited)
@@ -62,6 +64,8 @@ pub fn routes(state: AppState) -> Router {
         .route("/auth/me", get(me))
         .route("/auth/registration", get(registration_info))
         .merge(invites::admin_routes())
+        .merge(users_admin::admin_routes())
+        .merge(users_admin::session_routes())
         .route("/auth/api-keys", get(list_api_keys).post(create_api_key))
         .route("/auth/api-keys/{id}", delete(revoke_api_key))
         .with_state(state)
@@ -242,17 +246,27 @@ async fn login(
     jar: CookieJar,
     Json(c): Json<Credentials>,
 ) -> ApiResult<(CookieJar, Json<Value>)> {
-    let row: Option<(Uuid, String)> =
-        sqlx::query_as("SELECT id, password_hash FROM users WHERE lower(email) = lower($1)")
+    let row: Option<(Uuid, String, bool)> =
+        sqlx::query_as("SELECT id, password_hash, disabled_at IS NOT NULL FROM users WHERE lower(email) = lower($1)")
             .bind(c.email.trim())
             .fetch_optional(&db)
             .await?;
     // Same error for unknown user and bad password.
-    let (id, hash) = row.ok_or(ApiError::Unauthorized)?;
+    let (id, hash, disabled) = row.ok_or(ApiError::Unauthorized)?;
     let parsed = PasswordHash::new(&hash).map_err(|e| anyhow::anyhow!("stored hash: {e}"))?;
     Argon2::default()
         .verify_password(c.password.as_bytes(), &parsed)
         .map_err(|_| ApiError::Unauthorized)?;
+    // Said only to someone who knows the password, so it does not reveal which addresses have accounts.
+    if disabled {
+        return Err(ApiError::Limited {
+            status: StatusCode::FORBIDDEN,
+            code: "account_disabled",
+            message: "This account has been disabled. Ask the administrator.".into(),
+            details: json!({}),
+            retry_after_secs: None,
+        });
+    }
     let jar = start_session(&db, &cfg, jar, id).await?;
     Ok((jar, Json(json!({"id": id}))))
 }

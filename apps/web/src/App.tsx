@@ -7,14 +7,18 @@ import { Albums } from "./pages/Albums";
 import { ApiKeys } from "./pages/ApiKeys";
 import { AdminLayout } from "./pages/admin/AdminLayout";
 import { Accounts } from "./pages/admin/Accounts";
+import { AuditPage } from "./pages/admin/AuditPage";
+import { HealthPage } from "./pages/admin/HealthPage";
 import { Invites } from "./pages/admin/Invites";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { MapPage } from "./pages/MapPage";
 import { NotFound } from "./pages/NotFound";
 import { Register } from "./pages/Register";
+import { ResetPassword } from "./pages/ResetPassword";
 import { ShareView } from "./pages/ShareView";
 import { SearchPage } from "./pages/Search";
+import { Sessions } from "./pages/Sessions";
 import { SettingsLayout } from "./pages/SettingsLayout";
 import { SharedLinks } from "./pages/SharedLinks";
 import { Storage } from "./pages/Storage";
@@ -29,6 +33,7 @@ export function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/logout" element={<Logout />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
       {/* Public share links: no login, outside the signed-in shell. */}
       <Route path="/s/:token" element={<ShareView />} />
       <Route element={<RequireAuth />}>
@@ -43,6 +48,7 @@ export function App() {
         <Route path="/settings" element={<SettingsLayout />}>
           <Route index element={<Navigate to="storage" replace />} />
           <Route path="storage" element={<Storage />} />
+          <Route path="sessions" element={<Sessions />} />
           <Route path="api-keys" element={<ApiKeys />} />
           <Route path="*" element={<NotFound />} />
         </Route>
@@ -50,6 +56,8 @@ export function App() {
           <Route index element={<Navigate to="accounts" replace />} />
           <Route path="accounts" element={<Accounts />} />
           <Route path="invites" element={<Invites />} />
+          <Route path="health" element={<HealthPage />} />
+          <Route path="audit" element={<AuditPage />} />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Route>

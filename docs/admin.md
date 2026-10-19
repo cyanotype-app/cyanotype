@@ -3,7 +3,7 @@
 Cyanotype is multi-user. One or more accounts are **admins**; everyone else is a **member**. Admins manage who may
 join. They never see other people's photos: the admin area deals in accounts, invites and counts, not library content.
 
-This page describes what exists so far: roles, invites, the audit log, storage usage with the accounts page, and per-account limits. It grows with the portal.
+This page describes the whole portal: roles, invites, storage usage and limits, account actions, sessions, the health card and the audit log.
 
 ## Roles
 
@@ -61,9 +61,23 @@ Other actions: list with status (`pending`, `used`, `expired`, `revoked`) and wh
 ## Audit log
 
 `audit_log` records admin actions: when, the actor (id and email, kept after the account is deleted), an action name, the
-target and a small JSON detail. Never a token, a password or a photo name. Written so far: `invite.create`,
-`invite.reissue`, `invite.revoke` (by the admin) and `invite.use` (by the new account). Services write entries with
-`cyanotype_service::audit::record`.
+target and a small JSON detail. Never a token, a password or a photo name. Services and the worker write entries with
+`cyanotype_core::audit::record` (also reachable as `cyanotype_service::audit`). The actions, as the audit page words them:
+
+| Action | When |
+|---|---|
+| `invite.create`, `invite.reissue`, `invite.revoke` | an admin, on an invite; `invite.use` is by the new account |
+| `account.limits`, `settings.default_limits` | limits edited, with the old and new values |
+| `account.disable`, `account.enable` | an account disabled or enabled |
+| `account.role` | promoted or demoted (`from`, `to`) |
+| `account.reset_link` | a reset link made (never the link); `account.password_reset` is by the person who used it |
+| `account.sessions_revoked` | an admin signed an account out everywhere |
+| `account.delete.requested`, `account.delete.finished` | the two ends of an account deletion (the second is written by the worker, with counts) |
+| `storage.bucket_check`, `jobs.retry` | a bucket check started; failed jobs retried (kind and count) |
+
+**Admin > Audit log** (`GET /auth/admin/audit`, admins only) lists them newest first and filters by action (the start of the
+name, so `account.` is every account action), by who did it (part of the email), by what it was about (an id, or part of an email
+in the entry) and by date, and pages backwards with a cursor (`before`).
 
 ## Usage
 
@@ -178,3 +192,54 @@ resume, and "Try again" queues them again. A single file over the largest-file l
 
 Metric: `cyanotype.uploads.refused{reason}` counts refusals (`quota_exceeded`, `daily_cap_exceeded`, `file_too_large`,
 `file_exceeds_daily_cap`, `larger_than_declared`).
+
+## Account actions
+
+On each account's card on Admin > Accounts, under **Manage** (all of them admin sessions only, audited, enforced by the server):
+
+- **Disable / enable** (`POST /auth/admin/users/{id}/disable|enable`, `users.disabled_at`, migration 0019). A disabled account
+  cannot sign in (a correct password gets 403 `account_disabled`; a wrong one the usual 401, so the message reveals nothing to
+  someone guessing), its sessions are deleted when it is disabled, and every service refuses its API keys while it is disabled
+  (the keys are kept, so enabling restores the CLI; a disabled account's keys are not stamped as used). The check is in the shared
+  auth extractors, so assets, auth and the admin endpoints all honour it. Public share links of a disabled account keep working;
+  delete the account (or its shares) to stop them.
+- **Reset password** (`POST /auth/admin/users/{id}/reset-link`): makes a **one-time link** the admin copies and sends (no email is
+  sent). It is stored hashed, shown once, works once, expires after 24 hours and is replaced by the next link made for the same
+  account. The link opens `/reset-password?token=...` (no sign-in), which checks it (`POST /auth/reset-password/check`) and sets the
+  new password (`POST /auth/reset-password`, throttled with login and register). Using it signs the account out everywhere. A
+  disabled account cannot use one.
+- **Make admin / Remove admin** (`POST /auth/admin/users/{id}/role`).
+- **Sessions** (`GET|DELETE /auth/admin/users/{id}/sessions`): the account's active sessions (when they started and expire, never
+  a token) and **Sign out everywhere**. People see their own at Settings > Sessions (`GET /auth/sessions`, `POST
+  /auth/sessions/revoke-others`, `/revoke-all`, `DELETE /auth/sessions/{id}`; sessions only, not API keys).
+- **Delete account** (`POST /auth/admin/users/{id}/delete` with `confirm_email`): two steps in the web app (open the panel, then
+  type the account's email; the server checks it again). The account is disabled and signed out at once and a `delete_account` task
+  is queued; the worker then marks every file as being purged (so no new thumbnails are written for them) and waits for jobs
+  already running on them (up to 10 minutes, else the task fails and Delete again retries), aborts the unfinished uploads,
+  permanently deletes **every version** of everything under `originals/{id}/`, `derived/{id}/`, `manifests/{id}/` and `edits/{id}/`
+  (the same removal as "delete forever"), and finally deletes the account row, which removes its files, albums, shares, keys, usage
+  and log rows by cascade. Each step can run again, and the objects go before the rows, so a failure never leaves objects with no
+  record of whose they are. Tests delete one of two accounts and check the other's objects (every version) and rows are untouched.
+  While it runs the card says so; a failure shows its reason with a way to retry.
+
+**Guards**, enforced on the server under one advisory lock: nobody disables or deletes **themselves**; the **last active
+administrator** (a disabled admin does not count) can be neither demoted, disabled nor deleted (two admins demoting each other at
+the same moment leave exactly one); an account being deleted cannot be enabled.
+
+## Health
+
+Admin > Health (`GET /assets/admin/health`, refreshed every 15 seconds) shows only what the stack already has, with no call to
+Datadog:
+
+- **Job queue** by kind (waiting, running, failed, how long the oldest has waited), a warning when jobs are waiting and none has
+  finished for a while, the latest failed jobs with their error text (never a file name or owner), and **Retry all failed jobs**
+  or per kind (`POST /assets/admin/jobs/retry`, audited), which requeues the failures of every account with a fresh set of
+  attempts.
+- **Worker**: its resident memory and decode-budget use. The worker writes the values its DogStatsD gauges already carry (and its
+  version) to `server_state` (`worker:<host>`) once a minute; one not heard from for 5 minutes shows as not reporting.
+- **Backup**: the newest dump under `backups/postgres/` in the bucket (`BACKUP_PREFIX` if the backup service sets another), its
+  size and how many are kept; a warning past 36 hours; an error line if the bucket cannot be listed (the rest of the card still
+  loads).
+- **Sizes**: the database (`pg_database_size`), what the accounts store, thumbnails and, from the latest bucket check, the bucket.
+- **Version**: the label the services run under (`DD_VERSION`, which production sets to the image tag, `sha-<commit>`) for the
+  assets service and each worker.

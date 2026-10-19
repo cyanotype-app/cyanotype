@@ -95,6 +95,12 @@ struct Account {
     quota_bytes: Option<i64>,
     daily_upload_bytes: Option<i64>,
     max_file_bytes: Option<i64>,
+    /// Disabled accounts cannot sign in and their API keys are refused.
+    #[serde(with = "time::serde::rfc3339::option")]
+    disabled_at: Option<OffsetDateTime>,
+    /// The state of the latest deletion of this account (`queued`, `running`, `failed`), if one was requested.
+    deletion: Option<String>,
+    deletion_error: Option<String>,
 }
 
 /// `GET /assets/admin/accounts`: every account with its numbers, the server totals, the last reconcile and the last bucket check.
@@ -115,8 +121,12 @@ pub(super) async fn accounts(State(s): State<AppState>, _admin: AdminUser) -> Ap
                 (SELECT count(*) FROM albums WHERE owner_id = u.id) AS albums,
                 (SELECT count(*) FROM shares WHERE owner_id = u.id) AS shares,
                 (SELECT count(*) FROM api_keys WHERE user_id = u.id) AS api_keys,
-                u.quota_bytes, u.daily_upload_bytes, u.max_file_bytes
-         FROM users u LEFT JOIN user_usage m ON m.user_id = u.id
+                u.quota_bytes, u.daily_upload_bytes, u.max_file_bytes, u.disabled_at,
+                t.state AS deletion, t.error AS deletion_error
+         FROM users u
+         LEFT JOIN LATERAL (SELECT state, error FROM admin_tasks
+                            WHERE kind = 'delete_account' AND params ->> 'user_id' = u.id::text
+                            ORDER BY id DESC LIMIT 1) t ON true LEFT JOIN user_usage m ON m.user_id = u.id
          ORDER BY u.created_at, u.id",
     )
     .fetch_all(&s.db)
