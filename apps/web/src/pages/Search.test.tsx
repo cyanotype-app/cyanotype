@@ -81,12 +81,21 @@ describe("Search page", () => {
       .spyOn(api, "search")
       .mockResolvedValueOnce(result([hit(1), hit(2)], { next_cursor: "c1" }))
       .mockResolvedValueOnce(result([hit(2), hit(3)]));
-    renderAt("/search?q=cat");
-    await screen.findByText(/matches so far/);
-    await act(async () => io([{ isIntersecting: true }]));
-    await screen.findByText("3 matches");
-    expect(search).toHaveBeenLastCalledWith({ q: "cat" }, { cursor: "c1", limit: 60, weaker: false });
-    vi.unstubAllGlobals();
+    try {
+      renderAt("/search?q=cat");
+      await screen.findByText(/matches so far/);
+      // The page attaches its observer in an effect that runs after the results render, and re-attaches it when the
+      // list changes, so the observer the test holds can be missing or stale when the results first appear. Scroll
+      // again until the second page has been requested: the in-flight guard makes the repeats harmless.
+      await waitFor(() => {
+        act(() => io([{ isIntersecting: true }]));
+        expect(search).toHaveBeenCalledTimes(2);
+      });
+      await screen.findByText("3 matches");
+      expect(search).toHaveBeenLastCalledWith({ q: "cat" }, { cursor: "c1", limit: 60, weaker: false });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("shows a chip per filter and removing one searches again without it", async () => {

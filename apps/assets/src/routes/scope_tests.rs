@@ -279,9 +279,10 @@ async fn scope_favorites_albums_trash_purge() {
     t.teardown().await;
 }
 
-#[tokio::test]
-async fn five_thousand_photos_in_one_request() {
-    let Some(t) = TestDb::new().await else { return };
+/// Every scope action on a 5000-photo library, one request each: each must act on all 5000 (the count says so).
+/// Returns how long the whole round trip took, for the ignored timing test below.
+async fn five_thousand_round_trip() -> Option<Duration> {
+    let t = TestDb::new().await?;
     let (uid, key) = user(&t.pool, "a@example.com").await;
     let app = app(&t.pool);
     many(&t.pool, uid, "big", 5000).await;
@@ -337,6 +338,24 @@ async fn five_thousand_photos_in_one_request() {
         post(&app, &key, "/assets/purge", json!({"scope": "trash"})).await["count"],
         5000
     );
-    assert!(start.elapsed() < Duration::from_secs(30), "took {:?}", start.elapsed());
+    let took = start.elapsed();
     t.teardown().await;
+    Some(took)
+}
+
+/// The functional half runs in the normal suite with no time bound: a wall-clock limit fails on a loaded CI runner or
+/// dev host (3-5 s alone, far more under contention) without telling us anything about the code.
+#[tokio::test]
+async fn five_thousand_photos_in_one_request() {
+    five_thousand_round_trip().await;
+}
+
+/// The performance half: set-based statements finish in seconds, a per-photo loop would not. The bound is generous
+/// and only meaningful on a quiet host, so it is opt-in: `cargo test -p cyanotype-assets -- --ignored five_thousand`.
+#[tokio::test]
+#[ignore = "timing bound; run on a quiet host with --ignored"]
+async fn five_thousand_photos_stay_fast() {
+    if let Some(took) = five_thousand_round_trip().await {
+        assert!(took < Duration::from_secs(30), "took {took:?}");
+    }
 }
