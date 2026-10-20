@@ -443,6 +443,61 @@ every runtime image moved from Debian bookworm to trixie** (`lukemathwalker/carg
 `debian:trixie-slim`; libstdc++6 is part of trixie-slim). The worker's runtime packages are the same libraries with their
 trixie names (`libdav1d7`); the Dockerfile's `ldd` check still fails the build if anything is unresolved.
 
+### Near-duplicate threshold
+
+Near-duplicate review (`docs/library.md`, "Near-duplicates") judges a pair of photos by the cosine of their image embeddings plus a fact that has
+to agree (`cyanotype_core::duplicates::is_duplicate`); the thresholds per model are `Model::duplicate_rules()` in `cyanotype-clip`
+(`duplicates.rs`), calibrated like the burst threshold, with the same 209 CC0 photos:
+
+- **Copies** of every photo (1,254 pairs): resized to a half and a quarter (Lanczos), recompressed at JPEG quality 70 and 40, half size at
+  quality 60, and a 3 % border cropped off. `duplicate_bakeoff` in `tests/bakeoff.rs` (`DUP_MODEL=CLIP` or `SigLIP` picks one model; it needs
+  the evaluation set and the models like the other bake-offs: `SEARCH_MODEL_DIR=... SEARCH_EVAL_DIR=... cargo test --release -p cyanotype-clip
+  --test bakeoff duplicate_bakeoff -- --ignored --nocapture`, about 5 minutes).
+- **Different photos**: all 21,736 pairs, of which 936 are in the same category (the hardest: other dogs, other beaches). The set holds two
+  pairs that are the same picture twice under different file names (cosine 1.0000, `bridge`/`train`, `sailboat`/`sunset`), which count as
+  "different" here, so every precision below is a floor.
+
+The cosine of a copy is lower than "the same picture" suggests, because the shipped image towers are quantised (SigLIP 2 4-bit, CLIP 8-bit):
+
+| | SigLIP 2 | CLIP B/32 |
+|---|---|---|
+| copies, median / 5th percentile | 0.962 / 0.852 | 0.952 / 0.850 |
+| same size, JPEG q70 / q40, median | 0.986 / 0.963 | 0.971 / 0.957 |
+| half size / quarter size, median | 0.965 / 0.889 | 0.962 / 0.888 |
+| different photos, median / 99th / 99.9th percentile | 0.519 / 0.773 / 0.931 | 0.480 / 0.772 / 0.915 |
+| same-category pairs, median / 99th | 0.676 / 0.949 | 0.655 / 0.937 |
+
+Cosine alone, over the 1,254 copies and the 21,736 different pairs (recall = copies found; precision = copies found among everything found; the
+pool of negatives is 17 times the positives, so it is a pessimistic precision for a real library):
+
+| min cosine | SigLIP 2 recall | SigLIP 2 precision | different pairs merged | CLIP recall | CLIP precision |
+|---|---|---|---|---|---|
+| 0.80 | 98.7 % | 88.3 % | 164 (0.76 %) | 98.3 % | 88.5 % |
+| **0.85** | **95.5 %** | **91.7 %** | 109 (0.50 %) | 94.9 % | 92.5 % |
+| 0.88 | 91.9 % | 93.0 % | 87 (0.40 %) | 89.1 % | 95.3 % |
+| 0.90 | 87.2 % | 94.6 % | 62 (0.29 %) | 81.8 % | 97.0 % |
+| **0.92** | **80.6 %** | **96.8 %** | 33 (0.15 %) | 73.0 % | 97.9 % |
+| **0.94** | **71.5 %** | **98.1 %** | 17 (0.08 %) | 61.4 % | 98.7 % |
+| 0.96 | 52.4 % | 99.0 % | 7 (0.03 %) | 41.2 % | 99.2 % |
+| 0.98 | 20.9 % | 98.5 % | 4 (0.02 %) | 9.2 % | 98.3 % |
+
+So a single threshold would have to trade a lot of recall for precision, and the rules put the evidence on the pair instead:
+
+| the pair shares | threshold (SigLIP 2 / CLIP) | what the table says (SigLIP 2) |
+|---|---|---|
+| the same camera, capture times within 60 s | 0.85 / 0.84 | 95.5 % of the copies; a different pair at 0.85 or more is only merged if it also shares a camera and a minute (not measurable here: the set has no EXIF) |
+| the same pixel dimensions | 0.92 / 0.91 | 80.6 % of the copies (a re-encode at the same size is the easy case: q70 median 0.986), 96.8 % precision before the dimensions check |
+| neither has a capture time (a copy that lost its EXIF) | 0.94 / 0.93 | 71.5 % of the copies at 98.1 % precision with nothing else to go on |
+
+By kind of copy at the metadata rule (SigLIP 2, 0.85): same size q70 and q40, a cropped border and a half size are all found (5th percentile
+0.93 to 0.97 against 0.85); the quarter size (5th percentile 0.78) and a half size recompressed at q60 (0.885) are the ones lost. A copy
+that has lost its metadata and is resized can only be found by the strictest rule (a quarter size is not); that is by design: "a smaller
+copy of something with no date" and "another photo of the same kind of thing" cannot be told apart by this model.
+
+**Not measured**: real libraries (the set has no EXIF, so the metadata gates were reasoned about, not scored, and the time/camera facts
+are exact on the evidence of a copy that kept its EXIF); photos that differ only in a small moving subject (those are bursts or "similar
+shots", which the same thresholds would pair when they share a camera and a minute: a burst itself is excluded).
+
 ## Text in photos (OCR)
 
 The worker reads the text off each photo's preview (`docs/library.md`, "Text in photos") with **PP-OCRv6 small**, PaddlePaddle's own ONNX exports of its

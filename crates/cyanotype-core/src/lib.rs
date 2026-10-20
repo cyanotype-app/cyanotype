@@ -4,6 +4,7 @@ pub mod audit;
 pub mod bursts;
 pub mod config;
 pub mod db;
+pub mod duplicates;
 pub mod edits;
 pub mod embeddings;
 pub mod identity;

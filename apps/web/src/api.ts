@@ -567,6 +567,52 @@ export interface Facets {
   years: Facet[];
 }
 
+/** One photo of a duplicate group, with what the review compares. */
+export interface DuplicateMember extends AssetSummary {
+  thumbhash: string | null;
+  thumb_url: string | null;
+  /** Fields in the file's EXIF dump. */
+  exif_fields: number;
+  has_location: boolean;
+  has_caption: boolean;
+  tag_count: number;
+  /** The photo to keep unless another is chosen: the largest resolution, then the most metadata, then a favorite. */
+  best: boolean;
+}
+
+export interface DuplicateGroup {
+  id: string;
+  members: DuplicateMember[];
+}
+
+/** The state of the library's near-duplicate check. */
+export interface DuplicateScan {
+  state: "never" | "wanted" | "running" | "idle";
+  requested_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  groups?: number | null;
+  photos?: number | null;
+  error?: string | null;
+  manual?: boolean;
+}
+
+/** GET /assets/duplicates */
+export interface DuplicatesPage {
+  groups: DuplicateGroup[];
+  /** Groups with at least two photos this session may see. */
+  total: number;
+  next_cursor: string | null;
+  scan: DuplicateScan;
+}
+
+/** What keeping one photo did: the kept photo, the ids that went to the trash (for Undo) and what was merged onto it. */
+export interface DuplicateKept {
+  kept: string;
+  trashed: string[];
+  merged: Record<string, unknown>;
+}
+
 /** Most ids the server accepts per bulk request; longer lists are sent in several requests. */
 export const MAX_BULK_IDS = 1000;
 
@@ -1283,6 +1329,24 @@ export const api = {
   /** How many photos (and which first ones) rules would match now; nothing is saved. */
   previewSmartAlbum: (rules: SmartRules, signal?: AbortSignal) =>
     request<SmartPreview>("/assets/albums/preview", { ...json({ rules }), signal }),
+  /** The groups of near-duplicate photos found by the last check, newest first, with the best photo marked. */
+  duplicates: (opts: { cursor?: string | null; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts.cursor) q.set("cursor", opts.cursor);
+    const qs = q.toString();
+    return request<DuplicatesPage>(`/assets/duplicates${qs ? `?${qs}` : ""}`);
+  },
+  /** Check the library for duplicates now (the worker starts within seconds). */
+  scanDuplicates: () => request<{ scan: DuplicateScan }>("/assets/duplicates/scan", json({})),
+  /** Admins: check every account's library. */
+  scanAllDuplicates: () => request<{ accounts: number }>("/assets/admin/duplicates/scan", json({})),
+  /** Keep one photo of a group: the others go to the trash and what they carry is merged onto it. */
+  keepDuplicate: (group: string, keep: string) =>
+    request<DuplicateKept>(`/assets/duplicates/${encodeURIComponent(group)}/keep`, json({ keep })),
+  /** "Not duplicates": the group is dismissed for good. */
+  dismissDuplicates: (group: string) =>
+    request<{ dismissed: number }>(`/assets/duplicates/${encodeURIComponent(group)}/dismiss`, json({})),
   createAlbum: async (input: { title: string; description?: string; asset_ids?: readonly string[] }): Promise<Album> => {
     const ids = input.asset_ids ?? [];
     const album = await request<Album>(

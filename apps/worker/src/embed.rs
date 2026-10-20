@@ -327,6 +327,10 @@ async fn store(ctx: &Arc<Ctx>, model: Model, job: &jobs::Job, v: &[f32]) -> Resu
     if let Err(e) = bursts::requeue_after_embed(&ctx.db, job.asset_id).await {
         tracing::warn!(error = %format!("{e:#}"), "could not queue the burst regroup");
     }
+    // ... and a near-duplicate scan of the library is due once the import goes quiet (one scan per import, not per photo).
+    if let Err(e) = cyanotype_core::duplicates::request_for_asset(&ctx.db, job.asset_id).await {
+        tracing::warn!(error = %format!("{e:#}"), "could not request a near-duplicate scan");
+    }
     Ok(Outcome::Done)
 }
 
