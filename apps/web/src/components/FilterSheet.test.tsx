@@ -9,6 +9,10 @@ const facets: Facets = {
   total: 100,
   favorites: 7,
   with_location: 60,
+  ratings: [
+    { value: "5", count: 4 },
+    { value: "3", count: 20 },
+  ],
   types: [],
   cameras: [
     { value: "Canon EOS R5", count: 70 },
@@ -33,6 +37,7 @@ describe("FilterSheet", () => {
     const dialog = screen.getByRole("dialog", { name: "Filters" });
     await waitFor(() => expect(within(dialog).getByRole("option", { name: "Canon EOS R5 (70)" })).toBeInTheDocument());
 
+    await userEvent.selectOptions(screen.getByLabelText("Rating"), "4");
     await userEvent.selectOptions(screen.getByLabelText("Year"), "2024");
     await userEvent.selectOptions(screen.getByLabelText("Camera"), "Canon EOS R5");
     await userEvent.selectOptions(screen.getByLabelText("Lens"), "RF 24-70mm F2.8 L");
@@ -52,6 +57,7 @@ describe("FilterSheet", () => {
       has_location: true,
       album: "album-1",
       favorite: true,
+      rating: 4,
       type: "raw",
     });
   });

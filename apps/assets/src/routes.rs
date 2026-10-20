@@ -48,6 +48,9 @@ mod memories;
 #[cfg(test)]
 mod pair_tests;
 mod processing;
+mod ratings;
+#[cfg(test)]
+mod ratings_tests;
 mod scope;
 #[cfg(test)]
 mod scope_tests;
@@ -130,6 +133,7 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/tiles", get(tiles::installed))
         .route("/assets/tiles/{name}", get(tiles::tile_range))
         .route("/assets/favorite", post(favorites::set))
+        .route("/assets/rating", post(ratings::set))
         .route("/assets/hide", post(visibility::hide))
         .route("/assets/archive", post(visibility::archive))
         .route("/assets/prefs", get(visibility::prefs).put(visibility::set_prefs))
@@ -952,6 +956,8 @@ struct AssetSummary {
     sort_time: OffsetDateTime,
     /// Favorited (a RAW + JPEG pair carries it on the visible photo).
     favorite: bool,
+    /// Star rating 0 to 5 (0 = not rated); a RAW + JPEG pair carries it on the visible photo.
+    rating: i16,
     /// In the archive: off the timeline and the map, still in albums and search (shown with a badge there).
     archived: bool,
     /// Hidden. Only the Hidden view (unlocked) ever lists such a photo, and the viewer needs the flag for "Unhide".
@@ -1103,7 +1109,7 @@ fn decode_cursor(c: &str) -> Option<(OffsetDateTime, Uuid)> {
 fn list_select(sort: visibility::Sort) -> String {
     format!(
         "SELECT id, original_name, content_type, size_bytes, width, height,
-        {} AS sort_time, favorite, archived, hidden, thumbhash
+        {} AS sort_time, favorite, rating, archived, hidden, thumbhash
  FROM assets WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL",
         sort.expr()
     )
@@ -1203,7 +1209,7 @@ async fn get_one(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let a: AssetSummary = sqlx::query_as(
-        "SELECT id, original_name, content_type, size_bytes, width, height, coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite, archived, hidden
+        "SELECT id, original_name, content_type, size_bytes, width, height, coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite, rating, archived, hidden
          FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL AND (NOT hidden OR $3)",
     )
     .bind(id)
@@ -1881,6 +1887,7 @@ mod tests {
                 height: None,
                 sort_time: OffsetDateTime::UNIX_EPOCH,
                 favorite: false,
+                rating: 0,
                 archived: false,
                 hidden: false,
             },

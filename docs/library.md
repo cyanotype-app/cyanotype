@@ -1355,3 +1355,68 @@ copy, and QR codes in it are listed. Nothing leaves the server and no service is
   model files are there.
 - Web: `textText.test.ts`, `TextPanel.test.tsx` (copy, QR links, never auto-opened, empty and pending states, boxes), and `e2e/text-layout.spec.ts`
   (the panel, boxes and QR list at 320 to 1280 px, light and dark).
+
+# Star ratings
+
+Every photo can have 0 to 5 stars (migration 0024). A rating is the owner's own mark, set from the viewer, the info panel or in bulk, a
+search filter and a facet, and it can be read from the photo's own metadata as a default.
+
+## What the user sees
+
+- **In the viewer:** five stars under the photo, and the keys **0 to 5** (a bare digit; with Ctrl, Alt, Cmd or Shift they are not
+  shortcuts). Tapping the star the photo already has clears the rating. The **Info** panel has a *Rating* row with the same stars.
+  On a phone the stars are 44 px targets.
+- **In bulk:** *Rate* in the selection bar of the library, search results and an album opens a small dialog (5 stars down to *Clear
+  rating*); it works on "Select all" (the whole view) like the other bulk actions, and ends in a toast ("12 photos rated 4 stars").
+- **Search:** *Rating* in the filter sheet (*4 stars & up*, with how many photos have that many or more), a chip *4 stars & up* under the
+  search bar, `rating=` in the address. It combines with every other filter and with a text query. The same filter is in "More like
+  this" and in `scope: {"search": {...}}`, so *Select all* over a rating filter selects exactly what it lists.
+- A photo from before ratings, or one whose file says nothing, is *Not rated*: 0, the same as a cleared rating.
+
+## How it works
+
+- **Columns.** `assets.rating smallint NOT NULL DEFAULT 0 CHECK (0..5)` and `assets.rating_source` (`NULL` = nobody, `file`, `user`). A
+  RAW + JPEG pair carries the rating on its visible photo, as the favorite flag does; the id of the hidden RAW means its primary, and
+  pairing hands a RAW's stars to the visible photo when they are higher and the owner has not rated the visible photo.
+- **Who set it.** `POST /assets/rating` always writes `rating_source = 'user'` (a deliberate 0 included: it keeps a photo whose file says
+  4 stars cleared). The worker's `metadata` job reads the file's rating (below) and writes `rating` and `rating_source = 'file'` **only
+  while the source is not `user`**: a re-run, a re-import or a rebuild never overrides the owner. Clearing a rating on an unrated photo
+  is not a change and does not mark it as the owner's.
+- **The file's rating** (`apps/worker/src/embedded.rs`): `xmp:Rating` (attribute or element; `xap:` too) from the XMP packet, found by
+  its APP1 segment in a JPEG and by the text `<x:xmpmeta` in the first 4 MiB of any other container (HEIC, PNG, WebP, TIFF-based RAW);
+  else the EXIF `Rating` tag (0x4746) or `RatingPercent` (0x4749: 1, 25, 50, 75, 99). `-1` ("rejected") and anything that is not 0 to 5 is
+  no rating; XMP wins over EXIF. There is no XML parser: a packet the scanner does not understand is "no rating", never a failed job.
+- **Search.** `rating=N` is `a.rating >= N` in `Filters::push_where`, so it applies in every ranked plan, the timeline-order list,
+  counts, "More like this" and the scopes. Hidden photos are never in it (the clause of the base). **Facets** (`GET /assets/search/facets`)
+  gain `ratings`: "at least N stars" counts for N = 5 to 1, over the visible library only.
+- **Hidden photos.** Rating a hidden photo by id (or `scope: "hidden"`) needs the unlocked Hidden view; a locked session's request for
+  a hidden id changes nothing and answers `count: 0`.
+- **Recovery.** The manifest's `asset` line gains `rating` (1 to 5, or 0 for a rating cleared on purpose) and `rating_source`; both are
+  absent when they say nothing and older readers skip them. `reindex` writes them in the transaction that recreates the photo's row
+  (`ratings_restored` in its report). The manifest is rewritten about 30 s after a rating changes (the hide/archive debounce), so a
+  bucket-only rebuild loses at most those seconds. A `file` rating is read from the file again by the metadata job in any case.
+- **Index** (50,000 photos, one owner, 15 % of them rated, `EXPLAIN ANALYZE`): `assets_rating_idx` is partial (`rating > 0`, live, not a
+  RAW half, not hidden) in timeline order and `INCLUDE (rating)`. The first page of "4 stars and up, newest first" is an index scan
+  that stops after 61 rows (0.2 ms), the total (7,900 rated photos) a bitmap scan (5 ms), "5 stars and a camera" 17 ms through the
+  camera index. The facet counts add five `FILTER` aggregates to the facets' existing full scan of the owner's photos (about 40 ms at
+  50,000, as before). No row is rewritten and no job is queued by the migration (constant column defaults).
+
+## API (assets service, owner-scoped)
+
+| Request | Effect |
+|---|---|
+| `POST /assets/rating {ids \| scope+except, rating}` | 0 to 5 (`400` otherwise). `{count}` of photos that changed; foreign, unknown and trashed ids are ignored. |
+| `GET /assets/search?rating=N`, `/assets/{id}/similar?rating=N` | At least N stars (1 to 5; 0 is no filter; anything else `400`). |
+| `GET /assets/search/facets` | `ratings: [{value: "5", count}, ...]`, "at least" counts. |
+| any list, search result, `GET /assets/{id}` | Items carry `rating`. |
+
+## Tests
+
+- `apps/assets/src/routes/ratings_tests.rs` (Postgres): ids and scopes, idempotence, owner isolation, trashed photos, a RAW id, the
+  file-to-owner switch, the filter (≥ N, combined, as a scope, invalid), the facet; `visibility_tests.rs`: a hidden photo's five stars
+  are in no filter or facet and it is rated only from an unlocked session.
+- `apps/worker`: XMP and EXIF rating parsing (attribute, element, other containers, `-1`, garbage, truncated files) and the metadata
+  job (file default, never over the owner's, a cleared rating stays cleared) against Postgres and S3.
+- `crates/cyanotype-core/tests/reindex.rs`: ratings and their source come back with a rebuilt database (dry run and apply).
+- Web: `ratingText.test.ts`, `components/Rating.test.tsx` (stars, keys, the dialog), filter sheet and URL; `e2e/ratings-layout.spec.ts`
+  (Playwright, 320 to 414 px, 1280 px, 360 px dark).

@@ -339,6 +339,7 @@ describe("timeline, favorites and downloads", () => {
 
   it("builds the search query from the fields that are set, and pages with the cursor", async () => {
     expect(searchQuery({})).toBe("");
+    expect(searchQuery({ favorite: true, rating: 4 })).toBe("favorite=true&rating=4");
     expect(searchQuery({ q: "dog on the beach", favorite: false, camera: "", has_location: false })).toBe(
       "q=dog+on+the+beach&has_location=false",
     );

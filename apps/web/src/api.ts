@@ -323,6 +323,8 @@ export interface AssetSummary {
   sort_time: string;
   /** Favorited. Absent on older servers (treated as false). */
   favorite?: boolean;
+  /** Star rating, 0 (not rated) to 5. Absent on older servers (treated as 0). */
+  rating?: number;
   /** In the archive: off the timeline and the map; shown with a badge in search and albums. Absent on older servers. */
   archived?: boolean;
   /** Hidden: only the unlocked Hidden view lists such a photo. Absent on older servers. */
@@ -463,6 +465,8 @@ export interface SearchParams {
   from?: string;
   to?: string;
   favorite?: boolean;
+  /** At least this many stars (1 to 5). */
+  rating?: number;
   /** `false` leaves archived photos out. The server's default is to include them. */
   include_archived?: boolean;
   /** A camera as `facets().cameras` lists it. */
@@ -549,6 +553,8 @@ export interface Facets {
   with_location: number;
   /** Photos with text read off them. Absent on older servers. */
   with_text?: number;
+  /** "At least N stars" counts, 5 down to 1 (levels with no photo are left out). Absent on older servers. */
+  ratings?: Facet[];
   types: Facet[];
   cameras: Facet[];
   /** Absent on older servers. */
@@ -956,8 +962,8 @@ export function searchQuery(
   // (`similar` is part of the path of "More like this", and that endpoint takes neither `q` nor `skip`.)
   const keys = (
     params.similar
-      ? ["from", "to", "favorite", "include_archived", "camera", "lens", "place", "type", "album", "has_location", "has_text"]
-      : ["q", "from", "to", "favorite", "include_archived", "camera", "lens", "place", "type", "album", "has_location", "has_text", "skip"]
+      ? ["from", "to", "favorite", "rating", "include_archived", "camera", "lens", "place", "type", "album", "has_location", "has_text"]
+      : ["q", "from", "to", "favorite", "rating", "include_archived", "camera", "lens", "place", "type", "album", "has_location", "has_text", "skip"]
   ) as readonly (keyof SearchParams)[];
   for (const k of keys) {
     const v = params[k];
@@ -1165,6 +1171,8 @@ export const api = {
   tiles: () => request<TilesInstalled>("/assets/tiles"),
   /** Favorite or unfavorite photos. `count` is how many changed. */
   favoriteAssets: (target: Target, favorite: boolean) => bulk("/assets/favorite", target, { favorite }),
+  /** Give photos 0 to 5 stars (0 clears). `count` is how many changed. */
+  rateAssets: (target: Target, rating: number) => bulk("/assets/rating", target, { rating }),
   /** Move photos to the trash (reversible). `count` is how many actually moved. */
   trashAssets: (target: Target) => bulk("/assets/trash", target),
   /** Bring photos back from the trash. */

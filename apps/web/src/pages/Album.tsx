@@ -6,6 +6,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Grid } from "../components/Grid";
 import { Lightbox } from "../components/Lightbox";
 import { SelectionBar } from "../components/SelectionBar";
+import { RateTools } from "../components/RateTools";
 import { ShareDialog, type ShareTarget } from "../components/ShareDialog";
 import { useToast } from "../components/Toast";
 import { similarUrl } from "../searchText";
@@ -60,6 +61,20 @@ function AlbumView({ id }: { id: string }) {
       } catch (e) {
         refreshItem(target, { favorite: !favorite });
         failure(e, favorite ? "Couldn’t add to favorites." : "Couldn’t remove from favorites.");
+      }
+    },
+    [refreshItem, failure],
+  );
+
+  const rateOne = useCallback(
+    async (it: { id: string; rating?: number }, rating: number) => {
+      const was = it.rating ?? 0;
+      refreshItem(it.id, { rating });
+      try {
+        await api.rateAssets([it.id], rating);
+      } catch (e) {
+        refreshItem(it.id, { rating: was });
+        failure(e, "Couldn’t rate.");
       }
     },
     [refreshItem, failure],
@@ -278,6 +293,19 @@ function AlbumView({ id }: { id: string }) {
           >
             Set as cover
           </button>
+          <RateTools
+            target={sel.target({ album: id })}
+            count={sel.count}
+            disabled={sel.count === 0 || busy}
+            onDone={(rating, _n, message) => {
+              const picked = sel.all ? null : new Set(sel.ids);
+              sel.setSelecting(false);
+              if (picked) for (const pid of picked) refreshItem(pid, { rating });
+              else reset();
+              show({ message });
+            }}
+            onError={(e) => failure(e, "Couldn’t rate.")}
+          />
           <button
             type="button"
             className="btn btn-quiet"
@@ -332,6 +360,7 @@ function AlbumView({ id }: { id: string }) {
           loadDetails={api.getDetails}
           onShare={(it) => setSharing({ kind: "photos", ids: [it.id] })}
           onFavorite={(it, favorite) => void setFavorite(it.id, favorite)}
+          onRate={(it, n) => void rateOne(it, n)}
           onUnpair={(it) => void unpairItem(it)}
           onSimilar={(it) => navigate(similarUrl(it.id))}
         />

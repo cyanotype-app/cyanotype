@@ -10,6 +10,8 @@ import { placeLine } from "../map/geo";
 import { fileSize, pairLabel, primaryFormat } from "../pairText";
 import { placeholderUrl } from "../thumbhash";
 import { HeartIcon } from "./Tile";
+import { RatingStars } from "./Stars";
+import { ratingKey } from "../ratingText";
 
 interface Props {
   items: AssetListItem[];
@@ -33,6 +35,8 @@ interface Props {
   onSimilar?: (item: AssetListItem) => void;
   /** Favorite or unfavorite the current photo (the parent updates `item.favorite`). Shows the heart when given. */
   onFavorite?: (item: AssetListItem, favorite: boolean) => void;
+  /** Rate the current photo 0 to 5 stars (keys 0 to 5, the stars under the photo and in the info panel). Shown when given. */
+  onRate?: (item: AssetListItem, rating: number) => void;
   /** Archive the current photo, or restore it when it is archived (the button says which). Shown when given. */
   onArchive?: (item: AssetListItem) => void;
   /** Hide the current photo, or unhide it when it is hidden (unhiding needs the unlocked Hidden view). Shown when given. */
@@ -62,6 +66,7 @@ export function Lightbox({
   onUnpair,
   onSimilar,
   onFavorite,
+  onRate,
   onArchive,
   onHide,
   offset = 0,
@@ -202,6 +207,16 @@ export function Lightbox({
         e.preventDefault();
         if (!text.open) closeInfo();
         text.toggle();
+      } else if (
+        onRate &&
+        ratingKey(e) !== null &&
+        !e.repeat &&
+        [null, dialogRef.current].includes((e.target as HTMLElement | null)?.closest('[role="dialog"]') ?? null)
+      ) {
+        const cur = items[index];
+        if (!cur) return;
+        e.preventDefault();
+        onRate(cur, ratingKey(e)!);
       } else if (e.key === "ArrowLeft") {
         e.preventDefault();
         go(-1);
@@ -229,7 +244,7 @@ export function Lightbox({
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [go, close, onTrash, items, index, info, closeInfo, loadDetails, text, closeText]);
+  }, [go, close, onTrash, onRate, items, index, info, closeInfo, loadDetails, text, closeText]);
 
   // Focus management: move focus in, give it back to the tile on close; lock page scroll.
   useEffect(() => {
@@ -412,6 +427,11 @@ export function Lightbox({
           ›
         </button>
       </div>
+      {onRate && (
+        <div className="lightbox-rating">
+          <RatingStars value={item.rating} onChange={(n) => onRate(item, n)} label={`Rating of ${item.original_name}`} />
+        </div>
+      )}
       {detail?.caption && <p className="lightbox-words">{detail.caption}</p>}
       <p className="lightbox-caption">
         <strong>{item.original_name}</strong>
@@ -471,6 +491,8 @@ export function Lightbox({
           state={infoState}
           onRetry={retryInfo}
           onEdit={setEditing}
+          rating={item.rating}
+          onRate={onRate ? (n) => onRate(item, n) : undefined}
           onClose={closeInfo}
           onLeave={leave}
           onNavigate={onClose}

@@ -1,6 +1,7 @@
 // Pure helpers of the search UI: the URL <-> filters mapping, the labels of the filter chips, the indexing message and
 // the recent-searches list. Kept apart from the components so the rules are unit tested.
 import type { Processing, SearchParams } from "./api";
+import { ratingFilterLabel } from "./ratingText";
 
 const TYPES = ["jpeg", "heic", "raw", "other"] as const;
 export const TYPE_LABEL: Record<(typeof TYPES)[number], string> = {
@@ -26,6 +27,8 @@ export function paramsFromUrl(search: URLSearchParams): SearchParams {
     if (v && DAY.test(v)) out[k] = v;
   }
   if (search.get("favorite") === "true") out.favorite = true;
+  const rating = Number(search.get("rating"));
+  if (Number.isInteger(rating) && rating >= 1 && rating <= 5) out.rating = rating;
   // Archived photos are in a search unless asked otherwise.
   if (search.get("include_archived") === "false") out.include_archived = false;
   const camera = search.get("camera")?.trim();
@@ -73,6 +76,7 @@ export function urlFromParams(p: SearchParams): string {
   if (p.from) q.set("from", p.from);
   if (p.to) q.set("to", p.to);
   if (p.favorite) q.set("favorite", "true");
+  if (p.rating) q.set("rating", String(p.rating));
   if (p.include_archived === false) q.set("include_archived", "false");
   if (p.camera) q.set("camera", p.camera);
   if (p.lens) q.set("lens", p.lens);
@@ -125,6 +129,7 @@ export function chipsOf(p: SearchParams, albumTitle?: string): Chip[] {
   const chips: Chip[] = [];
   if (p.from || p.to) chips.push({ clears: ["from", "to"], label: dateRangeLabel(p.from, p.to) });
   if (p.favorite) chips.push({ clears: ["favorite"], label: "Favorites" });
+  if (p.rating) chips.push({ clears: ["rating"], label: ratingFilterLabel(p.rating) });
   if (p.include_archived === false) chips.push({ clears: ["include_archived"], label: "Without archived" });
   if (p.camera) chips.push({ clears: ["camera"], label: p.camera });
   if (p.lens) chips.push({ clears: ["lens"], label: p.lens });

@@ -1,7 +1,7 @@
 //! EXIF extraction and mapping onto `assets` columns. Pure logic, no I/O.
 use std::io::Cursor;
 
-use exif::{In, Reader, Tag, Value};
+use exif::{Context, In, Reader, Tag, Value};
 use serde_json::{Map, Value as Json};
 use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
 
@@ -19,6 +19,8 @@ pub struct ExifInfo {
     /// EXIF PixelXDimension/PixelYDimension: the image size the camera recorded (for RAW, usually the
     /// sensor size even when the file is not TIFF-based). Not stored in the database.
     pub pixel_dims: Option<(u32, u32)>,
+    /// The star rating the EXIF block carries (`Rating` 0x4746, else `RatingPercent` 0x4749), 0 to 5.
+    pub rating: Option<u8>,
     pub json: Option<Json>,
 }
 
@@ -58,6 +60,7 @@ impl ExifInfo {
             self.longitude = other.longitude;
         }
         self.pixel_dims = self.pixel_dims.or(other.pixel_dims);
+        self.rating = self.rating.or(other.rating);
         self.camera_make = self.camera_make.take().or(other.camera_make);
         self.camera_model = self.camera_model.take().or(other.camera_model);
         self.lens_model = self.lens_model.take().or(other.lens_model);
@@ -116,6 +119,7 @@ fn from_exif(exif: &exif::Exif) -> ExifInfo {
     };
 
     let mut map = Map::new();
+    let tiff_uint = |tag: Tag| exif.get_field(tag, In::PRIMARY).and_then(|f| f.value.get_uint(0));
     for f in exif.fields().filter(|f| f.ifd_num == In::PRIMARY) {
         let v = match &f.value {
             Value::Ascii(_) => ascii_value(&f.value).map(|s| Json::String(strip_nul(&s))),
@@ -137,6 +141,10 @@ fn from_exif(exif: &exif::Exif) -> ExifInfo {
         lens_model: ascii(Tag::LensModel),
         orientation,
         pixel_dims,
+        rating: crate::embedded::exif_rating(
+            tiff_uint(Tag(Context::Tiff, 0x4746)),
+            tiff_uint(Tag(Context::Tiff, 0x4749)),
+        ),
         json: (!map.is_empty()).then_some(Json::Object(map)),
     }
 }

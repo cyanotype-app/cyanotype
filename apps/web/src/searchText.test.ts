@@ -30,6 +30,16 @@ const memory = () => {
   };
 };
 
+describe("rating filter", () => {
+  it("reads 1 to 5 from the URL, drops the rest, and labels the chip", () => {
+    expect(paramsFromUrl(new URLSearchParams("rating=3")).rating).toBe(3);
+    for (const bad of ["0", "6", "x", "2.5", ""]) expect(paramsFromUrl(new URLSearchParams(`rating=${bad}`)).rating).toBeUndefined();
+    expect(chipsOf({ rating: 4 })).toEqual([{ clears: ["rating"], label: "4 stars & up" }]);
+    expect(chipsOf({ rating: 5 })).toEqual([{ clears: ["rating"], label: "5 stars" }]);
+    expect(hasFilters({ rating: 1 })).toBe(true);
+  });
+});
+
 describe("search URL", () => {
   it("round-trips every filter", () => {
     const p = {
@@ -37,6 +47,7 @@ describe("search URL", () => {
       from: "2024-01-01",
       to: "2024-12-31",
       favorite: true,
+      rating: 4,
       camera: "Canon EOS R5",
       place: "Lisbon",
       type: "raw" as const,

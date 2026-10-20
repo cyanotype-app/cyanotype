@@ -2,6 +2,7 @@ mod admin;
 mod budget;
 mod burst;
 mod embed;
+mod embedded;
 mod exif;
 mod finish;
 mod formats;

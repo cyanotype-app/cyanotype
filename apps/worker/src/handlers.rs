@@ -290,6 +290,8 @@ struct Metadata {
     width: u32,
     height: u32,
     exif: exif::ExifInfo,
+    /// The star rating the file carries (XMP before EXIF), 0 to 5.
+    rating: Option<u8>,
 }
 
 fn compute_metadata(kind: Kind, bytes: &Arc<Vec<u8>>, expected_sha: &[u8], limits: media::Limits) -> Result<Metadata> {
@@ -307,6 +309,7 @@ fn compute_metadata(kind: Kind, bytes: &Arc<Vec<u8>>, expected_sha: &[u8], limit
     Ok(Metadata {
         width: p.width,
         height: p.height,
+        rating: crate::embedded::xmp_rating(bytes).or(p.exif.rating),
         exif: p.exif,
     })
 }
@@ -334,7 +337,10 @@ async fn metadata(ctx: &Arc<Ctx>, job: &jobs::Job, asset: &AssetRow, kind: Kind,
              longitude = CASE WHEN location_edited THEN longitude ELSE $6 END,
              latitude_exif = CASE WHEN location_edited THEN $5 ELSE NULL END,
              longitude_exif = CASE WHEN location_edited THEN $6 ELSE NULL END,
-             camera_make = $7, camera_model = $8, lens_model = $9, exif = $10
+             camera_make = $7, camera_model = $8, lens_model = $9, exif = $10,
+             -- The file's rating is a default: a rating the owner chose (rating_source = 'user') is never overwritten.
+             rating = CASE WHEN rating_source = 'user' THEN rating ELSE $11 END,
+             rating_source = CASE WHEN rating_source = 'user' THEN 'user' WHEN $11 > 0 THEN 'file' END
          WHERE id = $1
          RETURNING latitude, longitude",
     )
@@ -348,6 +354,7 @@ async fn metadata(ctx: &Arc<Ctx>, job: &jobs::Job, asset: &AssetRow, kind: Kind,
     .bind(&e.camera_model)
     .bind(&e.lens_model)
     .bind(e.json.as_ref().map(sqlx::types::Json))
+    .bind(i16::from(m.rating.unwrap_or(0)))
     .fetch_one(&ctx.db)
     .await
     .context("update asset metadata")?;
@@ -619,6 +626,141 @@ mod tests {
             (taken.as_str(), exif_taken, lat < 0.0),
             ("2021-12-31 23:59:58+00", None, true)
         );
+
+        pool.close().await;
+        let mut admin = PgConnection::connect(&admin_url).await.unwrap();
+        admin
+            .execute(format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)").as_str())
+            .await
+            .unwrap();
+    }
+
+    /// A rating in the file is a default: read on import, never over one the owner chose. Needs Postgres and the S3 variables.
+    #[tokio::test]
+    async fn the_metadata_job_reads_the_files_rating_but_never_overrides_the_owners() {
+        let Ok(admin_url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        if std::env::var("S3_ENDPOINT").ok().filter(|v| !v.is_empty()).is_none() {
+            return;
+        }
+        let name = format!("cyanotype_test_{}", Uuid::new_v4().simple());
+        let mut admin = PgConnection::connect(&admin_url).await.unwrap();
+        admin.execute(format!("CREATE DATABASE {name}").as_str()).await.unwrap();
+        let (base, _) = admin_url.rsplit_once('/').unwrap();
+        let pool = db::connect(&format!("{base}/{name}")).await.unwrap();
+        db::migrate(&pool).await.unwrap();
+        let (owner,): (Uuid,) =
+            sqlx::query_as("INSERT INTO users (email, password_hash) VALUES ('r@example.com','x') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let storage = Storage::new(&S3Config::from_env().expect("S3_* env"));
+        let ctx = Arc::new(Ctx {
+            db: pool.clone(),
+            storage: storage.clone(),
+            max_original_bytes: 1 << 24,
+            budget: MemoryBudget::new(512 << 20),
+            raw_develop: false,
+            search_model: cyanotype_clip::DEFAULT_MODEL,
+        });
+        // A JPEG whose XMP says 4 stars, one with no rating at all.
+        let xmp = |stars: Option<u8>| {
+            let mut seg = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+            seg.extend_from_slice(
+                format!(
+                    "<x:xmpmeta><rdf:RDF><rdf:Description {}/></rdf:RDF></x:xmpmeta>",
+                    stars.map_or(String::new(), |n| format!("xmp:Rating=\"{n}\""))
+                )
+                .as_bytes(),
+            );
+            let mut app1 = vec![0xFF, 0xE1];
+            app1.extend_from_slice(&((seg.len() + 2) as u16).to_be_bytes());
+            app1.extend_from_slice(&seg);
+            crate::exif::testutil::with_app1(&crate::exif::tests_support_jpeg(), &app1)
+        };
+        let mut ids = Vec::new();
+        for (n, stars) in [Some(4u8), None].into_iter().enumerate() {
+            let mut jpeg = xmp(stars);
+            jpeg.extend_from_slice(format!("{n}").as_bytes()); // trailing byte: a distinct hash per photo
+            let sha: [u8; 32] = Sha256::digest(&jpeg).into();
+            let key = keys::original(owner, &sha, "jpg");
+            ctx.storage.put_bytes(&key, jpeg.clone(), "image/jpeg").await.unwrap();
+            let (id,): (Uuid,) = sqlx::query_as(
+                "INSERT INTO assets (owner_id, sha256, original_key, original_name, content_type, size_bytes)
+                 VALUES ($1, $2, $3, 'a.jpg', 'image/jpeg', $4) RETURNING id",
+            )
+            .bind(owner)
+            .bind(&sha[..])
+            .bind(&key)
+            .bind(jpeg.len() as i64)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            ids.push(id);
+        }
+        let job = |asset_id| jobs::Job {
+            id: 1,
+            kind: jobs::KIND_METADATA.into(),
+            asset_id,
+            version: 1,
+            attempts: 1,
+        };
+        let state = |id: Uuid| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_as::<_, (i16, Option<String>)>("SELECT rating, rating_source FROM assets WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        for id in &ids {
+            assert!(matches!(
+                run(&ctx, &job(*id), &JobInfo::default()).await,
+                Ok(Outcome::Done)
+            ));
+        }
+        assert_eq!(
+            state(ids[0]).await,
+            (4, Some("file".into())),
+            "the file's rating is the default"
+        );
+        assert_eq!(state(ids[1]).await, (0, None), "no rating in the file: nobody set one");
+        // The owner changes it; a re-run (a re-import, a metadata backfill) keeps the owner's.
+        sqlx::query("UPDATE assets SET rating = 2, rating_source = 'user' WHERE id = $1")
+            .bind(ids[0])
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            run(&ctx, &job(ids[0]), &JobInfo::default()).await,
+            Ok(Outcome::Done)
+        ));
+        assert_eq!(state(ids[0]).await, (2, Some("user".into())));
+        // Cleared on purpose (0 from the user) also stays.
+        sqlx::query("UPDATE assets SET rating = 0, rating_source = 'user' WHERE id = $1")
+            .bind(ids[0])
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            run(&ctx, &job(ids[0]), &JobInfo::default()).await,
+            Ok(Outcome::Done)
+        ));
+        assert_eq!(state(ids[0]).await, (0, Some("user".into())));
+        // A file rating that changes is followed while nobody has chosen one.
+        sqlx::query("UPDATE assets SET rating = 1, rating_source = 'file' WHERE id = $1")
+            .bind(ids[1])
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            run(&ctx, &job(ids[1]), &JobInfo::default()).await,
+            Ok(Outcome::Done)
+        ));
+        assert_eq!(state(ids[1]).await, (0, None), "the file no longer rates it");
 
         pool.close().await;
         let mut admin = PgConnection::connect(&admin_url).await.unwrap();

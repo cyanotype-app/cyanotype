@@ -238,6 +238,17 @@ pub async fn pair_asset(pool: &PgPool, id: Uuid) -> Result<Paired> {
         .bind(primary)
         .execute(&mut *tx)
         .await?;
+    // The stars are the visible photo's too: a RAW that was rated (by the owner, or by its own metadata) hands them over when
+    // they are higher than the photo's, and never over a rating the owner chose on the visible photo itself.
+    sqlx::query(
+        "UPDATE assets p SET rating = r.rating, rating_source = r.rating_source
+         FROM assets r
+         WHERE r.id = $1 AND p.id = $2 AND r.rating > p.rating AND p.rating_source IS DISTINCT FROM 'user'",
+    )
+    .bind(raw)
+    .bind(primary)
+    .execute(&mut *tx)
+    .await?;
     // Hidden and archived are the pair's, carried by the visible photo: a RAW that was hidden or archived on its own hides or
     // archives the pair (never the other way round: a hidden photo does not become visible because a file joined it), and the
     // RAW takes the primary's state so that separating them later keeps it.

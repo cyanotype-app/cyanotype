@@ -10,6 +10,7 @@ import { LibraryTabs } from "../components/LibraryTabs";
 import { Lightbox } from "../components/Lightbox";
 import { useProcessing } from "../components/ProcessingStatus";
 import { SelectionBar } from "../components/SelectionBar";
+import { RateTools } from "../components/RateTools";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
 import { useToast } from "../components/Toast";
 import {
@@ -348,6 +349,20 @@ function Results({ params }: { params: SearchParams }) {
     [refreshItem, failure],
   );
 
+  const rateOne = useCallback(
+    async (it: AssetListItem, rating: number) => {
+      const was = it.rating ?? 0;
+      refreshItem(it.id, { rating });
+      try {
+        await api.rateAssets([it.id], rating);
+      } catch (e) {
+        refreshItem(it.id, { rating: was });
+        failure(e, "Couldn’t rate.");
+      }
+    },
+    [refreshItem, failure],
+  );
+
   const favoriteSelected = useCallback(async () => {
     const target = sel.target(scope);
     const ids = everyPhoto.filter((i) => sel.selected.has(i.id));
@@ -579,6 +594,20 @@ function Results({ params }: { params: SearchParams }) {
               <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || busy} onClick={() => void favoriteSelected()}>
                 Favorite
               </button>
+              <RateTools
+                target={sel.target(scope)}
+                count={sel.count}
+                disabled={sel.count === 0 || busy}
+                onDone={(rating, _n, message) => {
+                  const picked = sel.all ? null : new Set(sel.ids);
+                  sel.setSelecting(false);
+                  // Loaded photos change at once; a whole-view rating starts the list over.
+                  if (picked) for (const id of picked) refreshItem(id, { rating });
+                  else reset();
+                  show({ message });
+                }}
+                onError={(e) => failure(e, "Couldn’t rate.")}
+              />
               <button
                 type="button"
                 className="btn btn-quiet"
@@ -660,6 +689,7 @@ function Results({ params }: { params: SearchParams }) {
           onShare={(it) => setShareTarget({ kind: "photos", ids: [it.id] })}
           onUnpair={(it) => void unpairItem(it)}
           onFavorite={(it, favorite) => void setFavorite([it.id], favorite)}
+          onRate={(it, n) => void rateOne(it, n)}
           onSimilar={(it) => navigate(similarUrl(it.id))}
         />
       )}

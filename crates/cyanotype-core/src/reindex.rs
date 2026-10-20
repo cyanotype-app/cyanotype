@@ -145,6 +145,8 @@ pub struct Report {
     /// Photos put back as hidden / archived (or that would be): a hidden photo must come back hidden.
     pub hidden_restored: u64,
     pub archived_restored: u64,
+    /// Photos put back with their star rating (or that would be).
+    pub ratings_restored: u64,
     /// Objects under `edits/` (a photo's corrected date, location and caption).
     pub edits_objects: u64,
     /// Applied to a row that had none or older ones (or would be, in a dry run).
@@ -278,6 +280,7 @@ impl Report {
             "    hidden / archived                {} / {}",
             self.hidden_restored, self.archived_restored
         );
+        let _ = writeln!(s, "    star ratings                     {}", self.ratings_restored);
         let _ = writeln!(
             s,
             "  edits: objects / {} / current     {} / {} / {}",
@@ -367,6 +370,8 @@ struct Ctx<'a> {
     has_favorite: bool,
     /// The schema has `hidden` and `archived` (migration 0020).
     has_state: bool,
+    /// The schema has `rating` and `rating_source` (migration 0024).
+    has_rating: bool,
     known_users: HashMap<Uuid, bool>,
     manifests: HashMap<Uuid, Arc<UserManifest>>,
     manifest_keys: BTreeMap<Uuid, Vec<String>>,
@@ -389,6 +394,12 @@ pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Repor
     )
     .fetch_one(db)
     .await?;
+    let has_rating: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = current_schema() AND table_name = 'assets' AND column_name = 'rating_source')",
+    )
+    .fetch_one(db)
+    .await?;
     if let Some(u) = opts.assign_to {
         let ok: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)")
             .bind(u)
@@ -402,6 +413,7 @@ pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Repor
         opts,
         has_favorite,
         has_state,
+        has_rating,
         known_users: HashMap::new(),
         manifests: HashMap::new(),
         manifest_keys: if opts.use_manifests {
@@ -756,6 +768,14 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
         let favorite = entry.and_then(|e| e.favorite).unwrap_or(false);
         let hidden = entry.and_then(|e| e.hidden).unwrap_or(false);
         let archived = entry.and_then(|e| e.archived).unwrap_or(false);
+        let rating = entry
+            .and_then(|e| {
+                Some((
+                    e.rating?.min(5),
+                    e.rating_source.clone().unwrap_or_else(|| "user".into()),
+                ))
+            })
+            .filter(|_| cx.has_rating);
         let wanted_id = entry.map(|e| e.id);
 
         if !cx.opts.apply {
@@ -771,6 +791,7 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
                 cx.report.hidden_restored += u64::from(hidden);
                 cx.report.archived_restored += u64::from(archived);
             }
+            cx.report.ratings_restored += u64::from(rating.is_some());
             continue;
         }
         let r = insert_orphan(
@@ -789,6 +810,7 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
                 favorite,
                 hidden,
                 archived,
+                rating: rating.clone(),
             },
         )
         .await;
@@ -806,6 +828,7 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
                     cx.report.hidden_restored += u64::from(hidden);
                     cx.report.archived_restored += u64::from(archived);
                 }
+                cx.report.ratings_restored += u64::from(rating.is_some());
             }
             Ok(false) => {
                 cx.report.alias_objects += 1;
@@ -835,6 +858,8 @@ struct Insert<'a> {
     favorite: bool,
     hidden: bool,
     archived: bool,
+    /// Stars and who set them, from the manifest (`None`: not rated, or the schema has no ratings).
+    rating: Option<(u8, String)>,
 }
 
 /// Insert one row and queue its jobs, atomically. False if the owner already has this content (a race or an alias).
@@ -901,6 +926,15 @@ async fn insert_orphan(cx: &Ctx<'_>, i: Insert<'_>) -> Result<bool> {
         .bind(i.archived)
         .execute(&mut *tx)
         .await?;
+    }
+    if let Some((stars, source)) = &i.rating {
+        let source = if source == "file" { "file" } else { "user" };
+        sqlx::query("UPDATE assets SET rating = $2, rating_source = $3 WHERE id = $1")
+            .bind(id)
+            .bind(i16::from(*stars))
+            .bind(source)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await?;
     Ok(true)

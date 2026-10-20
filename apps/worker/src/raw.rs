@@ -297,6 +297,7 @@ fn rawler_exif(src: &RawSource) -> Option<ExifInfo> {
                 .or_else(|| md.lens.as_ref().and_then(|l| non_empty(&l.lens_name))),
             orientation: e.orientation.filter(|o| (1..=8).contains(o)).unwrap_or(1) as u8,
             pixel_dims: None,
+            rating: None,
             json,
         })
     })

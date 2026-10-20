@@ -6,6 +6,7 @@ import { placeLine } from "../map/geo";
 import { fileSize } from "../pairText";
 import type { EditKind } from "./EditDialog";
 import { useVerticalSwipe } from "../useInfoPanel";
+import { RatingStars } from "./Stars";
 
 // maplibre-gl is big: the small map loads only when a photo with a location is looked at.
 const PlaceMap = lazy(() => import("../map/PlaceMap"));
@@ -29,6 +30,9 @@ interface Props {
   onNavigate: () => void;
   /** Open the editor for the photo's date, location or caption. Without it the panel only shows. */
   onEdit?: (kind: EditKind) => void;
+  /** The photo's stars, and how to change them (a row of stars shows when `onRate` is given). */
+  rating?: number;
+  onRate?: (rating: number) => void;
 }
 
 type Follow = (e: MouseEvent<HTMLAnchorElement>, to: string) => void;
@@ -56,7 +60,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
  * files, albums and burst. A row appears only when the photo has the information. The camera, lens, place and date
  * are links to the search or the timeline for the same thing.
  */
-export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, onEdit }: Props) {
+export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, onEdit, rating, onRate }: Props) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const navigate = useNavigate();
   const follow: Follow = (e, to) => {
@@ -98,7 +102,7 @@ export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavi
             </button>
           </p>
         )}
-        {state.status === "ready" && <Body d={state.details} follow={follow} onEdit={onEdit} />}
+        {state.status === "ready" && <Body d={state.details} follow={follow} onEdit={onEdit} rating={rating} onRate={onRate} />}
       </div>
     </aside>
   );
@@ -112,7 +116,19 @@ function EditButton({ label, onClick }: { label: string; onClick: () => void }) 
   );
 }
 
-function Body({ d, follow, onEdit }: { d: PhotoDetails; follow: Follow; onEdit?: (kind: EditKind) => void }) {
+function Body({
+  d,
+  follow,
+  onEdit,
+  rating,
+  onRate,
+}: {
+  d: PhotoDetails;
+  follow: Follow;
+  onEdit?: (kind: EditKind) => void;
+  rating?: number;
+  onRate?: (rating: number) => void;
+}) {
   const when = whenText(d.date);
   const loc = d.location;
   const place = loc?.place ? placeLine(loc.place) : "";
@@ -135,6 +151,12 @@ function Body({ d, follow, onEdit }: { d: PhotoDetails; follow: Follow; onEdit?:
         {d.edits?.date_edited && <span className="details-sub details-edited">Edited</span>}
         {onEdit && <EditButton label="Adjust date and time" onClick={() => onEdit("date")} />}
       </Row>
+
+      {onRate && (
+        <Row label="Rating">
+          <RatingStars value={rating} onChange={onRate} label="Rating of this photo" />
+        </Row>
+      )}
 
       {loc && (
         <Row label="Location">

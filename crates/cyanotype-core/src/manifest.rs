@@ -77,6 +77,14 @@ pub struct AssetLine {
     /// Archived (migration 0020). Absent in older manifests (not archived).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived: Option<bool>,
+    /// Star rating 1 to 5, or 0 for a rating the owner cleared on purpose (migration 0024). Absent: not rated. Older readers
+    /// ignore the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<u8>,
+    /// `user` or `file`: who set the rating (see `assets.rating_source`). A `file` rating is read from the photo again by a
+    /// rebuilt library, a `user` rating is the owner's and is kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -166,7 +174,8 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
         "SELECT a.id, a.sha256, a.original_key, a.original_name, a.content_type, a.size_bytes, a.created_at,
                 a.file_modified_at, a.taken_at, a.deleted_at,
                 (to_jsonb(a) ->> 'favorite')::boolean AS favorite, p.sha256 AS pair_primary,
-                (to_jsonb(a) ->> 'hidden')::boolean AS hidden, (to_jsonb(a) ->> 'archived')::boolean AS archived
+                (to_jsonb(a) ->> 'hidden')::boolean AS hidden, (to_jsonb(a) ->> 'archived')::boolean AS archived,
+                (to_jsonb(a) ->> 'rating')::smallint AS rating, to_jsonb(a) ->> 'rating_source' AS rating_source
          FROM assets a LEFT JOIN assets p ON p.id = a.primary_id
          WHERE a.owner_id = $1 AND a.purging_at IS NULL ORDER BY a.created_at, a.id",
     )
@@ -192,6 +201,17 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
             pair_primary: pair.map(|p| keys::hex(&p)),
             hidden: r.try_get("hidden")?,
             archived: r.try_get("archived")?,
+            rating: {
+                let (rating, source): (Option<i16>, Option<String>) =
+                    (r.try_get("rating")?, r.try_get("rating_source")?);
+                // Only what carries information: a rating, or a rating the owner cleared on purpose.
+                rating
+                    .filter(|n| (1..=5).contains(n) || (*n == 0 && source.as_deref() == Some("user")))
+                    .map(|n| n as u8)
+            },
+            rating_source: r
+                .try_get::<Option<String>, _>("rating_source")?
+                .filter(|s| s == "user" || s == "file"),
         }));
     }
     let n_assets = rows.len() as u64;
@@ -487,6 +507,8 @@ mod tests {
             pair_primary: None,
             hidden: Some(true),
             archived: None,
+            rating: Some(4),
+            rating_source: Some("user".into()),
         };
         let mut buf = serde_json::to_vec(&Line::Asset(a.clone())).unwrap();
         buf.extend_from_slice(b"\n\nnot json\n{\"t\":\"from_the_future\"}\n");
