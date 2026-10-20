@@ -5,6 +5,7 @@ members = [
     "crates/cyanotype-service",
     "crates/cyanotype-clip",
     "crates/cyanotype-takeout",
+    "crates/cyanotype-ocr",
     "apps/auth",
     "apps/assets",
     "apps/worker",
@@ -22,6 +23,7 @@ rust-version = "1.89"
 cyanotype-core = { path = "crates/cyanotype-core" }
 cyanotype-clip = { path = "crates/cyanotype-clip" }
 cyanotype-takeout = { path = "crates/cyanotype-takeout" }
+cyanotype-ocr = { path = "crates/cyanotype-ocr" }
 cyanotype-service = { path = "crates/cyanotype-service" }
 
 anyhow = "1"

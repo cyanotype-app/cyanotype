@@ -13,6 +13,7 @@ pub mod limits;
 pub mod manifest;
 pub mod metrics;
 pub mod objmeta;
+pub mod ocr;
 pub mod pairing;
 pub mod places;
 pub mod reindex;

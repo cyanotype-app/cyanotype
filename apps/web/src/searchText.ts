@@ -41,6 +41,9 @@ export function paramsFromUrl(search: URLSearchParams): SearchParams {
   const loc = search.get("has_location");
   if (loc === "true") out.has_location = true;
   if (loc === "false") out.has_location = false;
+  const txt = search.get("has_text");
+  if (txt === "true") out.has_text = true;
+  if (txt === "false") out.has_text = false;
   const skip = parseSkip(search.get("skip"));
   if (skip) out.skip = skip;
   // "More like this" has no text: a `q` next to it is dropped (the same URL always means the same search).
@@ -77,6 +80,7 @@ export function urlFromParams(p: SearchParams): string {
   if (p.type) q.set("type", p.type);
   if (p.album) q.set("album", p.album);
   if (p.has_location !== undefined) q.set("has_location", String(p.has_location));
+  if (p.has_text !== undefined) q.set("has_text", String(p.has_text));
   if (p.skip) q.set("skip", p.skip);
   if (p.similar) q.set("similar", p.similar);
   return q.toString();
@@ -127,6 +131,7 @@ export function chipsOf(p: SearchParams, albumTitle?: string): Chip[] {
   if (p.place) chips.push({ clears: ["place"], label: p.place });
   if (p.type) chips.push({ clears: ["type"], label: TYPE_LABEL[p.type] });
   if (p.has_location !== undefined) chips.push({ clears: ["has_location"], label: p.has_location ? "Has location" : "No location" });
+  if (p.has_text !== undefined) chips.push({ clears: ["has_text"], label: p.has_text ? "Has text" : "No text" });
   if (p.album) chips.push({ clears: ["album"], label: albumTitle ? `Album: ${albumTitle}` : "Album" });
   return chips;
 }

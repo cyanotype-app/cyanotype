@@ -319,6 +319,10 @@ async fn store(ctx: &Arc<Ctx>, model: Model, job: &jobs::Job, v: &[f32]) -> Resu
     embeddings::store(&ctx.db, job.asset_id, model.id(), model.version(), v)
         .await
         .context("store embedding")?;
+    // Its text is read next, after everything else (a failure here is not the embedding's either).
+    if let Err(e) = cyanotype_core::ocr::enqueue_for_asset(&ctx.db, job.asset_id, cyanotype_core::ocr::VERSION).await {
+        tracing::warn!(error = %format!("{e:#}"), "could not queue the text job");
+    }
     // The photo can be compared with its neighbours now: regroup its burst (a failure here is not the embedding's).
     if let Err(e) = bursts::requeue_after_embed(&ctx.db, job.asset_id).await {
         tracing::warn!(error = %format!("{e:#}"), "could not queue the burst regroup");

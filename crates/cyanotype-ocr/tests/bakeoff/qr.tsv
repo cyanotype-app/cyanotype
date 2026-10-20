@@ -1,0 +1,10 @@
+# QR codes in real photos (docs/build.md, "Text in photos"): 6 images from Wikimedia Commons, all marked CC0 or public domain, fetched by
+# scripts/fetch-ocr-set.sh next to the text set. `present` is how many codes a person can see; the last column is the payloads a
+# reader must decode (empty: none of the decoders tried read them; they stay here so a better reader shows up as a better number).
+# file	Commons file	licence	url	codes present	payloads that must be read
+qr_01.png	File:QR-Code für Wikipedia-Artikel.png	CC0	https://upload.wikimedia.org/wikipedia/commons/8/83/QR-Code_f%C3%BCr_Wikipedia-Artikel.png	1	https://de.wikipedia.org/wiki/Maschinenlesbarkeit
+qr_02.jpg	File:Fire extinguisher box with emergency instruction and QR codes for Android and iOS disaster prevention map app.jpg	CC0	https://thumb.wikimedia.org/wikipedia/commons/thumb/7/75/Fire_extinguisher_box_with_emergency_instruction_and_QR_codes_for_Android_and_iOS_disaster_prevention_map_app.jpg/1280px-Fire_extinguisher_box_with_emergency_instruction_and_QR_codes_for_Android_and_iOS_disaster_prevention_map_app.jpg	3	https://itunes.apple.com/jp/app/mu-hei-qu-fang-zaimappu/id816113046?mt=8 https://play.google.com/store/apps/details?id=jp.mappleon.android.meguro
+qr_03.jpg	File:Huge QR code billboard in central Shibuya, readable even behind trees.jpg	CC0	https://thumb.wikimedia.org/wikipedia/commons/thumb/3/3d/Huge_QR_code_billboard_in_central_Shibuya%2C_readable_even_behind_trees.jpg/1280px-Huge_QR_code_billboard_in_central_Shibuya%2C_readable_even_behind_trees.jpg	1	
+qr_04.jpg	File:QR Code Damaged.jpg	CC0	https://thumb.wikimedia.org/wikipedia/commons/thumb/8/8d/QR_Code_Damaged.jpg/1280px-QR_Code_Damaged.jpg	1	
+qr_05.jpg	File:QR band promotion.jpg	CC0	https://upload.wikimedia.org/wikipedia/commons/8/88/QR_band_promotion.jpg	1	https://qrco.de/bdIvSw
+receipt_02.jpg	File:Grocery Store Receipt in Vienna.jpg	Public domain	https://thumb.wikimedia.org/wikipedia/commons/thumb/b/bc/Grocery_Store_Receipt_in_Vienna.jpg/1280px-Grocery_Store_Receipt_in_Vienna.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=thumbnail	1	

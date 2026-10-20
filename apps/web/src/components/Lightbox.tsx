@@ -1,7 +1,9 @@
 import { Link } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { downloadHref, type AssetDetail, type AssetListItem, type PhotoDetails } from "../api";
+import { api, downloadHref, type AssetDetail, type AssetListItem, type PhotoDetails, type PhotoText } from "../api";
 import { useInfoHistory, useVerticalSwipe } from "../useInfoPanel";
+import { useImageRect, useTextPanel } from "../useTextPanel";
+import { TextBoxes, TextPanel } from "./TextPanel";
 import { DetailsPanel, type DetailsState } from "./DetailsPanel";
 import { EditDialog, type EditKind } from "./EditDialog";
 import { placeLine } from "../map/geo";
@@ -17,6 +19,8 @@ interface Props {
   loadDetail: (id: string) => Promise<AssetDetail>;
   /** Read the photo's details (the Info panel: date, place, camera, exposure, files). The Info button shows when given. */
   loadDetails?: (id: string) => Promise<PhotoDetails>;
+  /** Read the text found in the photo (the Text panel: copy it, QR codes). Defaults to the server's; the Text button shows when `loadDetails` is given. */
+  loadText?: (id: string) => Promise<PhotoText>;
   /** Move the current photo to the trash. The parent removes it from `items`, which shows the next photo. */
   onTrash?: (item: AssetListItem) => void;
   /** Open the "add to album" dialog for the current photo. */
@@ -50,6 +54,7 @@ export function Lightbox({
   onClose,
   loadDetail,
   loadDetails,
+  loadText = api.getText,
   onEdited,
   onTrash,
   onAddToAlbum,
@@ -94,6 +99,19 @@ export function Lightbox({
   }, [info.open, loadDetails, currentId, infoRetry]);
   const swipe = useVerticalSwipe({ onUp: info.show, enabled: !!loadDetails && !info.open });
   const closeInfo = info.hide;
+  // The Text panel: the Text button or `t`. It takes the Info panel's place (one panel at a time) and, like it, stays open while paging.
+  const text = useTextPanel(loadDetails ? loadText : undefined, currentId);
+  const { close: closeText } = text;
+  useEffect(() => {
+    if (info.open) closeText();
+  }, [info.open, closeText]);
+  const toggleText = () => {
+    if (!text.open) closeInfo();
+    text.toggle();
+  };
+  const stageRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const imageRect = useImageRect(stageRef, imgRef, [currentId, imgLoaded, text.open, text.boxes, info.open]);
   // The editor (date, location, caption) of the open photo, from the panel.
   const [editing, setEditing] = useState<EditKind | null>(null);
   const [editVersion, setEditVersion] = useState(0);
@@ -158,6 +176,7 @@ export function Lightbox({
         e.preventDefault();
         // The panel closes first; a second Escape closes the lightbox.
         if (info.open) closeInfo();
+        else if (text.open) closeText();
         else close();
       } else if (
         e.key === "i" &&
@@ -171,6 +190,18 @@ export function Lightbox({
       ) {
         e.preventDefault();
         info.toggle();
+      } else if (
+        e.key === "t" &&
+        text.enabled &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !e.repeat &&
+        [null, dialogRef.current].includes((e.target as HTMLElement | null)?.closest('[role="dialog"]') ?? null)
+      ) {
+        e.preventDefault();
+        if (!text.open) closeInfo();
+        text.toggle();
       } else if (e.key === "ArrowLeft") {
         e.preventDefault();
         go(-1);
@@ -198,7 +229,7 @@ export function Lightbox({
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [go, close, onTrash, items, index, info, closeInfo, loadDetails]);
+  }, [go, close, onTrash, items, index, info, closeInfo, loadDetails, text, closeText]);
 
   // Focus management: move focus in, give it back to the tile on close; lock page scroll.
   useEffect(() => {
@@ -260,6 +291,20 @@ export function Lightbox({
             >
               <InfoIcon />
               <span className="lightbox-info-label">Info</span>
+            </button>
+          )}
+          {text.enabled && (
+            <button
+              type="button"
+              className={`btn btn-glass lightbox-text${text.open ? " on" : ""}`}
+              aria-expanded={text.open}
+              aria-controls="text-panel"
+              aria-keyshortcuts="t"
+              aria-label="Text"
+              onClick={toggleText}
+            >
+              <TextIcon />
+              <span className="lightbox-text-label">Text</span>
             </button>
           )}
           {onSimilar && (
@@ -332,9 +377,9 @@ export function Lightbox({
           ))}
         </div>
       )}
-      <div className={`lightbox-body${info.open ? " with-info" : ""}`}>
+      <div className={`lightbox-body${info.open || text.open ? " with-info" : ""}`}>
       <div className="lightbox-main">
-      <div className="lightbox-stage" {...swipe} style={bg ? { backgroundImage: `url(${bg})` } : undefined}>
+      <div className="lightbox-stage" ref={stageRef} {...swipe} style={bg ? { backgroundImage: `url(${bg})` } : undefined}>
         <button
           type="button"
           className="nav nav-prev"
@@ -347,12 +392,14 @@ export function Lightbox({
         {(src ?? fallback) && (
           <img
             key={item.id}
+            ref={imgRef}
             src={src ?? fallback ?? undefined}
             alt={item.original_name}
             className={src && imgLoaded === item.id ? "loaded" : src ? "loading" : "loaded"}
             onLoad={() => setImgLoaded(item.id)}
           />
         )}
+        {text.open && text.boxes && text.current && imageRect && <TextBoxes text={text.current} style={imageRect} />}
         {failed[item.id] && <p className="lightbox-msg">Could not load this photo.</p>}
         {showPending && !fallback && <p className="lightbox-msg">This photo is still being processed.</p>}
         <button
@@ -408,6 +455,16 @@ export function Lightbox({
         </p>
       )}
       </div>
+      {text.open && text.enabled && (
+        <TextPanel
+          panelId="text-panel"
+          state={text.state}
+          onRetry={text.retry}
+          onClose={closeText}
+          showBoxes={text.boxes}
+          onShowBoxes={text.setBoxes}
+        />
+      )}
       {info.open && loadDetails && (
         <DetailsPanel
           panelId="details-panel"
@@ -453,6 +510,15 @@ function InfoIcon() {
       <circle cx="12" cy="12" r="9" />
       <path d="M12 11v5.5" />
       <circle cx="12" cy="7.8" r="0.6" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** Lines of text. On a phone this is all the button shows. */
+function TextIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <path d="M4 6h16M4 12h16M4 18h10" />
     </svg>
   );
 }

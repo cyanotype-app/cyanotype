@@ -12,6 +12,7 @@ mod imaging;
 mod media;
 #[cfg(test)]
 mod memcal;
+mod ocr;
 mod raw;
 #[cfg(test)]
 mod raw_samples;
@@ -60,7 +61,7 @@ fn handled_kinds() -> impl Iterator<Item = &'static str> {
 
 /// Every kind that has queue gauges.
 fn gauge_kinds() -> impl Iterator<Item = &'static str> {
-    handled_kinds().chain([jobs::KIND_EMBED])
+    handled_kinds().chain([jobs::KIND_EMBED, jobs::KIND_OCR])
 }
 
 fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
@@ -115,6 +116,33 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+    // Reading text off photos (own loop, after embedding; shares its permit so the two models never work at once). Its
+    // models (about 100 MB resident while loaded) are likewise outside the decode budget; each job holds `ocr::TRANSIENT_BYTES`
+    // of it. Without the model files the `ocr` jobs stay queued.
+    let ocr_on = env_parse("WORKER_OCR", 1u8) != 0;
+    let ocr_task = if ocr_on && ocr::model_installed() {
+        let reader = Arc::new(ocr::Reader::new(
+            env_parse("WORKER_OCR_THREADS", DEFAULT_EMBED_THREADS).max(1),
+        ));
+        let waker = jobs::JobWaker::spawn(&db_cfg.url);
+        Some(tokio::spawn(ocr::run_loop(
+            ctx.clone(),
+            reader,
+            waker,
+            embed_busy.clone(),
+        )))
+    } else {
+        if ocr_on {
+            tracing::warn!(
+                dir = %ocr::model_dir().display(),
+                "text model files not found: text in photos will not be read (run scripts/fetch-models.sh, or set OCR_MODEL_DIR)"
+            );
+        }
+        None
+    };
+    let embedding = embed_task.is_some();
+    let reading_text = ocr_task.is_some();
+    let background: Vec<tokio::task::JoinHandle<()>> = [embed_task, ocr_task].into_iter().flatten().collect();
     // Bounds in-flight jobs (each holds a whole original plus decoded pixels in memory).
     let heavy = Arc::new(Semaphore::new(concurrency));
 
@@ -123,7 +151,8 @@ async fn main() -> Result<()> {
         max_original_bytes = ctx.max_original_bytes,
         memory_budget_mb = ctx.budget.total_bytes() >> 20,
         raw_develop = ctx.raw_develop,
-        embedding = embed_task.is_some(),
+        embedding,
+        reading_text,
         "worker started"
     );
     // Instant pickup: a dedicated LISTEN connection (not from the pool) wakes the loop below.
@@ -139,7 +168,7 @@ async fn main() -> Result<()> {
             // Take a permit before claiming so we never hold a claimed job idle.
             let permit = tokio::select! {
                 p = heavy.clone().acquire_owned() => p?,
-                _ = &mut shutdown => return drain(heavy, concurrency, embed_busy, embed_task).await,
+                _ = &mut shutdown => return drain(heavy, concurrency, embed_busy, background).await,
             };
             match jobs::claim(&pool, kind).await {
                 Ok(Some(job)) => {
@@ -163,7 +192,7 @@ async fn main() -> Result<()> {
             let kinds: Vec<&str> = handled_kinds().collect();
             tokio::select! {
                 () = jobs::wait_for_work(&pool, &waker, &kinds, FALLBACK_POLL) => {}
-                _ = &mut shutdown => return drain(heavy, concurrency, embed_busy, embed_task).await,
+                _ = &mut shutdown => return drain(heavy, concurrency, embed_busy, background).await,
             }
         }
     }
@@ -174,7 +203,7 @@ async fn drain(
     heavy: Arc<Semaphore>,
     concurrency: usize,
     embed_busy: Arc<Semaphore>,
-    embed_task: Option<tokio::task::JoinHandle<()>>,
+    background: Vec<tokio::task::JoinHandle<()>>,
 ) -> Result<()> {
     tracing::info!("shutting down; waiting for in-flight jobs");
     let _ = tokio::time::timeout(Duration::from_secs(30), async {
@@ -184,7 +213,7 @@ async fn drain(
         let _ = embed_busy.acquire().await;
     })
     .await;
-    if let Some(t) = embed_task {
+    for t in background {
         t.abort();
     }
     Ok(())

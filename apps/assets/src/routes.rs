@@ -66,6 +66,9 @@ mod similar_tests;
 mod takeout;
 #[cfg(test)]
 mod takeout_tests;
+mod text;
+#[cfg(test)]
+mod text_tests;
 mod tiles;
 #[cfg(test)]
 mod tiles_tests;
@@ -165,6 +168,7 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/{id}/unpair", post(unpair))
         .route("/assets/{id}/similar", get(similar::similar))
         .route("/assets/{id}/details", get(details::get))
+        .route("/assets/{id}/text", get(text::get))
         .route("/assets/{id}/download", get(download::download))
         .route("/assets/{id}", get(get_one))
         .route("/assets/{id}", delete(remove))

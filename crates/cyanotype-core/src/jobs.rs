@@ -28,6 +28,9 @@ pub const KIND_SHARE_COPY: &str = "share_copy";
 /// bucket write, no download. Queued by the metadata job when it finishes, by the check call for a photo that already exists,
 /// and by the worker's sweep; one row per held revision.
 pub const KIND_TAKEOUT: &str = "takeout";
+/// Read the text (and QR codes) off a photo's preview (`ocr`, `cyanotype_core::ocr`). Queued by the worker after a photo's
+/// `embed` and by its sweep, at backfill priority; one row per model version.
+pub const KIND_OCR: &str = "ocr";
 
 /// Jobs enqueued for every new asset. Later pipeline stages are enqueued by earlier ones
 /// or by the milestones that implement them.

@@ -443,6 +443,66 @@ every runtime image moved from Debian bookworm to trixie** (`lukemathwalker/carg
 `debian:trixie-slim`; libstdc++6 is part of trixie-slim). The worker's runtime packages are the same libraries with their
 trixie names (`libdav1d7`); the Dockerfile's `ldd` check still fails the build if anything is unresolved.
 
+## Text in photos (OCR)
+
+The worker reads the text off each photo's preview (`docs/library.md`, "Text in photos") with **PP-OCRv6 small**, PaddlePaddle's own ONNX exports of its
+detection and recognition models, run with the same ONNX Runtime as the search models. The code is `crates/cyanotype-ocr` (the PaddleOCR pipeline
+without OpenCV: a DB probability map, connected components, the smallest rotated rectangle around each, CTC decoding) plus QR reading with `rxing`.
+
+### Which model, and why (the bake-off)
+
+38 images from Wikimedia Commons, all CC0 or public domain (`crates/cyanotype-ocr/tests/bakeoff/images.tsv`, fetched by `scripts/fetch-ocr-set.sh`): 7 receipts
+and forms (Latin, Vietnamese, Russian), 15 street signs (Latin, Cyrillic, Hebrew, Korean, Lao), 9 screenshots and 7 cards, letters and scans.
+The last column of the list is every word a person can read in the picture, accents removed and people's names left out; the score is the share of those
+words found (a token, a part of a word of five letters or more, or one edit away). The images are 1024 to 1280 px (the real preview is up to 1440). One
+thread, release build, this host (2 vCPU shared with other work, so times are indicative). `cargo run --release -p cyanotype-ocr --example bakeoff`
+with `OCR_VARIANT` = `v6`, `v3latin`, `v5latin` or `v3en`.
+
+| Model | Words found | Receipts | Signs | Screens | Documents | Mean / median / slowest | Resident after load | Highest process peak |
+|---|---|---|---|---|---|---|---|---|
+| **PP-OCRv6 small det + rec** (31 MB, multilingual dictionary) | **87.4 %** (327/374) | 84.8 | 78.7 | 97.4 | 76.5 | **1.9 s / 0.8 s / 10.2 s** | 78 MB | **257 MB** |
+| same, 1280 px detection | 87.2 % | 85.9 | 78.7 | 96.1 | 76.5 | 2.6 s / 1.4 s / 12.9 s | 78 MB | 324 MB |
+| same, 2 threads | 87.4 % | 84.8 | 78.7 | 97.4 | 76.5 | 1.8 s / 0.8 s / 12.6 s | 78 MB | 257 MB |
+| PP-OCRv3 mobile det (2.4 MB) + PP-OCRv5 Latin rec (7.9 MB) | 80.7 % | 76.1 | 78.7 | 94.8 | 60.5 | 2.2 s / 1.2 s / 12.0 s | 52 MB | 223 MB |
+| PP-OCRv5 det (88 MB) + Latin rec * | 87.4 % | 81.5 | 78.7 | 98.1 | 79.0 | 7.4 s / 5.9 s / 20.4 s | 230 MB | 725 MB |
+| PP-OCRv3 det + PP-OCRv5 English rec * | 83.4 % | 77.2 | 80.9 | 97.4 | 65.4 | 3.2 s / 1.1 s / 21.9 s | 52 MB | 264 MB |
+
+\* measured before the two speed and memory changes below (150 boxes at most, batches by width), so only its accuracy and its order of magnitude are comparable;
+the same change took PP-OCRv6 small from 2.9 s mean, 21 s slowest and a 492 MB peak to the numbers in the first row, with the same 87.4 %.
+
+PP-OCRv6 small wins: the same accuracy as the 88 MB server detector at a quarter of the time and a third of the memory, and 7 points above the small Latin-only
+models, mostly on documents (long lines of small type). It is the official PaddlePaddle export (`PaddlePaddle/PP-OCRv6_small_det_onnx` and `..._rec_onnx`,
+Apache-2.0, published June 2026), pinned by commit and sha256 in `models/ocr.lock`, fetched by `scripts/fetch-models.sh` and baked into the worker image
+(31 MB). Words it misses: scripts its dictionary lacks (the Russian receipt and the Cyrillic sign score 0 of 13 words; Vietnamese diacritics are
+dropped but the words mostly still match), an old handwritten hand, very small type on a crumpled receipt, text on a stone plaque.
+
+**Memory.** 78 MB resident with both networks loaded; the highest process peak while reading any of the 38 images was 257 MB, so a job needs about 180 MB above
+the resident models; the worker holds 224 MB of its byte budget per job (`apps/worker/src/ocr.rs`). Two things keep the peak down: boxes are read biggest first and at
+most 150 (a screenshot with 360 text boxes took 21 s and 262 MB), and recognition batches close when their padded widths pass 1,600 px (a batch of long lines is
+small), which took the 58-line letter from 482 MB to 257 MB. The worker's container limit (1280m) already covers the decode budget (640 MB), the image tower (about
+150 MB), this model (about 80 MB resident, outside the budget) and the runtime. The models are dropped after 5 idle minutes, and only one of the two ever works at a time.
+
+**Speed.** About 0.8 s for a typical photo, 1 to 3 s for a receipt, up to 10 s for a dense page, on one thread of a shared host: a 50,000-photo library is read
+in the background in roughly 12 to 16 hours of otherwise idle worker time (most photos have no text and cost about 0.4 s, the detector alone).
+
+### QR codes
+
+`rqrr` (pure Rust, small) found none of the 8 codes in the 6 real photos of `tests/bakeoff/qr.tsv`, not even a clean stylised one; `rxing` (a port of ZXing, Apache-2.0,
+published September 2026, with only its QR reader compiled in) found **5 of 8**: a stylised dot code, a sticker, and all three codes on a fire-extinguisher box
+(each decoded to the right address); not read: a billboard at night behind trees, a deliberately damaged code and the code on a crumpled Austrian till receipt
+(3 px per module). Each photo is scanned at its own size and again at twice it (the second pass found the second and third code on the box). 829 ms for the six.
+The payload is data: shown as text, a link only for `http(s)`, never opened by the server or the page.
+
+### Provenance and licences
+
+| What | Licence | Source |
+|---|---|---|
+| PP-OCRv6 small detection and recognition (ONNX) | Apache-2.0 | `huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx` @ 28fe589, `..._rec_onnx` @ b8f84f0 |
+| `rxing` 0.9.3 | Apache-2.0 | crates.io, 2026-09-16 (>= 14 days), checksum in `Cargo.lock` |
+| the bake-off images | CC0 / public domain | listed with their Commons titles in `tests/bakeoff/*.tsv` |
+
+Candidates compared but not shipped: PP-OCRv3 and v5 exports by `monkt/paddleocr-onnx` on Hugging Face (Apache-2.0, third-party conversion).
+
 ## Caching
 
 - Dependencies: the cargo-chef `cook` layer is reused until `Cargo.toml`/`Cargo.lock` change. Editing

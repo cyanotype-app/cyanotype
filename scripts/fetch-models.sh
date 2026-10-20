@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Download the search model files listed in models/<name>.lock (clip, siglip2), verify their sha256, and install them into a
-# directory.
+# Download the model files listed in models/<name>.lock (clip, siglip2: search; ocr: text in photos), verify their sha256, and
+# install them into a directory.
 #
 #   scripts/fetch-models.sh                              # every model into ./models/<name> (what `just models` and the tests use)
 #   MODELS=siglip2 scripts/fetch-models.sh               # only some of them (space separated names)
@@ -49,7 +49,7 @@ if [ -n "${LOCK:-}" ]; then
   shift
   fetch_lock "$LOCK" "$dest" "$@"
 else
-  for name in ${MODELS:-clip siglip2}; do
+  for name in ${MODELS:-clip siglip2 ocr}; do
     echo "== $name"
     fetch_lock "$here/models/$name.lock" "${1:-$here/models}/$name"
   done

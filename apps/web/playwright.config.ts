@@ -17,7 +17,7 @@ export default defineConfig({
     // scrubber-jump assertions flaky (a year tap landing ~33,000 px off).
     {
       name: "layout",
-      testMatch: /(mobile-overflow|security-layout|takeout)\.spec\.ts/,
+      testMatch: /(mobile-overflow|security-layout|takeout|text-layout)\.spec\.ts/,
       use: {
         launchOptions: {
           ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),
@@ -25,7 +25,7 @@ export default defineConfig({
         },
       },
     },
-    { name: "timeline", testIgnore: /(mobile-overflow|security-layout|takeout)\.spec\.ts/ },
+    { name: "timeline", testIgnore: /(mobile-overflow|security-layout|takeout|text-layout)\.spec\.ts/ },
   ],
   webServer: {
     command: `pnpm exec vite build && pnpm exec vite preview --port ${PORT} --strictPort`,

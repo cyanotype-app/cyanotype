@@ -1293,3 +1293,65 @@ dismissals in the bucket.
   Archive and Hidden views, the password prompt, lock and expiry); `e2e/mobile-overflow.spec.ts` ("library views") at 320 to 1280 px,
   light and dark: strip, More menu, selection actions, viewer menu, memories, recent, archive, the unlock prompt with its error,
   the Hidden view, album counts, the search filter.
+# Text in photos
+
+What is written in a photo (a sign, a receipt, a screenshot, a page) is read on the server, found by search, shown in the viewer to
+copy, and QR codes in it are listed. Nothing leaves the server and no service is called: the model files are baked into the worker.
+
+## What the user sees
+
+- **Search** finds a photo by the words in it, like it finds one by its caption: every word of the query (three letters or more) must be in
+  the text, in any case, as part of a word (`minste` finds `WESTMINSTER`), and such photos come **in front of** the model's ranking, after
+  the photos whose caption has the words (captions are the owner's own words), newest first within each. Someone else's text never matches.
+  Filters apply to them as to every result.
+- **Filter "Text in the photo"** in the search filter sheet (`has_text=true|false`; chip "Has text"): only photos with (or without) text; the
+  count of photos with text is in the sheet.
+- **Viewer, "Text" button** (or `t`): the recognised text, **Copy all**, and **Show on the photo**, which draws a box on every line (and on
+  QR codes) over the picture, in percentages of it so it follows any size. It replaces the Info panel while open (one panel at a time) and
+  stays open while paging. A photo not read yet says so; a photo with no text says "No text found". The text is machine-read: the panel says
+  to check numbers and names.
+- **QR codes** are listed with what they say (web address, Wi-Fi network, contact, ...), with **Copy**. A plain `http(s)` address also has an
+  **Open example.org** link, which opens only when clicked, in a new tab (`noopener noreferrer nofollow`). Nothing is ever opened for you, and
+  `javascript:`, `data:` and everything else is text only. The server decides what is a link (`link` in the API) and the page checks again.
+
+## How it works
+
+- **Job.** An `ocr` job per photo, queued when its `embed` job stores its vector (so text comes after search indexing), at the lowest
+  priority; the worker's `ocr` loop takes one only when no thumbnail, metadata, embed, pairing, geocode or takeout job is runnable, and shares the
+  embed loop's one-at-a-time permit, so the two ONNX models never work at once. It reads the photo's **`preview.webp`** (at most 1440 px), never
+  the original. Models load on the first job and are dropped after 5 quiet minutes (like embedding); each job holds 224 MB of the worker's byte
+  budget (`WORKER_MEMORY_BUDGET_MB`) while it runs. `WORKER_OCR=0` turns it off; `WORKER_OCR_THREADS` (default 1).
+- **Backfill.** The loop's sweep (at start, then every 15 minutes) queues, at backfill priority, every photo with a preview that the current
+  model has not read: an existing library is read in the background, at the pace of what is left over after uploads and embedding (about 1 s a
+  typical photo, up to 10 s for a page of dense text, on one thread).
+- **Model switch.** `crates/cyanotype-core/src/ocr.rs` has `MODEL` and `VERSION`; `models/ocr.lock` pins the files. A new model or version
+  reads the library again, like a new search model; the old text keeps answering until each photo's new text replaces it.
+- **Storage.** `asset_text` (migration 0023): the text, the lines with a confidence, a quadrilateral and the words of each, the QR codes. Coordinates
+  are 0..1 of the picture. A generated `simple`-configuration `tsvector` (no stemming or stop words, so any script and any mix of languages
+  works), a GIN trigram index on the text for part-of-a-word matches (`ILIKE`), and `has_text`. A photo with nothing on it has a row with empty
+  text so it is not read again. Rows go with their photo.
+- **No manifest.** The text is derived from the preview and re-made by the sweep; it is not state to preserve, so a bucket-only rebuild
+  (`cyanotype reindex`) reads the photos again like any derived data.
+- **Limits.** No angle classifier: text upside down is not read. Words in scripts the model's dictionary lacks (Cyrillic, Vietnamese
+  composed letters, Arabic) come out as look-alike Latin letters or nothing (measured in the bake-off). At most 150 text boxes per photo are read (the
+  biggest), so a screenshot of a spreadsheet is read in part. QR codes: found on a clear sticker, a sign or a screen; not on a crumpled receipt or a
+  distant, small or damaged one (see the bake-off).
+
+## API (assets service, owner-scoped)
+
+- `GET /assets/{id}/text` -> `{status: "read"|"pending", text, lines: [{t, s, q: [x0,y0,...,x3,y3], w: [{t, q}]}], qr: [{t, q, link?}]}`.
+  `pending`: not read yet. 404 for a photo that is not yours or is in the trash. A `read` API key (or a session) may call it.
+- `GET /assets/search?...&has_text=true|false`, and `with_text` in `GET /assets/search/facets`.
+- `GET /assets/processing` has `text: {read, total, queued, running, failed, model, percent}`, reported apart from `active` (a backfill takes hours
+  and is not "processing"), and `ocr` jobs are left out of `by_kind` unless they failed.
+
+## Tests
+
+- `cyanotype-ocr`: geometry (components, hull, rotated rectangle), detection boxes from a probability map, CTC decoding and word spans, batching, the
+  dictionary parser, QR reading on synthetic codes at several sizes, turned, in a noisy picture and two in one picture, and which payloads are links.
+- The assets service (`text_tests.rs`): the route (pending, read, links only for web addresses, other owners, trash), search order (captions, then
+  text, once each), filters, `has_text` and its facet, the sweep and a model switch, the processing report, and `simple`/trigram matching of Cyrillic,
+  Vietnamese and parts of numbers. The worker (`ocr.rs`): the stored shape, and a real preview read with the real model when `OCR_TEST_IMAGE` and the
+  model files are there.
+- Web: `textText.test.ts`, `TextPanel.test.tsx` (copy, QR links, never auto-opened, empty and pending states, boxes), and `e2e/text-layout.spec.ts`
+  (the panel, boxes and QR list at 320 to 1280 px, light and dark).
