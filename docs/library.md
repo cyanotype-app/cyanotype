@@ -1420,3 +1420,79 @@ search filter and a facet, and it can be read from the photo's own metadata as a
 - `crates/cyanotype-core/tests/reindex.rs`: ratings and their source come back with a rebuilt database (dry run and apply).
 - Web: `ratingText.test.ts`, `components/Rating.test.tsx` (stars, keys, the dialog), filter sheet and URL; `e2e/ratings-layout.spec.ts`
   (Playwright, 320 to 414 px, 1280 px, 360 px dark).
+
+# Tags
+
+Global per-user labels on photos (migration 0025): autocomplete, rename, merge, delete, bulk add and remove, a Tags view and a tag
+page, a search filter, tag words in text search, and keywords imported from the files.
+
+## What the user sees
+
+- **Tagging.** *Tag* in the selection bar of the library, search results and albums (also over a whole view) opens a dialog with *Add
+  tags* and *Remove tags*: chips plus a field with autocomplete (Enter or a comma adds a name, Backspace takes the last chip back). In
+  the viewer's Info panel a *Tags* row shows the photo's tags (a dashed outline marks one that was **imported** from the file), an *x*
+  on each removes it, *Add tag* opens the same field.
+- **Tags view** (*More*, *Tags*): every tag with its photo count, A to Z or most used, with a filter box. A tag opens its **tag page**: the
+  photos (select, rate, tag, *Remove this tag*), *Rename*, *Merge into...* (another tag; every photo gets that one and this one goes),
+  *Delete tag* (taken off its photos, the photos stay). Renaming to a name another tag has says so and points at Merge.
+- **Search.** *Tags* in the filter sheet (existing tags only, with autocomplete) and, with two or more, *All of them* or *Any of them*. A chip
+  (*Tags: beach and sunset*), `tags=beach,sunset&tag_mode=any` in the address. Text search also finds a photo by the words of its tags:
+  they lead the results exactly as caption words do (every word must be in the caption or in a tag).
+- Names are flat: letters, digits, spaces, symbols, and `/` (so `trip/2024` is one name; nothing treats it as a hierarchy yet). No commas
+  (the separator), at most 100 characters, no control characters. Two names are the same tag ignoring case; the first spelling is kept.
+- **Imported tags.** IPTC *Keywords* and XMP `dc:subject` of a file become tags marked imported, once per photo: removing one stays removed
+  when the metadata job runs again, and adding the same tag yourself makes it yours.
+
+## How it works
+
+- **Tables.** `tags (id, owner_id, name, created_at)` with a unique index on `(owner_id, lower(name))`; `asset_tags (asset_id, tag_id,
+  imported, added_at)`, both sides cascading (a purged photo, a deleted tag or account takes its links); `assets.tags_imported_at`. The
+  visible photo of a RAW + JPEG pair carries the tags: pairing moves a RAW's onto it, the id of the hidden RAW means its primary.
+- **Keywords** (`apps/worker/src/embedded.rs`): IPTC record 2 dataset 25 from the Photoshop segment (UTF-8, else Latin-1) of a JPEG, and the
+  entries of `<dc:subject>` in the XMP packet (any container, as for ratings), at most 200 per file, 50 imported. `tags::import_keywords`
+  runs in the metadata job under a row lock and sets `tags_imported_at`, so a photo's keywords are read once. A keyword is cleaned into a
+  name (commas and control characters become spaces, cut at 100 characters).
+- **Filter.** Per tag, `a.id IN (SELECT asset_id FROM asset_tags JOIN tags ... lower(name) = $tag)` (all), one such subquery with
+  `= ANY(...)` (any). The join form lets the planner see how many photos the tag has: with the tag id in an `InitPlan` instead, a rare
+  tag walked the whole timeline index (570 ms at 50,000 photos).
+- **Text search.** `caption_matches` builds, per query word, a materialized set (photos whose caption has it, by `assets_caption_idx`, union
+  photos with a tag whose name has it); the first word's set drives a primary-key lookup per candidate and the others filter it.
+  Order of what leads the model's ranking: captions and tags (the owner's words), then text read off the picture ("Text in photos"), sharing
+  one budget of 50. The has-text and tag filters combine.
+- **Hidden photos.** Tagging a hidden photo by id (or `scope: "hidden"`) needs the unlocked Hidden view. A locked session's tag list leaves out
+  a tag that only hidden photos have and counts only visible photos; with the view unlocked, hidden photos count. The search filter, the
+  caption/tag text matches and the tag lists of `GET /assets/{id}` all go through the base's hidden rules; the every-endpoint test has a tag
+  only the hidden photo carries.
+- **Audit.** Merge and delete write `tags.merge` / `tags.delete` with a photo count and nothing else (no names).
+- **Recovery.** The manifest gains `tag` lines (format 3): id, name, created time, photos by hash (`items` the owner's, `imported` the file's),
+  one line per tag so an empty tag survives. Older readers skip them. `reindex` recreates a tag the owner lacks (same id when free) with all its
+  photos, and for a tag that exists only tags the photos *it recreated* (so a tag removed since the manifest is not given back); a photo restored
+  from a manifest that knows tags gets `tags_imported_at`, so its keywords are not read again. Only the newest manifest's tag lines count (as share
+  links do), so a deleted or merged tag does not return from an older file. The manifest is rewritten about 30 s after a change.
+- **Indexes** (50,000 photos, 172,000 links, `EXPLAIN ANALYZE`): a rare tag (40 photos) 0.6 ms; a tag on 40 % of the library 74 ms; all of two tags 15 ms;
+  any of two 19 ms; with a camera and a rating filter 73 ms (the tag's 20,000 photos are the driver). The tag list with counts (300 tags) 177 ms,
+  autocomplete 0.3 ms. Text search leads: a word few photos have 8 ms, a word in the captions of 4 % of the photos 20 ms, a word in nearly every
+  tag name about 190 ms (that is every photo; the cost is the count of matches).
+
+## API (assets service, owner-scoped)
+
+| Request | Effect |
+|---|---|
+| `GET /assets/tags?q=&sort=name\|count&limit=` | `{items: [{id, name, count}]}`; `q` finds names containing it (autocomplete). |
+| `POST /assets/tags {name}` | Make a tag, or return the existing one: `{id, name, created}`. |
+| `PATCH /assets/tags/{id} {name}` | Rename; `409 tag_exists` with `existing_id` for a name another tag has. |
+| `POST /assets/tags/{id}/merge {into}` | Move every photo to `into` and delete the tag: `{into, photos}`. Audited. |
+| `DELETE /assets/tags/{id}` | Delete; `204`. Audited. |
+| `POST /assets/tags/apply {ids \| scope+except, add, remove}` | At most 20 names each; `{added, removed}` links changed. |
+| `GET /assets/search?tags=a,b&tag_mode=all\|any`, `/assets/{id}/similar` | The tag filter (names containing no comma; at most 20). |
+| `GET /assets/{id}` | `tags: [{id, name, imported}]`. |
+
+## Tests
+
+- `apps/assets/src/routes/tags_tests.rs` (Postgres): tags made once whatever the case, bulk apply (ids, scope, pairs, owners, trash), imported
+  taken over, list/count/sort/autocomplete (with LIKE characters), rename/merge/delete with owners and audit rows, the filter (all, any, unknown,
+  combined, as a scope), tag words in text search, the indexes; `visibility_tests.rs`: a tag only a hidden photo has leaks nowhere and a hidden
+  photo is tagged only from an unlocked session.
+- `crates/cyanotype-core/tests/tags.rs` (once-per-photo import, pairs, caps, cascades) and `reindex.rs` (tags restored with their ids, imported
+  marks, empty tags, never given back to photos that were not recreated); `apps/worker`: IPTC and XMP keyword parsing and the metadata job.
+- Web: `tagText.test.ts`, `Tags.test.tsx` (the field, the dialog, the Tags view), filter sheet and URL; `e2e/tags-layout.spec.ts` (Playwright).

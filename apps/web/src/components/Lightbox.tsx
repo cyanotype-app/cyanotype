@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, downloadHref, type AssetDetail, type AssetListItem, type PhotoDetails, type PhotoText } from "../api";
+import { api, downloadHref, type AssetDetail, type AssetListItem, type PhotoDetails, type PhotoTag, type PhotoText } from "../api";
 import { useInfoHistory, useVerticalSwipe } from "../useInfoPanel";
 import { useImageRect, useTextPanel } from "../useTextPanel";
 import { TextBoxes, TextPanel } from "./TextPanel";
@@ -11,6 +11,7 @@ import { fileSize, pairLabel, primaryFormat } from "../pairText";
 import { placeholderUrl } from "../thumbhash";
 import { HeartIcon } from "./Tile";
 import { RatingStars } from "./Stars";
+import { TagDialog } from "./TagDialog";
 import { ratingKey } from "../ratingText";
 
 interface Props {
@@ -120,6 +121,9 @@ export function Lightbox({
   // The editor (date, location, caption) of the open photo, from the panel.
   const [editing, setEditing] = useState<EditKind | null>(null);
   const [editVersion, setEditVersion] = useState(0);
+  // Adding a tag to the open photo (the dialog), and a failed removal.
+  const [tagging, setTagging] = useState(false);
+  const [tagError, setTagError] = useState<string | null>(null);
   // Closing (or leaving) with the panel open also pops its history entry.
   const { leave } = info;
   const close = useCallback(() => void leave().then(onClose), [leave, onClose]);
@@ -273,6 +277,15 @@ export function Lightbox({
     ...paired.map((p) => ({ key: p.id, href: downloadHref(item.id, p.id), label: "RAW", size: p.size_bytes })),
   ];
   const position = offset + index;
+  async function untag(t: PhotoTag) {
+    setTagError(null);
+    try {
+      await api.applyTags([item!.id], { remove: [t.name] });
+      setEditVersion((v) => v + 1);
+    } catch (e) {
+      setTagError(e instanceof Error ? e.message : "Could not remove the tag.");
+    }
+  }
   const retryInfo = () => {
     setInfoFailed((m) => Object.fromEntries(Object.entries(m).filter(([k]) => k !== item.id)));
     setInfoRetry((n) => n + 1);
@@ -491,6 +504,9 @@ export function Lightbox({
           state={infoState}
           onRetry={retryInfo}
           onEdit={setEditing}
+          tags={detail?.tags}
+          onTag={detail ? () => setTagging(true) : undefined}
+          onUntag={(t) => void untag(t)}
           rating={item.rating}
           onRate={onRate ? (n) => onRate(item, n) : undefined}
           onClose={closeInfo}
@@ -499,6 +515,23 @@ export function Lightbox({
         />
       )}
       </div>
+      {tagError && (
+        <p className="lightbox-msg" role="alert">
+          {tagError}
+        </p>
+      )}
+      {tagging && (
+        <TagDialog
+          target={[item.id]}
+          count={1}
+          allowRemove={false}
+          onClose={() => setTagging(false)}
+          onDone={() => {
+            setTagging(false);
+            setEditVersion((v) => v + 1);
+          }}
+        />
+      )}
       {editing && infoById[item.id] && (
         <EditDialog
           key={`${item.id}-${editing}`}

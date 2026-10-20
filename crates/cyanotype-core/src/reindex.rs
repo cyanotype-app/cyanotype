@@ -39,6 +39,7 @@ use crate::{
     objmeta,
     scan::{Head, Listed, MAX_COPY_BYTES},
     storage::Storage,
+    tags,
 };
 
 const SAMPLE_CAP: usize = 10;
@@ -147,6 +148,9 @@ pub struct Report {
     pub archived_restored: u64,
     /// Photos put back with their star rating (or that would be).
     pub ratings_restored: u64,
+    /// Tags recreated (the owner had none by that name) and photo-tag links put back (or that would be).
+    pub tags_restored: u64,
+    pub tag_links_restored: u64,
     /// Objects under `edits/` (a photo's corrected date, location and caption).
     pub edits_objects: u64,
     /// Applied to a row that had none or older ones (or would be, in a dry run).
@@ -281,6 +285,11 @@ impl Report {
             self.hidden_restored, self.archived_restored
         );
         let _ = writeln!(s, "    star ratings                     {}", self.ratings_restored);
+        let _ = writeln!(
+            s,
+            "    tags / photo-tag links           {} / {}",
+            self.tags_restored, self.tag_links_restored
+        );
         let _ = writeln!(
             s,
             "  edits: objects / {} / current     {} / {} / {}",
@@ -768,6 +777,9 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
         let favorite = entry.and_then(|e| e.favorite).unwrap_or(false);
         let hidden = entry.and_then(|e| e.hidden).unwrap_or(false);
         let archived = entry.and_then(|e| e.archived).unwrap_or(false);
+        // A manifest that knows tags says exactly which a photo has: its keywords are not read from the file again (a tag the
+        // owner removed must not come back).
+        let tags_known = entry.is_some() && manifest.as_ref().is_some_and(|m| m.tags_known);
         let rating = entry
             .and_then(|e| {
                 Some((
@@ -811,6 +823,7 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
                 hidden,
                 archived,
                 rating: rating.clone(),
+                tags_known,
             },
         )
         .await;
@@ -860,6 +873,8 @@ struct Insert<'a> {
     archived: bool,
     /// Stars and who set them, from the manifest (`None`: not rated, or the schema has no ratings).
     rating: Option<(u8, String)>,
+    /// The photo's tags come from the manifest: mark its keywords as read.
+    tags_known: bool,
 }
 
 /// Insert one row and queue its jobs, atomically. False if the owner already has this content (a race or an alias).
@@ -926,6 +941,12 @@ async fn insert_orphan(cx: &Ctx<'_>, i: Insert<'_>) -> Result<bool> {
         .bind(i.archived)
         .execute(&mut *tx)
         .await?;
+    }
+    if i.tags_known {
+        sqlx::query("UPDATE assets SET tags_imported_at = now() WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
     }
     if let Some((stars, source)) = &i.rating {
         let source = if source == "file" { "file" } else { "user" };
@@ -1206,6 +1227,90 @@ async fn asset_ids(db: &PgPool, user: Uuid, shas: &[Vec<u8>]) -> Result<HashMap<
     Ok(rows.into_iter().collect())
 }
 
+/// Tags from the user's newest manifest: a tag the owner has no tag of that name for is recreated with all its photos that exist
+/// (an empty tag too), and for a tag that exists only the photos recreated by this run are tagged again, so a tag the owner
+/// changed since the manifest is never overwritten. Imported tags keep their mark.
+async fn restore_tags(
+    cx: &mut Ctx<'_>,
+    user: Uuid,
+    m: &UserManifest,
+    recreated: &HashSet<(Uuid, [u8; 32])>,
+) -> Result<()> {
+    if m.tags.is_empty() {
+        return Ok(());
+    }
+    let apply = cx.opts.apply;
+    let existing: HashMap<String, Uuid> =
+        sqlx::query_as::<_, (String, Uuid)>("SELECT lower(name), id FROM tags WHERE owner_id = $1")
+            .bind(user)
+            .fetch_all(cx.db)
+            .await?
+            .into_iter()
+            .collect();
+    let shas: Vec<Vec<u8>> = m
+        .tags
+        .values()
+        .flat_map(|t| t.items.iter().chain(t.imported.iter()))
+        .filter_map(|h| keys::parse_sha256(h))
+        .map(|s| s.to_vec())
+        .collect();
+    let ids = asset_ids(cx.db, user, &shas).await?;
+    for tag in m.tags.values() {
+        let Ok(name) = tags::normalize(&tag.name) else {
+            cx.report.errors += 1;
+            tracing::warn!(tag = %tag.id, "a tag in the manifest has no valid name; skipped");
+            continue;
+        };
+        let known = existing.get(&name.to_lowercase()).copied();
+        let mut links: Vec<(Uuid, bool)> = Vec::new();
+        let mut n_links = 0u64;
+        for (hashes, imported) in [(&tag.items, false), (&tag.imported, true)] {
+            for h in hashes {
+                let Some(sha) = keys::parse_sha256(h) else { continue };
+                if known.is_some() && !recreated.contains(&(user, sha)) {
+                    continue;
+                }
+                match ids.get(&sha[..]) {
+                    Some(id) => links.push((*id, imported)),
+                    None if !apply && recreated.contains(&(user, sha)) => {}
+                    None => continue,
+                }
+                n_links += 1;
+            }
+        }
+        if known.is_none() {
+            cx.report.tags_restored += 1;
+        }
+        cx.report.tag_links_restored += n_links;
+        if !apply || (known.is_some() && links.is_empty()) {
+            continue;
+        }
+        let mut tx = cx.db.begin().await?;
+        let tag_id = match known {
+            Some(id) => id,
+            None => {
+                sqlx::query(
+                    "INSERT INTO tags (id, owner_id, name, created_at) VALUES ($1,$2,$3, coalesce($4, now()))
+                     ON CONFLICT DO NOTHING",
+                )
+                .bind(tag.id)
+                .bind(user)
+                .bind(&name)
+                .bind(tag.created_at)
+                .execute(&mut *tx)
+                .await?;
+                // The remembered id may be taken by something else: whatever tag now has the name is the one.
+                tags::ensure(&mut tx, user, &name).await?
+            }
+        };
+        for (asset, imported) in links {
+            tags::attach(&mut tx, asset, tag_id, imported).await?;
+        }
+        tx.commit().await?;
+    }
+    Ok(())
+}
+
 /// Share links of a user that has none, from the user's newest manifest: same id, same token (so links already handed out
 /// work again), same settings. An album link needs its album (restored just before) and a selection link at least one of its
 /// photos. A link that had a password comes back with a locked one: closed until its owner sets a new password, never open.
@@ -1395,6 +1500,7 @@ async fn restore_user(
     }
 
     restore_shares(cx, user, m).await?;
+    restore_tags(cx, user, m, recreated).await?;
 
     // Pairs: only for RAWs recreated in this run.
     let pairs: Vec<([u8; 32], [u8; 32])> = m

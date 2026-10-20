@@ -21,32 +21,42 @@ pub fn xmp_rating(bytes: &[u8]) -> Option<u8> {
     rating_in(&text)
 }
 
+/// The application segments (`marker`, body) of a JPEG up to the start of the image data. Nothing for a file that is not a JPEG;
+/// a segment that is cut short ends the list.
+fn jpeg_segments(bytes: &[u8]) -> Vec<(u8, &[u8])> {
+    let mut out = Vec::new();
+    if !bytes.starts_with(&[0xFF, 0xD8]) {
+        return out;
+    }
+    let mut i = 2;
+    while i + 4 <= bytes.len() && bytes[i] == 0xFF {
+        let marker = bytes[i + 1];
+        if marker == 0xFF {
+            i += 1; // fill byte
+            continue;
+        }
+        // Markers without a length, and the start of the entropy-coded data: nothing more to read.
+        if marker == 0xDA || marker == 0xD9 || (0xD0..=0xD8).contains(&marker) || marker == 0x01 {
+            break;
+        }
+        let len = usize::from(u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]));
+        let Some(end) = i.checked_add(2 + len) else { break };
+        if len < 2 || end > bytes.len() {
+            break;
+        }
+        out.push((marker, &bytes[i + 4..end]));
+        i = end;
+    }
+    out
+}
+
 /// The XMP packet of an image file, if there is one.
 fn xmp_packet(bytes: &[u8]) -> Option<&[u8]> {
     if bytes.starts_with(&[0xFF, 0xD8]) {
-        let mut i = 2;
-        while i + 4 <= bytes.len() && bytes[i] == 0xFF {
-            let marker = bytes[i + 1];
-            if marker == 0xFF {
-                i += 1; // fill byte
-                continue;
-            }
-            // Markers without a length, and the start of the entropy-coded data: nothing more to read.
-            if marker == 0xDA || marker == 0xD9 || (0xD0..=0xD8).contains(&marker) || marker == 0x01 {
-                break;
-            }
-            let len = usize::from(u16::from_be_bytes([bytes[i + 2], bytes[i + 3]]));
-            let end = i.checked_add(2 + len)?;
-            if len < 2 || end > bytes.len() {
-                break;
-            }
-            let body = &bytes[i + 4..end];
-            if marker == 0xE1 && body.starts_with(XMP_APP1) {
-                return Some(&body[XMP_APP1.len()..]);
-            }
-            i = end;
-        }
-        return None;
+        return jpeg_segments(bytes)
+            .into_iter()
+            .find(|(m, body)| *m == 0xE1 && body.starts_with(XMP_APP1))
+            .map(|(_, body)| &body[XMP_APP1.len()..]);
     }
     let head = &bytes[..bytes.len().min(SCAN_BYTES)];
     let start = find(head, b"<x:xmpmeta")?;
@@ -121,8 +131,115 @@ pub fn exif_rating(rating: Option<u32>, percent: Option<u32>) -> Option<u8> {
     })
 }
 
+/// The keywords a file carries: IPTC `Keywords` (a JPEG's Photoshop segment) and XMP `dc:subject`, in that order, as written (the
+/// caller turns them into tag names and drops duplicates). At most [`MAX_KEYWORDS`] of them.
+pub fn keywords(bytes: &[u8]) -> Vec<String> {
+    let mut out = iptc_keywords(bytes);
+    if let Some(packet) = xmp_packet(bytes) {
+        out.extend(subject_in(&String::from_utf8_lossy(packet)));
+    }
+    out.truncate(MAX_KEYWORDS);
+    out
+}
+
+/// The most keywords read from one file.
+pub const MAX_KEYWORDS: usize = 200;
+
+/// IPTC-IIM record 2, dataset 25 (`Keywords`) inside the Photoshop image resource 0x0404 of an APP13 segment.
+fn iptc_keywords(bytes: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (marker, body) in jpeg_segments(bytes) {
+        let Some(mut rest) = (marker == 0xED)
+            .then(|| body.strip_prefix(b"Photoshop 3.0\0"))
+            .flatten()
+        else {
+            continue;
+        };
+        while rest.len() >= 12 && rest.starts_with(b"8BIM") {
+            let id = u16::from_be_bytes([rest[4], rest[5]]);
+            // A Pascal string, padded so that its length byte and text take an even number of bytes.
+            let name_len = usize::from(rest[6]);
+            let at = 7 + name_len + (1 + name_len) % 2;
+            let Some(size_bytes) = rest.get(at..at + 4) else { break };
+            let size = u32::from_be_bytes([size_bytes[0], size_bytes[1], size_bytes[2], size_bytes[3]]) as usize;
+            let Some(data) = rest.get(at + 4..at + 4 + size) else {
+                break;
+            };
+            if id == 0x0404 {
+                iptc_records(data, &mut out);
+            }
+            let next = at + 4 + size + size % 2;
+            rest = rest.get(next..).unwrap_or(&[]);
+        }
+    }
+    out
+}
+
+fn iptc_records(data: &[u8], out: &mut Vec<String>) {
+    let mut i = 0;
+    while i + 5 <= data.len() && data[i] == 0x1C {
+        let (record, dataset) = (data[i + 1], data[i + 2]);
+        let size = usize::from(u16::from_be_bytes([data[i + 3], data[i + 4]]));
+        if size & 0x8000 != 0 {
+            return; // an extended dataset: not a keyword, and the length is not ours to read
+        }
+        let Some(value) = data.get(i + 5..i + 5 + size) else {
+            return;
+        };
+        if record == 2 && dataset == 25 {
+            // IPTC is UTF-8 only when it says so (dataset 1:90); older writers use Latin-1. UTF-8 first, since a valid
+            // multi-byte sequence is almost never Latin-1 text.
+            out.push(match std::str::from_utf8(value) {
+                Ok(s) => s.to_string(),
+                Err(_) => value.iter().map(|b| char::from(*b)).collect(),
+            });
+        }
+        i += 5 + size;
+    }
+}
+
+/// The entries of `<dc:subject><rdf:Bag><rdf:li>..</rdf:li>...`.
+fn subject_in(xml: &str) -> Vec<String> {
+    let Some(start) = xml.find("<dc:subject") else {
+        return Vec::new();
+    };
+    let Some(open_end) = xml[start..].find('>') else {
+        return Vec::new();
+    };
+    // `<dc:subject/>` has nothing in it.
+    if xml[start..start + open_end].ends_with('/') {
+        return Vec::new();
+    }
+    let body_start = start + open_end + 1;
+    let body_end = xml[body_start..]
+        .find("</dc:subject>")
+        .map_or(xml.len(), |e| body_start + e);
+    let mut out = Vec::new();
+    let mut rest = &xml[body_start..body_end];
+    while let Some(p) = rest.find("<rdf:li") {
+        let after = &rest[p + "<rdf:li".len()..];
+        // `<rdf:lig...`: some other element.
+        if !after.starts_with(|c: char| c == '>' || c == '/' || c.is_whitespace()) {
+            rest = after;
+            continue;
+        }
+        let Some(gt) = after.find('>') else { break };
+        if after[..gt].ends_with('/') {
+            rest = &after[gt + 1..];
+            continue;
+        }
+        let text = &after[gt + 1..];
+        let Some(close) = text.find("</rdf:li>") else { break };
+        let entry = unescape(&text[..close]).trim().to_string();
+        if !entry.is_empty() {
+            out.push(entry);
+        }
+        rest = &text[close + "</rdf:li>".len()..];
+    }
+    out
+}
+
 /// Decode the five predefined XML entities and numeric references.
-#[allow(dead_code)]
 pub fn unescape(s: &str) -> Cow<'_, str> {
     if !s.contains('&') {
         return Cow::Borrowed(s);
@@ -242,6 +359,60 @@ mod tests {
         j[4] = 0xFF;
         j[5] = 0xFF;
         let _ = xmp_rating(&j);
+    }
+
+    /// An APP13 segment holding a Photoshop resource with IPTC keywords (and a caption that is not one).
+    fn jpeg_with_iptc(keywords: &[&[u8]]) -> Vec<u8> {
+        let mut iim = vec![0x1C, 0x02, 0x78, 0, 4];
+        iim.extend_from_slice(b"Text"); // 2:120 caption
+        for k in keywords {
+            iim.extend_from_slice(&[0x1C, 0x02, 25]);
+            iim.extend_from_slice(&(k.len() as u16).to_be_bytes());
+            iim.extend_from_slice(k);
+        }
+        let mut res = b"Photoshop 3.0\0".to_vec();
+        // An unrelated resource first, with a name, to walk past it (and the padding after its odd size).
+        res.extend_from_slice(b"8BIM\x03\xED\x03abc\x00\x00\x00\x03xyz\x00");
+        res.extend_from_slice(b"8BIM\x04\x04\x00\x00");
+        res.extend_from_slice(&(iim.len() as u32).to_be_bytes());
+        res.extend_from_slice(&iim);
+        if iim.len() % 2 == 1 {
+            res.push(0);
+        }
+        let mut out = vec![0xFF, 0xD8, 0xFF, 0xED];
+        out.extend_from_slice(&((res.len() + 2) as u16).to_be_bytes());
+        out.extend_from_slice(&res);
+        out.extend_from_slice(&[0xFF, 0xDA, 0, 2, 0xFF, 0xD9]);
+        out
+    }
+
+    #[test]
+    fn iptc_keywords_utf8_latin1_and_neighbours() {
+        let j = jpeg_with_iptc(&[b"beach", "Café".as_bytes(), b"Caf\xe9 latin", b"trip/2024"]);
+        assert_eq!(keywords(&j), ["beach", "Café", "Café latin", "trip/2024"]);
+        assert!(keywords(&jpeg_with_iptc(&[])).is_empty());
+    }
+
+    #[test]
+    fn xmp_subject_bag_with_entities_languages_and_empties() {
+        let xml = r#"<x:xmpmeta><rdf:RDF><rdf:Description>
+            <dc:subject><rdf:Bag><rdf:li>sun &amp; sea</rdf:li><rdf:li xml:lang="x-default">Lisboa</rdf:li><rdf:li/><rdf:li>  </rdf:li><rdf:li>last</rdf:li></rdf:Bag></dc:subject>
+            <dc:title><rdf:Alt><rdf:li>Not a keyword</rdf:li></rdf:Alt></dc:title></rdf:Description></rdf:RDF></x:xmpmeta>"#;
+        assert_eq!(keywords(&jpeg_with_xmp(xml)), ["sun & sea", "Lisboa", "last"]);
+        assert!(keywords(&jpeg_with_xmp("<x:xmpmeta><dc:subject/></x:xmpmeta>")).is_empty());
+        assert!(keywords(&jpeg_with_xmp("<x:xmpmeta><dc:subject><rdf:Bag><rdf:li>cut")).is_empty());
+        assert!(keywords(b"not an image").is_empty());
+    }
+
+    #[test]
+    fn keyword_readers_survive_truncation_and_are_capped() {
+        let j = jpeg_with_iptc(&[b"a", b"bb", b"ccc"]);
+        for cut in 0..j.len() {
+            let _ = keywords(&j[..cut]);
+        }
+        let many: Vec<String> = (0..300).map(|n| format!("k{n}")).collect();
+        let refs: Vec<&[u8]> = many.iter().map(|s| s.as_bytes()).collect();
+        assert_eq!(keywords(&jpeg_with_iptc(&refs)).len(), MAX_KEYWORDS);
     }
 
     #[test]

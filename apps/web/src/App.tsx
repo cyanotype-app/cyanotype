@@ -25,6 +25,8 @@ import { ShareView } from "./pages/ShareView";
 import { SearchPage } from "./pages/Search";
 import { Sessions } from "./pages/Sessions";
 import { SettingsLayout } from "./pages/SettingsLayout";
+import { TagPage } from "./pages/TagPage";
+import { TagsPage } from "./pages/Tags";
 import { SharedLinks } from "./pages/SharedLinks";
 import { Storage } from "./pages/Storage";
 import { Trash } from "./pages/Trash";
@@ -50,6 +52,8 @@ export function App() {
         <Route path="/memories" element={<MemoriesPage />} />
         <Route path="/map" element={<MapPage />} />
         <Route path="/search" element={<SearchPage />} />
+        <Route path="/tags" element={<TagsPage />} />
+        <Route path="/tags/:id" element={<TagPage />} />
         <Route path="/albums" element={<Albums />} />
         <Route path="/albums/:id" element={<AlbumPage />} />
         <Route path="/shared" element={<SharedLinks />} />

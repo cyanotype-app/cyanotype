@@ -7,6 +7,7 @@ import { Grid } from "../components/Grid";
 import { Lightbox } from "../components/Lightbox";
 import { SelectionBar } from "../components/SelectionBar";
 import { RateTools } from "../components/RateTools";
+import { TagTools } from "../components/TagTools";
 import { ShareDialog, type ShareTarget } from "../components/ShareDialog";
 import { useToast } from "../components/Toast";
 import { similarUrl } from "../searchText";
@@ -305,6 +306,15 @@ function AlbumView({ id }: { id: string }) {
               show({ message });
             }}
             onError={(e) => failure(e, "Couldn’t rate.")}
+          />
+          <TagTools
+            target={sel.target({ album: id })}
+            count={sel.count}
+            disabled={sel.count === 0 || busy}
+            onDone={(message) => {
+              sel.setSelecting(false);
+              show({ message });
+            }}
           />
           <button
             type="button"

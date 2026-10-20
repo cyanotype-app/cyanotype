@@ -70,6 +70,8 @@ fn exact_max() -> i64 {
 pub(super) const DEFAULT_LIMIT: i64 = 60;
 pub(super) const MAX_LIMIT: i64 = 200;
 const MAX_QUERY_CHARS: usize = 200;
+/// Most tags one filter names.
+const MAX_TAG_FILTERS: usize = 20;
 /// HNSW candidates examined per query before the iterative scan widens (pgvector's default is 40). The ranked list is
 /// [`DEPTH`] deep, and recall at that depth needs `ef_search` near it (measured in docs/library.md).
 const EF_SEARCH: i32 = 400;
@@ -95,6 +97,11 @@ pub(super) struct SearchQuery {
     /// Last day (inclusive), `YYYY-MM-DD`, UTC.
     pub to: Option<String>,
     pub favorite: Option<bool>,
+    /// Tag names, comma-separated (a tag name has no comma), case-insensitive; names that are not tags match nothing in `all` mode
+    /// and are ignored in `any` mode.
+    pub tags: Option<String>,
+    /// `all` (default: every tag) or `any` (at least one of them).
+    pub tag_mode: Option<String>,
     /// At least this many stars (1 to 5; `assets_rating_idx` holds the rated photos). Unrated photos never match.
     pub rating: Option<i16>,
     /// `false` leaves archived photos out. They are in by default (they are only off the timeline, the map and the memories) and
@@ -139,6 +146,10 @@ pub(super) struct Filters {
     from: Option<OffsetDateTime>,
     to_exclusive: Option<OffsetDateTime>,
     favorite: bool,
+    /// The tags asked for, lower case.
+    tags: Vec<String>,
+    /// Photos with at least one of `tags` (false: with all of them).
+    tags_any: bool,
     /// At least this many stars.
     rating_min: Option<i16>,
     /// Leave archived photos out (`include_archived=false`).
@@ -191,11 +202,30 @@ impl Filters {
             Some(n @ 1..=5) => Some(n),
             Some(_) => return Err(ApiError::BadRequest("rating must be 1 to 5 (stars or more)".into())),
         };
+        let mut tags: Vec<String> = Vec::new();
+        for t in q.tags.as_deref().unwrap_or("").split(',') {
+            let t = t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+            if !t.is_empty() && !tags.contains(&t) {
+                tags.push(t);
+            }
+        }
+        if tags.len() > MAX_TAG_FILTERS || tags.iter().any(|t| t.chars().count() > 100) {
+            return Err(ApiError::BadRequest(format!(
+                "at most {MAX_TAG_FILTERS} tags of at most 100 characters"
+            )));
+        }
+        let tags_any = match clean(&q.tag_mode).as_deref() {
+            None | Some("all") => false,
+            Some("any") => true,
+            Some(_) => return Err(ApiError::BadRequest("tag_mode must be all or any".into())),
+        };
         let midnight = |d: Date| d.with_time(Time::MIDNIGHT).assume_utc();
         Ok(Self {
             from: from.map(midnight),
             to_exclusive: to.map(|d| midnight(d) + time::Duration::days(1)),
             favorite: q.favorite.unwrap_or(false),
+            tags,
+            tags_any,
             rating_min,
             exclude_archived: q.include_archived == Some(false),
             camera: clean(&q.camera),
@@ -223,6 +253,7 @@ impl Filters {
             || self.to_exclusive.is_some()
             || self.favorite
             || self.rating_min.is_some()
+            || !self.tags.is_empty()
             || self.camera.is_some()
             || self.lens.is_some()
             || self.place.is_some()
@@ -263,6 +294,24 @@ impl Filters {
         }
         if let Some(n) = self.rating_min {
             qb.push(" AND a.rating >= ").push_bind(n);
+        }
+        if !self.tags.is_empty() {
+            // Names to the owner's tags first (`tags_owner_name_idx`), then the photos that have them (`asset_tags_tag_idx`).
+            if self.tags_any {
+                qb.push(" AND a.id IN (SELECT at.asset_id FROM asset_tags at JOIN tags t ON t.id = at.tag_id WHERE t.owner_id = ")
+                    .push_bind(owner)
+                    .push(" AND lower(t.name) = ANY(")
+                    .push_bind(self.tags.clone())
+                    .push("))");
+            } else {
+                for tag in &self.tags {
+                    qb.push(" AND a.id IN (SELECT at.asset_id FROM asset_tags at JOIN tags t ON t.id = at.tag_id WHERE t.owner_id = ")
+                        .push_bind(owner)
+                        .push(" AND lower(t.name) = ")
+                        .push_bind(tag.clone())
+                        .push(")");
+                }
+            }
         }
         if let Some(c) = &self.camera {
             qb.push(format!(" AND lower({CAMERA_LABEL}) = lower("))
@@ -707,27 +756,79 @@ pub(super) fn caption_words(q: &str) -> Vec<String> {
     words
 }
 
-/// Photos whose caption contains **every** word of the query (case-insensitive, as part of a word), newest first, at most
-/// [`CAPTION_MAX`], with the request's filters applied. A caption is what the owner wrote about the photo, so such a photo is
-/// as good a match as there can be: these go **in front of** the model's ranking and are not part of it (no score, and they
-/// leave the model's cut-off, which is relative to its own best match, alone). A photo that is both a caption match and
-/// ranked is shown once, in front.
+/// Photos whose caption or tags contain **every** word of the query (case-insensitive, as part of a word; a word may be in the
+/// caption and the next in a tag), newest first, at most [`CAPTION_MAX`], with the request's filters applied. A caption and a tag
+/// are what the owner wrote about the photo, so such a photo is as good a match as there can be: these go **in front of** the
+/// model's ranking and are not part of it (no score, and they leave the model's cut-off, which is relative to its own best
+/// match, alone). A photo that is both a match and ranked is shown once, in front.
 ///
 /// The text the worker read off the photo (`asset_text`: signs, receipts, screenshots) is matched the same way and comes after
-/// the captions (a caption is the owner's own words; text in the picture is the picture's), newest first within each; the
-/// two share the [`CAPTION_MAX`] budget, captions first. The trigram index on `asset_text.text` serves the `ILIKE`.
+/// the captions and tags (those are the owner's own words; text in the picture is the picture's), newest first within each; the
+/// two share the [`CAPTION_MAX`] budget, captions and tags first. The trigram index on `asset_text.text` serves the `ILIKE`.
 async fn caption_matches(db: &sqlx::PgPool, owner: Uuid, f: &Filters, q: &str) -> ApiResult<Vec<SearchRow>> {
     let words = caption_words(q);
     if words.is_empty() {
         return Ok(Vec::new());
     }
-    let mut lead = lead_rows(db, owner, f, &words, "a.caption", None, CAPTION_MAX).await?;
+    let mut lead = caption_tag_rows(db, owner, f, &words, CAPTION_MAX).await?;
     let room = CAPTION_MAX - lead.len() as i64;
     if room > 0 {
         let seen: Vec<Uuid> = lead.iter().map(|r| r.row.summary.id).collect();
         lead.extend(lead_rows(db, owner, f, &words, "xt.text", Some(&seen), room).await?);
     }
     Ok(lead)
+}
+
+/// LIKE's own characters escaped (backslash is its default escape), as a `%word%` pattern.
+fn like_pattern(w: &str) -> String {
+    let escaped: String = w
+        .chars()
+        .flat_map(|c| match c {
+            '%' | '_' | '\\' => vec!['\\', c],
+            c => vec![c],
+        })
+        .collect();
+    format!("%{escaped}%")
+}
+
+/// Per word, the photos whose caption has it (`assets_caption_idx`) or that have a tag whose name does (`asset_tags_tag_idx`), as a
+/// materialized set; the first word's set drives the query (a primary-key lookup per candidate) and the others filter it.
+/// Measured at 50,000 photos with 172,000 tag links: a word few photos have, 8 ms; the 4 % of photos with captions, 20 ms.
+async fn caption_tag_rows(
+    db: &sqlx::PgPool,
+    owner: Uuid,
+    f: &Filters,
+    words: &[String],
+    limit: i64,
+) -> ApiResult<Vec<SearchRow>> {
+    let mut qb = QueryBuilder::<Postgres>::new("WITH ");
+    for (i, w) in words.iter().enumerate() {
+        let like = like_pattern(w);
+        if i > 0 {
+            qb.push(", ");
+        }
+        qb.push(format!(
+            "w{i} AS MATERIALIZED (SELECT c.id FROM assets c WHERE c.owner_id = "
+        ))
+        .push_bind(owner)
+        .push(" AND c.caption IS NOT NULL AND c.deleted_at IS NULL AND c.primary_id IS NULL AND c.caption ILIKE ")
+        .push_bind(like.clone())
+        .push(" UNION SELECT at.asset_id FROM asset_tags at JOIN tags t ON t.id = at.tag_id WHERE t.owner_id = ")
+        .push_bind(owner)
+        .push(" AND t.name ILIKE ")
+        .push_bind(like)
+        .push(")");
+    }
+    qb.push(format!(
+        " SELECT {LIST_COLS}, NULL::float8 AS dist FROM w0 JOIN assets a ON a.id = w0.id WHERE"
+    ));
+    f.push_where(&mut qb, owner);
+    for i in 1..words.len() {
+        qb.push(format!(" AND a.id IN (SELECT id FROM w{i})"));
+    }
+    qb.push(format!(" ORDER BY {SORT_TIME} DESC, a.id DESC LIMIT "))
+        .push_bind(limit);
+    Ok(qb.build_query_as::<SearchRow>().persistent(false).fetch_all(db).await?)
 }
 
 /// Photos whose `column` (a caption, or the text read off the photo) contains every word, newest first. `column` is

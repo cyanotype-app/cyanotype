@@ -2,6 +2,7 @@
 // the recent-searches list. Kept apart from the components so the rules are unit tested.
 import type { Processing, SearchParams } from "./api";
 import { ratingFilterLabel } from "./ratingText";
+import { tagFilterLabel, tagListOf } from "./tagText";
 
 const TYPES = ["jpeg", "heic", "raw", "other"] as const;
 export const TYPE_LABEL: Record<(typeof TYPES)[number], string> = {
@@ -27,6 +28,11 @@ export function paramsFromUrl(search: URLSearchParams): SearchParams {
     if (v && DAY.test(v)) out[k] = v;
   }
   if (search.get("favorite") === "true") out.favorite = true;
+  const tags = tagListOf(search.get("tags"));
+  if (tags.length > 0) {
+    out.tags = tags.join(",");
+    if (search.get("tag_mode") === "any" && tags.length > 1) out.tag_mode = "any";
+  }
   const rating = Number(search.get("rating"));
   if (Number.isInteger(rating) && rating >= 1 && rating <= 5) out.rating = rating;
   // Archived photos are in a search unless asked otherwise.
@@ -76,6 +82,8 @@ export function urlFromParams(p: SearchParams): string {
   if (p.from) q.set("from", p.from);
   if (p.to) q.set("to", p.to);
   if (p.favorite) q.set("favorite", "true");
+  if (p.tags) q.set("tags", p.tags);
+  if (p.tags && p.tag_mode === "any") q.set("tag_mode", "any");
   if (p.rating) q.set("rating", String(p.rating));
   if (p.include_archived === false) q.set("include_archived", "false");
   if (p.camera) q.set("camera", p.camera);
@@ -129,6 +137,7 @@ export function chipsOf(p: SearchParams, albumTitle?: string): Chip[] {
   const chips: Chip[] = [];
   if (p.from || p.to) chips.push({ clears: ["from", "to"], label: dateRangeLabel(p.from, p.to) });
   if (p.favorite) chips.push({ clears: ["favorite"], label: "Favorites" });
+  if (p.tags) chips.push({ clears: ["tags", "tag_mode"], label: tagFilterLabel(p.tags, p.tag_mode) });
   if (p.rating) chips.push({ clears: ["rating"], label: ratingFilterLabel(p.rating) });
   if (p.include_archived === false) chips.push({ clears: ["include_archived"], label: "Without archived" });
   if (p.camera) chips.push({ clears: ["camera"], label: p.camera });

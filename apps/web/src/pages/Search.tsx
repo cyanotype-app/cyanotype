@@ -11,6 +11,7 @@ import { Lightbox } from "../components/Lightbox";
 import { useProcessing } from "../components/ProcessingStatus";
 import { SelectionBar } from "../components/SelectionBar";
 import { RateTools } from "../components/RateTools";
+import { TagTools } from "../components/TagTools";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
 import { useToast } from "../components/Toast";
 import {
@@ -607,6 +608,17 @@ function Results({ params }: { params: SearchParams }) {
                   show({ message });
                 }}
                 onError={(e) => failure(e, "Couldn’t rate.")}
+              />
+              <TagTools
+                target={sel.target(scope)}
+                count={sel.count}
+                disabled={sel.count === 0 || busy}
+                onDone={(message) => {
+                  sel.setSelecting(false);
+                  // A tag filter in force changes which photos match: start over from the first page.
+                  reset();
+                  show({ message });
+                }}
               />
               <button
                 type="button"

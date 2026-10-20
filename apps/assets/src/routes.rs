@@ -8,7 +8,7 @@ use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, Request, State},
     http::{StatusCode, header},
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
 };
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use bytes::{Bytes, BytesMut};
@@ -66,6 +66,9 @@ mod shares;
 mod similar;
 #[cfg(test)]
 mod similar_tests;
+mod tags;
+#[cfg(test)]
+mod tags_tests;
 mod takeout;
 #[cfg(test)]
 mod takeout_tests;
@@ -139,6 +142,10 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/prefs", get(visibility::prefs).put(visibility::set_prefs))
         .route("/assets/memories", get(memories::list))
         .route("/assets/memories/dismiss", post(memories::dismiss))
+        .route("/assets/tags", get(tags::list).post(tags::create))
+        .route("/assets/tags/apply", post(tags::apply))
+        .route("/assets/tags/{id}", patch(tags::rename).delete(tags::remove))
+        .route("/assets/tags/{id}/merge", post(tags::merge))
         .route("/assets/edits", post(edits::edit))
         .route("/assets/places", get(edits::places))
         .route("/assets/processing", get(processing::status))
@@ -1228,6 +1235,7 @@ async fn get_one(
     v["paired"] = serde_json::to_value(paired_files(&s.db, &[id]).await?.remove(&id).unwrap_or_default())
         .map_err(anyhow::Error::from)?;
     v["place"] = place_of(&s.db, id).await?;
+    v["tags"] = serde_json::to_value(tags::of_photo(&s.db, user.id, id).await?).map_err(anyhow::Error::from)?;
     let caption: Option<String> = sqlx::query_scalar("SELECT caption FROM assets WHERE id = $1")
         .bind(id)
         .fetch_one(&s.db)

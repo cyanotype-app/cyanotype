@@ -1511,3 +1511,167 @@ async fn star_ratings_come_back_with_a_rebuilt_database() {
     assert_eq!((again.orphans, again.ratings_restored), (0, 0));
     fx.teardown().await;
 }
+
+/// Tags come back with a rebuilt database: the tag lines of the manifest carry names, the photos (by hash), the imported mark and
+/// empty tags; a restored photo's keywords are not read from the file again; and a tag that exists is only given back to the photos
+/// this run recreated.
+#[tokio::test]
+async fn tags_come_back_with_a_rebuilt_database() {
+    let Some(fx) = Fx::new().await else { return };
+    let mut ids = Vec::new();
+    for (name, body) in [
+        ("p1.jpg", &b"p1"[..]),
+        ("p2.jpg", b"p2"),
+        ("p3.jpg", b"p3"),
+        ("p4.jpg", b"p4"),
+    ] {
+        let (k, s) = fx.put_original(fx.user, name, body, None).await;
+        ids.push(fx.insert_row(fx.user, &k, &s, name).await);
+    }
+    let tag = |name: &'static str| {
+        let pool = fx.pool.clone();
+        let owner = fx.user;
+        async move {
+            sqlx::query_scalar::<_, Uuid>(
+                "INSERT INTO tags (owner_id, name) VALUES ($1, $2) ON CONFLICT (owner_id, lower(name)) DO UPDATE SET name = tags.name RETURNING id",
+            )
+            .bind(owner)
+            .bind(name)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let (holiday, kw, _empty) = (tag("Holiday").await, tag("From file").await, tag("Empty").await);
+    for (asset, tag_id, imported) in [
+        (ids[0], holiday, false),
+        (ids[1], holiday, false),
+        (ids[2], holiday, true),
+        (ids[0], kw, true),
+    ] {
+        sqlx::query("INSERT INTO asset_tags (asset_id, tag_id, imported) VALUES ($1,$2,$3)")
+            .bind(asset)
+            .bind(tag_id)
+            .bind(imported)
+            .execute(&fx.pool)
+            .await
+            .unwrap();
+    }
+    manifest::write_user(&fx.pool, &fx.storage, fx.user, 14).await.unwrap();
+    let key = manifest::list_all(&fx.storage).await.unwrap()[&fx.user][0].clone();
+    let text = String::from_utf8(fx.storage.get_bytes_limited(&key, 1 << 20).await.unwrap().to_vec()).unwrap();
+    assert!(text.contains("\"v\":3"), "{text}");
+    assert_eq!(
+        text.matches("\"t\":\"tag\"").count(),
+        3,
+        "one line per tag, an empty one too: {text}"
+    );
+    // The loaded manifest knows tags, and only the newest file's lines count.
+    let loaded = manifest::load(&fx.storage, fx.user, std::slice::from_ref(&key))
+        .await
+        .unwrap();
+    assert!(loaded.tags_known);
+    assert_eq!(loaded.tags.len(), 3);
+    assert_eq!(loaded.tags[&holiday].items.len(), 2);
+    assert_eq!(loaded.tags[&holiday].imported.len(), 1);
+
+    // The disaster: photos and tags are gone.
+    sqlx::query("DELETE FROM assets").execute(&fx.pool).await.unwrap();
+    sqlx::query("DELETE FROM tags").execute(&fx.pool).await.unwrap();
+    let dry = fx.run(|_| {}).await;
+    assert_eq!((dry.tags_restored, dry.tag_links_restored), (3, 4));
+    assert_eq!(fx.count("tags").await, 0, "a dry run writes nothing");
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!(
+        (r.orphans_recreated, r.tags_restored, r.tag_links_restored, r.errors),
+        (4, 3, 4, 0)
+    );
+    let links: Vec<(String, String, bool)> = sqlx::query_as(
+        "SELECT t.name, a.original_name, at.imported FROM asset_tags at JOIN tags t ON t.id = at.tag_id
+         JOIN assets a ON a.id = at.asset_id ORDER BY t.name, a.original_name",
+    )
+    .fetch_all(&fx.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        links,
+        [
+            ("From file".to_string(), "p1.jpg".to_string(), true),
+            ("Holiday".to_string(), "p1.jpg".to_string(), false),
+            ("Holiday".to_string(), "p2.jpg".to_string(), false),
+            ("Holiday".to_string(), "p3.jpg".to_string(), true),
+        ]
+    );
+    // The empty tag and the tags' ids survive, and the photos' keywords count as read.
+    let same_id: Uuid = sqlx::query_scalar("SELECT id FROM tags WHERE name = 'Holiday'")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert_eq!(same_id, holiday);
+    assert_eq!(fx.count("tags").await, 3);
+    let unread: i64 = sqlx::query_scalar("SELECT count(*) FROM assets WHERE tags_imported_at IS NULL")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        unread, 0,
+        "the manifest knows their tags, so the metadata job does not import keywords again"
+    );
+    // A second run has nothing to do.
+    let again = fx.run(|o| o.apply = true).await;
+    assert_eq!(
+        (again.orphans, again.tags_restored, again.tag_links_restored),
+        (0, 0, 0)
+    );
+    fx.teardown().await;
+}
+
+/// A tag the owner already has is not changed by a run that recreates no photo of it, and one that recreates a photo only tags that
+/// photo (the owner may have removed the tag from the others since the manifest was written).
+#[tokio::test]
+async fn an_existing_tag_is_only_given_to_photos_that_were_recreated() {
+    let Some(fx) = Fx::new().await else { return };
+    let mut ids = Vec::new();
+    for (name, body) in [("a.jpg", &b"aa"[..]), ("b.jpg", b"bb")] {
+        let (k, s) = fx.put_original(fx.user, name, body, None).await;
+        ids.push(fx.insert_row(fx.user, &k, &s, name).await);
+    }
+    let holiday: Uuid = sqlx::query_scalar("INSERT INTO tags (owner_id, name) VALUES ($1, 'Holiday') RETURNING id")
+        .bind(fx.user)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    for id in &ids {
+        sqlx::query("INSERT INTO asset_tags (asset_id, tag_id) VALUES ($1, $2)")
+            .bind(id)
+            .bind(holiday)
+            .execute(&fx.pool)
+            .await
+            .unwrap();
+    }
+    manifest::write_user(&fx.pool, &fx.storage, fx.user, 14).await.unwrap();
+    // Since then the owner took Holiday off photo a; then photo b is lost from the database.
+    sqlx::query("DELETE FROM asset_tags WHERE asset_id = $1")
+        .bind(ids[0])
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM assets WHERE id = $1")
+        .bind(ids[1])
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!(
+        (r.orphans_recreated, r.tags_restored, r.tag_links_restored, r.errors),
+        (1, 0, 1, 0)
+    );
+    let names: Vec<String> = sqlx::query_scalar(
+        "SELECT a.original_name FROM asset_tags at JOIN assets a ON a.id = at.asset_id ORDER BY a.original_name",
+    )
+    .fetch_all(&fx.pool)
+    .await
+    .unwrap();
+    assert_eq!(names, ["b.jpg"], "photo a stays without the tag the owner took off");
+    fx.teardown().await;
+}
