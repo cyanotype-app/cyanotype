@@ -117,6 +117,26 @@ pub(super) async fn resolve(
     if let Scope::Search(q) = scope {
         return resolve_search(tx, owner, q, except).await;
     }
+    // A smart album has no members: its photos are what its rules match now (never a hidden one: `push_where`).
+    if let Scope::Album(album) = scope {
+        let rules: Option<(Option<serde_json::Value>,)> =
+            sqlx::query_as("SELECT rules FROM albums WHERE id = $1 AND owner_id = $2")
+                .bind(album)
+                .bind(owner)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if let Some(rules) = rules.ok_or(ApiError::NotFound)?.0 {
+            let filters = super::smart::Rules::from_json(&rules)?.filters();
+            let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT a.id FROM assets a WHERE");
+            filters.push_where(&mut qb, owner);
+            qb.push(" AND a.id <> ALL(").push_bind(except.to_vec()).push(")");
+            return Ok(qb
+                .build_query_scalar::<Uuid>()
+                .persistent(false)
+                .fetch_all(&mut *tx)
+                .await?);
+        }
+    }
     // $1 is the owner and $2 the except list; $3 is the batch time or the album, where a scope has one.
     let (sql, album, at) = match scope {
         Scope::Library => (format!("SELECT id FROM assets WHERE {LIVE}"), None, None),

@@ -106,6 +106,9 @@ struct Library {
     album: Uuid,
     album_token: String,
     selection_token: String,
+    /// A smart album (favorites) that matches the hidden photo too, and a link to it.
+    smart: Uuid,
+    smart_token: String,
 }
 
 /// A library in which `h.jpg` is as exposed as a photo can be, then hidden through the API.
@@ -169,6 +172,18 @@ async fn library(t: &TestDb) -> Library {
     let (st, selection_share) = post(&app, &cookie, "/assets/shares", json!({"asset_ids": [h, v1]})).await;
     assert_eq!(st, StatusCode::CREATED, "{selection_share}");
 
+    let (st, sm) = post(
+        &app,
+        &cookie,
+        "/assets/albums",
+        json!({"title": "Faves", "rules": {"rules": [{"field": "favorite", "value": true}]}}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{sm}");
+    let smart: Uuid = sm["id"].as_str().unwrap().parse().unwrap();
+    let (st, smart_share) = post(&app, &cookie, "/assets/shares", json!({"album_id": smart})).await;
+    assert_eq!(st, StatusCode::CREATED, "{smart_share}");
+
     // Hide it (the way the app does).
     let (st, r) = post(&app, &cookie, "/assets/hide", json!({"ids": [h], "hidden": true})).await;
     assert_eq!((st, r["count"].as_i64()), (StatusCode::OK, Some(1)), "{r}");
@@ -182,6 +197,8 @@ async fn library(t: &TestDb) -> Library {
         album,
         album_token: album_share["token"].as_str().unwrap().into(),
         selection_token: selection_share["token"].as_str().unwrap().into(),
+        smart,
+        smart_token: smart_share["token"].as_str().unwrap().into(),
     }
 }
 
@@ -267,6 +284,11 @@ async fn a_hidden_photo_is_in_no_list_search_map_album_share_or_similar_result()
         format!("/assets/{}/similar?cutoff=false&favorite=true", l.v1),
         format!("/assets/albums/{album}"),
         format!("/assets/albums/{album}/assets"),
+        format!("/assets/albums/{}", l.smart),
+        format!("/assets/albums/{}/assets", l.smart),
+        format!("/assets/search?album={}", l.smart),
+        format!("/assets/public/s/{}", l.smart_token),
+        format!("/assets/public/s/{}/items", l.smart_token),
         format!("/assets/{}", l.v1),
         format!("/assets/{}/details", l.v1),
         format!("/assets/{}/details", l.v2),
@@ -295,6 +317,7 @@ async fn a_hidden_photo_is_in_no_list_search_map_album_share_or_similar_result()
         format!("/assets/{}/download", l.hidden),
         format!("/assets/{}/similar", l.hidden),
         format!("/assets/public/s/{}/items/{}", l.album_token, l.hidden),
+        format!("/assets/public/s/{}/items/{}", l.smart_token, l.hidden),
         format!("/assets/public/s/{}/items/{}", l.selection_token, l.hidden),
         format!("/assets/public/s/{}/items/{}/download", l.selection_token, l.hidden),
     ] {
@@ -337,7 +360,24 @@ async fn a_hidden_photo_is_in_no_list_search_map_album_share_or_similar_result()
 
     // The album keeps the member, says so to its owner, and never uses it as the cover.
     let (_, albums) = get(app, c, "/assets/albums").await;
-    let a = &albums["items"][0];
+    let a = albums["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == json!(l.album))
+        .unwrap();
+    // The smart album matches the visible favorite only, never the hidden one, and has nothing hidden to report.
+    let smart = albums["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["id"] == json!(l.smart))
+        .unwrap();
+    assert_eq!(
+        (smart["photo_count"].as_i64(), smart["hidden_count"].as_i64()),
+        (Some(1), Some(0))
+    );
+    assert_eq!(smart["cover"]["id"], json!(l.v1));
     assert_eq!(
         (a["photo_count"].as_i64(), a["hidden_count"].as_i64()),
         (Some(2), Some(1))
@@ -360,7 +400,7 @@ async fn a_hidden_photo_is_in_no_list_search_map_album_share_or_similar_result()
         .iter()
         .map(|s| s["item_count"].as_i64().unwrap())
         .collect();
-    assert_eq!(counts.iter().sum::<i64>(), 2 + 1, "{shares}");
+    assert_eq!(counts.iter().sum::<i64>(), 2 + 1 + 1, "{shares}");
     t.teardown().await;
 }
 

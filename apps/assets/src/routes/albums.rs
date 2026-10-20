@@ -87,8 +87,14 @@ pub(super) struct Album {
     id: Uuid,
     title: String,
     description: Option<String>,
+    /// A smart album: its photos are what its `rules` match when it is looked at, not members.
+    smart: bool,
+    /// The rules of a smart album (`smart.rs`); null for an ordinary one.
+    rules: Option<serde_json::Value>,
     /// Photos in the album, not counting trashed ones or hidden ones.
     photo_count: i64,
+    /// A smart album with more matches than are counted (`photo_count` is then 10,000: "10,000 or more").
+    photo_count_capped: bool,
     /// Members that are hidden: they stay in the album but no album view lists them ("N hidden" for the owner).
     hidden_count: i64,
     /// The chosen cover if it is still in the album and not trashed, else the most recent photo; null when empty.
@@ -111,6 +117,7 @@ struct AlbumRow {
     description: Option<String>,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
+    rules: Option<serde_json::Value>,
     photo_count: i64,
     hidden_count: i64,
     first_at: Option<OffsetDateTime>,
@@ -121,7 +128,7 @@ struct AlbumRow {
 
 fn summary_sql(tail: &str) -> String {
     format!(
-        "SELECT a.id, a.title, a.description, a.created_at, a.updated_at,
+        "SELECT a.id, a.title, a.description, a.created_at, a.updated_at, a.rules,
                 st.photo_count, st.hidden_count, st.first_at, st.last_at, cv.id AS cover_id, cv.thumbhash AS cover_thumbhash
          FROM albums a
          CROSS JOIN LATERAL (
@@ -139,9 +146,65 @@ fn summary_sql(tail: &str) -> String {
     )
 }
 
+/// The most photos a smart album counts; beyond it the count says "this many or more" (`photo_count_capped`). Counting every match
+/// of a broad rule costs far more than reading the 10,001st (measured at 50,000 photos: 411 ms for 20,000 matches, 26 ms capped).
+const SMART_COUNT_CAP: i64 = 10_000;
+
+/// What a smart album shows now: how many photos match (up to [`SMART_COUNT_CAP`]), the oldest and the newest (two index reads
+/// of the timeline), and the newest one as the cover.
+async fn smart_summary(
+    db: &sqlx::PgPool,
+    owner: Uuid,
+    rules: &super::smart::Rules,
+) -> ApiResult<(
+    i64,
+    Option<OffsetDateTime>,
+    Option<OffsetDateTime>,
+    Option<(Uuid, Option<Vec<u8>>)>,
+)> {
+    let filters = rules.filters();
+    let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT count(*) FROM (SELECT 1 FROM assets a WHERE");
+    filters.push_where(&mut qb, owner);
+    qb.push(" LIMIT ").push_bind(SMART_COUNT_CAP + 1).push(") c");
+    let n: i64 = qb.build_query_scalar().persistent(false).fetch_one(db).await?;
+    if n == 0 {
+        return Ok((0, None, None, None));
+    }
+    let end = |dir: &str| {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(format!(
+            "SELECT a.id, a.thumbhash, {SORT_A} AS t FROM assets a WHERE"
+        ));
+        filters.push_where(&mut qb, owner);
+        qb.push(format!(" ORDER BY {SORT_A} {dir}, a.id {dir} LIMIT 1"));
+        qb
+    };
+    type EndRow = (Uuid, Option<Vec<u8>>, OffsetDateTime);
+    let newest: Option<EndRow> = end("DESC")
+        .build_query_as()
+        .persistent(false)
+        .fetch_optional(db)
+        .await?;
+    let oldest: Option<EndRow> = end("ASC").build_query_as().persistent(false).fetch_optional(db).await?;
+    Ok((
+        n,
+        oldest.map(|r| r.2),
+        newest.as_ref().map(|r| r.2),
+        newest.map(|r| (r.0, r.1)),
+    ))
+}
+
+/// The same expression as the library timeline, for `assets a`.
+const SORT_A: &str = "coalesce(a.taken_at, a.file_modified_at, a.created_at)";
+
 async fn to_albums(s: &AppState, owner: Uuid, rows: Vec<AlbumRow>) -> ApiResult<Vec<Album>> {
     let mut out = Vec::with_capacity(rows.len());
-    for r in rows {
+    for mut r in rows {
+        // A smart album has no members: what it shows is looked up from its rules each time.
+        if let Some(rules) = r.rules.as_ref().and_then(|v| super::smart::Rules::from_json(v).ok()) {
+            let (n, first, last, cover) = smart_summary(&s.db, owner, &rules).await?;
+            (r.photo_count, r.hidden_count, r.first_at, r.last_at) = (n, 0, first, last);
+            (r.cover_id, r.cover_thumbhash) = cover.map_or((None, None), |(id, th)| (Some(id), th));
+        }
         let cover = match r.cover_id {
             Some(id) => {
                 let (thumbhash, thumb_url) = thumb_fields(&s.storage, owner, id, r.cover_thumbhash.as_deref()).await?;
@@ -157,7 +220,10 @@ async fn to_albums(s: &AppState, owner: Uuid, rows: Vec<AlbumRow>) -> ApiResult<
             id: r.id,
             title: r.title,
             description: r.description,
-            photo_count: r.photo_count,
+            smart: r.rules.is_some(),
+            rules: r.rules,
+            photo_count: r.photo_count.min(SMART_COUNT_CAP),
+            photo_count_capped: r.photo_count > SMART_COUNT_CAP,
             hidden_count: r.hidden_count,
             cover,
             first_at: r.first_at,
@@ -190,6 +256,48 @@ async fn lock_album(tx: &mut sqlx::PgConnection, owner: Uuid, id: Uuid) -> ApiRe
         .ok_or(ApiError::NotFound)
 }
 
+async fn is_smart(tx: &mut sqlx::PgConnection, id: Uuid) -> ApiResult<bool> {
+    Ok(sqlx::query_scalar("SELECT rules IS NOT NULL FROM albums WHERE id = $1")
+        .bind(id)
+        .fetch_one(tx)
+        .await?)
+}
+
+/// A smart album's photos come from its rules: adding or removing one by hand makes no sense.
+async fn refuse_smart(tx: &mut sqlx::PgConnection, id: Uuid) -> ApiResult<()> {
+    if is_smart(tx, id).await? {
+        return Err(ApiError::BadRequest(
+            "this is a smart album: its photos come from its rules, change the rules instead".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub(super) struct PreviewBody {
+    rules: serde_json::Value,
+}
+
+/// `POST /assets/albums/preview {rules}`: how many photos the rules would match now and a few of them, for the editor's live
+/// preview. Nothing is saved.
+pub(super) async fn preview(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<PreviewBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let rules = super::smart::Rules::from_json(&req.rules)?;
+    let filters = rules.filters();
+    let (count, _, _, _) = smart_summary(&s.db, user.id, &rules).await?;
+    let rows = super::search::timeline_rows(&s.db, user.id, &filters, 8, None).await?;
+    let items = list_items(&s, user.id, rows.into_iter().map(|r| r.row).collect()).await?;
+    Ok(Json(serde_json::json!({
+        "count": count.min(SMART_COUNT_CAP),
+        "capped": count > SMART_COUNT_CAP,
+        "items": items,
+        "rules": rules.to_json()
+    })))
+}
+
 pub(super) async fn list(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<serde_json::Value>> {
     let rows: Vec<AlbumRow> = sqlx::query_as(&summary_sql("ORDER BY a.updated_at DESC, a.id DESC"))
         .bind(user.id)
@@ -208,6 +316,8 @@ pub(super) struct CreateBody {
     description: Option<String>,
     #[serde(default)]
     asset_ids: Vec<Uuid>,
+    /// Rules make a smart album (no `asset_ids` then).
+    rules: Option<serde_json::Value>,
 }
 
 /// Insert the caller's live photos among `ids` into the album; returns how many were new.
@@ -233,18 +343,33 @@ pub(super) async fn create(
     let title = clean_title(&req.title)?;
     let description = clean_description(req.description.as_deref())?;
     let ids = clean_ids(req.asset_ids)?;
+    let rules = match &req.rules {
+        Some(v) => {
+            if !ids.is_empty() {
+                return Err(ApiError::BadRequest(
+                    "a smart album has rules, not photos: send one or the other".into(),
+                ));
+            }
+            Some(super::smart::Rules::from_json(v)?.to_json())
+        }
+        None => None,
+    };
     let mut tx = s.db.begin().await?;
     let (id,): (Uuid,) =
-        sqlx::query_as("INSERT INTO albums (owner_id, title, description) VALUES ($1,$2,$3) RETURNING id")
+        sqlx::query_as("INSERT INTO albums (owner_id, title, description, rules) VALUES ($1,$2,$3,$4) RETURNING id")
             .bind(user.id)
             .bind(&title)
             .bind(&description)
+            .bind(&rules)
             .fetch_one(&mut *tx)
             .await?;
     if !ids.is_empty() {
         insert_members(&mut tx, user.id, id, &ids).await?;
     }
     tx.commit().await?;
+    if rules.is_some() {
+        super::visibility::manifest_soon(&s, user.id);
+    }
     Ok((StatusCode::CREATED, Json(load_album(&s, user.id, id).await?)))
 }
 
@@ -255,6 +380,8 @@ pub(super) struct UpdateBody {
     description: Option<Option<String>>,
     #[serde(default, deserialize_with = "present")]
     cover_asset_id: Option<Option<Uuid>>,
+    /// New rules for a smart album (an ordinary album cannot become smart or the other way round).
+    rules: Option<serde_json::Value>,
 }
 
 pub(super) async fn update(
@@ -269,8 +396,20 @@ pub(super) async fn update(
         .as_ref()
         .map(|d| clean_description(d.as_deref()))
         .transpose()?;
+    let new_rules = req
+        .rules
+        .as_ref()
+        .map(|v| super::smart::Rules::from_json(v).map(|r| r.to_json()))
+        .transpose()?;
     let mut tx = s.db.begin().await?;
     lock_album(&mut tx, user.id, id).await?;
+    let smart = is_smart(&mut tx, id).await?;
+    if new_rules.is_some() && !smart {
+        return Err(ApiError::BadRequest("only a smart album has rules".into()));
+    }
+    if smart && matches!(req.cover_asset_id, Some(Some(_))) {
+        return Err(ApiError::BadRequest("a smart album's cover is its newest photo".into()));
+    }
     if let Some(Some(cover)) = req.cover_asset_id {
         let ok: Option<(Uuid,)> = sqlx::query_as(
             "SELECT aa.asset_id FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
@@ -286,9 +425,10 @@ pub(super) async fn update(
             return Err(ApiError::BadRequest("the cover must be a photo in this album".into()));
         }
     }
-    if title.is_some() || description.is_some() || req.cover_asset_id.is_some() {
+    if title.is_some() || description.is_some() || req.cover_asset_id.is_some() || new_rules.is_some() {
         sqlx::query(
             "UPDATE albums SET
+                rules = coalesce($7, rules),
                 title = coalesce($2, title),
                 description = CASE WHEN $3 THEN $4 ELSE description END,
                 cover_asset_id = CASE WHEN $5 THEN $6 ELSE cover_asset_id END,
@@ -301,10 +441,14 @@ pub(super) async fn update(
         .bind(description.flatten())
         .bind(req.cover_asset_id.is_some())
         .bind(req.cover_asset_id.flatten())
+        .bind(&new_rules)
         .execute(&mut *tx)
         .await?;
     }
     tx.commit().await?;
+    if new_rules.is_some() {
+        super::visibility::manifest_soon(&s, user.id);
+    }
     Ok(Json(load_album(&s, user.id, id).await?))
 }
 
@@ -329,13 +473,32 @@ pub(super) async fn assets(
     Path(id): Path<Uuid>,
     Query(q): Query<ListQuery>,
 ) -> ApiResult<Json<ListResponse>> {
-    let owned: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM albums WHERE id = $1 AND owner_id = $2")
-        .bind(id)
-        .bind(user.id)
-        .fetch_optional(&s.db)
-        .await?;
-    owned.ok_or(ApiError::NotFound)?;
+    let owned: Option<(Option<serde_json::Value>,)> =
+        sqlx::query_as("SELECT rules FROM albums WHERE id = $1 AND owner_id = $2")
+            .bind(id)
+            .bind(user.id)
+            .fetch_optional(&s.db)
+            .await?;
+    let (rules,) = owned.ok_or(ApiError::NotFound)?;
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    if let Some(rules) = rules {
+        // A smart album lists what its rules match now, newest first, with the search's own SQL and cursor.
+        let filters = super::smart::Rules::from_json(&rules)?.filters();
+        let after = match &q.cursor {
+            Some(c) => Some(decode_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
+            None => None,
+        };
+        let rows = super::search::timeline_rows(&s.db, user.id, &filters, limit, after).await?;
+        let last = if rows.len() as i64 == limit { rows.last() } else { None };
+        let next_cursor = last.map(|r| encode_cursor(r.row.summary.sort_time, r.row.summary.id));
+        let next_before = last.map(|r| r.row.summary.sort_time);
+        let items = list_items(&s, user.id, rows.into_iter().map(|r| r.row).collect()).await?;
+        return Ok(Json(ListResponse {
+            items,
+            next_cursor,
+            next_before,
+        }));
+    }
     let after = match (&q.cursor, q.before) {
         (Some(c), _) => Some(decode_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
         (None, Some(t)) => Some((t, Uuid::nil())),
@@ -395,6 +558,7 @@ pub(super) async fn add(
     let pick = req.validated(unlock)?;
     let mut tx = s.db.begin().await?;
     lock_album(&mut tx, user.id, id).await?;
+    refuse_smart(&mut tx, id).await?;
     let ids = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();
     let count = insert_members(&mut tx, user.id, id, &ids).await?;
     if count > 0 {
@@ -418,6 +582,7 @@ pub(super) async fn remove_assets(
     let pick = req.validated(unlock)?;
     let mut tx = s.db.begin().await?;
     lock_album(&mut tx, user.id, id).await?;
+    refuse_smart(&mut tx, id).await?;
     let ids = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();
     let count = sqlx::query("DELETE FROM album_assets WHERE album_id = $1 AND asset_id = ANY($2)")
         .bind(id)

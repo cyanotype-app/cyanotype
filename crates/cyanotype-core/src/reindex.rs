@@ -135,6 +135,8 @@ pub struct Report {
     /// Server settings (default limits) put back.
     pub settings_restored: u64,
     pub albums_restored: u64,
+    /// Of those, smart albums (their saved rules).
+    pub smart_albums_restored: u64,
     pub album_items_restored: u64,
     /// Share links recreated (or that would be). Password-protected ones come back locked.
     pub shares_restored: u64,
@@ -250,6 +252,7 @@ impl Report {
             "    albums / items / pairs restored  {} / {} / {}",
             self.albums_restored, self.album_items_restored, self.pairs_restored
         );
+        let _ = writeln!(s, "    smart albums (saved rules)       {}", self.smart_albums_restored);
         let _ = writeln!(
             s,
             "    share links restored / skipped   {} / {}",
@@ -1460,6 +1463,7 @@ async fn restore_user(
         }
         if is_new {
             cx.report.albums_restored += 1;
+            cx.report.smart_albums_restored += u64::from(album.rules.is_some());
         }
         if !is_new && n_items == 0 {
             continue;
@@ -1476,8 +1480,8 @@ async fn restore_user(
                 .and_then(keys::parse_sha256)
                 .and_then(|s| ids.get(&s[..]).copied());
             sqlx::query(
-                "INSERT INTO albums (id, owner_id, title, description, cover_asset_id, created_at, updated_at)
-                 VALUES ($1,$2,$3,$4,$5, coalesce($6, now()), coalesce($7, now())) ON CONFLICT DO NOTHING",
+                "INSERT INTO albums (id, owner_id, title, description, cover_asset_id, created_at, updated_at, rules)
+                 VALUES ($1,$2,$3,$4,$5, coalesce($6, now()), coalesce($7, now()), $8) ON CONFLICT DO NOTHING",
             )
             .bind(album.id)
             .bind(user)
@@ -1486,6 +1490,7 @@ async fn restore_user(
             .bind(cover)
             .bind(album.created_at)
             .bind(album.updated_at)
+            .bind(&album.rules)
             .execute(&mut *tx)
             .await?;
         }

@@ -4,6 +4,8 @@ import { api, ApiError, type Album } from "../api";
 import { useAuth } from "../auth";
 import { AlbumCover } from "../components/AlbumCover";
 import { NameDialog } from "../components/NameDialog";
+import { SmartAlbumEditor } from "../components/SmartAlbumEditor";
+import { blankRules, describeRules, smartCount } from "../smartText";
 import { dateRange, hiddenNote, photoCount } from "../albumText";
 
 /** Grid of album cards, most recently updated first. */
@@ -13,6 +15,7 @@ export function Albums() {
   const [albums, setAlbums] = useState<Album[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [naming, setNaming] = useState(false);
+  const [makingSmart, setMakingSmart] = useState(false);
   const [busy, setBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -44,6 +47,19 @@ export function Albums() {
     }
   }
 
+  async function createSmart(title: string, rules: import("../api").SmartRules) {
+    setBusy(true);
+    setCreateError(null);
+    try {
+      const a = await api.createSmartAlbum({ title, rules });
+      navigate(`/albums/${a.id}`);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) setAnonymous();
+      else setCreateError(e instanceof Error ? e.message : "Could not create the smart album.");
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="albums">
       <div className="page-head">
@@ -52,6 +68,9 @@ export function Albums() {
           <Link to="/shared" className="btn btn-quiet">
             Shared links
           </Link>
+          <button type="button" className="btn btn-quiet" onClick={() => setMakingSmart(true)}>
+            New smart album
+          </button>
           <button type="button" className="btn btn-primary" onClick={() => setNaming(true)}>
             New album
           </button>
@@ -75,14 +94,38 @@ export function Albums() {
             <li key={a.id}>
               <Link to={`/albums/${a.id}`} className="album-card">
                 <AlbumCover cover={a.cover} />
-                <span className="album-card-title">{a.title}</span>
-                <span className="muted small">
-                  {[photoCount(a.photo_count), hiddenNote(a.hidden_count), dateRange(a.first_at, a.last_at)].filter(Boolean).join(" · ")}
+                <span className="album-card-title">
+                  <span className="album-card-name">{a.title}</span>
+                  {a.smart && <span className="badge smart-badge">Smart</span>}
                 </span>
+                <span className="muted small">
+                  {[
+                    a.smart ? smartCount(a.photo_count, a.photo_count_capped) : photoCount(a.photo_count),
+                    hiddenNote(a.hidden_count),
+                    dateRange(a.first_at, a.last_at),
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </span>
+                {a.smart && a.rules && <span className="muted small album-card-rules">{describeRules(a.rules)}</span>}
               </Link>
             </li>
           ))}
         </ul>
+      )}
+      {makingSmart && (
+        <SmartAlbumEditor
+          title="New smart album"
+          submitLabel="Create smart album"
+          initialRules={blankRules()}
+          busy={busy}
+          error={createError}
+          onSubmit={(t, r) => void createSmart(t, r)}
+          onCancel={() => {
+            setMakingSmart(false);
+            setCreateError(null);
+          }}
+        />
       )}
       {naming && (
         <NameDialog

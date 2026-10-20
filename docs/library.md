@@ -1496,3 +1496,67 @@ page, a search filter, tag words in text search, and keywords imported from the 
 - `crates/cyanotype-core/tests/tags.rs` (once-per-photo import, pairs, caps, cascades) and `reindex.rs` (tags restored with their ids, imported
   marks, empty tags, never given back to photos that were not recreated); `apps/worker`: IPTC and XMP keyword parsing and the metadata job.
 - Web: `tagText.test.ts`, `Tags.test.tsx` (the field, the dialog, the Tags view), filter sheet and URL; `e2e/tags-layout.spec.ts` (Playwright).
+
+# Smart albums
+
+An album defined by saved rules instead of members (migration 0026). It is **live**: nothing is stored about which photos are in it, so
+a photo that starts to match appears and one that stops disappears, in the album and in its share link.
+
+## What the user sees
+
+- *Albums*, *New smart album*: a title, **match all / any** over a list of rules, *Include archived photos*, and a **live preview** (how many photos
+  match right now and eight of them). Rules: *Date range*, *Place*, *Camera*, *Lens*, *File type*, *Favorites*, *Rating* (N stars and up), *Tags*
+  (with all / any), *Location* (has or has none), *Text in the photo* (has or has none), *Caption contains*. Place, camera and lens suggest what the
+  library has.
+- **A text query is not a rule**, and the editor says why: a semantic search such as "dog on the beach" ranks by a model, so the album's contents
+  would change without a photo changing. The caption rule (a plain substring) and the tag rule are stable.
+- In *Albums* a smart album has a **Smart** badge, its rules in words and its live count (`10,000+` for a big one). Its page says *Smart*, shows the
+  rules and has **Edit rules** in place of *Add photos*; selecting photos there offers Rate, Tag, Share and the rest, but no *Set as cover* or
+  *Remove from album* (the cover is the newest match). A smart album is not offered in *Add to album* or as the album filter of a search.
+- **Sharing** works like any album link: the visitor sees what the rules match when they look (the newest 10,000), never a hidden photo, and the
+  owner's link list counts the same.
+
+## How it works
+
+- **Storage.** `albums.rules jsonb` (NULL for an ordinary album): `{"match": "all"|"any", "archived": "include"|"exclude", "rules": [...]}`, validated
+  and normalised by `routes/smart.rs` (at most 20 rules, strings trimmed and at most 200 characters, dates real, tags 1 to 20 valid names). `archived` is
+  a switch for the whole album, not a rule, so "exclude" never becomes "or not archived". A smart album has no `album_assets` rows.
+- **Same SQL as search.** Each rule becomes a `search::Filters` holding only that rule; the album is `Filters::smart`, whose conditions are the rules'
+  `push_conditions` (the very code of the search filters) joined by `AND` or `OR`, after the usual ownership and visibility terms of `push_where`
+  (live, not a RAW half, **not hidden**). So everything that follows search follows here: hidden photos are never in a smart album, its cover or counts,
+  its link, or a bulk scope.
+- **Listing.** `GET /assets/albums/{id}/assets` of a smart album is the search's timeline-order list (the same cursor and `ListResponse`).
+  `GET /assets/albums` and `{id}` give `smart: true`, `rules`, a live `photo_count` (counted up to 10,000, `photo_count_capped` beyond), the oldest and the
+  newest photo's time (two timeline-index reads) and the newest photo as the cover. `hidden_count` is 0.
+- **Scopes.** `{"album": id}` in a bulk request (select all, rate, tag, share, trash...) resolves a smart album's rules: the photos it matches now.
+  Adding or removing photos of a smart album by hand, and choosing a cover, are `400`.
+- **Share links.** `share_public::ShareRow::source` resolves the rules when the link is viewed into an array of ids (the newest 10,000), joined to `assets`
+  with the usual `VISIBLE` predicate. The owner's list counts through the same filters.
+- **Recovery.** The album's manifest line gains `rules` (absent for ordinary albums and in older manifests). `reindex` recreates a missing smart album with
+  its rules (`smart albums (saved rules)` in the report) and its share link; there are no members to restore. The manifest is rewritten about 30 s after a
+  smart album is made or changed.
+- **Indexes** (50,000 photos, `EXPLAIN ANALYZE`): a page of an `AND` of favorite and a rating walks `assets_favorites_idx` (26 ms); an `OR` of favorite,
+  rating and a tag walks the timeline index and stops after 61 rows (9 ms); the album card's count is capped at 10,001 rows (26 ms for a rule matching
+  20,000 photos, where counting them all took 411 ms); the oldest and newest times are one-row index reads (3 ms each). An `OR` whose branches are all
+  indexed becomes a `BitmapOr` of the rating, favorites and camera indexes.
+- **Preview.** `POST /assets/albums/preview {rules}` validates, counts (capped) and lists eight photos; nothing is saved.
+
+## API (assets service, owner-scoped)
+
+| Request | Effect |
+|---|---|
+| `POST /assets/albums {title, rules}` | A smart album (`400` with `asset_ids`, or with a text query as a rule: "its ranking is not stable"). |
+| `PATCH /assets/albums/{id} {rules, title...}` | Edit the rules of a smart album (`400` for an ordinary album; no cover). |
+| `POST /assets/albums/preview {rules}` | `{count, capped, items, rules}`. |
+| `GET /assets/albums`, `/assets/albums/{id}` | `smart`, `rules`, `photo_count`, `photo_count_capped`. |
+| `POST /assets/albums/{id}/assets[/remove]` | `400` for a smart album. |
+
+## Tests
+
+- `smart.rs` (unit): normalisation, round trip, the text-query refusal, every kind of nonsense. `smart_tests.rs` (Postgres): every rule against the search filter's
+  own results, match all / any and the archived switch, live membership (a photo starts to match, one stops, one is trashed, one hidden, a stranger's),
+  the cover and counts and paging, editing and everything a smart album refuses, bulk scopes, the preview, a share link that follows the rules and never
+  shows a hidden photo, owner isolation, and the plan; `visibility_tests.rs`: a smart album that matches the hidden photo lists, counts, covers and links
+  without it; `key_scope_tests.rs`: the new route.
+- `crates/cyanotype-core/tests/reindex.rs`: a smart album's rules and link come back, with no members.
+- Web: `smartText.test.ts`, `SmartAlbumEditor.test.tsx` (the editor, the Albums list, the album page); `e2e/smart-layout.spec.ts` (Playwright).

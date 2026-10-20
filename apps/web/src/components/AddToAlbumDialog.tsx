@@ -28,7 +28,8 @@ export function AddToAlbumDialog({ ids, count, onClose, onDone }: Props) {
     let live = true;
     api
       .listAlbums()
-      .then((r) => live && setAlbums(r.items))
+      // A smart album gets its photos from its rules: it is not somewhere to add a photo.
+      .then((r) => live && setAlbums(r.items.filter((a) => !a.smart)))
       .catch((e: unknown) => {
         if (!live) return;
         if (e instanceof ApiError && e.status === 401) setAnonymous();

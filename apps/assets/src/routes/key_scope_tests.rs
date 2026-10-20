@@ -75,6 +75,7 @@ const ROUTES: &[(&str, &str, Who)] = &[
     ("POST", "/assets/restore", Write),
     ("POST", "/assets/purge", Write),
     ("POST", "/assets/albums", Write),
+    ("POST", "/assets/albums/preview", Write),
     ("PATCH", "/assets/albums/{id}", Write),
     ("DELETE", "/assets/albums/{id}", Write),
     ("POST", "/assets/albums/{id}/assets", Write),

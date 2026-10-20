@@ -130,11 +130,13 @@ struct ShareRow {
     include_originals: bool,
     expires_at: Option<OffsetDateTime>,
     expired: bool,
-    item_count: i64,
+    /// NULL for a link to a smart album: counted from its rules below.
+    item_count: Option<i64>,
     view_count: i64,
     last_viewed_at: Option<OffsetDateTime>,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
+    album_rules: Option<serde_json::Value>,
 }
 
 impl From<ShareRow> for Share {
@@ -150,7 +152,7 @@ impl From<ShareRow> for Share {
             include_originals: r.include_originals,
             expires_at: r.expires_at,
             expired: r.expired,
-            item_count: r.item_count,
+            item_count: r.item_count.unwrap_or(0),
             view_count: r.view_count,
             last_viewed_at: r.last_viewed_at,
             created_at: r.created_at,
@@ -164,7 +166,8 @@ async fn fetch(db: &sqlx::PgPool, owner: Uuid, id: Option<Uuid>) -> ApiResult<Ve
         "SELECT s.id, s.kind, s.album_id, a.title AS album_title, s.title, s.token,
                 (s.password_hash IS NOT NULL) AS has_password, s.allow_download, s.include_originals,
                 s.expires_at, coalesce(s.expires_at <= now(), false) AS expired,
-                CASE WHEN s.kind = 'album' THEN
+                CASE WHEN a.rules IS NOT NULL THEN NULL
+                WHEN s.kind = 'album' THEN
                     (SELECT count(*) FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
                      WHERE aa.album_id = s.album_id AND x.owner_id = s.owner_id
                        AND x.deleted_at IS NULL AND x.primary_id IS NULL AND NOT x.hidden)
@@ -174,6 +177,7 @@ async fn fetch(db: &sqlx::PgPool, owner: Uuid, id: Option<Uuid>) -> ApiResult<Ve
                        AND x.deleted_at IS NULL AND x.primary_id IS NULL AND NOT x.hidden)
                 END AS item_count,
                 s.view_count, s.last_viewed_at, s.created_at, s.updated_at
+                , a.rules AS album_rules
          FROM shares s LEFT JOIN albums a ON a.id = s.album_id
          WHERE s.owner_id = $1 AND ($2::uuid IS NULL OR s.id = $2)
          ORDER BY s.created_at DESC, s.id DESC",
@@ -182,6 +186,18 @@ async fn fetch(db: &sqlx::PgPool, owner: Uuid, id: Option<Uuid>) -> ApiResult<Ve
     .bind(id)
     .fetch_all(db)
     .await?;
+    let mut rows = rows;
+    for r in &mut rows {
+        // A link to a smart album shows what the album's rules match now (visitors never see a hidden photo).
+        if let Some(rules) = &r.album_rules {
+            let filters = super::smart::Rules::from_json(rules)?.filters();
+            let mut qb =
+                sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT count(*) FROM (SELECT 1 FROM assets a WHERE");
+            filters.push_where(&mut qb, owner);
+            qb.push(" LIMIT 10000) c");
+            r.item_count = Some(qb.build_query_scalar::<i64>().persistent(false).fetch_one(db).await?);
+        }
+    }
     Ok(rows.into_iter().map(Share::from).collect())
 }
 

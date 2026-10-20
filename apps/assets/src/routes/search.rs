@@ -161,9 +161,20 @@ pub(super) struct Filters {
     album: Option<Uuid>,
     has_location: Option<bool>,
     has_text: Option<bool>,
+    /// The caption contains this text (case-insensitive). Not a search parameter: smart albums use it.
+    caption_contains: Option<String>,
+    /// Rules joined by AND (`all`) or OR (smart albums): each member is a `Filters` of its own, of which only the filters count.
+    group: Option<Group>,
     /// "More like this": never the source photo itself, nor the other photos of its burst.
     exclude: Option<Uuid>,
     exclude_burst: Option<Uuid>,
+}
+
+/// The rules of a smart album as filters, joined by AND or OR (`docs/library.md`, "Smart albums").
+#[derive(Clone)]
+pub(super) struct Group {
+    pub(super) all: bool,
+    pub(super) members: Vec<Filters>,
 }
 
 pub(super) fn clean(s: &Option<String>) -> Option<String> {
@@ -235,9 +246,74 @@ impl Filters {
             album: q.album,
             has_location: q.has_location,
             has_text: q.has_text,
+            caption_contains: None,
+            group: None,
             exclude: None,
             exclude_burst: None,
         })
+    }
+
+    /// The photos of a smart album: ownership and visibility as for every search, `exclude_archived` as the album says, and
+    /// the rules (already validated into `members`) joined by AND or OR.
+    pub(super) fn smart(all: bool, exclude_archived: bool, members: Vec<Filters>) -> Self {
+        Self {
+            exclude_archived,
+            group: Some(Group { all, members }),
+            ..Self::default()
+        }
+    }
+
+    /// A filter with only the given conditions set (one rule of a smart album).
+    pub(super) fn rule() -> Self {
+        Self::default()
+    }
+
+    pub(super) fn with_dates(mut self, from: Option<Date>, to: Option<Date>) -> Self {
+        let midnight = |d: Date| d.with_time(Time::MIDNIGHT).assume_utc();
+        self.from = from.map(midnight);
+        self.to_exclusive = to.map(|d| midnight(d) + time::Duration::days(1));
+        self
+    }
+    pub(super) fn with_favorite(mut self) -> Self {
+        self.favorite = true;
+        self
+    }
+    pub(super) fn with_rating(mut self, min: i16) -> Self {
+        self.rating_min = Some(min);
+        self
+    }
+    pub(super) fn with_tags(mut self, lowered: Vec<String>, any: bool) -> Self {
+        self.tags = lowered;
+        self.tags_any = any;
+        self
+    }
+    pub(super) fn with_camera(mut self, v: String) -> Self {
+        self.camera = Some(v);
+        self
+    }
+    pub(super) fn with_lens(mut self, v: String) -> Self {
+        self.lens = Some(v);
+        self
+    }
+    pub(super) fn with_place(mut self, v: String) -> Self {
+        self.place = Some(v);
+        self
+    }
+    pub(super) fn with_kind(mut self, k: FileType) -> Self {
+        self.kind = Some(k);
+        self
+    }
+    pub(super) fn with_has_location(mut self, v: bool) -> Self {
+        self.has_location = Some(v);
+        self
+    }
+    pub(super) fn with_has_text(mut self, v: bool) -> Self {
+        self.has_text = Some(v);
+        self
+    }
+    pub(super) fn with_caption(mut self, text: String) -> Self {
+        self.caption_contains = Some(text);
+        self
     }
 
     /// The same filters, leaving one photo out (the source of a "More like this") and the rest of its burst, if it is in one.
@@ -261,6 +337,8 @@ impl Filters {
             || self.album.is_some()
             || self.has_location.is_some()
             || self.has_text.is_some()
+            || self.caption_contains.is_some()
+            || self.group.is_some()
     }
 
     /// ` a.owner_id = $ AND ...` for `assets a`: ownership, not trashed, not a hidden RAW, then the filters.
@@ -283,6 +361,12 @@ impl Filters {
                 .push_bind(b)
                 .push(")");
         }
+        self.push_conditions(qb, owner);
+    }
+
+    /// ` AND cond` for each filter that is set (not the ownership and visibility terms of `push_where`): also what one rule of
+    /// a smart album is, so a rule and the same filter in a search are the same SQL.
+    pub(super) fn push_conditions(&self, qb: &mut QueryBuilder<'_, Postgres>, owner: Uuid) {
         if let Some(t) = self.from {
             qb.push(format!(" AND {SORT_TIME} >= ")).push_bind(t);
         }
@@ -311,6 +395,25 @@ impl Filters {
                         .push_bind(tag.clone())
                         .push(")");
                 }
+            }
+        }
+        if let Some(text) = &self.caption_contains {
+            qb.push(" AND a.caption ILIKE ").push_bind(like_pattern(text));
+        }
+        if let Some(g) = &self.group {
+            if g.members.is_empty() {
+                qb.push(" AND FALSE");
+            } else {
+                qb.push(" AND (");
+                for (i, m) in g.members.iter().enumerate() {
+                    if i > 0 {
+                        qb.push(if g.all { " AND " } else { " OR " });
+                    }
+                    qb.push("(TRUE");
+                    m.push_conditions(qb, owner);
+                    qb.push(")");
+                }
+                qb.push(")");
             }
         }
         if let Some(c) = &self.camera {
@@ -1088,7 +1191,7 @@ async fn respond_timeline(
     ))
 }
 
-async fn timeline_rows(
+pub(super) async fn timeline_rows(
     db: &sqlx::PgPool,
     owner: Uuid,
     f: &Filters,

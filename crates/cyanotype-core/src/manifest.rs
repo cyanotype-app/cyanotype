@@ -104,6 +104,10 @@ pub struct AlbumLine {
     /// Member photos by hash.
     #[serde(default)]
     pub items: Vec<String>,
+    /// The saved rules of a smart album (migration 0026), as the API stores them; such an album has no `items`. Absent for an
+    /// ordinary album and in older manifests (an older reader restores a smart album as an empty ordinary one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<serde_json::Value>,
 }
 
 /// A share link (`shares`, migration 0009): its address, its settings and, for a selection, its photos by hash.
@@ -253,7 +257,7 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
         items.entry(r.try_get("album_id")?).or_default().push(keys::hex(&sha));
     }
     for r in sqlx::query(
-        "SELECT al.id, al.title, al.description, al.created_at, al.updated_at, c.sha256 AS cover
+        "SELECT al.id, al.title, al.description, al.created_at, al.updated_at, c.sha256 AS cover, to_jsonb(al) -> 'rules' AS rules
          FROM albums al LEFT JOIN assets c ON c.id = al.cover_asset_id AND c.purging_at IS NULL
          WHERE al.owner_id = $1 ORDER BY al.created_at, al.id",
     )
@@ -272,6 +276,7 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
             created_at: r.try_get("created_at")?,
             updated_at: r.try_get("updated_at")?,
             items: items.remove(&id).unwrap_or_default(),
+            rules: r.try_get::<Option<serde_json::Value>, _>("rules")?.filter(|v| !v.is_null()),
         }));
     }
 

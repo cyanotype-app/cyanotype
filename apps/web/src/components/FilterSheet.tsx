@@ -23,7 +23,8 @@ interface Props {
 }
 
 const defaultLoad = async () => {
-  const [facets, albums] = await Promise.all([api.searchFacets(), api.listAlbums().then((r) => r.items)]);
+  // A smart album has no members to filter by (its rules are the filters).
+  const [facets, albums] = await Promise.all([api.searchFacets(), api.listAlbums().then((r) => r.items.filter((a) => !a.smart))]);
   return { facets, albums };
 };
 
