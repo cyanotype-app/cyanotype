@@ -239,7 +239,7 @@ pub(super) struct TrashResponse {
 }
 
 const TRASH_SELECT: &str = "SELECT id, original_name, content_type, size_bytes, width, height,
-        coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite, rating, archived, hidden, thumbhash, deleted_at,
+        coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite, rating, archived, hidden, (recipe IS NOT NULL) AS edited, thumbhash, deleted_at,
         deleted_at + make_interval(days => $2) AS purge_at
  FROM assets WHERE owner_id = $1 AND deleted_at IS NOT NULL AND purging_at IS NULL AND primary_id IS NULL";
 

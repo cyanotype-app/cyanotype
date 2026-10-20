@@ -478,9 +478,12 @@ struct ItemRow {
     original_name: String,
     size_bytes: i64,
     share_copy_at: Option<OffsetDateTime>,
+    /// Has a rotate/crop recipe: its download is the edited JPEG, whatever the original's format.
+    edited: bool,
+    edited_copy_at: Option<OffsetDateTime>,
 }
 
-const ITEM_COLUMNS: &str = "x.id, x.width, x.height, {SORT} AS sort_time, x.thumbhash, x.content_type, x.original_name, x.size_bytes, x.share_copy_at";
+const ITEM_COLUMNS: &str = "x.id, x.width, x.height, {SORT} AS sort_time, x.thumbhash, x.content_type, x.original_name, x.size_bytes, x.share_copy_at, (x.recipe IS NOT NULL) AS edited, x.edited_copy_at";
 
 fn item_columns() -> String {
     ITEM_COLUMNS.replace("{SORT}", SORT)
@@ -564,6 +567,17 @@ async fn build_items(s: &AppState, share: &ShareRow, rows: Vec<ItemRow>) -> PubR
                         label: "RAW".into(),
                         size_bytes: Some(p.size_bytes),
                     });
+                }
+            } else if r.edited {
+                // The picture as the owner edited it (rotated, straightened, cropped), as a JPEG without metadata.
+                if r.edited_copy_at.is_some() {
+                    downloads.push(Download {
+                        id: r.id,
+                        label: "JPEG".into(),
+                        size_bytes: None,
+                    });
+                } else {
+                    pending = true;
                 }
             } else if is_jpeg(&r) {
                 if r.share_copy_at.is_some() {
@@ -683,10 +697,19 @@ async fn prepare(
 ) -> PubResult<(StatusCode, Json<serde_json::Value>)> {
     let share = open(&s, &st, ip, &token, &jar).await?;
     let row = one(&s, &share, id).await?;
-    let needed = share.allow_download && !share.include_originals && is_jpeg(&row) && row.share_copy_at.is_none();
+    let wanted = share.allow_download && !share.include_originals;
+    let needed = if wanted && row.edited {
+        row.edited_copy_at.is_none()
+    } else {
+        wanted && is_jpeg(&row) && row.share_copy_at.is_none()
+    };
     if needed {
         // Idempotent (one job per photo); the worker is woken by the queue's NOTIFY.
-        jobs::enqueue(&s.db, jobs::KIND_SHARE_COPY, id, 1).await?;
+        if row.edited {
+            jobs::requeue(&s.db, jobs::KIND_EDITED_COPY, id, 1).await?;
+        } else {
+            jobs::enqueue(&s.db, jobs::KIND_SHARE_COPY, id, 1).await?;
+        }
     }
     Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"pending": needed}))))
 }
@@ -725,8 +748,27 @@ async fn download(
         s.storage.presign_get_download(&key, &name, DOWNLOAD_TTL).await?
     } else {
         // Only the location-free JPEG copy. Never the original, never a RAW, never HEIC.
-        if file != id || !is_jpeg(&row) {
+        if file != id || (!row.edited && !is_jpeg(&row)) {
             return Err(ApiError::NotFound.into());
+        }
+        if row.edited {
+            // An edited photo's copy is the edited render (any original format), not the stripped original.
+            if row.edited_copy_at.is_none() {
+                return Err(
+                    ApiError::Conflict("this download is still being prepared, try again in a moment".into()).into(),
+                );
+            }
+            let name = keys::edited_file_name(&row.original_name);
+            let url = s
+                .storage
+                .presign_get_download(&keys::edited_copy(share.owner_id, id), &name, DOWNLOAD_TTL)
+                .await?;
+            metrics::global().count("shares.downloads", 1, &[("kind", share.kind.as_str())]);
+            return Ok((
+                StatusCode::TEMPORARY_REDIRECT,
+                [(header::LOCATION, url), (header::CACHE_CONTROL, "no-store".to_string())],
+            )
+                .into_response());
         }
         if row.share_copy_at.is_none() {
             return Err(

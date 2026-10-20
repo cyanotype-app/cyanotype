@@ -54,6 +54,8 @@ mod processing;
 mod ratings;
 #[cfg(test)]
 mod ratings_tests;
+#[cfg(test)]
+mod rotate_tests;
 mod scope;
 #[cfg(test)]
 mod scope_tests;
@@ -193,6 +195,7 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/{id}/details", get(details::get))
         .route("/assets/{id}/text", get(text::get))
         .route("/assets/{id}/download", get(download::download))
+        .route("/assets/{id}/download/edited", get(download::download_edited))
         .route("/assets/{id}", get(get_one))
         .route("/assets/{id}", delete(remove))
 }
@@ -981,6 +984,8 @@ struct AssetSummary {
     archived: bool,
     /// Hidden. Only the Hidden view (unlocked) ever lists such a photo, and the viewer needs the flag for "Unhide".
     hidden: bool,
+    /// Rotated, straightened or cropped (`width` / `height` and the thumbnail are the edited picture's).
+    edited: bool,
 }
 
 #[derive(FromRow)]
@@ -1128,7 +1133,7 @@ fn decode_cursor(c: &str) -> Option<(OffsetDateTime, Uuid)> {
 fn list_select(sort: visibility::Sort) -> String {
     format!(
         "SELECT id, original_name, content_type, size_bytes, width, height,
-        {} AS sort_time, favorite, rating, archived, hidden, thumbhash
+        {} AS sort_time, favorite, rating, archived, hidden, (recipe IS NOT NULL) AS edited, thumbhash
  FROM assets WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL",
         sort.expr()
     )
@@ -1228,7 +1233,7 @@ async fn get_one(
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let a: AssetSummary = sqlx::query_as(
-        "SELECT id, original_name, content_type, size_bytes, width, height, coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite, rating, archived, hidden
+        "SELECT id, original_name, content_type, size_bytes, width, height, coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite, rating, archived, hidden, (recipe IS NOT NULL) AS edited
          FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL AND (NOT hidden OR $3)",
     )
     .bind(id)
@@ -1237,11 +1242,33 @@ async fn get_one(
     .fetch_optional(&s.db)
     .await?
     .ok_or(ApiError::NotFound)?;
-    let (key, owner_id, thumbhash): (String, Uuid, Option<Vec<u8>>) =
-        sqlx::query_as("SELECT original_key, owner_id, thumbhash FROM assets WHERE id = $1")
-            .bind(id)
-            .fetch_one(&s.db)
-            .await?;
+    #[derive(FromRow)]
+    struct Own {
+        original_key: String,
+        owner_id: Uuid,
+        thumbhash: Option<Vec<u8>>,
+        recipe: Option<sqlx::types::Json<cyanotype_core::recipe::Recipe>>,
+        rendering: bool,
+        file_width: Option<i32>,
+        file_height: Option<i32>,
+    }
+    let Own {
+        original_key: key,
+        owner_id,
+        thumbhash,
+        recipe,
+        rendering,
+        file_width,
+        file_height,
+    } = sqlx::query_as(
+        "SELECT original_key, owner_id, thumbhash, recipe, coalesce(width_orig, width) AS file_width,
+                coalesce(height_orig, height) AS file_height,
+                EXISTS (SELECT 1 FROM jobs WHERE kind = 'thumbnail' AND asset_id = $1 AND state IN ('queued', 'running')) AS rendering
+         FROM assets WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&s.db)
+    .await?;
     let mut v = serde_json::to_value(a).map_err(anyhow::Error::from)?;
     v["albums"] = albums::containing(&s.db, user.id, id).await?;
     v["paired"] = serde_json::to_value(paired_files(&s.db, &[id]).await?.remove(&id).unwrap_or_default())
@@ -1261,6 +1288,18 @@ async fn get_one(
     v["thumb_url"] = thumb_url.into();
     v["preview_url"] = if thumbhash.is_some() {
         s.storage.presign_get(&keys::preview(owner_id, id)).await?.into()
+    } else {
+        serde_json::Value::Null
+    };
+    // Rotate and crop: the recipe, whether the worker is still rendering it, and (once it has) the whole picture the editor
+    // works on, since the preview is already cropped.
+    v["recipe"] = serde_json::to_value(recipe.as_ref().map(|j| j.0)).map_err(anyhow::Error::from)?;
+    v["rendering"] = rendering.into();
+    // The file's own size (`width` / `height` are the edited picture's while there is a recipe).
+    v["file_width"] = file_width.into();
+    v["file_height"] = file_height.into();
+    v["edit_base_url"] = if recipe.is_some() && !rendering && thumbhash.is_some() {
+        s.storage.presign_get(&keys::edit_base(owner_id, id)).await?.into()
     } else {
         serde_json::Value::Null
     };
@@ -1910,6 +1949,7 @@ mod tests {
                 rating: 0,
                 archived: false,
                 hidden: false,
+                edited: false,
             },
             thumbhash: Some("AQ==".into()),
             thumb_url: None,

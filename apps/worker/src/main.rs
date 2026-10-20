@@ -56,6 +56,7 @@ fn handled_kinds() -> impl Iterator<Item = &'static str> {
         jobs::KIND_PAIR,
         jobs::KIND_GEOCODE,
         jobs::KIND_SHARE_COPY,
+        jobs::KIND_EDITED_COPY,
         jobs::KIND_BURST,
         jobs::KIND_TAKEOUT,
     ])

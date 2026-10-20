@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, downloadHref, type AssetDetail, type AssetListItem, type PhotoDetails, type PhotoTag, type PhotoText } from "../api";
+import { api, downloadHref, editedHref, type AssetDetail, type AssetListItem, type PhotoDetails, type PhotoTag, type PhotoText } from "../api";
 import { useInfoHistory, useVerticalSwipe } from "../useInfoPanel";
 import { useImageRect, useTextPanel } from "../useTextPanel";
 import { TextBoxes, TextPanel } from "./TextPanel";
@@ -13,6 +13,12 @@ import { HeartIcon } from "./Tile";
 import { RatingStars } from "./Stars";
 import { TagDialog } from "./TagDialog";
 import { ratingKey } from "../ratingText";
+import { fromServer, toRequest, type Recipe } from "../recipeText";
+import { CropIcon, RotateCrop } from "./RotateCrop";
+
+/** How often the viewer asks whether the worker has finished a picture or an edited download, and how many times. */
+const POLL_MS = 1500;
+const POLL_TRIES = 40;
 
 interface Props {
   items: AssetListItem[];
@@ -50,6 +56,8 @@ interface Props {
   onEdited?: (item: AssetListItem) => void;
   /** Bump after the photo's albums changed so its details (the "In albums" line) are fetched again. */
   refreshKey?: number;
+  /** How often to ask whether the worker has finished rendering an edited picture or an edited download (tests shorten it). */
+  pollMs?: number;
 }
 
 export function Lightbox({
@@ -73,6 +81,7 @@ export function Lightbox({
   offset = 0,
   total = items.length,
   refreshKey = 0,
+  pollMs = POLL_MS,
 }: Props) {
   const item = items[index];
   // Which photo's file chooser is open (it closes by itself when the photo changes).
@@ -124,6 +133,19 @@ export function Lightbox({
   // Adding a tag to the open photo (the dialog), and a failed removal.
   const [tagging, setTagging] = useState(false);
   const [tagError, setTagError] = useState<string | null>(null);
+  // The rotate/crop editor of the open photo (the Crop button, or `e`, `r`, `c`), and the photo the worker is rendering after a save.
+  const [picture, setPicture] = useState<{ cropping: boolean; turned: boolean } | null>(null);
+  const [waitingFor, setWaitingFor] = useState<string | null>(null);
+  // "Download edited": the photo being prepared, and why it failed.
+  const [preparing, setPreparing] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   // Closing (or leaving) with the panel open also pops its history entry.
   const { leave } = info;
   const close = useCallback(() => void leave().then(onClose), [leave, onClose]);
@@ -168,6 +190,34 @@ export function Lightbox({
     }
   }, [refreshTotal, items, index, loadDetail, loadDetails]);
 
+  // After a save the worker renders the picture again: ask until it has, then show it (and let the page refresh its tile).
+  useEffect(() => {
+    if (!waitingFor) return;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const id = waitingFor;
+    const tick = () => {
+      tries += 1;
+      loadDetail(id)
+        .then((d) => {
+          setDetails((m) => ({ ...m, [id]: d }));
+          if (d.rendering && tries < POLL_TRIES) timer = setTimeout(tick, pollMs);
+          else {
+            setWaitingFor(null);
+            const cur = items.find((i) => i.id === id);
+            if (cur) onEdited?.(cur);
+          }
+        })
+        .catch(() => {
+          if (tries < POLL_TRIES) timer = setTimeout(tick, pollMs);
+          else setWaitingFor(null);
+        });
+    };
+    tick();
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one polling run per save
+  }, [waitingFor]);
+
   const go = useCallback(
     (delta: number) => {
       const next = index + delta;
@@ -177,10 +227,33 @@ export function Lightbox({
   );
 
   // Keyboard: ←/→ navigate, Esc closes, Tab stays inside the dialog.
+  // Rotate and crop: the editor works on the whole upright picture, which is the preview unless the photo is already cropped.
+  const here = items[index];
+  const hereDetail = here ? details[here.id] : undefined;
+  const editBase = hereDetail ? (hereDetail.recipe ? (hereDetail.edit_base_url ?? null) : hereDetail.preview_url) : null;
+  const canEditPicture = !!loadDetails && !!editBase && hereDetail?.rendering !== true;
+  const pictureOpen = picture !== null;
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       // Typing in a dialog opened over the lightbox (add to album) is not a lightbox shortcut.
       if ((e.target as HTMLElement | null)?.closest("input, textarea, select")) return;
+      // The rotate/crop editor owns the keyboard while it is open.
+      if (pictureOpen) return;
+      if (
+        loadDetails &&
+        ["e", "r", "c"].includes(e.key) &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !e.repeat &&
+        [null, dialogRef.current].includes((e.target as HTMLElement | null)?.closest('[role="dialog"]') ?? null)
+      ) {
+        const cur = items[index];
+        if (!cur || !canEditPicture) return;
+        e.preventDefault();
+        setPicture({ cropping: e.key === "c", turned: e.key === "r" });
+        return;
+      }
       if (e.key === "Escape") {
         e.preventDefault();
         // The panel closes first; a second Escape closes the lightbox.
@@ -248,7 +321,7 @@ export function Lightbox({
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [go, close, onTrash, onRate, items, index, info, closeInfo, loadDetails, text, closeText]);
+  }, [go, close, onTrash, onRate, items, index, info, closeInfo, loadDetails, text, closeText, pictureOpen, canEditPicture]);
 
   // Focus management: move focus in, give it back to the tile on close; lock page scroll.
   useEffect(() => {
@@ -277,6 +350,48 @@ export function Lightbox({
     ...paired.map((p) => ({ key: p.id, href: downloadHref(item.id, p.id), label: "RAW", size: p.size_bytes })),
   ];
   const position = offset + index;
+  const rendering = detail?.rendering === true;
+  const edited = item.edited === true;
+  const pixelSize: [number, number] | null =
+    detail?.file_width && detail.file_height
+      ? [detail.file_width, detail.file_height]
+      : !edited && item.width && item.height
+        ? [item.width, item.height]
+        : null;
+  async function savePicture(recipe: Recipe) {
+    const res = await api.editAssets([item!.id], { recipe: toRequest(recipe) });
+    if (res.failed.length > 0 || res.missing > 0) throw new Error("Could not save the changes. Try again.");
+    finishPicture();
+  }
+  async function revertPicture() {
+    const res = await api.editAssets([item!.id], { recipe: { revert: true } });
+    if (res.failed.length > 0 || res.missing > 0) throw new Error("Could not go back to the original. Try again.");
+    finishPicture();
+  }
+  function finishPicture() {
+    setPicture(null);
+    setEditVersion((v) => v + 1);
+    setWaitingFor(item!.id);
+    onEdited?.(item!);
+  }
+  async function downloadEdited() {
+    const id = item!.id;
+    setPreparing(id);
+    setDownloadError(null);
+    try {
+      for (let i = 0; i < POLL_TRIES && alive.current; i++) {
+        if ((await api.editedStatus(id)) === "ready") {
+          window.location.assign(editedHref(id));
+          break;
+        }
+        await new Promise((r) => setTimeout(r, pollMs));
+      }
+    } catch (e) {
+      if (alive.current) setDownloadError(e instanceof Error ? e.message : "Could not prepare the edited photo.");
+    } finally {
+      if (alive.current) setPreparing(null);
+    }
+  }
   async function untag(t: PhotoTag) {
     setTagError(null);
     try {
@@ -352,8 +467,21 @@ export function Lightbox({
               <HeartIcon filled={favorite} />
             </button>
           )}
+          {loadDetails && (
+            <button
+              type="button"
+              className="btn btn-glass lightbox-crop"
+              aria-label="Rotate and crop"
+              aria-keyshortcuts="e"
+              disabled={!canEditPicture}
+              title={rendering ? "The picture is being updated" : "Rotate and crop"}
+              onClick={() => setPicture({ cropping: false, turned: false })}
+            >
+              <CropIcon />
+            </button>
+          )}
           <div className="lightbox-actions">
-            {files.length === 1 ? (
+            {files.length === 1 && !edited ? (
               <a className="btn btn-glass" href={files[0]!.href} rel="noopener">
                 Download
               </a>
@@ -396,14 +524,24 @@ export function Lightbox({
           </div>
         </div>
       </div>
-      {files.length > 1 && downloadsOpen && (
+      {(files.length > 1 || edited) && downloadsOpen && (
         <div className="lightbox-downloads" id="lightbox-downloads">
           {files.map((f) => (
             <a key={f.key} className="btn btn-glass" href={f.href} rel="noopener">
-              Download {f.label} <span className="muted">{fileSize(f.size)}</span>
+              Download {edited && !f.label ? "original" : f.label} <span className="muted">{fileSize(f.size)}</span>
             </a>
           ))}
+          {edited && (
+            <button type="button" className="btn btn-glass" disabled={preparing === item.id} onClick={() => void downloadEdited()}>
+              {preparing === item.id ? "Preparing the edited photo…" : "Download edited (JPEG)"}
+            </button>
+          )}
         </div>
+      )}
+      {downloadError && (
+        <p className="lightbox-msg lightbox-msg-top" role="alert">
+          {downloadError}
+        </p>
       )}
       <div className={`lightbox-body${info.open || text.open ? " with-info" : ""}`}>
       <div className="lightbox-main">
@@ -429,6 +567,11 @@ export function Lightbox({
         )}
         {text.open && text.boxes && text.current && imageRect && <TextBoxes text={text.current} style={imageRect} />}
         {failed[item.id] && <p className="lightbox-msg">Could not load this photo.</p>}
+        {rendering && (
+          <p className="lightbox-updating" role="status">
+            Updating the picture…
+          </p>
+        )}
         {showPending && !fallback && <p className="lightbox-msg">This photo is still being processed.</p>}
         <button
           type="button"
@@ -450,6 +593,7 @@ export function Lightbox({
         <strong>{item.original_name}</strong>
         <span className="muted">
           {item.width && item.height ? `${item.width} × ${item.height} · ` : ""}
+          {edited && <span className="lightbox-edited">edited · </span>}
           <time dateTime={item.sort_time}>{Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString()}</time>
           {detail?.place && <span className="lightbox-place"> · {placeLine(detail.place)}</span>}
         </span>
@@ -512,9 +656,24 @@ export function Lightbox({
           onClose={closeInfo}
           onLeave={leave}
           onNavigate={onClose}
+          onEditPicture={canEditPicture ? () => setPicture({ cropping: false, turned: false }) : undefined}
         />
       )}
       </div>
+      {picture && editBase && (
+        <RotateCrop
+          key={`${item.id}-${detail?.recipe ? "edited" : "plain"}`}
+          name={item.original_name}
+          src={editBase}
+          initial={fromServer(detail?.recipe)}
+          fileSize={pixelSize}
+          startCropping={picture.cropping}
+          startTurned={picture.turned}
+          onSave={savePicture}
+          onRevert={revertPicture}
+          onCancel={() => setPicture(null)}
+        />
+      )}
       {tagError && (
         <p className="lightbox-msg" role="alert">
           {tagError}

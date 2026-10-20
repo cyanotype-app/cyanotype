@@ -2,6 +2,8 @@
 // structs in apps/auth/src/routes.rs and apps/assets/src/routes.rs; generating this from a utoipa
 // OpenAPI document is a planned follow-up (see docs/build.md).
 
+import type { Crop, ServerRecipe } from "./recipeText";
+
 /** GET /auth/me */
 export interface Me {
   id: string;
@@ -329,6 +331,8 @@ export interface AssetSummary {
   archived?: boolean;
   /** Hidden: only the unlocked Hidden view lists such a photo. Absent on older servers. */
   hidden?: boolean;
+  /** Rotated, straightened or cropped; `width` and `height` are then the edited picture's. Absent on older servers. */
+  edited?: boolean;
 }
 
 /** The other file of a RAW + JPEG pair: the RAW stacked behind a visible photo. */
@@ -717,6 +721,15 @@ export interface AssetDetail extends AssetSummary {
   original_url: string;
   thumb_url: string | null;
   preview_url: string | null;
+  /** The rotate/straighten/crop recipe, null when the picture is shown as the file is. Absent on older servers. */
+  recipe?: ServerRecipe | null;
+  /** The worker is still rendering the thumbnail and preview (after an edit). */
+  rendering?: boolean;
+  /** The file's own size in pixels (`width` / `height` are the edited picture's while there is a recipe). */
+  file_width?: number | null;
+  file_height?: number | null;
+  /** The whole upright picture, to work on in the rotate/crop editor (the preview is already cropped); null until rendered. */
+  edit_base_url?: string | null;
 }
 
 /** Where a photo was taken: the nearest populated place (GeoNames), looked up offline. */
@@ -791,6 +804,10 @@ export interface PhotoDetails {
     location_edited: boolean;
     original_date: PhotoDetails["date"] | null;
     original_location: { latitude: number; longitude: number } | null;
+    /** The rotate/straighten/crop recipe. Absent on older servers. */
+    recipe?: ServerRecipe | null;
+    /** The edited JPEG is ready, so "Download edited" answers at once. */
+    edited_copy_ready?: boolean;
   };
 }
 
@@ -798,10 +815,13 @@ export interface PhotoDetails {
 export type DateEdit = { local: string; offset: string | null } | { shift_seconds: number } | { revert: true };
 export type LocationEdit = { latitude: number; longitude: number } | { revert: true };
 export type CaptionEdit = { text: string } | { revert: true };
+/** A recipe to set, a relative quarter turn (`turn`: 90, -90, 180; the crop turns with the picture), or the original picture back. */
+export type RecipeEdit = { rotate?: number; straighten?: number; crop?: Crop } | { turn: number } | { revert: true };
 export interface EditRequest {
   date?: DateEdit;
   location?: LocationEdit;
   caption?: CaptionEdit;
+  recipe?: RecipeEdit;
 }
 
 /** POST /assets/edits. `failed` are the ids that could not be written (retry only those: a shift would move the others twice). */
@@ -1392,6 +1412,24 @@ export const api = {
       "/assets/edits",
       json(isScope(target) ? { scope: target.scope, except: target.except, ...edit } : { ids: target, ...edit }),
     ),
+  /**
+   * Ask for the edited JPEG of a photo ("Download edited"): `ready` when the worker has written it (then
+   * `editedHref(id)` downloads it), `pending` when it was just queued.
+   */
+  editedStatus: async (id: string): Promise<"ready" | "pending"> => {
+    const res = await fetch(editedHref(id), { credentials: "include", redirect: "manual" });
+    if (res.status === 202) return "pending";
+    // The redirect to the file is not followed (it is another origin): the browser reports it as an opaque redirect.
+    if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) return "ready";
+    let message = `Could not prepare the edited photo (${res.status}).`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body.error) message = body.error;
+    } catch {
+      /* keep the generic message */
+    }
+    throw new ApiError(res.status, message);
+  },
   /** The places the user's own photos are in (`q`: the start of a word of the city, region or country). */
   places: (q = "", signal?: AbortSignal) =>
     request<PlaceHit[]>(`/assets/places${q ? `?${new URLSearchParams({ q })}` : ""}`, { signal }),
@@ -1416,5 +1454,8 @@ export const api = {
  */
 export const downloadHref = (id: string, file?: string) =>
   `/assets/${encodeURIComponent(id)}/download${file ? `?file=${encodeURIComponent(file)}` : ""}`;
+
+/** The edited JPEG of a photo (rotated, straightened, cropped; no metadata). A redirect once the worker has made it. */
+export const editedHref = (id: string) => `/assets/${encodeURIComponent(id)}/download/edited`;
 
 export type Api = typeof api;

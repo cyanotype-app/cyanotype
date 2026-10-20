@@ -74,8 +74,14 @@ pub const FULL_BYTES_PER_PIXEL_HDR: u64 = 9;
 
 impl HeifHeader {
     /// Estimated peak bytes of [`decode_reduced`] for this image, targeting a [`crate::imaging::PREVIEW_EDGE`] output.
+    #[cfg(test)]
     pub fn cost_bytes(&self) -> u64 {
-        let out = Accum::bytes_for(self.width, self.height, crate::imaging::PREVIEW_EDGE, self.has_alpha);
+        self.cost_bytes_for(crate::imaging::PREVIEW_EDGE)
+    }
+
+    /// [`Self::cost_bytes`] for an output at least `edge` on the long edge.
+    pub fn cost_bytes_for(&self, edge: u32) -> u64 {
+        let out = Accum::bytes_for(self.width, self.height, edge, self.has_alpha);
         match &self.tiling {
             Some(t) => out + u64::from(t.tile_width) * u64::from(t.tile_height) * TILE_BYTES_PER_PIXEL + TILED_OVERHEAD,
             None => {

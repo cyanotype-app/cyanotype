@@ -17,6 +17,7 @@ pub mod objmeta;
 pub mod ocr;
 pub mod pairing;
 pub mod places;
+pub mod recipe;
 pub mod reindex;
 pub mod scan;
 pub mod storage;

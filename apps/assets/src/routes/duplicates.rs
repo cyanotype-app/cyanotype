@@ -179,7 +179,7 @@ pub(super) async fn list(
     let rows: Vec<Row> = sqlx::query_as(&format!(
         "SELECT m.group_id, a.id, a.original_name, a.content_type, a.size_bytes, a.width, a.height,
                 coalesce(a.taken_at, a.file_modified_at, a.created_at) AS sort_time, a.favorite, a.rating, a.archived, a.hidden,
-                a.thumbhash,
+                (a.recipe IS NOT NULL) AS edited, a.thumbhash,
                 CASE WHEN jsonb_typeof(a.exif) = 'object' THEN (SELECT count(*) FROM jsonb_object_keys(a.exif)) ELSE 0 END AS exif_fields,
                 (a.latitude IS NOT NULL AND a.longitude IS NOT NULL) AS has_location,
                 (a.taken_at IS NOT NULL) AS has_taken, (a.caption IS NOT NULL) AS has_caption,

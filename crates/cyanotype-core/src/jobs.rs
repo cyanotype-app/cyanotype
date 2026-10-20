@@ -32,6 +32,14 @@ pub const KIND_TAKEOUT: &str = "takeout";
 /// `embed` and by its sweep, at backfill priority; one row per model version.
 pub const KIND_OCR: &str = "ocr";
 
+/// Write the full-size JPEG of a photo's edited picture (`derived/{user}/{asset}/edited.jpg`, `cyanotype_core::recipe`).
+/// Queued when someone asks to download it or opens a share link that offers downloads of an edited photo, never for
+/// every edit; the row is unique per photo and re-queued by [`requeue`] after each new recipe.
+pub const KIND_EDITED_COPY: &str = "edited_copy";
+/// The version of the `thumbnail` job that re-renders a photo after its recipe changed (the upload's job is version 1).
+/// It is the only one that queues the embedding again, because the picture the embedding describes changed.
+pub const RERENDER_VERSION: i32 = 2;
+
 /// Jobs enqueued for every new asset. Later pipeline stages are enqueued by earlier ones
 /// or by the milestones that implement them.
 pub const DEFAULT_PIPELINE: &[&str] = &[KIND_METADATA, KIND_THUMBNAIL];
@@ -69,6 +77,24 @@ pub async fn enqueue_with_priority(
         .bind(priority)
         .execute(db)
         .await?;
+    Ok(())
+}
+
+/// Queue a job again: insert it, or when the same (kind, photo, version) job has finished or failed, put it back in the
+/// queue with fresh attempts. A job that is queued or running is left alone (the worker rereads the photo when it runs,
+/// and a result that no longer matches is retried, so the newer request is not lost).
+pub async fn requeue(db: impl PgExecutor<'_>, kind: &str, asset_id: Uuid, version: i32) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO jobs (kind, asset_id, version) VALUES ($1, $2, $3)
+         ON CONFLICT (kind, asset_id, version) DO UPDATE
+             SET state = 'queued', attempts = 0, run_after = now(), locked_at = NULL, finished_at = NULL, last_error = NULL
+             WHERE jobs.state IN ('done', 'failed')",
+    )
+    .bind(kind)
+    .bind(asset_id)
+    .bind(version)
+    .execute(db)
+    .await?;
     Ok(())
 }
 

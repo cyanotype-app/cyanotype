@@ -3,6 +3,7 @@
 use std::io::Cursor;
 
 use anyhow::{Context, Result, bail};
+use cyanotype_core::recipe::Recipe;
 use fast_image_resize::{
     FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer,
     images::{Image as FirImage, ImageRef as FirImageRef},
@@ -251,11 +252,17 @@ impl JpegInfo {
 
     /// Reduction chosen for this image: `n` in eighths, i.e. the decoder produces `n/8` of the size. 8 means no
     /// reduction. It is the smallest `n` whose long edge is still at least [`PREVIEW_EDGE`].
+    #[cfg(test)]
     pub fn scale_eighths(&self) -> u32 {
+        self.scale_eighths_for(PREVIEW_EDGE)
+    }
+
+    /// [`Self::scale_eighths`] for an output whose long edge must be at least `edge` (a crop needs more of the original).
+    pub fn scale_eighths_for(&self, edge: u32) -> u32 {
         let long = self.width.max(self.height);
         [1u32, 2, 4]
             .into_iter()
-            .find(|&n| scaled_len(long, n) >= PREVIEW_EDGE)
+            .find(|&n| scaled_len(long, n) >= edge)
             .unwrap_or(8)
     }
 
@@ -264,12 +271,12 @@ impl JpegInfo {
         (scaled_len(self.width, n), scaled_len(self.height, n))
     }
 
-    /// Estimated peak bytes of [`decode_jpeg_scaled`] at the reduction [`Self::scale_eighths`] picks.
+    /// Estimated peak bytes of [`decode_jpeg_scaled_to`] at the reduction [`Self::scale_eighths_for`] picks for `edge`.
     ///
     /// Baseline: the decoder works one MCU row at a time and keeps only its scaled component planes plus the packed
     /// output. Progressive: every coefficient of the full-size image (2 bytes each) is kept until the last scan.
-    pub fn scaled_cost_bytes(&self) -> u64 {
-        let n = self.scale_eighths();
+    pub fn scaled_cost_bytes_for(&self, edge: u32) -> u64 {
+        let n = self.scale_eighths_for(edge);
         let (sw, sh) = self.scaled_dims(n);
         let spx = u64::from(sw) * u64::from(sh);
         let fpx = u64::from(self.width) * u64::from(self.height);
@@ -303,10 +310,16 @@ fn scaled_len(len: u32, eighths: u32) -> u32 {
 /// Decode a JPEG at a reduced size using the IDCT's scaling (1/2, 1/4 or 1/8), so the full-size image never exists.
 /// The result is at least [`PREVIEW_EDGE`] on the long edge whenever the source is. Colour handling matches the full
 /// decode: ICC profiles are ignored in both, Adobe CMYK/YCCK is converted to RGB. EXIF orientation is not applied.
+#[cfg(test)]
 pub fn decode_jpeg_scaled(bytes: &[u8]) -> Result<DynamicImage> {
+    decode_jpeg_scaled_to(bytes, PREVIEW_EDGE)
+}
+
+/// [`decode_jpeg_scaled`] for an output at least `edge` on the long edge (a render of a crop).
+pub fn decode_jpeg_scaled_to(bytes: &[u8], edge: u32) -> Result<DynamicImage> {
     let mut dec = jpeg_decoder::Decoder::new(Cursor::new(bytes));
     dec.read_info().context("read JPEG header")?;
-    let edge = u16::try_from(PREVIEW_EDGE).unwrap_or(u16::MAX);
+    let edge = u16::try_from(edge).unwrap_or(u16::MAX);
     let (w, h) = dec.scale(edge, edge).context("choose JPEG scale")?;
     let px = dec.decode().context("decode JPEG")?;
     let info = dec.info().context("JPEG info")?;
@@ -355,12 +368,18 @@ pub fn png_streamable(bytes: &[u8]) -> Option<bool> {
 
 /// Decode a PNG one row at a time, averaging rows down into a buffer of roughly [`PREVIEW_EDGE`] on the long edge as
 /// they arrive. Peak memory is that buffer plus one row and the inflate window, whatever the PNG's size.
+#[cfg(test)]
 pub fn decode_png_streamed(bytes: &[u8]) -> Result<DynamicImage> {
+    decode_png_streamed_to(bytes, PREVIEW_EDGE)
+}
+
+/// [`decode_png_streamed`] averaged down to roughly `edge` instead.
+pub fn decode_png_streamed_to(bytes: &[u8], edge: u32) -> Result<DynamicImage> {
     let mut reader = png_decoder(bytes).read_info().context("read PNG header")?;
     let (w, h) = (reader.info().width, reader.info().height);
     let (color, _) = reader.output_color_type();
     let alpha = matches!(color, png::ColorType::GrayscaleAlpha | png::ColorType::Rgba);
-    let mut acc = crate::stream::Accum::new(w, h, PREVIEW_EDGE, alpha)?;
+    let mut acc = crate::stream::Accum::new(w, h, edge, alpha)?;
     let ch = if alpha { 4 } else { 3 };
     let mut row_buf = vec![0u8; w as usize * ch];
     for y in 0..h {
@@ -423,6 +442,127 @@ pub fn derive_scaled(img: DynamicImage, orientation: u8, full_w: u32, full_h: u3
         width,
         height,
     })
+}
+
+// ---- Edit recipes: rotate, straighten, crop --------------------------------------------------------------------------
+
+/// The long edge of the full-size JPEG of an edited photo ("Download edited", share links).
+pub const EXPORT_EDGE: u32 = 4096;
+const EXPORT_QUALITY: u8 = 90;
+
+/// Turn the picture by `deg` degrees (positive = clockwise) about its centre, keeping the frame, magnified by `zoom` so
+/// that no empty corner shows (`Recipe::straighten_zoom`). Bilinear.
+pub fn straighten(img: &DynamicImage, deg: f32, zoom: f64) -> DynamicImage {
+    let (w, h) = (img.width(), img.height());
+    if img.color().has_alpha() {
+        let src = img.to_rgba8();
+        let out = straighten_raw(src.as_raw(), w, h, 4, deg, zoom);
+        DynamicImage::ImageRgba8(image::RgbaImage::from_raw(w, h, out).expect("same size"))
+    } else {
+        let src = img.to_rgb8();
+        let out = straighten_raw(src.as_raw(), w, h, 3, deg, zoom);
+        DynamicImage::ImageRgb8(RgbImage::from_raw(w, h, out).expect("same size"))
+    }
+}
+
+fn straighten_raw(src: &[u8], w: u32, h: u32, ch: usize, deg: f32, zoom: f64) -> Vec<u8> {
+    let (sin, cos) = f64::from(deg).to_radians().sin_cos();
+    let (cx, cy) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
+    let (wi, hi) = (w as usize, h as usize);
+    let mut out = vec![0u8; src.len()];
+    for y in 0..hi {
+        let v = (y as f64 + 0.5 - cy) / zoom;
+        for x in 0..wi {
+            let u = (x as f64 + 0.5 - cx) / zoom;
+            // Where this output pixel comes from: the frame point turned back by the angle.
+            let sx = u * cos + v * sin + cx - 0.5;
+            let sy = -u * sin + v * cos + cy - 0.5;
+            let (x0, y0) = (sx.floor(), sy.floor());
+            let (fx, fy) = (sx - x0, sy - y0);
+            let at = |px: f64, py: f64| {
+                let px = (px.max(0.0) as usize).min(wi - 1);
+                let py = (py.max(0.0) as usize).min(hi - 1);
+                (py * wi + px) * ch
+            };
+            let (i00, i10, i01, i11) = (at(x0, y0), at(x0 + 1.0, y0), at(x0, y0 + 1.0), at(x0 + 1.0, y0 + 1.0));
+            let o = (y * wi + x) * ch;
+            for c in 0..ch {
+                let top = f64::from(src[i00 + c]) * (1.0 - fx) + f64::from(src[i10 + c]) * fx;
+                let bottom = f64::from(src[i01 + c]) * (1.0 - fx) + f64::from(src[i11 + c]) * fx;
+                out[o + c] = (top * (1.0 - fy) + bottom * fy + 0.5) as u8;
+            }
+        }
+    }
+    out
+}
+
+/// Apply a recipe to a picture that is already upright (EXIF orientation applied): quarter turns, straighten, crop.
+pub fn apply_recipe(img: DynamicImage, r: &Recipe) -> DynamicImage {
+    let mut img = match r.rotate % 360 {
+        90 => img.rotate90(),
+        180 => img.rotate180(),
+        270 => img.rotate270(),
+        _ => img,
+    };
+    if r.straighten != 0.0 {
+        let zoom = r.straighten_zoom(img.width(), img.height());
+        img = straighten(&img, r.straighten, zoom);
+    }
+    let (x, y, w, h) = r.crop_pixels(img.width(), img.height());
+    if (x, y, w, h) != (0, 0, img.width(), img.height()) {
+        img = img.crop_imm(x, y, w, h);
+    }
+    img
+}
+
+/// Encode as a JPEG without any metadata. Transparency is flattened onto white.
+pub fn encode_jpeg(img: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
+    let rgb = if img.color().has_alpha() {
+        let rgba = img.to_rgba8();
+        let mut out = RgbImage::new(rgba.width(), rgba.height());
+        for (o, p) in out.pixels_mut().zip(rgba.pixels()) {
+            let a = u32::from(p[3]);
+            let mix = |c: u8| ((u32::from(c) * a + 255 * (255 - a) + 127) / 255) as u8;
+            *o = image::Rgb([mix(p[0]), mix(p[1]), mix(p[2])]);
+        }
+        out
+    } else {
+        img.to_rgb8()
+    };
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality)
+        .encode_image(&rgb)
+        .context("encode JPEG")?;
+    Ok(out)
+}
+
+/// The full-size JPEG of an upright `img` with `r` applied, at most [`EXPORT_EDGE`] on the long edge.
+pub fn export_jpeg(img: DynamicImage, r: &Recipe) -> Result<Vec<u8>> {
+    let out = apply_recipe(img, r);
+    let (w, h) = fit_within(out.width(), out.height(), EXPORT_EDGE);
+    encode_jpeg(&resize(&out, w, h)?, EXPORT_QUALITY)
+}
+
+/// Like [`derive_image`] for an upright `img` with a recipe: thumbnail, preview and ThumbHash of the edited picture, and the
+/// whole upright picture at preview size (WebP) for the editor to work on.
+pub fn derive_edited(img: DynamicImage, r: &Recipe) -> Result<(Derived, Vec<u8>)> {
+    let (bw, bh) = fit_within(img.width(), img.height(), PREVIEW_EDGE);
+    let base = encode_webp(&resize(&img, bw, bh)?, PREVIEW_QUALITY)?;
+    let out = apply_recipe(img, r);
+    let (width, height) = (out.width(), out.height());
+    let (pw, ph) = fit_within(width, height, PREVIEW_EDGE);
+    let preview = resize(&out, pw, ph)?;
+    let (tw, th) = fit_within(width, height, THUMB_EDGE);
+    let thumb = resize(&preview, tw, th)?;
+    drop(out);
+    let derived = Derived {
+        thumb_webp: encode_webp(&thumb, THUMB_QUALITY)?,
+        preview_webp: encode_webp(&preview, PREVIEW_QUALITY)?,
+        thumbhash: thumbhash(&thumb)?,
+        width,
+        height,
+    };
+    Ok((derived, base))
 }
 
 #[cfg(test)]
@@ -932,5 +1072,138 @@ mod tests {
     #[test]
     fn garbage_fails() {
         assert!(derive(b"definitely not an image", 1).is_err());
+    }
+
+    // ---- recipes
+
+    fn recipe(rotate: u16, straighten: f32, crop: Option<(f64, f64, f64, f64)>) -> Recipe {
+        Recipe {
+            rotate,
+            straighten,
+            crop: crop.map(|(x, y, w, h)| cyanotype_core::recipe::Crop { x, y, w, h }),
+        }
+    }
+
+    fn gradient(w: u32, h: u32) -> DynamicImage {
+        DynamicImage::ImageRgb8(RgbImage::from_fn(w, h, |x, y| Rgb([(x * 10) as u8, (y * 10) as u8, 7])))
+    }
+
+    #[test]
+    fn quarter_turns_are_clockwise() {
+        let src = gradient(4, 2);
+        let r90 = apply_recipe(src.clone(), &recipe(90, 0.0, None)).to_rgb8();
+        assert_eq!((r90.width(), r90.height()), (2, 4));
+        // The top left of the source ends up top right; its bottom left ends up top left.
+        assert_eq!(r90.get_pixel(1, 0).0, [0, 0, 7]);
+        assert_eq!(r90.get_pixel(0, 0).0, [0, 10, 7]);
+        let r180 = apply_recipe(src.clone(), &recipe(180, 0.0, None)).to_rgb8();
+        assert_eq!(r180.get_pixel(0, 0).0, [30, 10, 7]);
+        let r270 = apply_recipe(src, &recipe(270, 0.0, None)).to_rgb8();
+        assert_eq!((r270.width(), r270.height()), (2, 4));
+        assert_eq!(
+            r270.get_pixel(0, 3).0,
+            [0, 0, 7],
+            "the top left goes to the bottom left"
+        );
+    }
+
+    #[test]
+    fn crop_is_cut_from_the_turned_frame() {
+        let src = gradient(10, 10);
+        let out = apply_recipe(src.clone(), &recipe(0, 0.0, Some((0.5, 0.0, 0.5, 1.0)))).to_rgb8();
+        assert_eq!((out.width(), out.height()), (5, 10));
+        assert_eq!(out.get_pixel(0, 0).0, [50, 0, 7]);
+        // The crop follows the turn: in a 90 degree frame the right half of it is the source's upper half.
+        let out = apply_recipe(src, &recipe(90, 0.0, Some((0.5, 0.0, 0.5, 1.0)))).to_rgb8();
+        assert_eq!((out.width(), out.height()), (5, 10));
+        // Turned clockwise, frame (5, 0) is the source's (0, 4).
+        assert_eq!(out.get_pixel(0, 0).0, [0, 40, 7]);
+    }
+
+    #[test]
+    fn straightening_fills_the_frame_and_keeps_its_size() {
+        // White with a black 1 px frame: if the zoom were too small the frame would show in the corners.
+        let img = DynamicImage::ImageRgb8(RgbImage::from_fn(200, 100, |x, y| {
+            if x == 0 || y == 0 || x == 199 || y == 99 {
+                Rgb([0, 0, 0])
+            } else {
+                Rgb([255, 255, 255])
+            }
+        }));
+        for deg in [-12.5f32, -3.0, 0.1, 5.0, 30.0, 45.0] {
+            let out = apply_recipe(img.clone(), &recipe(0, deg, None)).to_rgb8();
+            assert_eq!((out.width(), out.height()), (200, 100));
+            let dark = out
+                .enumerate_pixels()
+                .filter(|(x, y, p)| *x >= 3 && *y >= 3 && *x < 197 && *y < 97 && p.0[0] < 200)
+                .count();
+            assert_eq!(dark, 0, "{deg} degrees left the frame showing");
+        }
+        // And it really turns: a vertical white bar on black leans.
+        let bar = DynamicImage::ImageRgb8(RgbImage::from_fn(100, 100, |x, _| {
+            if (45..55).contains(&x) {
+                Rgb([255, 255, 255])
+            } else {
+                Rgb([0, 0, 0])
+            }
+        }));
+        let out = apply_recipe(bar, &recipe(0, 10.0, None)).to_rgb8();
+        let centre_of = |y: u32| {
+            let xs: Vec<u32> = (0..100).filter(|&x| out.get_pixel(x, y).0[0] > 128).collect();
+            xs.iter().sum::<u32>() as f64 / xs.len() as f64
+        };
+        // Clockwise: the top of a vertical line moves right of its bottom.
+        assert!(
+            centre_of(10) > centre_of(90) + 5.0,
+            "{} {}",
+            centre_of(10),
+            centre_of(90)
+        );
+    }
+
+    #[test]
+    fn edited_renders_have_the_edited_size() {
+        let src = decode(&jpeg(2000, 1000)).unwrap();
+        let r = recipe(90, 0.0, Some((0.0, 0.0, 1.0, 0.5)));
+        let (d, base) = derive_edited(src, &r).unwrap();
+        assert_eq!((d.width, d.height), (1000, 1000));
+        assert_eq!(
+            webp_dims(&base),
+            (1440, 720),
+            "the editor gets the whole picture, upright and uncropped"
+        );
+        assert_eq!(webp_dims(&d.preview_webp), (1000, 1000));
+        assert_eq!(webp_dims(&d.thumb_webp), (320, 320));
+        assert!(!d.thumbhash.is_empty());
+        // The size the database stores (cyanotype_core) is the size the worker renders.
+        assert_eq!(r.output_dims(2000, 1000), (1000, 1000));
+    }
+
+    #[test]
+    fn export_is_a_bare_jpeg_at_most_4096_wide() {
+        let src = DynamicImage::ImageRgb8(RgbImage::from_pixel(6000, 3000, Rgb([10, 120, 200])));
+        let bytes = export_jpeg(src, &recipe(0, 0.0, None)).unwrap();
+        let back = decode(&bytes).unwrap();
+        assert_eq!((back.width(), back.height()), (4096, 2048));
+        assert!(!bytes.windows(4).any(|w| w == b"Exif"), "no metadata");
+        // A transparent corner becomes white, not black.
+        let mut rgba = image::RgbaImage::from_pixel(8, 8, image::Rgba([0, 0, 0, 0]));
+        rgba.put_pixel(7, 7, image::Rgba([255, 0, 0, 255]));
+        let flat = decode(&encode_jpeg(&DynamicImage::ImageRgba8(rgba), 95).unwrap())
+            .unwrap()
+            .to_rgb8();
+        assert!(flat.get_pixel(0, 0).0.iter().all(|&c| c > 240));
+    }
+
+    #[test]
+    fn a_crop_is_rendered_from_more_of_the_original() {
+        let info = jpeg_info(&crate::testgen::jpeg(crate::testgen::JpegSpec::new(6000, 4000))).unwrap();
+        assert_eq!(info.scale_eighths_for(PREVIEW_EDGE), 2, "6000 px at a quarter is 1500");
+        assert_eq!(
+            info.scale_eighths_for(4096),
+            8,
+            "a 4096 px render needs more than half of 6000"
+        );
+        assert!(info.scaled_cost_bytes_for(4096) > info.scaled_cost_bytes_for(PREVIEW_EDGE));
     }
 }

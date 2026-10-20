@@ -76,6 +76,34 @@ pub async fn enqueue_for_asset(db: impl PgExecutor<'_>, asset_id: Uuid, version:
     jobs::enqueue_with_priority(db, jobs::KIND_OCR, asset_id, version, jobs::PRIORITY_BACKFILL).await
 }
 
+/// A photo's picture changed (a rotate or crop): the text read off the old one, and where on it, is wrong now. Forget it and
+/// read the new preview again (queued again even if the photo was read before). Nothing happens for a photo that was never
+/// read (the ordinary sweep will, if text reading is on). Returns whether there was text to forget.
+pub async fn forget_and_requeue(db: &PgPool, asset_id: Uuid, version: i32) -> Result<bool> {
+    let forgot = sqlx::query("DELETE FROM asset_text WHERE asset_id = $1")
+        .bind(asset_id)
+        .execute(db)
+        .await?
+        .rows_affected()
+        > 0;
+    if forgot {
+        sqlx::query(
+            "INSERT INTO jobs (kind, asset_id, version, priority) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (kind, asset_id, version) DO UPDATE
+                 SET state = 'queued', attempts = 0, run_after = now(), locked_at = NULL, finished_at = NULL,
+                     last_error = NULL, priority = EXCLUDED.priority
+                 WHERE jobs.state IN ('done', 'failed')",
+        )
+        .bind(jobs::KIND_OCR)
+        .bind(asset_id)
+        .bind(version)
+        .bind(jobs::PRIORITY_BACKFILL)
+        .execute(db)
+        .await?;
+    }
+    Ok(forgot)
+}
+
 /// How many visible photos with a preview have no text read by `(model, version)`.
 pub async fn missing_count(db: impl PgExecutor<'_>, model: &str, version: i32) -> Result<i64> {
     let (n,): (i64,) = sqlx::query_as(

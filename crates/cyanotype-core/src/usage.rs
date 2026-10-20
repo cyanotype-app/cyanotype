@@ -38,7 +38,7 @@ impl Usage {
 const TRUTH: &str = "SELECT owner_id AS user_id,
     coalesce(sum(size_bytes) FILTER (WHERE deleted_at IS NULL), 0)::bigint AS originals_bytes,
     coalesce(sum(size_bytes) FILTER (WHERE deleted_at IS NOT NULL), 0)::bigint AS trash_bytes,
-    coalesce(sum(coalesce(derived_bytes, 0) + coalesce(share_copy_bytes, 0)), 0)::bigint AS derived_bytes,
+    coalesce(sum(coalesce(derived_bytes, 0) + coalesce(share_copy_bytes, 0) + coalesce(edited_copy_bytes, 0)), 0)::bigint AS derived_bytes,
     count(*) FILTER (WHERE deleted_at IS NULL AND primary_id IS NULL) AS photo_count,
     count(*) FILTER (WHERE deleted_at IS NULL AND asset_is_raw(file_ext)) AS raw_count,
     count(*) FILTER (WHERE deleted_at IS NULL) AS file_count,

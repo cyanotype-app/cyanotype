@@ -451,16 +451,25 @@ fn decode_jpeg(bytes: &[u8], max_alloc: u64) -> Result<DynamicImage> {
 
 /// Produce the derived images according to `header.plan`.
 pub fn render(bytes: &Arc<Vec<u8>>, header: &RawHeader) -> Result<imaging::Derived> {
+    let (img, o) = render_image(bytes, header)?;
+    let mut d = imaging::derive_image(img, o)?;
+    if matches!(header.plan, Ok(Plan::Preview(_))) {
+        // Report the real sensor size, not the preview's.
+        d.width = header.width;
+        d.height = header.height;
+    }
+    Ok(d)
+}
+
+/// The picture `header.plan` yields (the embedded preview or the developed sensor data) and the EXIF orientation to
+/// apply to it.
+pub fn render_image(bytes: &Arc<Vec<u8>>, header: &RawHeader) -> Result<(DynamicImage, u8)> {
     let plan = header.plan.as_ref().map_err(|e| anyhow::anyhow!("{e}"))?;
     match plan {
         Plan::Preview(c) => {
             let img = decode_jpeg(&bytes[c.offset..], header.cost_bytes().max(64 << 20) * 2)?;
             let o = preview_orientation(header.exif.orientation, header.sensor, (img.width(), img.height()));
-            let mut d = imaging::derive_image(img, o)?;
-            // Report the real sensor size, not the preview's.
-            d.width = header.width;
-            d.height = header.height;
-            Ok(d)
+            Ok((img, o))
         }
         Plan::Develop { .. } => {
             let src = RawSource::new_from_shared_vec(bytes.clone());
@@ -475,7 +484,7 @@ pub fn render(bytes: &Arc<Vec<u8>>, header: &RawHeader) -> Result<imaging::Deriv
                 drop(raw);
                 inter.to_dynamic_image().context("developed image buffer")
             })?;
-            imaging::derive_image(img, header.exif.orientation)
+            Ok((img, header.exif.orientation))
         }
     }
 }

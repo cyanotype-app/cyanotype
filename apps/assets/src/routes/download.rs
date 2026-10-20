@@ -30,6 +30,54 @@ pub(super) struct DownloadQuery {
     file: Option<Uuid>,
 }
 
+/// `GET /assets/{id}/download/edited`: the photo as edited (rotated, straightened, cropped), a JPEG of at most 4096 px on
+/// the long edge with no metadata. `307` to a presigned URL once the worker has written it; until then `202 {"pending":
+/// true}` (the job is queued by this request) and the page asks again. `404` for a photo that is not the caller's, not
+/// visible, or in the trash; `400` for a photo with no rotate or crop to apply.
+pub(super) async fn download_edited(
+    State(s): State<AppState>,
+    user: AuthUser,
+    unlock: Unlock,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Response> {
+    let found: Option<(String, bool, bool)> = sqlx::query_as(
+        "SELECT original_name, recipe IS NOT NULL, edited_copy_at IS NOT NULL FROM assets
+         WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL AND primary_id IS NULL AND purging_at IS NULL
+           AND (NOT hidden OR $3)",
+    )
+    .bind(id)
+    .bind(user.id)
+    .bind(unlock.0)
+    .fetch_optional(&s.db)
+    .await?;
+    let (name, edited, ready) = found.ok_or(ApiError::NotFound)?;
+    if !edited {
+        return Err(ApiError::BadRequest("this photo has no rotate or crop to apply".into()));
+    }
+    if !ready {
+        cyanotype_core::jobs::requeue(&s.db, cyanotype_core::jobs::KIND_EDITED_COPY, id, 1).await?;
+        return Ok((
+            StatusCode::ACCEPTED,
+            [(header::CACHE_CONTROL, "no-store")],
+            axum::Json(serde_json::json!({"pending": true})),
+        )
+            .into_response());
+    }
+    let url = s
+        .storage
+        .presign_get_download(
+            &cyanotype_core::keys::edited_copy(user.id, id),
+            &cyanotype_core::keys::edited_file_name(&name),
+            DOWNLOAD_TTL,
+        )
+        .await?;
+    Ok((
+        StatusCode::TEMPORARY_REDIRECT,
+        [(header::LOCATION, url), (header::CACHE_CONTROL, "no-store".to_string())],
+    )
+        .into_response())
+}
+
 pub(super) async fn download(
     State(s): State<AppState>,
     user: AuthUser,
