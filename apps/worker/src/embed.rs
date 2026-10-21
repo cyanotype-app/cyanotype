@@ -567,7 +567,7 @@ mod tests {
             rows,
             [(env.model.id().to_string(), env.model.version(), names.len() as i64)]
         );
-        let states: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT state FROM jobs")
+        let states: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT state FROM jobs WHERE kind = 'embed'")
             .fetch_all(&env.pool)
             .await
             .unwrap();
@@ -622,11 +622,13 @@ mod tests {
         let state = |id: Uuid| {
             let pool = env.pool.clone();
             async move {
-                sqlx::query_as::<_, (String, Option<String>)>("SELECT state, last_error FROM jobs WHERE asset_id = $1")
-                    .bind(id)
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap()
+                sqlx::query_as::<_, (String, Option<String>)>(
+                    "SELECT state, last_error FROM jobs WHERE kind = 'embed' AND asset_id = $1",
+                )
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
             }
         };
         for id in [good, primary, hidden_raw, purging, no_preview_yet] {
