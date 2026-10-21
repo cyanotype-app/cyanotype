@@ -34,6 +34,8 @@ describe("TagInput", () => {
     const field = screen.getByRole("combobox", { name: "Add tags" });
     await user.type(field, "sun set{Enter}");
     await user.type(field, "trip/2024, beach");
+    // The library's spelling is known only once the suggestions for "beach" have arrived (they come after a short pause).
+    await screen.findByRole("option", { name: /Beach/ });
     await user.keyboard("{Enter}");
     expect(screen.getByLabelText("chosen")).toHaveTextContent("sun set|trip/2024|Beach"); // the library's spelling wins
     await user.type(field, "bar");
