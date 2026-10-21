@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -55,6 +55,20 @@ describe("TagInput", () => {
     await user.clear(field);
     await user.type(field, "beach{Enter}");
     await waitFor(() => expect(screen.getByLabelText("chosen")).toHaveTextContent("Beach"));
+  });
+
+  it("leaves no timer behind when it goes away right after a blur", () => {
+    vi.useFakeTimers();
+    try {
+      const { unmount } = render(<Harness />);
+      const field = screen.getByRole("combobox", { name: "Add tags" });
+      fireEvent.focus(field);
+      fireEvent.blur(field);
+      unmount();
+      expect(vi.getTimerCount()).toBe(0); // the list-closing timer would fire after teardown
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not let a name longer than 100 characters in", async () => {

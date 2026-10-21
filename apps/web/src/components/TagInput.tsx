@@ -33,6 +33,9 @@ export function TagInput({ value, onChange, label, placeholder, existingOnly = f
   const [problem, setProblem] = useState<string | null>(null);
   const [known, setKnown] = useState<Map<string, Tag>>(new Map());
   const input = useRef<HTMLInputElement>(null);
+  // The list closes a moment after blur (so a click on an option still lands). The timer must not outlive the component.
+  const closing = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(closing.current), []);
 
   // Autocomplete: what the server says for the text typed so far, a moment after the last key.
   useEffect(() => {
@@ -110,8 +113,14 @@ export function TagInput({ value, onChange, label, placeholder, existingOnly = f
           placeholder={value.length === 0 ? placeholder : undefined}
           value={typed}
           maxLength={160}
-          onFocus={() => setOpen(true)}
-          onBlur={() => setTimeout(() => setOpen(false), 120)}
+          onFocus={() => {
+            clearTimeout(closing.current);
+            setOpen(true);
+          }}
+          onBlur={() => {
+            clearTimeout(closing.current);
+            closing.current = setTimeout(() => setOpen(false), 120);
+          }}
           onChange={(e) => {
             const v = e.target.value;
             setProblem(null);
