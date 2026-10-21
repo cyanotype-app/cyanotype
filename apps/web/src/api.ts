@@ -8,6 +8,48 @@ export interface Me {
   email: string;
   /** Absent on older servers (treated as member). */
   role?: "admin" | "member";
+  /** This account has two-factor authentication on. Absent on older servers. */
+  two_factor?: boolean;
+  /** The administrator requires 2FA and this session may only enrol (every other call is refused until it does). */
+  mfa_enrol_required?: boolean;
+}
+
+/** What a correct password returns: a session (the cookie is set), or a challenge to answer with a code. */
+export type LoginResult = { id: string; mfa_enrol_required?: boolean } | { mfa_required: true; challenge: string };
+
+/** GET /auth/2fa */
+export interface TwoFactorStatus {
+  /** The server has AUTH_TOTP_KEY, so enrolment can work. */
+  available: boolean;
+  enabled: boolean;
+  recovery_codes_remaining: number;
+  /** The administrator requires 2FA (and this server can enforce it). */
+  required: boolean;
+}
+
+/** POST /auth/2fa/enrol: shown once, until a code confirms it. */
+export interface TwoFactorEnrolment {
+  secret: string;
+  otpauth_uri: string;
+  issuer: string;
+  account: string;
+}
+
+/** An account in GET /auth/admin/2fa. */
+export interface TwoFactorAccount {
+  id: string;
+  email: string;
+  role: "admin" | "member";
+  enabled: boolean;
+  since: string | null;
+  recovery_codes_remaining: number;
+}
+
+export interface TwoFactorOverview {
+  key_configured: boolean;
+  required: boolean;
+  enforced: boolean;
+  users: TwoFactorAccount[];
 }
 
 /** GET /auth/registration: what the register page may offer. */
@@ -256,10 +298,16 @@ export interface ApiKey {
   prefix: string;
   created_at: string;
   last_used_at: string | null;
+  /** What the key may do. Keys made before scopes existed are `full`. */
+  scope: ApiKeyScope;
+  expires_at: string | null;
+  expired: boolean;
 }
 
+export type ApiKeyScope = "import" | "read" | "full";
+
 /** POST /auth/api-keys: `key` is the plaintext secret, returned only once. */
-export interface CreatedApiKey extends Omit<ApiKey, "last_used_at"> {
+export interface CreatedApiKey extends Omit<ApiKey, "last_used_at" | "expired"> {
   key: string;
 }
 
@@ -944,7 +992,28 @@ export const api = {
   prefs: () => request<Prefs>("/assets/prefs"),
   setPrefs: (patch: Partial<Prefs>) => request<Prefs>("/assets/prefs", { method: "PUT", body: JSON.stringify(patch) }),
   me: () => request<Me>("/auth/me"),
-  login: (email: string, password: string) => request<{ id: string }>("/auth/login", json({ email, password })),
+  login: (email: string, password: string) => request<LoginResult>("/auth/login", json({ email, password })),
+  /** The second step of a login with 2FA: a 6-digit code or a recovery code. */
+  loginCode: (challenge: string, code: string) =>
+    request<{ id: string; recovery_code_used?: boolean; recovery_codes_remaining?: number }>(
+      "/auth/login/2fa",
+      json({ challenge, code }),
+    ),
+  twoFactorStatus: () => request<TwoFactorStatus>("/auth/2fa"),
+  twoFactorEnrol: () => request<TwoFactorEnrolment>("/auth/2fa/enrol", { method: "POST" }),
+  twoFactorConfirm: (code: string) =>
+    request<{ enabled: true; recovery_codes: string[] }>("/auth/2fa/confirm", json({ code })),
+  twoFactorDisable: (password: string, code: string) =>
+    request<{ enabled: false; enrol_required: boolean }>("/auth/2fa/disable", json({ password, code })),
+  newRecoveryCodes: (password: string, code: string) =>
+    request<{ recovery_codes: string[] }>("/auth/2fa/recovery-codes", json({ password, code })),
+  adminTwoFactor: () => request<TwoFactorOverview>("/auth/admin/2fa"),
+  adminRequireTwoFactor: (required: boolean) =>
+    request<{ required: boolean }>("/auth/admin/2fa/require", { ...json({ required }), method: "PUT" }),
+  adminResetTwoFactor: (id: string) =>
+    request<{ reset: boolean; had_2fa: boolean }>(`/auth/admin/users/${encodeURIComponent(id)}/2fa/reset`, {
+      method: "POST",
+    }),
   /** 403 when registration is closed (REGISTRATION_MODE=closed, or first_user with an owner already present). */
   register: (email: string, password: string, invite?: string) =>
     request<Me>("/auth/register", json(invite ? { email, password, invite } : { email, password })),
@@ -1014,7 +1083,11 @@ export const api = {
   revokeInvite: (id: string) => request<void>(`/auth/admin/invites/${encodeURIComponent(id)}`, { method: "DELETE" }),
   logout: () => request<void>("/auth/logout", { method: "POST" }),
   listApiKeys: () => request<{ items: ApiKey[] }>("/auth/api-keys"),
-  createApiKey: (name: string) => request<CreatedApiKey>("/auth/api-keys", json({ name })),
+  createApiKey: (name: string, scope: ApiKeyScope = "full", expiresInDays?: number) =>
+    request<CreatedApiKey>(
+      "/auth/api-keys",
+      json(expiresInDays ? { name, scope, expires_in_days: expiresInDays } : { name, scope }),
+    ),
   revokeApiKey: (id: string) => request<void>(`/auth/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" }),
   listAssets: (
     opts: { cursor?: string | null; before?: string | null; limit?: number; bbox?: string } & LibraryView = {},

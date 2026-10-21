@@ -10,6 +10,9 @@ const key = (n: number, over: Partial<ApiKey> = {}): ApiKey => ({
   prefix: `cyk_ab12c${n}`,
   created_at: "2026-01-01T00:00:00Z",
   last_used_at: null,
+  scope: "full",
+  expires_at: null,
+  expired: false,
   ...over,
 });
 
@@ -44,6 +47,8 @@ describe("ApiKeys", () => {
       name: "laptop",
       prefix: "cyk_ab12c1",
       created_at: "2026-01-01T00:00:00Z",
+      scope: "import",
+      expires_at: null,
       key: "cyk_SECRET",
     });
     const user = userEvent.setup();
@@ -52,7 +57,8 @@ describe("ApiKeys", () => {
     await user.type(screen.getByLabelText("Name"), "laptop");
     await user.click(screen.getByRole("button", { name: "Create key" }));
     expect(await screen.findByText("cyk_SECRET")).toBeInTheDocument();
-    expect(create).toHaveBeenCalledWith("laptop");
+    // The default is the smallest scope that works for the command line, with no expiry.
+    expect(create).toHaveBeenCalledWith("laptop", "import", undefined);
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     await user.click(screen.getByRole("button", { name: "Done" }));
     expect(screen.queryByText("cyk_SECRET")).not.toBeInTheDocument();

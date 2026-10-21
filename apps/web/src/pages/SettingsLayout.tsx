@@ -7,6 +7,7 @@ export function SettingsLayout() {
       <nav className="admin-nav settings-nav" aria-label="Settings">
         <NavLink to="/settings/storage">Storage</NavLink>
         <NavLink to="/settings/sessions">Sessions</NavLink>
+        <NavLink to="/settings/security">Security</NavLink>
         <NavLink to="/settings/api-keys">API keys</NavLink>
       </nav>
       <Outlet />

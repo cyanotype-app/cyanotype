@@ -18,6 +18,9 @@ const LABELS: Record<string, string> = {
   "account.delete.requested": "Requested the deletion of an account",
   "account.delete.finished": "Finished deleting an account",
   "jobs.retry": "Retried failed jobs",
+  "account.2fa_reset": "Reset an account's two-factor authentication",
+  "2fa.require": "Required two-factor authentication for everyone",
+  "2fa.unrequire": "Stopped requiring two-factor authentication",
 };
 
 /** A sentence for an action name; the name itself for one this version does not know. */

@@ -38,6 +38,8 @@ mod health;
 #[cfg(test)]
 mod health_tests;
 #[cfg(test)]
+mod key_scope_tests;
+#[cfg(test)]
 mod limits_tests;
 mod map;
 #[cfg(test)]
@@ -78,7 +80,7 @@ mod visibility;
 mod visibility_tests;
 
 use crate::AppState;
-use cyanotype_service::{ApiError, ApiResult, AuthUser, Unlock};
+use cyanotype_service::{ApiError, ApiResult, AuthUser, ImportUser, Unlock};
 
 const PART_SIZE: i64 = 16 * 1024 * 1024;
 const MAX_PARTS: i64 = 10_000; // S3 limit
@@ -375,7 +377,7 @@ async fn refuse_if_purging(s: &AppState, owner: Uuid, sha: &[u8]) -> ApiResult<(
 
 async fn check(
     State(s): State<AppState>,
-    user: AuthUser,
+    user: ImportUser,
     Json(req): Json<CheckRequest>,
 ) -> ApiResult<Json<CheckResponse>> {
     let sha =
@@ -687,7 +689,7 @@ async fn read_part_body(req: Request, expected: usize, progress: &mut PartProgre
 /// the file name, the owner or a URL.
 async fn put_part(
     state: State<AppState>,
-    user: AuthUser,
+    user: ImportUser,
     path: Path<(String, i32)>,
     req: Request,
 ) -> ApiResult<Json<serde_json::Value>> {
@@ -726,7 +728,7 @@ async fn put_part(
 
 async fn relay_part(
     State(s): State<AppState>,
-    user: AuthUser,
+    user: ImportUser,
     Path((upload_id, number)): Path<(String, i32)>,
     req: Request,
     progress: &mut PartProgress,
@@ -850,7 +852,7 @@ fn purging_conflict() -> ApiError {
 
 async fn complete(
     State(s): State<AppState>,
-    user: AuthUser,
+    user: ImportUser,
     Json(req): Json<CompleteRequest>,
 ) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
     let up: UploadRow = sqlx::query_as(
@@ -1161,7 +1163,7 @@ async fn list_items(s: &AppState, owner: Uuid, rows: Vec<ListRow>) -> ApiResult<
 }
 
 /// Number of live photos (a RAW + JPEG pair counts once), for `cyanotype status`.
-async fn count(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<serde_json::Value>> {
+async fn count(State(s): State<AppState>, user: ImportUser) -> ApiResult<Json<serde_json::Value>> {
     let (n,): (i64,) =
         sqlx::query_as("SELECT count(*) FROM assets WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL")
             .bind(user.id)

@@ -3552,3 +3552,104 @@ body:has(.selection-bar) .scrubber {
     font-size: 0.8125rem;
   }
 }
+/* Two-factor authentication, recovery codes and API key scopes. */
+.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.notice.warn {
+  border-color: var(--danger);
+}
+.qr {
+  display: block;
+  width: min(14rem, 100%);
+  height: auto;
+  margin: 0.5rem 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.secret {
+  display: block;
+  padding: 0.5rem;
+  overflow-wrap: anywhere;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+.enrol,
+.recovery,
+.security-form {
+  max-width: 34rem;
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.enrol ol {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+.enrol li + li {
+  margin-top: 1rem;
+}
+.recovery-codes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.4rem;
+  margin: 0.75rem 0;
+  padding: 0;
+  list-style: none;
+}
+.recovery-codes code {
+  display: block;
+  padding: 0.4rem 0.5rem;
+  overflow-wrap: anywhere;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+.recovery-actions,
+.settings .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+.recovery .check,
+.require .check {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin: 0.75rem 0;
+}
+.security-form label {
+  display: block;
+  margin: 0.5rem 0 0.25rem;
+}
+.security-form input,
+.key-form select {
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.tfa-list li {
+  flex-wrap: wrap;
+}
+@media print {
+  .topbar,
+  .settings-nav,
+  .recovery-actions,
+  .recovery .check,
+  .recovery > .btn {
+    display: none;
+  }
+}

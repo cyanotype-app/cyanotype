@@ -31,7 +31,7 @@ use crate::{keys, manifest::today_utc, storage::Storage};
 pub const FORMAT_VERSION: u32 = 1;
 const MAX_BYTES: u64 = 64 << 20;
 /// `server_state` entries that are settings an admin made (not heartbeats or job results) and so come back with a rebuild.
-pub const SETTINGS: &[&str] = &["default_limits"];
+pub const SETTINGS: &[&str] = &["default_limits", "require_2fa"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
