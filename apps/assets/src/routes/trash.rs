@@ -22,7 +22,7 @@ use uuid::Uuid;
 use super::scope::{Pick, Selector};
 use super::{AssetSummary, ListItem, decode_cursor, encode_cursor, paired_files, thumb_fields};
 use crate::AppState;
-use cyanotype_service::{ApiError, ApiResult, AuthUser};
+use cyanotype_service::{ApiError, ApiResult, AuthUser, Unlock};
 
 /// Most ids one bulk request may carry.
 pub const MAX_IDS: usize = 1000;
@@ -138,9 +138,10 @@ async fn apply_in(tx: &mut sqlx::PgConnection, owner: Uuid, op: Op, ids: Option<
 pub(super) async fn trash(
     State(s): State<AppState>,
     user: AuthUser,
+    unlock: Unlock,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated()?;
+    let pick = req.validated(unlock)?;
     let (applied, now) = apply_pick(&s.db, user.id, Op::Trash, &pick).await?;
     let batch = (pick.is_scope() && applied.photos > 0).then_some(now);
     Ok(Json(Count {
@@ -152,9 +153,10 @@ pub(super) async fn trash(
 pub(super) async fn restore(
     State(s): State<AppState>,
     user: AuthUser,
+    unlock: Unlock,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated()?;
+    let pick = req.validated(unlock)?;
     let (applied, _) = apply_pick(&s.db, user.id, Op::Restore, &pick).await?;
     // Files that were trashed while their counterpart was uploaded were not paired then; they can be now.
     // Pairing is per file, so only look at files that have a live, unpaired namesake to pair with (a restore of
@@ -181,9 +183,10 @@ pub(super) async fn restore(
 pub(super) async fn purge(
     State(s): State<AppState>,
     user: AuthUser,
+    unlock: Unlock,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated()?;
+    let pick = req.validated(unlock)?;
     let count = apply_pick(&s.db, user.id, Op::Purge, &pick).await?.0.photos;
     if count > 0 {
         s.purge_wake.notify_one();
@@ -236,15 +239,24 @@ pub(super) struct TrashResponse {
 }
 
 const TRASH_SELECT: &str = "SELECT id, original_name, content_type, size_bytes, width, height,
-        coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite, thumbhash, deleted_at,
+        coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite, archived, hidden, thumbhash, deleted_at,
         deleted_at + make_interval(days => $2) AS purge_at
  FROM assets WHERE owner_id = $1 AND deleted_at IS NOT NULL AND purging_at IS NULL AND primary_id IS NULL";
+
+/// A hidden photo that was trashed is listed (and counted) only for a session that has the Hidden view unlocked.
+const NOT_HIDDEN: &str = " AND NOT hidden";
 
 pub(super) async fn list(
     State(s): State<AppState>,
     user: AuthUser,
+    unlock: Unlock,
     Query(q): Query<TrashQuery>,
 ) -> ApiResult<Json<TrashResponse>> {
+    let select = if unlock.0 {
+        TRASH_SELECT.to_string()
+    } else {
+        format!("{TRASH_SELECT}{NOT_HIDDEN}")
+    };
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
     let after = q
         .cursor
@@ -254,7 +266,7 @@ pub(super) async fn list(
     let rows = match after {
         Some((ts, id)) => {
             sqlx::query_as::<_, TrashRow>(&format!(
-                "{TRASH_SELECT} AND (deleted_at, id) < ($3, $4) ORDER BY deleted_at DESC, id DESC LIMIT $5"
+                "{select} AND (deleted_at, id) < ($3, $4) ORDER BY deleted_at DESC, id DESC LIMIT $5"
             ))
             .bind(user.id)
             .bind(s.trash_retention_days)
@@ -265,7 +277,7 @@ pub(super) async fn list(
             .await?
         }
         None => {
-            sqlx::query_as::<_, TrashRow>(&format!("{TRASH_SELECT} ORDER BY deleted_at DESC, id DESC LIMIT $3"))
+            sqlx::query_as::<_, TrashRow>(&format!("{select} ORDER BY deleted_at DESC, id DESC LIMIT $3"))
                 .bind(user.id)
                 .bind(s.trash_retention_days)
                 .bind(limit)
@@ -294,9 +306,10 @@ pub(super) async fn list(
             purge_at: r.purge_at,
         });
     }
-    let (total,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM assets WHERE owner_id = $1 AND deleted_at IS NOT NULL AND purging_at IS NULL AND primary_id IS NULL",
-    )
+    let (total,): (i64,) = sqlx::query_as(&format!(
+        "SELECT count(*) FROM assets WHERE owner_id = $1 AND deleted_at IS NOT NULL AND purging_at IS NULL AND primary_id IS NULL{}",
+        if unlock.0 { "" } else { NOT_HIDDEN }
+    ))
     .bind(user.id)
     .fetch_one(&s.db)
     .await?;

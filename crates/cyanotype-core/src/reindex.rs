@@ -142,6 +142,9 @@ pub struct Report {
     pub pairs_restored: u64,
     pub favorites_restored: u64,
     pub trashed_restored: u64,
+    /// Photos put back as hidden / archived (or that would be): a hidden photo must come back hidden.
+    pub hidden_restored: u64,
+    pub archived_restored: u64,
     /// Objects under `edits/` (a photo's corrected date, location and caption).
     pub edits_objects: u64,
     /// Applied to a row that had none or older ones (or would be, in a dry run).
@@ -272,6 +275,11 @@ impl Report {
         );
         let _ = writeln!(
             s,
+            "    hidden / archived                {} / {}",
+            self.hidden_restored, self.archived_restored
+        );
+        let _ = writeln!(
+            s,
             "  edits: objects / {} / current     {} / {} / {}",
             w("restored", "would restore"),
             self.edits_objects,
@@ -357,6 +365,8 @@ struct Ctx<'a> {
     storage: &'a Storage,
     opts: &'a Options,
     has_favorite: bool,
+    /// The schema has `hidden` and `archived` (migration 0020).
+    has_state: bool,
     known_users: HashMap<Uuid, bool>,
     manifests: HashMap<Uuid, Arc<UserManifest>>,
     manifest_keys: BTreeMap<Uuid, Vec<String>>,
@@ -373,6 +383,12 @@ pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Repor
     )
     .fetch_one(db)
     .await?;
+    let has_state: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = current_schema() AND table_name = 'assets' AND column_name = 'hidden')",
+    )
+    .fetch_one(db)
+    .await?;
     if let Some(u) = opts.assign_to {
         let ok: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)")
             .bind(u)
@@ -385,6 +401,7 @@ pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Repor
         storage,
         opts,
         has_favorite,
+        has_state,
         known_users: HashMap::new(),
         manifests: HashMap::new(),
         manifest_keys: if opts.use_manifests {
@@ -737,6 +754,8 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
             .unwrap_or_else(|| "application/octet-stream".into());
         let trashed = entry.is_some_and(|e| e.deleted_at.is_some());
         let favorite = entry.and_then(|e| e.favorite).unwrap_or(false);
+        let hidden = entry.and_then(|e| e.hidden).unwrap_or(false);
+        let archived = entry.and_then(|e| e.archived).unwrap_or(false);
         let wanted_id = entry.map(|e| e.id);
 
         if !cx.opts.apply {
@@ -747,6 +766,10 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
             }
             if favorite && cx.has_favorite {
                 cx.report.favorites_restored += 1;
+            }
+            if cx.has_state {
+                cx.report.hidden_restored += u64::from(hidden);
+                cx.report.archived_restored += u64::from(archived);
             }
             continue;
         }
@@ -764,6 +787,8 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
                 created_at,
                 trashed,
                 favorite,
+                hidden,
+                archived,
             },
         )
         .await;
@@ -776,6 +801,10 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
                 }
                 if favorite && cx.has_favorite {
                     cx.report.favorites_restored += 1;
+                }
+                if cx.has_state {
+                    cx.report.hidden_restored += u64::from(hidden);
+                    cx.report.archived_restored += u64::from(archived);
                 }
             }
             Ok(false) => {
@@ -804,6 +833,8 @@ struct Insert<'a> {
     created_at: OffsetDateTime,
     trashed: bool,
     favorite: bool,
+    hidden: bool,
+    archived: bool,
 }
 
 /// Insert one row and queue its jobs, atomically. False if the owner already has this content (a race or an alias).
@@ -859,6 +890,17 @@ async fn insert_orphan(cx: &Ctx<'_>, i: Insert<'_>) -> Result<bool> {
             .bind(id)
             .execute(&mut *tx)
             .await?;
+    }
+    // In the same transaction as the insert: there is no moment at which the row exists and is visible.
+    if (i.hidden || i.archived) && cx.has_state {
+        sqlx::query(
+            "UPDATE assets SET hidden = $2, archived = $3, archived_at = CASE WHEN $3 THEN now() END WHERE id = $1",
+        )
+        .bind(id)
+        .bind(i.hidden)
+        .bind(i.archived)
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
     Ok(true)

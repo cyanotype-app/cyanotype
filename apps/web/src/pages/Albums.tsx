@@ -4,7 +4,7 @@ import { api, ApiError, type Album } from "../api";
 import { useAuth } from "../auth";
 import { AlbumCover } from "../components/AlbumCover";
 import { NameDialog } from "../components/NameDialog";
-import { dateRange, photoCount } from "../albumText";
+import { dateRange, hiddenNote, photoCount } from "../albumText";
 
 /** Grid of album cards, most recently updated first. */
 export function Albums() {
@@ -77,7 +77,7 @@ export function Albums() {
                 <AlbumCover cover={a.cover} />
                 <span className="album-card-title">{a.title}</span>
                 <span className="muted small">
-                  {[photoCount(a.photo_count), dateRange(a.first_at, a.last_at)].filter(Boolean).join(" · ")}
+                  {[photoCount(a.photo_count), hiddenNote(a.hidden_count), dateRange(a.first_at, a.last_at)].filter(Boolean).join(" · ")}
                 </span>
               </Link>
             </li>

@@ -20,7 +20,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::AppState;
-use cyanotype_service::{ApiError, ApiResult, AuthUser};
+use cyanotype_service::{ApiError, ApiResult, AuthUser, Unlock};
 
 /// How long a download link works. The browser starts the request immediately, so a minute is plenty.
 pub(super) const DOWNLOAD_TTL: Duration = Duration::from_secs(60);
@@ -33,6 +33,7 @@ pub(super) struct DownloadQuery {
 pub(super) async fn download(
     State(s): State<AppState>,
     user: AuthUser,
+    unlock: Unlock,
     Path(id): Path<Uuid>,
     Query(q): Query<DownloadQuery>,
 ) -> ApiResult<Response> {
@@ -40,11 +41,13 @@ pub(super) async fn download(
     let found: Option<(String, String)> = sqlx::query_as(
         "SELECT f.original_key, f.original_name
          FROM assets p JOIN assets f ON f.id = $3 AND (f.id = p.id OR f.primary_id = p.id)
-         WHERE p.id = $1 AND p.owner_id = $2 AND p.deleted_at IS NULL AND p.primary_id IS NULL AND f.owner_id = $2",
+         WHERE p.id = $1 AND p.owner_id = $2 AND p.deleted_at IS NULL AND p.primary_id IS NULL AND f.owner_id = $2
+           AND (NOT p.hidden OR $4)",
     )
     .bind(id)
     .bind(user.id)
     .bind(file)
+    .bind(unlock.0)
     .fetch_optional(&s.db)
     .await?;
     let (key, name) = found.ok_or(ApiError::NotFound)?;

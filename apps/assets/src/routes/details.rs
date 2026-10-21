@@ -18,7 +18,7 @@ use crate::{
     AppState,
     details::{self, DateInfo, Exposure},
 };
-use cyanotype_service::{ApiError, ApiResult, AuthUser};
+use cyanotype_service::{ApiError, ApiResult, AuthUser, Unlock};
 
 #[derive(FromRow)]
 struct Row {
@@ -147,16 +147,22 @@ struct BurstPosition {
     size: i64,
 }
 
-pub(super) async fn get(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> ApiResult<Json<Details>> {
+pub(super) async fn get(
+    State(s): State<AppState>,
+    user: AuthUser,
+    unlock: Unlock,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Details>> {
     let r: Row = sqlx::query_as(
         "SELECT original_name, content_type, size_bytes, width, height, taken_at, file_modified_at, created_at,
                 latitude, longitude, camera_make, camera_model, camera_label, lens_model, exif, file_ext,
                 place_city, place_region, place_country, place_country_code, burst_id,
                 caption, date_edited, taken_at_exif, taken_offset_edit, location_edited, latitude_exif, longitude_exif
-         FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL",
+         FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL AND (NOT hidden OR $3)",
     )
     .bind(id)
     .bind(user.id)
+    .bind(unlock.0)
     .fetch_optional(&s.db)
     .await?
     .ok_or(ApiError::NotFound)?;
@@ -214,7 +220,8 @@ pub(super) async fn get(State(s): State<AppState>, user: AuthUser, Path(id): Pat
             // docs/library.md, "Bursts").
             let (position, size): (i64, i64) = sqlx::query_as(
                 "SELECT count(*) FILTER (WHERE m.taken_at < $4 OR (m.taken_at = $4 AND m.id <= $3)), count(*)
-                 FROM assets m WHERE m.owner_id = $2 AND m.burst_id = $1 AND m.deleted_at IS NULL AND m.primary_id IS NULL",
+                 FROM assets m WHERE m.owner_id = $2 AND m.burst_id = $1 AND m.deleted_at IS NULL AND m.primary_id IS NULL
+                   AND NOT m.hidden",
             )
             .bind(b)
             .bind(user.id)

@@ -54,6 +54,7 @@ pub fn routes(state: AppState) -> Router {
     let limited = Router::new()
         .route("/auth/register", post(register))
         .route("/auth/login", post(login))
+        .route("/auth/hidden/unlock", post(hidden_unlock))
         .route("/auth/invites/check", post(invites::check))
         .route("/auth/reset-password/check", post(users_admin::reset_check))
         .route("/auth/reset-password", post(users_admin::reset_password))
@@ -62,6 +63,7 @@ pub fn routes(state: AppState) -> Router {
         .merge(limited)
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
+        .route("/auth/hidden", get(hidden_status).delete(hidden_lock))
         .route("/auth/registration", get(registration_info))
         .merge(invites::admin_routes())
         .merge(users_admin::admin_routes())
@@ -288,6 +290,87 @@ async fn login(
     }
     let jar = start_session(&db, &cfg, jar, id).await?;
     Ok((jar, Json(json!({"id": id}))))
+}
+
+#[derive(Deserialize)]
+struct UnlockReq {
+    password: String,
+}
+
+fn unlock_state(until: Option<time::OffsetDateTime>) -> Value {
+    let open = until.filter(|t| *t > time::OffsetDateTime::now_utc());
+    json!({"unlocked": open.is_some(), "expires_at": open.map(rfc3339)})
+}
+
+/// `POST /auth/hidden/unlock {password}`: opens the Hidden view for this login session for ten minutes. The password is the
+/// account's, checked here with argon2 like a login; the unlock is stored on the session row (`hidden_unlocked_until`), where
+/// the assets service reads it on every request, so the browser holds nothing that could be forged or extended. Not available
+/// to API keys. A wrong password is `403 wrong_password` (a 401 would sign the web app out); the per-IP limiter that guards
+/// login guards this too.
+async fn hidden_unlock(
+    State(AppState { db, .. }): State<AppState>,
+    user: SessionUser,
+    jar: CookieJar,
+    Json(r): Json<UnlockReq>,
+) -> ApiResult<Json<Value>> {
+    let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
+        .bind(user.id)
+        .fetch_one(&db)
+        .await?;
+    let parsed = PasswordHash::new(&hash).map_err(|e| anyhow::anyhow!("stored hash: {e}"))?;
+    if Argon2::default()
+        .verify_password(r.password.as_bytes(), &parsed)
+        .is_err()
+    {
+        return Err(ApiError::Limited {
+            status: StatusCode::FORBIDDEN,
+            code: "wrong_password",
+            message: "That password is not right.".into(),
+            details: json!({}),
+            retry_after_secs: None,
+        });
+    }
+    let token = jar.get(COOKIE).ok_or(ApiError::Unauthorized)?;
+    let until: Option<time::OffsetDateTime> = sqlx::query_scalar(
+        "UPDATE sessions SET hidden_unlocked_until = now() + make_interval(mins => $2)
+         WHERE token_hash = $1 RETURNING hidden_unlocked_until",
+    )
+    .bind(sha256(token.value().as_bytes()))
+    .bind(cyanotype_service::auth::HIDDEN_UNLOCK_MINUTES)
+    .fetch_optional(&db)
+    .await?
+    .flatten();
+    Ok(Json(unlock_state(until)))
+}
+
+/// `GET /auth/hidden`: is the Hidden view open for this session, and until when.
+async fn hidden_status(
+    State(AppState { db, .. }): State<AppState>,
+    _user: SessionUser,
+    jar: CookieJar,
+) -> ApiResult<Json<Value>> {
+    let token = jar.get(COOKIE).ok_or(ApiError::Unauthorized)?;
+    let until: Option<time::OffsetDateTime> =
+        sqlx::query_scalar("SELECT hidden_unlocked_until FROM sessions WHERE token_hash = $1")
+            .bind(sha256(token.value().as_bytes()))
+            .fetch_optional(&db)
+            .await?
+            .flatten();
+    Ok(Json(unlock_state(until)))
+}
+
+/// `DELETE /auth/hidden`: close the Hidden view now.
+async fn hidden_lock(
+    State(AppState { db, .. }): State<AppState>,
+    _user: SessionUser,
+    jar: CookieJar,
+) -> ApiResult<StatusCode> {
+    let token = jar.get(COOKIE).ok_or(ApiError::Unauthorized)?;
+    sqlx::query("UPDATE sessions SET hidden_unlocked_until = NULL WHERE token_hash = $1")
+        .bind(sha256(token.value().as_bytes()))
+        .execute(&db)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn logout(State(AppState { db, cfg }): State<AppState>, jar: CookieJar) -> ApiResult<(CookieJar, StatusCode)> {
@@ -609,6 +692,121 @@ mod tests {
     async fn json_of(res: axum::response::Response) -> Value {
         let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    }
+
+    /// A request with a cookie (or bearer key) and a peer address, for the routes behind the rate limiter.
+    fn limited_call(method: &str, path: &str, auth: (&str, &str), body: Option<&str>) -> Request<Body> {
+        let mut req = call(method, path, auth, body);
+        let addr: SocketAddr = "172.18.0.9:50000".parse().unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        req
+    }
+
+    #[tokio::test]
+    async fn the_hidden_view_unlocks_with_the_password_for_ten_minutes_on_that_session_only() {
+        let Some(t) = TestDb::new().await else { return };
+        let app = app(t.pool.clone(), |c| c.registration = RegistrationMode::Open);
+        let cookie = register_cookie(&app, "h@example.com").await;
+        let other = register_cookie(&app, "h@example.com.other").await;
+        let sess = ("cookie", cookie.as_str());
+        let state = |app: Router, c: String| async move {
+            let res = app
+                .oneshot(call("GET", "/auth/hidden", ("cookie", &c), None))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+            json_of(res).await
+        };
+        assert_eq!(
+            state(app.clone(), cookie.clone()).await,
+            json!({"unlocked": false, "expires_at": null})
+        );
+
+        // A wrong password is a 403 the app can show (a 401 would sign it out), and unlocks nothing.
+        let res = app
+            .clone()
+            .oneshot(limited_call(
+                "POST",
+                "/auth/hidden/unlock",
+                sess,
+                Some(r#"{"password":"wrong"}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(json_of(res).await["code"], "wrong_password");
+        assert!(!state(app.clone(), cookie.clone()).await["unlocked"].as_bool().unwrap());
+
+        // The right one opens it for ten minutes, on this session's row.
+        let res = app
+            .clone()
+            .oneshot(limited_call(
+                "POST",
+                "/auth/hidden/unlock",
+                sess,
+                Some(r#"{"password":"correct horse battery"}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_of(res).await;
+        assert_eq!(body["unlocked"], true);
+        assert!(body["expires_at"].is_string());
+        let mins: f64 = sqlx::query_scalar(
+            "SELECT max(extract(epoch FROM hidden_unlocked_until - now()) / 60)::float8 FROM sessions",
+        )
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+        assert!((9.0..=10.0).contains(&mins), "{mins}");
+        let unlocked_rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM sessions WHERE hidden_unlocked_until IS NOT NULL")
+                .fetch_one(&t.pool)
+                .await
+                .unwrap();
+        assert_eq!(unlocked_rows, 1, "only the session that entered the password");
+        assert!(state(app.clone(), cookie.clone()).await["unlocked"].as_bool().unwrap());
+        assert!(!state(app.clone(), other.clone()).await["unlocked"].as_bool().unwrap());
+
+        // An API key cannot unlock (nor read the state), even next to a cookie.
+        let key = {
+            let res = app
+                .clone()
+                .oneshot(call("POST", "/auth/api-keys", sess, Some(r#"{"name":"cli"}"#)))
+                .await
+                .unwrap();
+            format!("Bearer {}", json_of(res).await["key"].as_str().unwrap())
+        };
+        let mut req = limited_call(
+            "POST",
+            "/auth/hidden/unlock",
+            ("authorization", &key),
+            Some(r#"{"password":"correct horse battery"}"#),
+        );
+        req.headers_mut().insert("cookie", cookie.parse().unwrap());
+        assert_eq!(status(&app, req).await, StatusCode::FORBIDDEN);
+        let req = limited_call(
+            "POST",
+            "/auth/hidden/unlock",
+            ("x", "y"),
+            Some(r#"{"password":"correct horse battery"}"#),
+        );
+        assert_eq!(status(&app, req).await, StatusCode::UNAUTHORIZED);
+
+        // Locking again takes it back at once; an expired unlock reads as locked.
+        let res = app
+            .clone()
+            .oneshot(call("DELETE", "/auth/hidden", sess, None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        assert!(!state(app.clone(), cookie.clone()).await["unlocked"].as_bool().unwrap());
+        sqlx::query("UPDATE sessions SET hidden_unlocked_until = now() - interval '1 second'")
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        assert!(!state(app.clone(), cookie.clone()).await["unlocked"].as_bool().unwrap());
+        t.teardown().await;
     }
 
     #[tokio::test]

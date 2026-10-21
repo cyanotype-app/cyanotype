@@ -3353,3 +3353,202 @@ body:has(.selection-bar) .scrubber {
     padding-block: 0.4rem;
   }
 }
+
+/* Hidden, archive, On this day, Recently added */
+.view-title {
+  margin: 0.75rem 1rem 0;
+  font-size: 1.25rem;
+}
+.tile-badge-archived {
+  top: auto;
+  right: auto;
+  left: 0.4rem;
+  bottom: 0.4rem;
+}
+.library-tabs {
+  align-items: center;
+}
+.library-more {
+  position: relative;
+  flex: 0 0 auto;
+}
+.library-more > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.library-more > summary::-webkit-details-marker {
+  display: none;
+}
+.library-more[open] > summary {
+  background: var(--surface-2);
+}
+.library-more-menu {
+  position: absolute;
+  z-index: 20;
+  right: 0;
+  top: calc(100% + 0.35rem);
+  min-width: 11rem;
+  margin: 0;
+  padding: 0.3rem;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 6px 24px rgb(0 19 31 / 0.18);
+}
+.library-more-item {
+  display: flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0 0.75rem;
+  border-radius: 6px;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+}
+.library-more-item:hover,
+.library-more-item[aria-current="page"] {
+  background: var(--surface-2);
+}
+.sort-toggle {
+  display: inline-flex;
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.sort-option {
+  min-height: 2.25rem;
+  padding: 0 0.75rem;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sort-option[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.memories {
+  padding: 0.75rem 1rem 0;
+}
+.memories-head {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.memories-head h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 1rem;
+}
+.memories-row {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.4rem 0 0;
+  padding: 0 0 0.25rem;
+  list-style: none;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+}
+.memory-card {
+  position: relative;
+  display: block;
+  width: 9rem;
+  height: 11rem;
+  border-radius: 10px;
+  overflow: hidden;
+  background-color: var(--surface-2);
+  background-size: cover;
+  scroll-snap-align: start;
+  color: #fff;
+  text-decoration: none;
+}
+.memory-card img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.memory-label {
+  position: absolute;
+  inset: auto 0 0 0;
+  display: flex;
+  flex-direction: column;
+  padding: 1.5rem 0.6rem 0.5rem;
+  background: linear-gradient(transparent, rgb(0 19 31 / 0.75));
+  font-size: 0.8rem;
+}
+.memory-year h2 {
+  margin: 1rem 1rem 0.4rem;
+  font-size: 1.05rem;
+}
+.memories-switch {
+  margin: 0.5rem 1rem;
+}
+.unlock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-width: 24rem;
+  margin: 1.5rem auto;
+  padding: 1.25rem;
+}
+.unlock h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+.hidden-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem 0;
+}
+@media (max-width: 640px) {
+  .library-more-menu {
+    right: 0;
+  }
+  .library-tabs .library-more {
+    flex: 0 0 auto;
+  }
+  .sort-toggle {
+    margin-left: 0;
+  }
+}
+
+.more-dots {
+  display: none;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+@media (max-width: 400px) {
+  /* The fourth pill is an icon so that three tabs, it and the search icon still fit 288 px. */
+  .library-header .library-more > .library-tab {
+    flex: none;
+    width: 2.5rem;
+    padding: 0;
+    justify-content: center;
+  }
+  .more-label {
+    display: none;
+  }
+  .more-dots {
+    display: inline;
+  }
+}
+
+@media (max-width: 400px) {
+  /* "All photos" reads "All" on a narrow phone: with More and the search icon the row has no room for the long label
+     (the text stays "All photos" for screen readers and search). */
+  .library-tab-all {
+    font-size: 0;
+  }
+  .library-tab-all::after {
+    content: "All";
+    font-size: 0.8125rem;
+  }
+}

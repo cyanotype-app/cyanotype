@@ -1270,3 +1270,153 @@ async fn reset_links_replace_each_other_and_store_only_a_hash() {
     );
     fx.teardown().await;
 }
+
+/// Hidden and archived survive a bucket-only rebuild: a rebuilt library must not show a photo its owner hid.
+#[tokio::test]
+async fn hidden_and_archived_come_back_with_a_rebuilt_database() {
+    let Some(fx) = Fx::new().await else { return };
+    let mut rows = Vec::new();
+    for (name, body) in [
+        ("plain.jpg", &b"plain"[..]),
+        ("hidden.jpg", b"hidden"),
+        ("archived.jpg", b"archived"),
+        ("both.jpg", b"both"),
+        ("IMG_9.jpg", b"pair-jpg"),
+        ("IMG_9.dng", b"pair-raw"),
+    ] {
+        let (k, s) = fx.put_original(fx.user, name, body, None).await;
+        rows.push((name, fx.insert_row(fx.user, &k, &s, name).await));
+    }
+    let id = |n: &str| rows.iter().find(|r| r.0 == n).unwrap().1;
+    // A pair is hidden through its visible photo, and the RAW takes the state with it (as `POST /assets/hide` does).
+    sqlx::query("UPDATE assets SET primary_id = $2 WHERE id = $1")
+        .bind(id("IMG_9.dng"))
+        .bind(id("IMG_9.jpg"))
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE assets SET hidden = true WHERE original_name IN ('hidden.jpg', 'both.jpg', 'IMG_9.jpg', 'IMG_9.dng')",
+    )
+    .execute(&fx.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE assets SET archived = true, archived_at = now() WHERE original_name IN ('archived.jpg', 'both.jpg')",
+    )
+    .execute(&fx.pool)
+    .await
+    .unwrap();
+    let album: Uuid =
+        sqlx::query_scalar("INSERT INTO albums (owner_id, title, cover_asset_id) VALUES ($1,'Trip',$2) RETURNING id")
+            .bind(fx.user)
+            .bind(id("plain.jpg"))
+            .fetch_one(&fx.pool)
+            .await
+            .unwrap();
+    for n in ["plain.jpg", "hidden.jpg", "archived.jpg"] {
+        sqlx::query("INSERT INTO album_assets (album_id, asset_id) VALUES ($1,$2)")
+            .bind(album)
+            .bind(id(n))
+            .execute(&fx.pool)
+            .await
+            .unwrap();
+    }
+
+    // The manifest says it, in one additive field per state, and an old reader would only skip them.
+    manifest::write_user(&fx.pool, &fx.storage, fx.user, 14).await.unwrap();
+    let key = manifest::list_all(&fx.storage).await.unwrap()[&fx.user][0].clone();
+    let text = String::from_utf8(fx.storage.get_bytes_limited(&key, 1 << 20).await.unwrap().to_vec()).unwrap();
+    assert_eq!(text.matches("\"hidden\":true").count(), 4, "{text}");
+    assert_eq!(text.matches("\"archived\":true").count(), 2, "{text}");
+
+    // The disaster: the database loses everything about photos.
+    sqlx::query("DELETE FROM assets").execute(&fx.pool).await.unwrap();
+    sqlx::query("DELETE FROM albums").execute(&fx.pool).await.unwrap();
+
+    let dry = fx.run(|_| {}).await;
+    assert_eq!((dry.hidden_restored, dry.archived_restored), (4, 2));
+    assert_eq!(fx.count("assets").await, 0, "a dry run writes nothing");
+
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!((r.orphans_recreated, r.errors), (6, 0));
+    assert_eq!((r.hidden_restored, r.archived_restored), (4, 2));
+    let flags: Vec<(String, bool, bool, bool)> =
+        sqlx::query_as("SELECT original_name, hidden, archived, archived_at IS NOT NULL FROM assets ORDER BY original_name COLLATE \"C\"")
+            .fetch_all(&fx.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        flags,
+        [
+            ("IMG_9.dng".to_string(), true, false, false),
+            ("IMG_9.jpg".to_string(), true, false, false),
+            ("archived.jpg".to_string(), false, true, true),
+            ("both.jpg".to_string(), true, true, true),
+            ("hidden.jpg".to_string(), true, false, false),
+            ("plain.jpg".to_string(), false, false, false),
+        ]
+    );
+    // What a rebuilt timeline would list: only the plain photo.
+    let visible: Vec<String> = sqlx::query_scalar(
+        "SELECT original_name FROM assets
+         WHERE deleted_at IS NULL AND primary_id IS NULL AND NOT hidden AND NOT archived",
+    )
+    .fetch_all(&fx.pool)
+    .await
+    .unwrap();
+    assert_eq!(visible, ["plain.jpg"]);
+    // Albums come back with every member (a hidden one stays a member; the album views leave it out).
+    let members: i64 = sqlx::query_scalar("SELECT count(*) FROM album_assets WHERE album_id = $1")
+        .bind(album)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert_eq!(members, 3);
+    // A second run has nothing to do, and the state stays.
+    let again = fx.run(|o| o.apply = true).await;
+    assert_eq!(
+        (again.orphans, again.hidden_restored, again.archived_restored),
+        (0, 0, 0)
+    );
+    let hidden: i64 = sqlx::query_scalar("SELECT count(*) FROM assets WHERE hidden")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert_eq!(hidden, 4);
+    fx.teardown().await;
+}
+
+/// A manifest written before hidden and archived existed has neither field: nothing is hidden or archived by it.
+#[tokio::test]
+async fn manifests_without_hidden_and_archived_still_read_and_hide_nothing() {
+    let Some(fx) = Fx::new().await else { return };
+    let (_k, s) = fx.put_original(fx.user, "a.jpg", b"aaa", None).await;
+    let id = Uuid::new_v4();
+    let old = format!(
+        "{{\"t\":\"meta\",\"v\":2,\"user\":\"{u}\",\"generated_at\":\"2026-01-01T00:00:00Z\",\"assets\":1}}\n\
+         {{\"t\":\"asset\",\"id\":\"{id}\",\"sha256\":\"{sha}\",\"key\":\"k\",\"name\":\"Before.jpg\",\"content_type\":\"image/jpeg\",\"size_bytes\":3,\"favorite\":false}}\n",
+        u = fx.user,
+        sha = keys::hex(&s),
+    );
+    fx.storage
+        .put_bytes(
+            &keys::manifest(fx.user, "20260101"),
+            old.into_bytes(),
+            "application/x-ndjson",
+        )
+        .await
+        .unwrap();
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!(
+        (r.orphans_recreated, r.hidden_restored, r.archived_restored, r.errors),
+        (1, 0, 0, 0)
+    );
+    let (hidden, archived): (bool, bool) = sqlx::query_as("SELECT hidden, archived FROM assets WHERE id = $1")
+        .bind(id)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert!(!hidden && !archived);
+    fx.teardown().await;
+}

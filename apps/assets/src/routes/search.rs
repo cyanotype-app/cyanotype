@@ -78,7 +78,7 @@ const MAX_SCAN_TUPLES: i32 = 20_000;
 
 const SORT_TIME: &str = "coalesce(a.taken_at, a.file_modified_at, a.created_at)";
 const LIST_COLS: &str = "a.id, a.original_name, a.content_type, a.size_bytes, a.width, a.height,
-        coalesce(a.taken_at, a.file_modified_at, a.created_at) AS sort_time, a.favorite, a.thumbhash, a.burst_id";
+        coalesce(a.taken_at, a.file_modified_at, a.created_at) AS sort_time, a.favorite, a.archived, a.hidden, a.thumbhash, a.burst_id";
 /// The camera as the facets list it ("Canon EOS R5", "Apple iPhone 15"): a stored generated column (migration 0011).
 const CAMERA_LABEL: &str = "a.camera_label";
 /// Lowercase extension of the original's file name (a stored generated column, migration 0011).
@@ -95,6 +95,9 @@ pub(super) struct SearchQuery {
     /// Last day (inclusive), `YYYY-MM-DD`, UTC.
     pub to: Option<String>,
     pub favorite: Option<bool>,
+    /// `false` leaves archived photos out. They are in by default (they are only off the timeline, the map and the memories) and
+    /// each result carries `archived`, which the app shows as a badge. Hidden photos are never in a search.
+    pub include_archived: Option<bool>,
     /// A camera as the facets list it ("Canon EOS R5"); case-insensitive.
     pub camera: Option<String>,
     /// A lens as the facets list it (the EXIF lens model); case-insensitive.
@@ -132,6 +135,8 @@ pub(super) struct Filters {
     from: Option<OffsetDateTime>,
     to_exclusive: Option<OffsetDateTime>,
     favorite: bool,
+    /// Leave archived photos out (`include_archived=false`).
+    exclude_archived: bool,
     camera: Option<String>,
     lens: Option<String>,
     place: Option<String>,
@@ -179,6 +184,7 @@ impl Filters {
             from: from.map(midnight),
             to_exclusive: to.map(|d| midnight(d) + time::Duration::days(1)),
             favorite: q.favorite.unwrap_or(false),
+            exclude_archived: q.include_archived == Some(false),
             camera: clean(&q.camera),
             lens: clean(&q.lens),
             place: clean(&q.place),
@@ -215,7 +221,13 @@ impl Filters {
         qb.push(" a.owner_id = ").push_bind(owner);
         // (`purging_at` is never set on a photo that is not trashed: a constraint says so. Leaving it out lets ownership,
         // the trash and the hidden-RAW rule be answered from `assets_timeline_idx` alone, without reading rows.)
-        qb.push(" AND a.deleted_at IS NULL AND a.primary_id IS NULL");
+        // A hidden photo is in no search, whatever the filters say: the one place every search path goes through (the ranked
+        // plans, the timeline-order list, the caption matches, the counts, "More like this", the scopes that select by search).
+        // It is written as the partial indexes' own predicate, so it costs them nothing.
+        qb.push(" AND a.deleted_at IS NULL AND a.primary_id IS NULL AND NOT a.hidden");
+        if self.exclude_archived {
+            qb.push(" AND NOT a.archived");
+        }
         if let Some(id) = self.exclude {
             qb.push(" AND a.id <> ").push_bind(id);
         }
@@ -1243,7 +1255,7 @@ const MAX_PLACES: i64 = 120;
 /// What the filters can be set to, with how many photos each matches: the whole library (not narrowed by the filters
 /// already chosen). Visible live photos only, like search itself.
 pub(super) async fn facets(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<Facets>> {
-    let base = "FROM assets a WHERE a.owner_id = $1 AND a.deleted_at IS NULL AND a.primary_id IS NULL";
+    let base = "FROM assets a WHERE a.owner_id = $1 AND a.deleted_at IS NULL AND a.primary_id IS NULL AND NOT a.hidden";
     let (total, favorites, with_location, jpeg, heic, raw, other): (i64, i64, i64, i64, i64, i64, i64) =
         sqlx::query_as(&format!(
             "SELECT count(*), count(*) FILTER (WHERE a.favorite),

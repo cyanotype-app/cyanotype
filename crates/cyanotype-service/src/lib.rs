@@ -5,5 +5,5 @@ pub mod error;
 pub mod http;
 pub mod ratelimit;
 
-pub use auth::{AdminUser, AuthUser, SessionUser};
+pub use auth::{AdminUser, AuthUser, SessionUser, Unlock};
 pub use error::{ApiError, ApiResult};

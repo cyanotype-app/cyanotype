@@ -59,6 +59,7 @@ const trash = assets.slice(0, 9).map((a) => ({
 const album = (id: string, title: string, count: number, withDesc = false) => ({
   id,
   title,
+  hidden_count: id === "l1" ? 12 : 0,
   description: withDesc ? "A long description. ".repeat(12) + "x".repeat(60) : null,
   photo_count: count,
   cover: { id: "a1", thumbhash: null, thumb_url: thumb(1) },
@@ -102,6 +103,21 @@ const REINDEXING = {
     model: "siglip2-b16", percent: 40, reindexing: true, switch_at_percent: 95, serving_model: "clip-b32",
   },
 };
+// On this day: three earlier years, one with a long count; the Hidden view's unlock lives here like it does on the server's
+// session. `archivedAssets` marks a few photos as archived so their badge is in the pictures.
+const memoryYear = (years: number, count: number, from: number) => ({
+  year: 2026 - years,
+  years_ago: years,
+  count,
+  items: assets.slice(from, from + 6).map((a) => ({ ...a, sort_time: new Date(Date.UTC(2026 - years, 9, 19, 12)).toISOString() })),
+});
+const MEMORIES = { enabled: true, day: "10-19", years: [memoryYear(1, 6, 0), memoryYear(3, 1234, 6), memoryYear(12, 2, 12)] };
+let hiddenUnlocked = false;
+// Off except in the views test: the strip pushes the photos down, and the other tests open photos by position.
+let memoriesOn = false;
+test.afterEach(() => {
+  memoriesOn = false;
+});
 let memberView = false;
 let anonymous = false;
 let processing: typeof IDLE | typeof BUSY | typeof INDEXING | typeof REINDEXING = IDLE;
@@ -212,6 +228,17 @@ async function mock(page: Page) {
       const u = new URL(req.url());
       const p = u.pathname;
       const m = req.method();
+      if (p === "/assets/prefs") return route.fulfill(json({ memories_enabled: true, library_sort: "taken" }));
+      if (p === "/assets/memories" && m === "GET") return route.fulfill(json(memoriesOn ? MEMORIES : { ...MEMORIES, years: [] }));
+      if (p === "/auth/hidden" && m === "GET")
+        return route.fulfill(json({ unlocked: hiddenUnlocked, expires_at: hiddenUnlocked ? new Date(Date.now() + 600_000).toISOString() : null }));
+      if (p === "/auth/hidden/unlock") {
+        const ok = (req.postDataJSON() as { password: string }).password === "right";
+        if (ok) hiddenUnlocked = true;
+        return ok
+          ? route.fulfill(json({ unlocked: true, expires_at: new Date(Date.now() + 600_000).toISOString() }))
+          : route.fulfill({ status: 403, contentType: "application/json", body: '{"error":"That password is not right.","code":"wrong_password"}' });
+      }
       if (p === "/assets/tiles" && m === "GET") return route.fulfill(json({ world: basemapInstalled, detail: false }));
       if (p === "/assets/tiles/world.pmtiles") {
         const r = /bytes=(\d+)-(\d+)/.exec(req.headers()["range"] ?? "");
@@ -624,7 +651,8 @@ function makeCheck(page: Page, prefix: string, problems: string[]) {
       for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
         const b = el.getBoundingClientRect();
         // Tiles clip their hover-zoomed image; map markers sit wherever the map puts them and the pane clips them.
-        if (b.width === 0 || el.closest(".tile") || el.closest(".map-canvas")) continue;
+        // The On this day cards scroll sideways inside their own row (clipped by it, on purpose).
+        if (b.width === 0 || el.closest(".tile") || el.closest(".map-canvas") || el.closest(".memories-row")) continue;
         if (b.right > w + 0.5 || b.left < -0.5) {
           bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} "${(el.textContent ?? "").trim().slice(0, 24)}" [${Math.round(b.left)}..${Math.round(b.right)}]`);
         }
@@ -632,7 +660,7 @@ function makeCheck(page: Page, prefix: string, problems: string[]) {
       // The page can also be pushed wide by something whose own box fits but whose content spills (scrollWidth): name those.
       if (document.documentElement.scrollWidth > w) {
         for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
-          if (el.scrollWidth > w + 0.5 && !el.closest(".tile") && !el.closest(".map-canvas")) {
+          if (el.scrollWidth > w + 0.5 && !el.closest(".tile") && !el.closest(".map-canvas") && !el.closest(".memories-row")) {
             bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} scrollWidth ${el.scrollWidth}`);
           }
         }
@@ -649,7 +677,7 @@ for (const { width, scheme } of RUNS) {
     test.use({ colorScheme: scheme, viewport: { width, height: width === 1280 ? 800 : 740 }, hasTouch: width < 600 });
 
     test(`no horizontal overflow on any page or overlay`, async ({ page }) => {
-      test.setTimeout(90_000);
+      test.setTimeout(300_000);
       if (SHOT_DIR) mkdirSync(SHOT_DIR, { recursive: true });
       const problems: string[] = [];
 
@@ -943,6 +971,103 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: "Create key" }).click();
       await page.getByText("Copy your new key").waitFor();
       await check("api-keys");
+
+      expect(problems, problems.join("\n")).toEqual([]);
+    });
+
+    test(`library views: more menu, on this day, recently added, archive and hidden fit`, async ({ page }) => {
+      test.setTimeout(90_000);
+      if (SHOT_DIR) mkdirSync(SHOT_DIR, { recursive: true });
+      const problems: string[] = [];
+      const check = makeCheck(page, `${width}${scheme === "dark" ? "-dark" : ""}-views`, problems);
+      await mock(page);
+      processing = IDLE;
+      hiddenUnlocked = false;
+      memoriesOn = true;
+      // A few archived photos, so the badge is on screen where search and albums show them.
+      const flagged = assets.map((a, i) => (i % 5 === 1 ? { ...a, archived: true } : a));
+      await page.route("**/assets?*", (r) => (new URL(r.request().url()).pathname === "/assets" ? r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pageOf(flagged as FakeAsset[], new URL(r.request().url()).searchParams)) }) : r.fallback()));
+
+      // The library: the On this day strip on top, the sort toggle and the More menu in the header.
+      await page.goto("/library");
+      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
+      await page.getByRole("heading", { name: "On this day" }).waitFor();
+      await check("library-strip");
+      await page.getByRole("button", { name: "Date added" }).waitFor();
+      await page.locator("summary[aria-label='More views']").click();
+      await page.getByRole("link", { name: "Hidden", exact: true }).waitFor();
+      await check("more-menu");
+      await page.keyboard.press("Escape");
+      await page.locator("summary[aria-label='More views']").click();
+
+      // Selection bar with the new actions, and the viewer menu.
+      await page.getByRole("button", { name: "Select", exact: true }).click();
+      await page.getByRole("button", { name: /Select IMG_1000/ }).click();
+      await page.getByRole("button", { name: "Archive", exact: true }).waitFor();
+      await check("select-archive-hide");
+      await page.getByRole("button", { name: "Done" }).click();
+      await page.getByRole("button", { name: /Open IMG_1000/ }).first().click();
+      await page.getByRole("button", { name: "Hide", exact: true }).waitFor();
+      await check("viewer-menu");
+      await page.keyboard.press("Escape");
+
+      // On this day: the page behind the strip, and selecting for "Not this one".
+      await page.goto("/memories");
+      await page.getByRole("heading", { name: "On this day", level: 1 }).waitFor();
+      await page.getByRole("heading", { name: /3 years ago/ }).waitFor();
+      await check("memories-page");
+      await page.getByRole("button", { name: "Select", exact: true }).click();
+      await page.getByRole("button", { name: "Not this one" }).waitFor();
+      await check("memories-select");
+
+      // Recently added and the archive.
+      await page.goto("/recent");
+      await page.getByRole("heading", { name: "Recently added" }).waitFor();
+      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
+      await check("recent");
+      await page.goto("/archive");
+      await page.getByRole("heading", { name: "Archive", exact: true }).waitFor();
+      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
+      await page.getByRole("button", { name: "Select", exact: true }).click();
+      await page.getByRole("button", { name: /Select IMG_1000/ }).click();
+      await page.getByRole("button", { name: "Restore", exact: true }).waitFor();
+      await check("archive-select");
+
+      // Hidden: the password first (a wrong one shows its error), then the view with its lock bar.
+      await page.goto("/hidden");
+      await page.getByLabel("Password").waitFor();
+      await check("hidden-prompt");
+      await page.getByLabel("Password").fill("nope");
+      await page.getByRole("button", { name: "Open Hidden" }).click();
+      await page.getByRole("alert").waitFor();
+      await check("hidden-prompt-error");
+      await page.getByLabel("Password").fill("right");
+      await page.getByRole("button", { name: "Open Hidden" }).click();
+      await page.getByText(/Unlocked until/).waitFor();
+      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
+      await check("hidden-open");
+      await page.getByRole("button", { name: "Select", exact: true }).click();
+      await page.getByRole("button", { name: /Select IMG_1000/ }).click();
+      await page.getByRole("button", { name: "Unhide", exact: true }).waitFor();
+      await check("hidden-select");
+      hiddenUnlocked = false;
+
+      // Albums say how many members are hidden; search shows the Archived badge and the filter.
+      await page.goto("/albums");
+      await page.getByText(/12 hidden/).first().waitFor();
+      await check("albums-hidden-count");
+      await page.goto("/albums/l1");
+      await page.getByText(/12 hidden/).first().waitFor();
+      await check("album-hidden-count");
+      await page.goto("/search?q=dog");
+      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
+      await page.getByRole("button", { name: /^Filters/ }).click();
+      await page.getByRole("checkbox", { name: "Include archived" }).waitFor();
+      await check("search-include-archived");
+      await page.getByRole("checkbox", { name: "Include archived" }).uncheck();
+      await page.getByRole("button", { name: "Show photos" }).click();
+      await page.getByText("Without archived").first().waitFor();
+      await check("search-without-archived-chip");
 
       expect(problems, problems.join("\n")).toEqual([]);
     });

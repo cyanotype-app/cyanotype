@@ -26,6 +26,8 @@ export function paramsFromUrl(search: URLSearchParams): SearchParams {
     if (v && DAY.test(v)) out[k] = v;
   }
   if (search.get("favorite") === "true") out.favorite = true;
+  // Archived photos are in a search unless asked otherwise.
+  if (search.get("include_archived") === "false") out.include_archived = false;
   const camera = search.get("camera")?.trim();
   if (camera) out.camera = camera;
   const lens = search.get("lens")?.trim();
@@ -68,6 +70,7 @@ export function urlFromParams(p: SearchParams): string {
   if (p.from) q.set("from", p.from);
   if (p.to) q.set("to", p.to);
   if (p.favorite) q.set("favorite", "true");
+  if (p.include_archived === false) q.set("include_archived", "false");
   if (p.camera) q.set("camera", p.camera);
   if (p.lens) q.set("lens", p.lens);
   if (p.place) q.set("place", p.place);
@@ -118,6 +121,7 @@ export function chipsOf(p: SearchParams, albumTitle?: string): Chip[] {
   const chips: Chip[] = [];
   if (p.from || p.to) chips.push({ clears: ["from", "to"], label: dateRangeLabel(p.from, p.to) });
   if (p.favorite) chips.push({ clears: ["favorite"], label: "Favorites" });
+  if (p.include_archived === false) chips.push({ clears: ["include_archived"], label: "Without archived" });
   if (p.camera) chips.push({ clears: ["camera"], label: p.camera });
   if (p.lens) chips.push({ clears: ["lens"], label: p.lens });
   if (p.place) chips.push({ clears: ["place"], label: p.place });

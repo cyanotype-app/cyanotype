@@ -29,6 +29,10 @@ interface Props {
   onSimilar?: (item: AssetListItem) => void;
   /** Favorite or unfavorite the current photo (the parent updates `item.favorite`). Shows the heart when given. */
   onFavorite?: (item: AssetListItem, favorite: boolean) => void;
+  /** Archive the current photo, or restore it when it is archived (the button says which). Shown when given. */
+  onArchive?: (item: AssetListItem) => void;
+  /** Hide the current photo, or unhide it when it is hidden (unhiding needs the unlocked Hidden view). Shown when given. */
+  onHide?: (item: AssetListItem) => void;
   /** Position of `items[0]` in the whole list and the size of the whole list, when `items` is only the part that is
    * loaded around the current photo (the counter and the end stops use them). */
   offset?: number;
@@ -53,6 +57,8 @@ export function Lightbox({
   onUnpair,
   onSimilar,
   onFavorite,
+  onArchive,
+  onHide,
   offset = 0,
   total = items.length,
   refreshKey = 0,
@@ -297,6 +303,16 @@ export function Lightbox({
             {onShare && (
               <button type="button" className="btn btn-glass" onClick={() => onShare(item)}>
                 Share
+              </button>
+            )}
+            {onArchive && (
+              <button type="button" className="btn btn-glass" onClick={() => onArchive(item)}>
+                {item.archived === true ? "Restore" : "Archive"}
+              </button>
+            )}
+            {onHide && (
+              <button type="button" className="btn btn-glass" onClick={() => onHide(item)}>
+                {item.hidden === true ? "Unhide" : "Hide"}
               </button>
             )}
             {onTrash && (

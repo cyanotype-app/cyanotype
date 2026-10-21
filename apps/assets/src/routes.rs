@@ -42,6 +42,7 @@ mod limits_tests;
 mod map;
 #[cfg(test)]
 mod map_tests;
+mod memories;
 #[cfg(test)]
 mod pair_tests;
 mod processing;
@@ -72,9 +73,12 @@ mod upload_meta_tests;
 mod usage;
 #[cfg(test)]
 mod usage_tests;
+mod visibility;
+#[cfg(test)]
+mod visibility_tests;
 
 use crate::AppState;
-use cyanotype_service::{ApiError, ApiResult, AuthUser};
+use cyanotype_service::{ApiError, ApiResult, AuthUser, Unlock};
 
 const PART_SIZE: i64 = 16 * 1024 * 1024;
 const MAX_PARTS: i64 = 10_000; // S3 limit
@@ -114,6 +118,11 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/tiles", get(tiles::installed))
         .route("/assets/tiles/{name}", get(tiles::tile_range))
         .route("/assets/favorite", post(favorites::set))
+        .route("/assets/hide", post(visibility::hide))
+        .route("/assets/archive", post(visibility::archive))
+        .route("/assets/prefs", get(visibility::prefs).put(visibility::set_prefs))
+        .route("/assets/memories", get(memories::list))
+        .route("/assets/memories/dismiss", post(memories::dismiss))
         .route("/assets/edits", post(edits::edit))
         .route("/assets/places", get(edits::places))
         .route("/assets/processing", get(processing::status))
@@ -917,6 +926,10 @@ struct AssetSummary {
     sort_time: OffsetDateTime,
     /// Favorited (a RAW + JPEG pair carries it on the visible photo).
     favorite: bool,
+    /// In the archive: off the timeline and the map, still in albums and search (shown with a badge there).
+    archived: bool,
+    /// Hidden. Only the Hidden view (unlocked) ever lists such a photo, and the viewer needs the flag for "Unhide".
+    hidden: bool,
 }
 
 #[derive(FromRow)]
@@ -1010,9 +1023,18 @@ struct ListQuery {
     /// a sort time across a page boundary.
     #[serde(default, with = "time::serde::rfc3339::option")]
     before: Option<OffsetDateTime>,
-    /// `true` lists favorites only (served by the partial index `assets_favorites_idx`).
+    /// `true` lists favorites only (served by the partial index `assets_favorites_idx`). Archived favorites are listed.
     #[serde(default)]
     favorite: bool,
+    /// `true` lists the archive (`assets_archived_idx`) instead of the timeline.
+    #[serde(default)]
+    archived: bool,
+    /// `true` lists the Hidden view: refused (`403 hidden_locked`) unless this session has unlocked it.
+    #[serde(default)]
+    hidden: bool,
+    /// `taken` (default) or `added`: order, and `sort_time`, by capture time or by upload time.
+    #[serde(default)]
+    sort: visibility::Sort,
     /// `west,south,east,north`: only geotagged photos inside this box (the map's viewport list; see `map`).
     bbox: Option<String>,
 }
@@ -1052,11 +1074,21 @@ fn decode_cursor(c: &str) -> Option<(OffsetDateTime, Uuid)> {
     ))
 }
 
-const LIST_SELECT: &str = "SELECT id, original_name, content_type, size_bytes, width, height,
-        coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite, thumbhash
- FROM assets WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL";
+fn list_select(sort: visibility::Sort) -> String {
+    format!(
+        "SELECT id, original_name, content_type, size_bytes, width, height,
+        {} AS sort_time, favorite, archived, hidden, thumbhash
+ FROM assets WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL",
+        sort.expr()
+    )
+}
 
-async fn list(State(s): State<AppState>, user: AuthUser, Query(q): Query<ListQuery>) -> ApiResult<Json<ListResponse>> {
+async fn list(
+    State(s): State<AppState>,
+    user: AuthUser,
+    unlock: Unlock,
+    Query(q): Query<ListQuery>,
+) -> ApiResult<Json<ListResponse>> {
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
     // Keyset position: rows strictly after (ts, id) in (sort_time DESC, id DESC) order. The legacy `before` has no
     // id, so it compares against the nil uuid, which makes the predicate a strict `sort_time < before`.
@@ -1067,19 +1099,20 @@ async fn list(State(s): State<AppState>, user: AuthUser, Query(q): Query<ListQue
     };
     // Row comparison against the (owner_id, sort expression DESC, id DESC) index; two statements so the planner
     // never has to guess around an optional predicate.
-    let mut select = if q.favorite {
-        format!("{LIST_SELECT} AND favorite")
-    } else {
-        LIST_SELECT.to_string()
-    };
+    let expr = q.sort.expr();
+    let mut select = format!(
+        "{}{}",
+        list_select(q.sort),
+        visibility::view_sql(q.favorite, q.archived, q.hidden, unlock)?
+    );
     if let Some(b) = &q.bbox {
         select.push_str(&map::Bbox::parse(b)?.sql());
     }
     let rows = match after {
         Some((ts, id)) => {
             sqlx::query_as::<_, ListRow>(&format!(
-                "{select} AND (coalesce(taken_at, file_modified_at, created_at), id) < ($2, $3)
-                 ORDER BY coalesce(taken_at, file_modified_at, created_at) DESC, id DESC LIMIT $4"
+                "{select} AND ({expr}, id) < ($2, $3)
+                 ORDER BY {expr} DESC, id DESC LIMIT $4"
             ))
             .bind(user.id)
             .bind(ts)
@@ -1091,7 +1124,7 @@ async fn list(State(s): State<AppState>, user: AuthUser, Query(q): Query<ListQue
         None => {
             sqlx::query_as::<_, ListRow>(&format!(
                 "{select}
-                 ORDER BY coalesce(taken_at, file_modified_at, created_at) DESC, id DESC LIMIT $2"
+                 ORDER BY {expr} DESC, id DESC LIMIT $2"
             ))
             .bind(user.id)
             .bind(limit)
@@ -1140,14 +1173,16 @@ async fn count(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<serd
 async fn get_one(
     State(s): State<AppState>,
     user: AuthUser,
+    unlock: Unlock,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let a: AssetSummary = sqlx::query_as(
-        "SELECT id, original_name, content_type, size_bytes, width, height, coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite
-         FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL",
+        "SELECT id, original_name, content_type, size_bytes, width, height, coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite, archived, hidden
+         FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL AND (NOT hidden OR $3)",
     )
     .bind(id)
     .bind(user.id)
+    .bind(unlock.0)
     .fetch_optional(&s.db)
     .await?
     .ok_or(ApiError::NotFound)?;
@@ -1820,6 +1855,8 @@ mod tests {
                 height: None,
                 sort_time: OffsetDateTime::UNIX_EPOCH,
                 favorite: false,
+                archived: false,
+                hidden: false,
             },
             thumbhash: Some("AQ==".into()),
             thumb_url: None,

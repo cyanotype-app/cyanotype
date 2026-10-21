@@ -3,13 +3,13 @@
 //! photos without the browser ever listing them.
 //!
 //! ```json
-//! {"scope": "library" | "favorites" | "trash" | {"album": "<id>"} | {"search": {"from": "2024-01-01", ...}}
+//! {"scope": "library" | "favorites" | "archive" | "hidden" | "trash" | {"album": "<id>"} | {"search": {"from": "2024-01-01", ...}}
 //!           | {"trash_batch": "<rfc3339>"}, "except": ["<id>"]}
 //! ```
 //!
 //! `search` takes the filters of `GET /assets/search` (never `q`: a ranked search selects what it shows, by id) and names the
 //! photos a filter-only search lists. A scope names the same photos the matching list shows: not trashed (or only trashed, for `trash`), hidden RAW
-//! files left out, so a RAW + JPEG pair is one photo and the endpoints' usual pair handling applies. It is resolved
+//! files left out, and never a hidden photo (except `hidden`, which needs the unlocked Hidden view, and `trash`, which lists them only then), so a RAW + JPEG pair is one photo and the endpoints' usual pair handling applies. It is resolved
 //! to ids inside the transaction of the operation, always for the caller's own photos. `trash_batch` is what a
 //! scope-based trash returns as `batch`, so Undo restores exactly what that request trashed.
 use serde::Deserialize;
@@ -17,7 +17,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::trash::MAX_IDS;
-use cyanotype_service::{ApiError, ApiResult};
+use cyanotype_service::{ApiError, ApiResult, Unlock};
 
 /// Most ids an `except` list may carry (a JSON body of this many ids stays under the 2 MB default limit).
 pub const MAX_EXCEPT: usize = 20_000;
@@ -27,11 +27,16 @@ pub const MAX_EXCEPT: usize = 20_000;
 pub(super) enum Scope {
     Library,
     Favorites,
+    Archive,
+    /// The Hidden view: refused unless this session has unlocked it.
+    Hidden,
     Trash,
     Album(Uuid),
     /// Boxed: the filters are much bigger than the other scopes.
     Search(Box<super::search::SearchQuery>),
     TrashBatch(#[serde(with = "time::serde::rfc3339")] OffsetDateTime),
+    /// What one scope-based archive archived (`archive`'s `batch`): the Undo of a bulk archive.
+    ArchiveBatch(#[serde(with = "time::serde::rfc3339")] OffsetDateTime),
 }
 
 /// The request fields shared by all bulk endpoints.
@@ -46,11 +51,12 @@ pub(super) struct Selector {
 
 pub(super) enum Pick {
     Ids(Vec<Uuid>),
-    Scope(Scope, Vec<Uuid>),
+    /// The scope, its `except` list, and whether this session has the Hidden view unlocked.
+    Scope(Scope, Vec<Uuid>, bool),
 }
 
 impl Selector {
-    pub(super) fn validated(mut self) -> ApiResult<Pick> {
+    pub(super) fn validated(mut self, unlock: Unlock) -> ApiResult<Pick> {
         match self.scope {
             None => {
                 if !self.except.is_empty() {
@@ -72,7 +78,10 @@ impl Selector {
                 }
                 self.except.sort_unstable();
                 self.except.dedup();
-                Ok(Pick::Scope(scope, self.except))
+                if scope == Scope::Hidden {
+                    unlock.require()?;
+                }
+                Ok(Pick::Scope(scope, self.except, unlock.0))
             }
         }
     }
@@ -87,12 +96,14 @@ impl Pick {
     pub(super) async fn resolve(&self, tx: &mut sqlx::PgConnection, owner: Uuid) -> ApiResult<Option<Vec<Uuid>>> {
         match self {
             Pick::Ids(ids) => Ok(Some(ids.clone())),
-            Pick::Scope(scope, except) => Ok(Some(resolve(tx, owner, scope, except).await?)),
+            Pick::Scope(scope, except, unlocked) => Ok(Some(resolve(tx, owner, scope, except, *unlocked).await?)),
         }
     }
 }
 
-const LIVE: &str = "owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL AND id <> ALL($2)";
+/// The timeline's photos: live, not a paired RAW, not hidden, not archived.
+const LIVE: &str =
+    "owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL AND NOT hidden AND NOT archived AND id <> ALL($2)";
 const TRASHED: &str =
     "owner_id = $1 AND deleted_at IS NOT NULL AND purging_at IS NULL AND primary_id IS NULL AND id <> ALL($2)";
 
@@ -101,6 +112,7 @@ pub(super) async fn resolve(
     owner: Uuid,
     scope: &Scope,
     except: &[Uuid],
+    unlocked: bool,
 ) -> ApiResult<Vec<Uuid>> {
     if let Scope::Search(q) = scope {
         return resolve_search(tx, owner, q, except).await;
@@ -108,10 +120,52 @@ pub(super) async fn resolve(
     // $1 is the owner and $2 the except list; $3 is the batch time or the album, where a scope has one.
     let (sql, album, at) = match scope {
         Scope::Library => (format!("SELECT id FROM assets WHERE {LIVE}"), None, None),
-        Scope::Favorites => (format!("SELECT id FROM assets WHERE {LIVE} AND favorite"), None, None),
-        Scope::Trash => (format!("SELECT id FROM assets WHERE {TRASHED}"), None, None),
+        // Favorites keep archived photos (as the Favorites view does), never hidden ones.
+        Scope::Favorites => (
+            "SELECT id FROM assets WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL AND NOT hidden
+                 AND id <> ALL($2) AND favorite"
+                .to_string(),
+            None,
+            None,
+        ),
+        Scope::Archive => (
+            "SELECT id FROM assets WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL AND NOT hidden
+                 AND id <> ALL($2) AND archived"
+                .to_string(),
+            None,
+            None,
+        ),
+        Scope::ArchiveBatch(at) => (
+            "SELECT id FROM assets WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL AND NOT hidden
+             AND id <> ALL($2) AND archived AND archived_at = $3"
+                .to_string(),
+            None,
+            Some(*at),
+        ),
+        Scope::Hidden => {
+            // `validated` refused a locked session already; this is the second lock on the same door.
+            if !unlocked {
+                return Err(ApiError::NotFound);
+            }
+            (
+                "SELECT id FROM assets WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL
+                 AND id <> ALL($2) AND hidden"
+                    .to_string(),
+                None,
+                None,
+            )
+        }
+        // Trashed hidden photos are in the trash only for an unlocked session: a locked one neither sees nor restores them.
+        Scope::Trash => (
+            format!("SELECT id FROM assets WHERE {TRASHED}{}", hidden_clause("", unlocked)),
+            None,
+            None,
+        ),
         Scope::TrashBatch(at) => (
-            format!("SELECT id FROM assets WHERE {TRASHED} AND deleted_at = $3"),
+            format!(
+                "SELECT id FROM assets WHERE {TRASHED}{} AND deleted_at = $3",
+                hidden_clause("", unlocked)
+            ),
             None,
             Some(*at),
         ),
@@ -126,7 +180,7 @@ pub(super) async fn resolve(
             (
                 "SELECT x.id FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
                  WHERE aa.album_id = $3 AND x.owner_id = $1 AND x.deleted_at IS NULL AND x.primary_id IS NULL
-                   AND x.id <> ALL($2)"
+                   AND NOT x.hidden AND x.id <> ALL($2)"
                     .to_string(),
                 Some(*album),
                 None,
@@ -140,6 +194,15 @@ pub(super) async fn resolve(
         _ => q,
     };
     Ok(q.fetch_all(&mut *tx).await?)
+}
+
+fn hidden_clause(alias: &str, unlocked: bool) -> String {
+    if unlocked {
+        String::new()
+    } else {
+        let dot = if alias.is_empty() { "" } else { "." };
+        format!(" AND NOT {alias}{dot}hidden")
+    }
 }
 
 /// The photos a filter-only search lists (ownership, not trashed, not a hidden RAW, then the filters), as ids.

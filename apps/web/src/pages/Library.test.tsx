@@ -469,7 +469,7 @@ describe("Library", () => {
       const user = userEvent.setup();
       renderLibrary(true);
       await screen.findByAltText("photo-2.jpg");
-      expect(lib.timeline).toHaveBeenCalledWith({ favorite: true });
+      expect(lib.timeline).toHaveBeenCalledWith(expect.objectContaining({ favorite: true }));
       expect(lib.listAssets).toHaveBeenCalledWith(expect.objectContaining({ favorite: true }));
       expect(screen.getAllByRole("img").map((i) => i.getAttribute("alt"))).toEqual(["photo-2.jpg", "photo-4.jpg"]);
       expect(screen.getByText("2 photos")).toBeInTheDocument();

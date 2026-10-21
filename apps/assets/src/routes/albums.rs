@@ -9,7 +9,8 @@
 //!   are idempotent and answer `{count}` with the number of memberships actually changed.
 //!
 //! Albums reference photos. Trashed photos keep their membership but are invisible in album views and counts
-//! (restoring brings them back); a purge removes the membership through the foreign key cascade. Someone else's
+//! (restoring brings them back); so do hidden photos (the album reports `hidden_count` for its owner and its cover is never
+//! a hidden photo), while archived photos stay; a purge removes the membership through the foreign key cascade. Someone else's
 //! album, or an unknown id, is always a 404, and only the caller's own live photos can be added.
 use axum::{
     Json,
@@ -24,7 +25,7 @@ use uuid::Uuid;
 use super::scope::Selector;
 use super::{ListQuery, ListResponse, ListRow, decode_cursor, encode_cursor, list_items, thumb_fields, trash::MAX_IDS};
 use crate::AppState;
-use cyanotype_service::{ApiError, ApiResult, AuthUser};
+use cyanotype_service::{ApiError, ApiResult, AuthUser, Unlock};
 
 const MAX_TITLE: usize = 200;
 const MAX_DESCRIPTION: usize = 5000;
@@ -86,8 +87,10 @@ pub(super) struct Album {
     id: Uuid,
     title: String,
     description: Option<String>,
-    /// Photos in the album, not counting trashed ones.
+    /// Photos in the album, not counting trashed ones or hidden ones.
     photo_count: i64,
+    /// Members that are hidden: they stay in the album but no album view lists them ("N hidden" for the owner).
+    hidden_count: i64,
     /// The chosen cover if it is still in the album and not trashed, else the most recent photo; null when empty.
     cover: Option<Cover>,
     /// Earliest / latest photo time (taken_at, file mtime or upload time); null when empty.
@@ -109,6 +112,7 @@ struct AlbumRow {
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
     photo_count: i64,
+    hidden_count: i64,
     first_at: Option<OffsetDateTime>,
     last_at: Option<OffsetDateTime>,
     cover_id: Option<Uuid>,
@@ -118,16 +122,17 @@ struct AlbumRow {
 fn summary_sql(tail: &str) -> String {
     format!(
         "SELECT a.id, a.title, a.description, a.created_at, a.updated_at,
-                st.photo_count, st.first_at, st.last_at, cv.id AS cover_id, cv.thumbhash AS cover_thumbhash
+                st.photo_count, st.hidden_count, st.first_at, st.last_at, cv.id AS cover_id, cv.thumbhash AS cover_thumbhash
          FROM albums a
          CROSS JOIN LATERAL (
-             SELECT count(*) AS photo_count, min({SORT}) AS first_at, max({SORT}) AS last_at
+             SELECT count(*) FILTER (WHERE NOT x.hidden) AS photo_count, count(*) FILTER (WHERE x.hidden) AS hidden_count,
+                    min({SORT}) FILTER (WHERE NOT x.hidden) AS first_at, max({SORT}) FILTER (WHERE NOT x.hidden) AS last_at
              FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
              WHERE aa.album_id = a.id AND x.deleted_at IS NULL AND x.primary_id IS NULL
          ) st
          LEFT JOIN LATERAL (
              SELECT x.id, x.thumbhash FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
-             WHERE aa.album_id = a.id AND x.deleted_at IS NULL AND x.primary_id IS NULL
+             WHERE aa.album_id = a.id AND x.deleted_at IS NULL AND x.primary_id IS NULL AND NOT x.hidden
              ORDER BY (x.id = a.cover_asset_id) DESC, {SORT} DESC, x.id DESC LIMIT 1
          ) cv ON true
          WHERE a.owner_id = $1 {tail}"
@@ -153,6 +158,7 @@ async fn to_albums(s: &AppState, owner: Uuid, rows: Vec<AlbumRow>) -> ApiResult<
             title: r.title,
             description: r.description,
             photo_count: r.photo_count,
+            hidden_count: r.hidden_count,
             cover,
             first_at: r.first_at,
             last_at: r.last_at,
@@ -268,7 +274,8 @@ pub(super) async fn update(
     if let Some(Some(cover)) = req.cover_asset_id {
         let ok: Option<(Uuid,)> = sqlx::query_as(
             "SELECT aa.asset_id FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
-             WHERE aa.album_id = $1 AND aa.asset_id = $2 AND x.owner_id = $3 AND x.deleted_at IS NULL AND x.primary_id IS NULL",
+             WHERE aa.album_id = $1 AND aa.asset_id = $2 AND x.owner_id = $3 AND x.deleted_at IS NULL AND x.primary_id IS NULL
+               AND NOT x.hidden",
         )
         .bind(id)
         .bind(cover)
@@ -335,9 +342,9 @@ pub(super) async fn assets(
         (None, None) => None,
     };
     let select = format!(
-        "SELECT x.id, x.original_name, x.content_type, x.size_bytes, x.width, x.height, {SORT} AS sort_time, x.favorite, x.thumbhash
+        "SELECT x.id, x.original_name, x.content_type, x.size_bytes, x.width, x.height, {SORT} AS sort_time, x.favorite, x.archived, x.hidden, x.thumbhash
          FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
-         WHERE aa.album_id = $1 AND x.owner_id = $2 AND x.deleted_at IS NULL AND x.primary_id IS NULL"
+         WHERE aa.album_id = $1 AND x.owner_id = $2 AND x.deleted_at IS NULL AND x.primary_id IS NULL AND NOT x.hidden"
     );
     let rows = match after {
         Some((ts, aid)) => {
@@ -381,10 +388,11 @@ pub(super) struct Count {
 pub(super) async fn add(
     State(s): State<AppState>,
     user: AuthUser,
+    unlock: Unlock,
     Path(id): Path<Uuid>,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated()?;
+    let pick = req.validated(unlock)?;
     let mut tx = s.db.begin().await?;
     lock_album(&mut tx, user.id, id).await?;
     let ids = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();
@@ -403,10 +411,11 @@ pub(super) async fn add(
 pub(super) async fn remove_assets(
     State(s): State<AppState>,
     user: AuthUser,
+    unlock: Unlock,
     Path(id): Path<Uuid>,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated()?;
+    let pick = req.validated(unlock)?;
     let mut tx = s.db.begin().await?;
     lock_album(&mut tx, user.id, id).await?;
     let ids = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();

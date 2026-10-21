@@ -11,3 +11,6 @@ export function dateRange(first: string | null, last: string | null): string {
   const [from, to] = [month(a), month(b)];
   return from === to ? from : `${from} – ${to}`;
 }
+
+/** "2 hidden": members that are in the album but hidden (shown to the owner only, as a count). Empty when there are none. */
+export const hiddenNote = (n: number | undefined) => (n && n > 0 ? `${n.toLocaleString("en-US")} hidden` : "");

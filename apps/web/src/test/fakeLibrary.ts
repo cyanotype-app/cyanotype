@@ -1,7 +1,7 @@
 // An in-memory stand-in for the assets service's timeline, list, favorite and trash endpoints, so the Library page can
 // be tested against realistic paging (counts per day, `before` and keyset cursors) instead of canned responses.
 import { vi } from "vitest";
-import { api, isScope, type AssetListItem, type Target } from "../api";
+import { api, isScope, type AssetListItem, type LibraryView, type Target } from "../api";
 import { dayOfTime } from "../timeline";
 
 const newestFirst = (a: AssetListItem, b: AssetListItem) =>
@@ -18,18 +18,23 @@ export interface FakeLibrary {
 /** Install spies on `api` that behave like the server for the given photos. */
 export function fakeLibrary(initial: AssetListItem[]): FakeLibrary {
   const lib = { photos: [...initial], trashed: [] as AssetListItem[] } as FakeLibrary;
-  const visible = (favorite?: boolean) =>
-    lib.photos.filter((p) => !favorite || p.favorite === true).sort(newestFirst);
+  // The server's views: hidden photos only in the Hidden view, archived ones only in the Archive (and in Favorites).
+  const visible = (v: LibraryView = {}) =>
+    lib.photos
+      .filter((p) => (v.hidden ? p.hidden === true : p.hidden !== true))
+      .filter((p) => !v.favorite || p.favorite === true)
+      .filter((p) => (v.archived ? p.archived === true : v.favorite || v.hidden || p.archived !== true))
+      .sort(newestFirst); // (the fake has no upload times: both orders use sort_time)
 
   lib.timeline = vi.spyOn(api, "timeline").mockImplementation(async (opts = {}) => {
     const counts = new Map<string, number>();
-    for (const p of visible(opts.favorite)) counts.set(dayOfTime(p.sort_time), (counts.get(dayOfTime(p.sort_time)) ?? 0) + 1);
+    for (const p of visible(opts)) counts.set(dayOfTime(p.sort_time), (counts.get(dayOfTime(p.sort_time)) ?? 0) + 1);
     const days = [...counts].map(([day, count]) => ({ day, count })).sort((a, b) => (a.day < b.day ? 1 : -1));
     return { total: days.reduce((n, d) => n + d.count, 0), days };
   });
 
   lib.listAssets = vi.spyOn(api, "listAssets").mockImplementation(async (opts = {}) => {
-    let rows = visible(opts.favorite);
+    let rows = visible(opts);
     if (opts.cursor) {
       const [t, id] = opts.cursor.split("|");
       rows = rows.filter((p) => Date.parse(p.sort_time) < Date.parse(t!) || (Date.parse(p.sort_time) === Date.parse(t!) && p.id < id!));
@@ -54,8 +59,14 @@ export function fakeLibrary(initial: AssetListItem[]): FakeLibrary {
     const s = t.scope;
     const rows =
       s === "favorites"
-        ? from.filter((p) => p.favorite === true)
-        : typeof s === "object" && "trash_batch" in s
+        ? from.filter((p) => p.favorite === true && p.hidden !== true)
+        : s === "archive"
+          ? from.filter((p) => p.archived === true && p.hidden !== true)
+          : s === "hidden"
+            ? from.filter((p) => p.hidden === true)
+            : s === "library"
+              ? from.filter((p) => p.hidden !== true && p.archived !== true)
+              : typeof s === "object" && "trash_batch" in s
           ? from.filter((p) => batches.get(s.trash_batch)?.has(p.id))
           : from;
     return rows.filter((p) => !t.except.includes(p.id));
@@ -85,6 +96,19 @@ export function fakeLibrary(initial: AssetListItem[]): FakeLibrary {
       }
     }
     return { count };
+  });
+  // The per-user switches and the strip: defaults, and nothing for today.
+  vi.spyOn(api, "prefs").mockResolvedValue({ memories_enabled: true, library_sort: "taken" });
+  vi.spyOn(api, "memories").mockResolvedValue({ enabled: true, day: "01-01", years: [] });
+  vi.spyOn(api, "archiveAssets").mockImplementation(async (target, archived) => {
+    const rows = pick(target, lib.photos);
+    for (const p of rows) p.archived = archived;
+    return { count: rows.length };
+  });
+  vi.spyOn(api, "hideAssets").mockImplementation(async (target, hidden) => {
+    const rows = pick(target, lib.photos);
+    for (const p of rows) p.hidden = hidden;
+    return { count: rows.length };
   });
   return lib;
 }

@@ -8,6 +8,10 @@ import { ProcessingStatus } from "../components/ProcessingStatus";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Lightbox } from "../components/Lightbox";
 import { LibraryTabs } from "../components/LibraryTabs";
+import { MemoriesStrip } from "../components/MemoriesStrip";
+import { SortToggle } from "../components/SortToggle";
+import { usePrefs } from "../usePrefs";
+import { archiveMessage, emptyView, viewTitle, type ViewKind } from "../viewText";
 import { SelectionBar } from "../components/SelectionBar";
 import { EditDialog, type EditKind } from "../components/EditDialog";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
@@ -29,8 +33,49 @@ const LIGHTBOX_RUN = 60;
 
 const photos = (n: number) => `${n.toLocaleString("en-US")} photo${n === 1 ? "" : "s"}`;
 
-/** The library as a date-grouped, virtualized timeline; `favorites` limits it to the photos with a heart. */
-export function Library({ favorites = false }: { favorites?: boolean }) {
+interface LibraryProps {
+  /** Only the photos with a heart (archived ones too). */
+  favorites?: boolean;
+  /** The Archive view. */
+  archive?: boolean;
+  /** The Hidden view: the page that shows it has made sure the session is unlocked. */
+  hidden?: boolean;
+  /** Recently added: the library in upload order, whatever the sort setting. */
+  recent?: boolean;
+  /** The server said the Hidden view is locked (the ten minutes ran out): the page asks for the password again. */
+  onLocked?: () => void;
+}
+
+/**
+ * The library as a date-grouped, virtualized timeline: all photos (in the order the user chose, remembered per user),
+ * favorites, the archive, the hidden photos or the photos by upload time. The order is read first so the timeline is
+ * laid out once.
+ */
+export function Library(props: LibraryProps) {
+  const plain = !props.favorites && !props.archive && !props.hidden && !props.recent;
+  const { prefs, update } = usePrefs(plain);
+  if (plain && prefs === null) return <p className="center muted" role="status">Loading your photos…</p>;
+  const sort = props.recent ? "added" : plain ? (prefs?.library_sort ?? "taken") : "taken";
+  return (
+    <LibraryView
+      key={sort}
+      {...props}
+      sort={sort}
+      onSort={plain ? (s) => void update({ library_sort: s }) : undefined}
+    />
+  );
+}
+
+function LibraryView({
+  favorites = false,
+  archive = false,
+  hidden = false,
+  recent = false,
+  onLocked,
+  sort,
+  onSort,
+}: LibraryProps & { sort: "taken" | "added"; onSort?: (s: "taken" | "added") => void }) {
+  const kind: ViewKind = hidden ? "hidden" : archive ? "archive" : favorites ? "favorites" : recent ? "recent" : "library";
   const navigate = useNavigate();
   const [search] = useSearchParams();
   const jumpToDay = dayFromSearch(search);
@@ -54,8 +99,12 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
   const [editKind, setEditKind] = useState<EditKind | null>(null);
 
   const selectedRef = useRef<ReadonlySet<string>>(new Set());
-  const tl = useTimeline({ favorite: favorites, keep: () => selectedRef.current });
-  const scope = favorites ? "favorites" : "library";
+  const tl = useTimeline({ view: { favorite: favorites, archived: archive, hidden, sort }, keep: () => selectedRef.current });
+  const scope = hidden ? "hidden" : archive ? "archive" : favorites ? "favorites" : "library";
+  // The ten minutes of the Hidden view ran out while it was open: back to the password prompt.
+  useEffect(() => {
+    if (hidden && tl.error === "hidden_locked") onLocked?.();
+  }, [hidden, tl.error, onLocked]);
   const { index, loaded, ensure, refresh, remove, patch } = tl;
   const items = useMemo(() => inOrder(loaded), [loaded]);
   const itemIds = useMemo(() => items.map((i) => i.id), [items]);
@@ -95,7 +144,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
 
   // Photos finished by the uploader show up without a reload.
   useEffect(() => {
-    if (favorites) return; // a new upload is not a favorite
+    if (favorites || archive || hidden) return; // a new upload is not a favorite, archived or hidden
     let timer: ReturnType<typeof setTimeout> | undefined;
     let last = 0;
     // A big upload finishes photos every second or so: look again shortly after the first, then at most every 3 s.
@@ -110,7 +159,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
       off();
       clearTimeout(timer);
     };
-  }, [queue, favorites, refreshSoon]);
+  }, [queue, favorites, archive, hidden, refreshSoon]);
 
   // Thumbnails appear once the worker is done: poll lightly for tiles that still have none.
   const pending = items.filter((i) => !i.thumb_url).map((i) => i.id);
@@ -240,6 +289,102 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
     if (isScope(target)) void trashView(target);
     else void trashItems(items.filter((i) => ids.has(i.id)));
   }, [sel, scope, items, trashItems, trashView]);
+
+  // Archive and hide take photos out of this view at once (rolled back by a reload if the server refuses). Archiving can
+  // be undone from the toast; hiding cannot (unhiding needs the password, so the Hidden view is where it is undone).
+  const leaveView = useCallback(
+    (ids: string[]) => {
+      const left = index.total - remove(new Set(ids)).length;
+      setOpen((o) => (o === null || left <= 0 ? null : Math.min(o, left - 1)));
+    },
+    [index.total, remove],
+  );
+  const undoArchive = useCallback(
+    async (target: Target, archived: boolean, count: number) => {
+      try {
+        await api.archiveAssets(target, archived);
+        void refresh();
+        show({ message: `${count.toLocaleString("en-US")} ${archived ? "archived" : "back in the library"}` });
+      } catch (e) {
+        failure(e, "Couldn’t undo.");
+      }
+    },
+    [refresh, show, failure],
+  );
+  const archiveItems = useCallback(
+    async (targets: AssetListItem[], archived: boolean) => {
+      if (targets.length === 0) return;
+      const ids = targets.map((t) => t.id);
+      // In Favorites an archived photo stays (flagged); everywhere else it leaves the view it was archived from or restored to.
+      if (favorites) patch(new Set(ids), { archived });
+      else leaveView(ids);
+      try {
+        await api.archiveAssets(ids, archived);
+      } catch (e) {
+        void refresh();
+        failure(e, archived ? "Couldn’t archive." : "Couldn’t restore.");
+        return;
+      }
+      show({
+        message: archiveMessage(ids.length, archived),
+        action: { label: "Undo", onClick: () => void undoArchive(ids, !archived, ids.length) },
+      });
+    },
+    [favorites, patch, leaveView, refresh, failure, show, undoArchive],
+  );
+  const archiveView = useCallback(
+    async (target: Target, archived: boolean) => {
+      setBulkBusy(true);
+      try {
+        const r = await api.archiveAssets(target, archived);
+        setOpen(null);
+        void refresh();
+        const back: Target = r.batch ? { scope: { archive_batch: r.batch }, except: [] } : [];
+        show({
+          message: archiveMessage(r.count, archived),
+          action: r.batch || !archived ? { label: "Undo", onClick: () => void undoArchive(archived ? back : target, !archived, r.count) } : undefined,
+        });
+      } catch (e) {
+        failure(e, archived ? "Couldn’t archive." : "Couldn’t restore.");
+      } finally {
+        setBulkBusy(false);
+      }
+    },
+    [refresh, show, failure, undoArchive],
+  );
+  const archiveSelected = useCallback(() => {
+    const archived = !archive;
+    const target = sel.target(scope);
+    const ids = new Set(sel.ids);
+    sel.setSelecting(false);
+    if (isScope(target)) void archiveView(target, archived);
+    else void archiveItems(items.filter((i) => ids.has(i.id)), archived);
+  }, [archive, sel, scope, items, archiveView, archiveItems]);
+  const hideItems = useCallback(
+    async (target: Target, ids: string[], hide: boolean) => {
+      if (ids.length > 0) leaveView(ids);
+      else setOpen(null);
+      try {
+        const r = await api.hideAssets(target, hide);
+        if (ids.length === 0) void refresh();
+        show({
+          message: hide
+            ? `${r.count.toLocaleString("en-US")} hidden. Find ${r.count === 1 ? "it" : "them"} under More, Hidden.`
+            : `${r.count.toLocaleString("en-US")} back in the library`,
+        });
+      } catch (e) {
+        void refresh();
+        failure(e, hide ? "Couldn’t hide." : "Couldn’t unhide.");
+      }
+    },
+    [leaveView, refresh, show, failure],
+  );
+  const hideSelected = useCallback(() => {
+    const target = sel.target(scope);
+    const ids = isScope(target) ? [] : [...sel.ids];
+    sel.setSelecting(false);
+    void hideItems(target, ids, !hidden);
+  }, [sel, scope, hidden, hideItems]);
 
   // Separate a RAW + JPEG pair: the photo loses its RAW badge and the RAW appears as a photo of its own.
   const unpairItem = useCallback(
@@ -378,14 +523,17 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
     </>
   );
 
+  const title = viewTitle(kind);
   if (index.total === 0) {
+    const e = emptyView(kind);
     return (
       <div className="library" {...dropProps}>
         {tabs}
-        {favorites ? (
+        {kind === "library" && <MemoriesStrip />}
+        {e ? (
           <div className="empty">
-            <h1>No favorites yet</h1>
-            <p>Tap the heart on a photo, or select photos and choose Favorite, and they will be here.</p>
+            <h1>{e.title}</h1>
+            <p>{e.body}</p>
           </div>
         ) : (
           <div className="empty">
@@ -404,8 +552,9 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
 
   return (
     <div className="library" {...dropProps}>
-      <h1 className="sr-only">{favorites ? "Favorites" : "Library"}</h1>
+      <h1 className={title ? "view-title" : "sr-only"}>{title ?? (favorites ? "Favorites" : "Library")}</h1>
       {tabs}
+      {kind === "library" && <MemoriesStrip />}
       <div className="library-bar">
         <UploadButtons onFiles={addFiles} />
         <button
@@ -416,6 +565,7 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
         >
           Select
         </button>
+        {onSort && <SortToggle value={sort} onChange={onSort} />}
         {notice && <span className="muted small" role="status">{notice}</span>}
       </div>
       {sel.selecting && (
@@ -428,6 +578,14 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
         >
           <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || bulkBusy} onClick={favoriteSelected}>
             {allSelectedFavorite ? "Unfavorite" : "Favorite"}
+          </button>
+          {!hidden && (
+            <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || bulkBusy} onClick={archiveSelected}>
+              {archive ? "Restore" : "Archive"}
+            </button>
+          )}
+          <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || bulkBusy} onClick={hideSelected}>
+            {hidden ? "Unhide" : "Hide"}
           </button>
           <button
             type="button"
@@ -499,6 +657,8 @@ export function Library({ favorites = false }: { favorites?: boolean }) {
           onUnpair={(it) => void unpairItem(it)}
           onSimilar={(it) => navigate(similarUrl(it.id))}
           onFavorite={(it, value) => void setFavorite([it], value)}
+          onArchive={hidden ? undefined : (it) => void archiveItems([it], it.archived !== true)}
+          onHide={(it) => void hideItems([it.id], [it.id], !hidden)}
           refreshKey={albumsVersion}
           onEdited={() => void refresh()}
         />

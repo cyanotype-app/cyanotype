@@ -213,7 +213,7 @@ impl SearchState {
         ] {
             let rows: Vec<(String,)> = sqlx::query_as(&format!(
                 "SELECT DISTINCT {column} FROM assets
-                 WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL AND {column} IS NOT NULL"
+                 WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL AND NOT hidden AND {column} IS NOT NULL"
             ))
             .bind(owner)
             .fetch_all(db)

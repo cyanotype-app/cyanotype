@@ -143,6 +143,11 @@ export const Tile = memo(function Tile({
             RAW
           </span>
         )}
+        {item.archived === true && (
+          <span className="tile-badge tile-badge-archived" title="Archived: not in the timeline or the map">
+            Archived
+          </span>
+        )}
         {selecting && (
           <span className="tile-check" aria-hidden="true">
             {selected ? "✓" : ""}

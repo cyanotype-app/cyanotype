@@ -10,7 +10,9 @@ import { Accounts } from "./pages/admin/Accounts";
 import { AuditPage } from "./pages/admin/AuditPage";
 import { HealthPage } from "./pages/admin/HealthPage";
 import { Invites } from "./pages/admin/Invites";
+import { HiddenPage } from "./pages/HiddenPage";
 import { Library } from "./pages/Library";
+import { MemoriesPage } from "./pages/MemoriesPage";
 import { Login } from "./pages/Login";
 import { MapPage } from "./pages/MapPage";
 import { NotFound } from "./pages/NotFound";
@@ -39,6 +41,10 @@ export function App() {
       <Route element={<RequireAuth />}>
         <Route path="/library" element={<Library key="all" />} />
         <Route path="/favorites" element={<Library key="favorites" favorites />} />
+        <Route path="/recent" element={<Library key="recent" recent />} />
+        <Route path="/archive" element={<Library key="archive" archive />} />
+        <Route path="/hidden" element={<HiddenPage />} />
+        <Route path="/memories" element={<MemoriesPage />} />
         <Route path="/map" element={<MapPage />} />
         <Route path="/search" element={<SearchPage />} />
         <Route path="/albums" element={<Albums />} />
