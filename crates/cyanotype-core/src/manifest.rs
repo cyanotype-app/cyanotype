@@ -22,9 +22,10 @@ use sqlx::{PgPool, Row};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{keys, storage::Storage};
+use crate::{identity, keys, storage::Storage};
 
-pub const FORMAT_VERSION: u32 = 1;
+/// 2: adds `share` lines (readers of version 1 count them as lines they do not know and go on).
+pub const FORMAT_VERSION: u32 = 2;
 pub const DEFAULT_KEEP: usize = 14;
 const MAX_MANIFEST_BYTES: u64 = 1 << 30;
 
@@ -34,6 +35,7 @@ pub enum Line {
     Meta(MetaLine),
     Asset(AssetLine),
     Album(AlbumLine),
+    Share(ShareLine),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,11 +91,49 @@ pub struct AlbumLine {
     pub items: Vec<String>,
 }
 
+/// A share link (`shares`, migration 0009): its address, its settings and, for a selection, its photos by hash.
+///
+/// The token is the secret in the link's address. It is in the bucket in plaintext, like it is in the database (so the owner
+/// can copy a link again): reading the bucket already gives every photo, so this adds no access, and without it a rebuilt
+/// library would break every link the owner has handed out. **The password is not here**: `password_protected` only says that
+/// the link had one; a rebuilt link keeps its address and settings, stays closed (locked password) and its owner sets a new
+/// password. Failing closed matters more than convenience: a protected link must never come back open.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShareLine {
+    pub id: Uuid,
+    pub token: String,
+    /// `album` or `selection`.
+    pub kind: String,
+    #[serde(default)]
+    pub album: Option<Uuid>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub password_protected: bool,
+    #[serde(default = "yes")]
+    pub allow_download: bool,
+    #[serde(default)]
+    pub include_originals: bool,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub expires_at: Option<OffsetDateTime>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub created_at: Option<OffsetDateTime>,
+    /// Photos of a `selection` share, by hash.
+    #[serde(default)]
+    pub items: Vec<String>,
+}
+
+fn yes() -> bool {
+    true
+}
+
 /// A user's manifests merged: newest manifest first, the first entry for a photo (or album) wins.
 #[derive(Debug, Default)]
 pub struct UserManifest {
     pub assets: HashMap<[u8; 32], AssetLine>,
     pub albums: BTreeMap<Uuid, AlbumLine>,
+    /// The share links of the NEWEST manifest only (a revoked link must not come back from an older file).
+    pub shares: BTreeMap<Uuid, ShareLine>,
     pub files: usize,
     pub bad_lines: usize,
 }
@@ -184,6 +224,49 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
         }));
     }
 
+    let mut share_items: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for r in sqlx::query(
+        "SELECT sa.share_id, a.sha256 FROM share_assets sa
+         JOIN shares s ON s.id = sa.share_id JOIN assets a ON a.id = sa.asset_id
+         WHERE s.owner_id = $1 AND a.purging_at IS NULL ORDER BY sa.share_id, a.created_at, a.id",
+    )
+    .bind(user)
+    .fetch_all(db)
+    .await
+    .context("read share items")?
+    {
+        let sha: Vec<u8> = r.try_get("sha256")?;
+        share_items
+            .entry(r.try_get("share_id")?)
+            .or_default()
+            .push(keys::hex(&sha));
+    }
+    for r in sqlx::query(
+        "SELECT id, token, kind, album_id, title, (password_hash IS NOT NULL) AS protected, allow_download,
+                include_originals, expires_at, created_at
+         FROM shares WHERE owner_id = $1 ORDER BY created_at, id",
+    )
+    .bind(user)
+    .fetch_all(db)
+    .await
+    .context("read shares")?
+    {
+        let id: Uuid = r.try_get("id")?;
+        body.push(Line::Share(ShareLine {
+            id,
+            token: r.try_get("token")?,
+            kind: r.try_get("kind")?,
+            album: r.try_get("album_id")?,
+            title: r.try_get("title")?,
+            password_protected: r.try_get("protected")?,
+            allow_download: r.try_get("allow_download")?,
+            include_originals: r.try_get("include_originals")?,
+            expires_at: r.try_get("expires_at")?,
+            created_at: r.try_get("created_at")?,
+            items: share_items.remove(&id).unwrap_or_default(),
+        }));
+    }
+
     let mut out = Vec::new();
     let header = Line::Meta(MetaLine {
         v: FORMAT_VERSION,
@@ -243,7 +326,7 @@ pub async fn list_all(storage: &Storage) -> Result<BTreeMap<Uuid, Vec<String>>> 
 /// Fetch and merge the given manifest keys (newest first, as returned by [`list_all`]).
 pub async fn load(storage: &Storage, user: Uuid, manifest_keys: &[String]) -> Result<UserManifest> {
     let mut m = UserManifest::default();
-    for key in manifest_keys {
+    for (n, key) in manifest_keys.iter().enumerate() {
         let bytes = storage.get_bytes_limited(key, MAX_MANIFEST_BYTES).await?;
         let (lines, bad) = parse(&bytes);
         m.files += 1;
@@ -264,7 +347,11 @@ pub async fn load(storage: &Storage, user: Uuid, manifest_keys: &[String]) -> Re
                 Line::Album(a) => {
                     m.albums.entry(a.id).or_insert(a);
                 }
-                Line::Meta(_) => {}
+                // Only the newest file's links: a link revoked since an older file was written stays revoked.
+                Line::Share(sh) if n == 0 => {
+                    m.shares.entry(sh.id).or_insert(sh);
+                }
+                Line::Share(_) | Line::Meta(_) => {}
             }
         }
     }
@@ -300,6 +387,15 @@ pub async fn write_user(db: &PgPool, storage: &Storage, user: Uuid, keep: usize)
 
 /// Write today's manifest for every user that has photos and does not have one yet. Returns users written.
 pub async fn write_missing(db: &PgPool, storage: &Storage, keep: usize) -> Result<usize> {
+    // The accounts (identities, roles, limits) the photos' keys name as owners: what a bucket-only rebuild needs first.
+    match identity::written_today(storage).await {
+        Ok(true) => {}
+        Ok(false) => match identity::write(db, storage, keep).await {
+            Ok(n) => tracing::info!(accounts = n, "wrote account manifest"),
+            Err(e) => tracing::warn!(error = ?e, "could not write the account manifest"),
+        },
+        Err(e) => tracing::warn!(error = ?e, "could not check for today's account manifest"),
+    }
     let have = list_all(storage).await?;
     let today = today_utc();
     let users: Vec<(Uuid,)> = sqlx::query_as("SELECT DISTINCT owner_id FROM assets WHERE purging_at IS NULL")

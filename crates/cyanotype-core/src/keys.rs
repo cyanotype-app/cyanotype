@@ -80,6 +80,14 @@ pub fn manifest_prefix(user: Uuid) -> String {
     format!("{MANIFESTS_PREFIX}{user}/")
 }
 
+/// The account manifests (`identity` module): `manifests/accounts/accounts-YYYYMMDD.jsonl`. Not a user id, so the per-user
+/// manifest code (and older versions of `reindex`) never mistakes the directory for a user.
+pub const ACCOUNTS_MANIFEST_PREFIX: &str = "manifests/accounts/";
+
+pub fn accounts_manifest(yyyymmdd: &str) -> String {
+    format!("{ACCOUNTS_MANIFEST_PREFIX}accounts-{yyyymmdd}.jsonl")
+}
+
 /// One day's manifest of a user: `manifests/{user}/originals-YYYYMMDD.jsonl`.
 pub fn manifest(user: Uuid, yyyymmdd: &str) -> String {
     format!("{}originals-{yyyymmdd}.jsonl", manifest_prefix(user))

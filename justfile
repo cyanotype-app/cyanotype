@@ -111,6 +111,12 @@ datadog-up:
 backup-now:
     ${COMPOSE:-docker compose} run --rm backup now
 
+# Restore drill (docs/recovery.md): a throwaway `cyano-drill` stack (ports 54397/18397/3397), a synthetic library, then both recovery
+# paths (nightly dump; `cyanotype reindex` from the bucket alone) with a report of what each loses. Fully local. --keep leaves the
+# stack up, --report FILE chooses the file; `--source real` is the read-only drill against your real bucket (docs/recovery.md).
+restore-drill *args:
+    PYTHONDONTWRITEBYTECODE=1 scripts/restore-drill.sh {{args}}
+
 # ---- Production (single VPS; see docs/deploy.md) ----------------------------------------------
 # DEPLOY_HOST=deploy@203.0.113.10 (user@host, key auth; use the origin IP or a DNS-only name, not a Cloudflare-proxied
 # one). Optional: DEPLOY_DIR (default ~/cyanotype), DEPLOY_PROFILES (e.g. "datadog"), DEPLOY_REF (git ref the bundle

@@ -40,6 +40,10 @@ enum Command {
     /// Write today's per-user recovery manifests to the bucket now (the assets service also does this daily).
     #[cfg(feature = "server-tools")]
     Manifest,
+    /// Print a one-time password reset link for an account (after a bucket-only rebuild the restored accounts have locked
+    /// passwords, and nobody can sign in to ask an admin for a link). Runs where `migrate` runs.
+    #[cfg(feature = "server-tools")]
+    ResetLink(reindex::ResetLinkArgs),
     /// Log in to a Cyanotype server and store an API key for the other commands.
     Login(LoginArgs),
     /// Import photos and videos from files and directories (resumable; safe to re-run).
@@ -109,6 +113,8 @@ async fn dispatch(command: Command) -> Result<ExitCode> {
         Command::Reindex(a) => return reindex::run(a).await,
         #[cfg(feature = "server-tools")]
         Command::Manifest => reindex::write_manifests().await?,
+        #[cfg(feature = "server-tools")]
+        Command::ResetLink(a) => reindex::reset_link(a).await?,
         Command::Update(a) => update::run(a).await?,
         Command::Login(a) => login(a).await?,
         Command::Status => status().await?,

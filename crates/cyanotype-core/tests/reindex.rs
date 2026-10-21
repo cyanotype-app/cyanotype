@@ -825,8 +825,7 @@ async fn edits_come_back_with_a_rebuilt_database() {
     assert_eq!(
         (dry.orphans, dry.edits_objects, dry.edits_restored),
         (2, 4, 0),
-        "{}",
-        dry.text()
+        "unexpected reindex counters"
     );
     assert_eq!(fx.count("assets").await, 0);
 
@@ -834,8 +833,7 @@ async fn edits_come_back_with_a_rebuilt_database() {
     assert_eq!(
         (r.orphans_recreated, r.edits_objects, r.edits_restored, r.errors),
         (2, 4, 1, 0),
-        "{}",
-        r.text()
+        "unexpected reindex counters"
     );
     assert_eq!(
         (r.edits_without_photo, r.edits_bad),
@@ -872,5 +870,403 @@ async fn edits_come_back_with_a_rebuilt_database() {
     // The metadata job that now runs for the recreated row keeps them (the worker's test), and a second reindex has nothing to do.
     let again = fx.run(|o| o.apply = true).await;
     assert_eq!((again.edits_restored, again.edits_current), (0, 1));
+    fx.teardown().await;
+}
+
+// ---- accounts, limits, server defaults and share links (docs/recovery.md, path B) -------------------------------------
+
+/// Insert a share link row; returns its id.
+async fn make_share(
+    fx: &Fx,
+    owner: Uuid,
+    token: &str,
+    album: Option<Uuid>,
+    title: &str,
+    password_hash: Option<&str>,
+) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO shares (owner_id, token, kind, album_id, title, password_hash, allow_download, include_originals)
+         VALUES ($1, $2, $3, $4, $5, $6, false, true) RETURNING id",
+    )
+    .bind(owner)
+    .bind(token)
+    .bind(if album.is_some() { "album" } else { "selection" })
+    .bind(album)
+    .bind(title)
+    .bind(password_hash)
+    .fetch_one(&fx.pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_bucket_only_rebuild_brings_back_accounts_roles_limits_defaults_and_share_links() {
+    let Some(fx) = Fx::new().await else { return };
+    // The state the manifests must carry: an admin with limits, a disabled member with none, the server defaults.
+    sqlx::query("UPDATE users SET role = 'admin', quota_bytes = 1000, daily_upload_bytes = 500, max_file_bytes = 100 WHERE id = $1")
+        .bind(fx.user)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    let member = make_user(&fx.pool, "member@example.com").await;
+    sqlx::query("UPDATE users SET disabled_at = now() WHERE id = $1")
+        .bind(member)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO server_state (key, value) VALUES ('default_limits', '{\"quota_bytes\":7,\"daily_upload_bytes\":null,\"max_file_bytes\":null}'), ('worker:abc', '{}')")
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    // Credentials that must NOT travel: an API key and a session.
+    sqlx::query("INSERT INTO api_keys (user_id, name, key_hash, prefix) VALUES ($1, 'cli', '\\x01', 'cy_1')")
+        .bind(fx.user)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+
+    let (k1, s1) = fx.put_original(fx.user, "a.jpg", b"aaa", Some(fx.meta("a.jpg"))).await;
+    let (k2, s2) = fx.put_original(fx.user, "b.jpg", b"bbb", Some(fx.meta("b.jpg"))).await;
+    let a = fx.insert_row(fx.user, &k1, &s1, "a.jpg").await;
+    let b = fx.insert_row(fx.user, &k2, &s2, "b.jpg").await;
+    let album: Uuid = sqlx::query_scalar("INSERT INTO albums (owner_id, title) VALUES ($1, 'Trip') RETURNING id")
+        .bind(fx.user)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    for x in [a, b] {
+        sqlx::query("INSERT INTO album_assets (album_id, asset_id) VALUES ($1, $2)")
+            .bind(album)
+            .bind(x)
+            .execute(&fx.pool)
+            .await
+            .unwrap();
+    }
+    let open = make_share(
+        &fx,
+        fx.user,
+        "open-token-aaaaaaaaaaaaaaaaaaaa",
+        Some(album),
+        "Album link",
+        None,
+    )
+    .await;
+    let locked = make_share(
+        &fx,
+        fx.user,
+        "locked-token-bbbbbbbbbbbbbbbbbbb",
+        None,
+        "Selection link",
+        Some("$argon2id$secret-not-for-the-bucket"),
+    )
+    .await;
+    sqlx::query("INSERT INTO share_assets (share_id, asset_id) VALUES ($1, $2)")
+        .bind(locked)
+        .bind(b)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+
+    cyanotype_core::identity::write(&fx.pool, &fx.storage, 14)
+        .await
+        .unwrap();
+    manifest::write_user(&fx.pool, &fx.storage, fx.user, 14).await.unwrap();
+    // Nothing secret reached the bucket: no password hash, no API key hash.
+    let acc_key = cyanotype_core::identity::list(&fx.storage).await.unwrap().remove(0);
+    let acc = String::from_utf8(fx.storage.get_bytes(&acc_key).await.unwrap()).unwrap();
+    let user_key = &manifest::list_all(&fx.storage).await.unwrap()[&fx.user][0];
+    let um = String::from_utf8(fx.storage.get_bytes(user_key).await.unwrap()).unwrap();
+    for text in [&acc, &um] {
+        assert!(!text.contains("argon2") && !text.contains("secret-not-for-the-bucket") && !text.contains("key_hash"));
+    }
+    assert!(!acc.contains("worker:abc"), "heartbeats are not settings");
+
+    // The disaster: the whole database is gone (users cascade to everything they own).
+    sqlx::query("DELETE FROM users").execute(&fx.pool).await.unwrap();
+    sqlx::query("DELETE FROM server_state").execute(&fx.pool).await.unwrap();
+    assert_eq!(fx.count("users").await, 0);
+
+    let dry = fx.run(|_| {}).await;
+    assert_eq!(
+        (
+            dry.users_in_manifest,
+            dry.users_restored,
+            dry.orphans_recreated,
+            dry.orphans_unknown_user
+        ),
+        (2, 2, 2, 0),
+        "a dry run counts the accounts it would recreate and does not treat their photos as ownerless"
+    );
+    assert_eq!((dry.shares_restored, dry.settings_restored), (2, 1));
+    assert_eq!(
+        (fx.count("users").await, fx.count("shares").await),
+        (0, 0),
+        "a dry run writes nothing"
+    );
+
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!((r.users_restored, r.orphans_recreated, r.errors), (2, 2, 0));
+    assert_eq!((r.albums_restored, r.shares_restored, r.settings_restored), (1, 2, 1));
+    // The report (printed, and sent as JSON by the CLI) carries counts and ids only: no hash, token, email or password.
+    let shown = format!("{}\n{}", r.text(), serde_json::to_string(&r).unwrap());
+    for (label, planted) in [
+        ("a password hash", "argon2"),
+        ("a share token", "open-token-"),
+        ("a share token", "locked-token-"),
+        ("an email", "@example.com"),
+    ] {
+        assert!(!shown.contains(planted), "the report leaks {label}");
+    }
+
+    // Identity, role, limits, disabled flag: same ids as before.
+    let (role, quota, daily, max_file, disabled): (String, Option<i64>, Option<i64>, Option<i64>, bool) =
+        sqlx::query_as(
+            "SELECT role, quota_bytes, daily_upload_bytes, max_file_bytes, disabled_at IS NOT NULL FROM users WHERE id = $1",
+        )
+        .bind(fx.user)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        (role.as_str(), quota, daily, max_file, disabled),
+        ("admin", Some(1000), Some(500), Some(100), false)
+    );
+    let (mrole, mdisabled, mquota): (String, bool, Option<i64>) =
+        sqlx::query_as("SELECT role, disabled_at IS NOT NULL, quota_bytes FROM users WHERE id = $1")
+            .bind(member)
+            .fetch_one(&fx.pool)
+            .await
+            .unwrap();
+    assert_eq!((mrole.as_str(), mdisabled, mquota), ("member", true, None));
+    let defaults: serde_json::Value = sqlx::query_scalar("SELECT value FROM server_state WHERE key = 'default_limits'")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert_eq!(defaults["quota_bytes"], 7);
+    assert_eq!(fx.count("server_state").await, 1);
+
+    // Credentials: a locked password nobody can use, and no API key or session came back.
+    let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
+        .bind(fx.user)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert!(hash.starts_with("$argon2id$"));
+    assert_eq!((fx.count("api_keys").await, fx.count("sessions").await), (0, 0));
+
+    // Share links: same ids and tokens, settings kept, the protected one is closed (locked password), never open.
+    let (token, kind, album_id, allow, orig): (String, String, Option<Uuid>, bool, bool) =
+        sqlx::query_as("SELECT token, kind, album_id, allow_download, include_originals FROM shares WHERE id = $1")
+            .bind(open)
+            .fetch_one(&fx.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (token.as_str(), kind.as_str(), album_id, allow, orig),
+        ("open-token-aaaaaaaaaaaaaaaaaaaa", "album", Some(album), false, true)
+    );
+    let (ph, n_items): (Option<String>, i64) = sqlx::query_as(
+        "SELECT s.password_hash, (SELECT count(*) FROM share_assets WHERE share_id = s.id) FROM shares s WHERE s.id = $1",
+    )
+    .bind(locked)
+    .fetch_one(&fx.pool)
+    .await
+    .unwrap();
+    let ph = ph.expect("a protected link comes back with a (locked) password, not open");
+    assert!(ph.starts_with("$argon2id$") && !ph.contains("secret-not-for-the-bucket"));
+    assert_eq!(n_items, 1);
+
+    // A second run has nothing to do.
+    let again = fx.run(|o| o.apply = true).await;
+    assert_eq!(
+        (
+            again.users_restored,
+            again.users_present,
+            again.orphans,
+            again.shares_restored
+        ),
+        (0, 2, 0, 0)
+    );
+    fx.teardown().await;
+}
+
+#[tokio::test]
+async fn a_revoked_share_link_does_not_come_back_from_an_older_manifest() {
+    let Some(fx) = Fx::new().await else { return };
+    let (k, s) = fx.put_original(fx.user, "a.jpg", b"aaa", Some(fx.meta("a.jpg"))).await;
+    let a = fx.insert_row(fx.user, &k, &s, "a.jpg").await;
+    let sel = make_share(&fx, fx.user, "revoked-later-cccccccccccccccc", None, "old", None).await;
+    sqlx::query("INSERT INTO share_assets (share_id, asset_id) VALUES ($1, $2)")
+        .bind(sel)
+        .bind(a)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    // Yesterday's manifest lists the link; today's (written after the owner revoked it) does not.
+    let (older, _) = manifest::build(&fx.pool, fx.user).await.unwrap();
+    fx.storage
+        .put_bytes(&keys::manifest(fx.user, "20200101"), older, "application/x-ndjson")
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM shares").execute(&fx.pool).await.unwrap();
+    let (newer, _) = manifest::build(&fx.pool, fx.user).await.unwrap();
+    fx.storage
+        .put_bytes(&keys::manifest(fx.user, "20200102"), newer, "application/x-ndjson")
+        .await
+        .unwrap();
+
+    sqlx::query("DELETE FROM assets").execute(&fx.pool).await.unwrap();
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!((r.orphans_recreated, r.shares_restored, r.errors), (1, 0, 0));
+    assert_eq!(fx.count("shares").await, 0, "a revoked link stays revoked");
+    fx.teardown().await;
+}
+
+#[tokio::test]
+async fn share_links_are_only_restored_into_an_account_that_has_none() {
+    let Some(fx) = Fx::new().await else { return };
+    let (k, s) = fx.put_original(fx.user, "a.jpg", b"aaa", Some(fx.meta("a.jpg"))).await;
+    let a = fx.insert_row(fx.user, &k, &s, "a.jpg").await;
+    let kept = make_share(&fx, fx.user, "kept-token-dddddddddddddddddd", None, "kept", None).await;
+    sqlx::query("INSERT INTO share_assets (share_id, asset_id) VALUES ($1, $2)")
+        .bind(kept)
+        .bind(a)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    let gone = make_share(&fx, fx.user, "gone-token-eeeeeeeeeeeeeeeeeee", None, "gone", None).await;
+    sqlx::query("INSERT INTO share_assets (share_id, asset_id) VALUES ($1, $2)")
+        .bind(gone)
+        .bind(a)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    manifest::write_user(&fx.pool, &fx.storage, fx.user, 14).await.unwrap();
+    // The owner revokes one link after the manifest; the database (a dump taken after that) lacks it.
+    sqlx::query("DELETE FROM shares WHERE id = $1")
+        .bind(gone)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!((r.shares_restored, r.errors), (0, 0));
+    assert_eq!(
+        fx.count("shares").await,
+        1,
+        "the revoked link is not resurrected from the manifest"
+    );
+    fx.teardown().await;
+}
+
+#[tokio::test]
+async fn old_manifests_without_share_or_account_lines_still_reindex() {
+    let Some(fx) = Fx::new().await else { return };
+    let (_k, s) = fx.put_original(fx.user, "a.jpg", b"aaa", None).await;
+    let id = Uuid::new_v4();
+    // Exactly what version 1 wrote: no share lines, `v` 1, and a line type from the future that every reader skips.
+    let v1 = format!(
+        "{{\"t\":\"meta\",\"v\":1,\"user\":\"{u}\",\"generated_at\":\"2026-01-01T00:00:00Z\",\"assets\":1}}\n\
+         {{\"t\":\"asset\",\"id\":\"{id}\",\"sha256\":\"{sha}\",\"key\":\"k\",\"name\":\"Old name.jpg\",\"content_type\":\"image/jpeg\",\"size_bytes\":3,\"favorite\":true}}\n\
+         {{\"t\":\"album\",\"id\":\"{album}\",\"title\":\"Old album\",\"items\":[\"{sha}\"]}}\n\
+         {{\"t\":\"from_the_future\"}}\n",
+        u = fx.user,
+        sha = keys::hex(&s),
+        album = Uuid::new_v4()
+    );
+    fx.storage
+        .put_bytes(
+            &keys::manifest(fx.user, "20260101"),
+            v1.into_bytes(),
+            "application/x-ndjson",
+        )
+        .await
+        .unwrap();
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!(
+        (
+            r.orphans_recreated,
+            r.albums_restored,
+            r.favorites_restored,
+            r.users_in_manifest,
+            r.shares_restored,
+            r.errors
+        ),
+        (1, 1, 1, 0, 0, 0)
+    );
+    assert_eq!(r.manifest_bad_lines, 1, "only the line type from the future");
+    let name: String = sqlx::query_scalar("SELECT original_name FROM assets WHERE id = $1")
+        .bind(id)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert_eq!(name, "Old name.jpg");
+    fx.teardown().await;
+}
+
+#[tokio::test]
+async fn an_email_taken_by_a_new_account_is_not_overwritten_and_an_empty_database_never_writes_an_account_manifest() {
+    let Some(fx) = Fx::new().await else { return };
+    let (_k, _s) = fx.put_original(fx.user, "a.jpg", b"aaa", Some(fx.meta("a.jpg"))).await;
+    cyanotype_core::identity::write(&fx.pool, &fx.storage, 14)
+        .await
+        .unwrap();
+    // The owner registered again (under the old runbook) before the reindex: same email, a new id.
+    sqlx::query("DELETE FROM users").execute(&fx.pool).await.unwrap();
+    let fresh = make_user(&fx.pool, "OWNER@example.com").await;
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!((r.users_restored, r.users_conflict, r.errors), (0, 1, 0));
+    assert_eq!(
+        (r.orphans_unknown_user, r.orphans_recreated),
+        (1, 0),
+        "the photos still need --assign-to, which says so"
+    );
+    let r = fx
+        .run(|o| {
+            o.apply = true;
+            o.assign_to = Some(fresh);
+        })
+        .await;
+    assert_eq!(r.orphans_reassigned, 1);
+
+    // A database with no users has nothing to protect: it must not replace the real accounts as the newest file.
+    sqlx::query("DELETE FROM users").execute(&fx.pool).await.unwrap();
+    let before = cyanotype_core::identity::list(&fx.storage).await.unwrap();
+    assert_eq!(
+        cyanotype_core::identity::write(&fx.pool, &fx.storage, 14)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(cyanotype_core::identity::list(&fx.storage).await.unwrap(), before);
+    fx.teardown().await;
+}
+
+#[tokio::test]
+async fn reset_links_replace_each_other_and_store_only_a_hash() {
+    let Some(fx) = Fx::new().await else { return };
+    let first = cyanotype_core::identity::create_reset_link(&fx.pool, "Owner@Example.com", 24)
+        .await
+        .unwrap();
+    let second = cyanotype_core::identity::create_reset_link(&fx.pool, "owner@example.com", 1)
+        .await
+        .unwrap();
+    assert_ne!(first.token, second.token);
+    assert_eq!(first.token.len(), 64);
+    let live: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM password_resets WHERE used_at IS NULL AND expires_at > now()")
+            .fetch_one(&fx.pool)
+            .await
+            .unwrap();
+    assert_eq!(live, 1, "an earlier unused link stops working");
+    let stored: Vec<u8> = sqlx::query_scalar("SELECT token_hash FROM password_resets WHERE expires_at > now()")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, Sha256::digest(second.token.as_bytes()).to_vec());
+    assert!(
+        cyanotype_core::identity::create_reset_link(&fx.pool, "nobody@example.com", 1)
+            .await
+            .is_err()
+    );
     fx.teardown().await;
 }

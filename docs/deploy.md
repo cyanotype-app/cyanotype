@@ -440,7 +440,9 @@ versions after some days (Linode supports lifecycle rules via the S3 API or a to
 purge old versions by hand now and then. Backups cover the database only: originals and derived files are
 already in the bucket, and `cyanotype reindex` rebuilds the photo index from them (restoring the newest dump first
 gets back users and API keys; per-user daily manifests in the bucket carry names, trash, favorites and albums), so
-keep the dumps. See [`recovery.md`](recovery.md) for exactly what comes back and the runbook.
+keep the dumps. See [`recovery.md`](recovery.md) for exactly what comes back and the runbook, and rehearse it:
+`just restore-drill` restores a synthetic library both ways on a throwaway local stack, and `scripts/restore-drill.sh --source real`
+checks your real dump and bucket read-only (read-only key, see recovery.md).
 
 ### Restore
 

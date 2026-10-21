@@ -692,7 +692,11 @@ async fn reindex_puts_edits_back_on_a_database_restored_from_before_them() {
     };
     // A dry run says what it would restore and writes nothing.
     let dry = reindex::run(&t.pool, &storage, &opts(false)).await.unwrap();
-    assert_eq!((dry.edits_restored, dry.edits_current), (2, 1), "{}", dry.text());
+    assert_eq!(
+        (dry.edits_restored, dry.edits_current),
+        (2, 1),
+        "unexpected reindex counters"
+    );
     let c: Option<String> = sqlx::query_scalar("SELECT caption FROM assets WHERE id = $1")
         .bind(edited)
         .fetch_one(&t.pool)
@@ -704,8 +708,7 @@ async fn reindex_puts_edits_back_on_a_database_restored_from_before_them() {
     // (The shared test bucket also holds other tests' edits, of users this database does not have: not counted as ours.)
     assert!(
         done.edits_objects >= 3 && done.edits_without_photo + 3 == done.edits_objects,
-        "{}",
-        done.text()
+        "unexpected reindex counters"
     );
     assert_eq!((done.edits_restored, done.edits_current, done.edits_bad), (2, 1, 0));
     let d = details(&app, &key, edited).await;
@@ -721,7 +724,11 @@ async fn reindex_puts_edits_back_on_a_database_restored_from_before_them() {
 
     // Idempotent: nothing left to restore.
     let again = reindex::run(&t.pool, &storage, &opts(true)).await.unwrap();
-    assert_eq!((again.edits_restored, again.edits_current), (0, 3), "{}", again.text());
+    assert_eq!(
+        (again.edits_restored, again.edits_current),
+        (0, 3),
+        "unexpected reindex counters"
+    );
     t.teardown().await;
 }
 

@@ -136,8 +136,11 @@ jobs:
         run: |
           cargo clippy -p cyanotype-cli --no-default-features --all-targets -- -D warnings
           cargo test -p cyanotype-cli --no-default-features
+      # The tests resolve the workspace with `cargo metadata --locked --offline`, so every locked crate must already be in
+      # CARGO_HOME: the clippy and test steps above fetch only what the CLI and `just check` build, and a cold cache lacks the rest.
       - name: CLI release tooling (tag decisions, dist assembly and signing)
         run: |
+          cargo fetch --locked
           python3 -I -m unittest discover -s scripts -p 'test_cli_release.py'
           scripts/test-cli-dist.sh
       - name: deploy.sh against a fake ssh (regression test)

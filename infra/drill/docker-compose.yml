@@ -1,0 +1,201 @@
+# Throwaway stack for the restore drill (scripts/restore-drill.sh, docs/recovery.md). Never the default compose project:
+# its own project name, its own volumes and its own host ports (bound to 127.0.0.1), so it cannot collide with a dev
+# stack or anything else on the host. The images are the real ones (Dockerfile targets, infra/backup); only the web UI is
+# left out (the drill talks to the APIs through the gateway). Every credential comes from the drill script, which makes
+# fresh throwaway values per run; nothing here is a secret.
+#
+#   docker compose -f infra/drill/docker-compose.yml up -d --wait postgres seaweedfs
+
+name: cyano-drill
+
+x-app-env: &app-env
+  DATABASE_URL: postgres://cyanotype:cyanotype@postgres:5432/cyanotype
+  LOG_FORMAT: json
+  RUST_LOG: info,sqlx=warn
+  DOGSTATSD_URL: ""
+
+x-s3-env: &s3-env
+  S3_ENDPOINT: http://seaweedfs:8333
+  S3_PUBLIC_ENDPOINT: http://localhost:${DRILL_LOCAL_S3_PORT:-18397}
+  S3_REGION: us-east-1
+  S3_BUCKET: cyanotype
+  S3_ACCESS_KEY: ${DRILL_LOCAL_S3_ACCESS_KEY:?set by scripts/restore-drill.sh}
+  S3_SECRET_KEY: ${DRILL_LOCAL_S3_SECRET_KEY:?set by scripts/restore-drill.sh}
+  S3_FORCE_PATH_STYLE: "true"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: cyanotype
+      POSTGRES_PASSWORD: cyanotype
+      POSTGRES_DB: cyanotype
+    ports: ["127.0.0.1:${DRILL_PG_PORT:-54397}:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cyanotype"]
+      interval: 2s
+      retries: 30
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mkdir -p /etc/seaweedfs
+        # "drill" may do everything; "drill-ro" may only read and list (the self-test of the real-data mode's read-only guard).
+        printf '{"identities":[{"name":"drill","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]},{"name":"drill-ro","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Read","List"]}]}' \
+          "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY" "$$S3_RO_ACCESS_KEY" "$$S3_RO_SECRET_KEY" > /etc/seaweedfs/s3.json
+        exec weed server -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -dir=/data -volume.max=200 -master.volumeSizeLimitMB=64
+    environment:
+      S3_ACCESS_KEY: ${DRILL_LOCAL_S3_ACCESS_KEY:?set by scripts/restore-drill.sh}
+      S3_SECRET_KEY: ${DRILL_LOCAL_S3_SECRET_KEY:?set by scripts/restore-drill.sh}
+      S3_RO_ACCESS_KEY: ${DRILL_LOCAL_S3_RO_ACCESS_KEY:?set by scripts/restore-drill.sh}
+      S3_RO_SECRET_KEY: ${DRILL_LOCAL_S3_RO_SECRET_KEY:?set by scripts/restore-drill.sh}
+    ports: ["127.0.0.1:${DRILL_LOCAL_S3_PORT:-18397}:8333"]
+    volumes: [seaweeddata:/data]
+    healthcheck:
+      test: ["CMD-SHELL", "ip=$$(hostname -i); wget -q -O /dev/null http://$$ip:9333/cluster/status && wget -q -O /dev/null http://$$ip:8888/"]
+      interval: 3s
+      retries: 40
+
+  # Creates the bucket and turns versioning on, like production's.
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:4.48
+    depends_on:
+      seaweedfs: { condition: service_healthy }
+    environment:
+      S3_ACCESS_KEY: ${DRILL_LOCAL_S3_ACCESS_KEY:?set by scripts/restore-drill.sh}
+      S3_SECRET_KEY: ${DRILL_LOCAL_S3_SECRET_KEY:?set by scripts/restore-drill.sh}
+      S3_BUCKET: cyanotype
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        s3() { curl -fsS --aws-sigv4 aws:amz:us-east-1:s3 --user "$$S3_ACCESS_KEY:$$S3_SECRET_KEY" "$$@"; }
+        until s3 -o /dev/null http://seaweedfs:8333/; do sleep 1; done
+        s3 -o /dev/null -X PUT http://seaweedfs:8333/$$S3_BUCKET || true
+        s3 -o /dev/null -X PUT "http://seaweedfs:8333/$$S3_BUCKET?versioning" \
+          -d '<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>'
+        s3 "http://seaweedfs:8333/$$S3_BUCKET?versioning" | grep -q Enabled
+        echo "bucket $$S3_BUCKET ready (versioned)"
+    restart: "no"
+
+  migrate:
+    build: { context: ../.., target: cli }
+    image: cyano-drill-cli:drill
+    command: ["migrate"]
+    environment: *app-env
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  # Never started by `up` (profile `tools`): `cyanotype reindex` / `manifest` / `reset-link` against this stack.
+  cli:
+    build: { context: ../.., target: cli }
+    image: cyano-drill-cli:drill
+    profiles: [tools]
+    entrypoint: ["/usr/local/bin/app"]
+    environment:
+      <<: [*app-env, *s3-env]
+    depends_on:
+      postgres: { condition: service_healthy }
+      seaweedfs-init: { condition: service_completed_successfully }
+    restart: "no"
+
+  # Real-data mode (`restore-drill.sh --source real`): the CLI image against the REAL bucket with a READ-ONLY key. Reindex
+  # only reads the bucket (listings, HEADs, the small manifest and edits objects); this container has no writable volume
+  # and only a small tmpfs, so no original can land on the host's disk. The database is the local scratch Postgres above.
+  cli-real:
+    build: { context: ../.., target: cli }
+    image: cyano-drill-cli:drill
+    profiles: [real]
+    entrypoint: ["/usr/local/bin/app"]
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    environment:
+      <<: *app-env
+      DATABASE_URL: ${DRILL_DATABASE_URL:-postgres://cyanotype:cyanotype@postgres:5432/cyanotype}
+      S3_ENDPOINT: ${DRILL_S3_ENDPOINT:-unset}
+      S3_REGION: ${DRILL_S3_REGION:-us-east-1}
+      S3_BUCKET: ${DRILL_S3_BUCKET:-unset}
+      S3_ACCESS_KEY: ${DRILL_S3_ACCESS_KEY_ID:-unset}
+      S3_SECRET_KEY: ${DRILL_S3_SECRET_ACCESS_KEY:-unset}
+      S3_FORCE_PATH_STYLE: ${DRILL_S3_FORCE_PATH_STYLE:-true}
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  # Real-data mode: the production backup job, only used to `list` and `restore` the newest real dump (a read) into the
+  # local scratch Postgres. It downloads the dump (small) into the container's own temp dir.
+  backup-real:
+    build: { context: ../backup }
+    image: cyano-drill-backup:drill
+    profiles: [real]
+    environment:
+      DATABASE_URL: ${DRILL_DATABASE_URL:-postgres://cyanotype:cyanotype@postgres:5432/cyanotype}
+      S3_ENDPOINT: ${DRILL_S3_ENDPOINT:-unset}
+      S3_REGION: ${DRILL_S3_REGION:-us-east-1}
+      S3_BUCKET: ${DRILL_S3_BUCKET:-unset}
+      S3_ACCESS_KEY: ${DRILL_S3_ACCESS_KEY_ID:-unset}
+      S3_SECRET_KEY: ${DRILL_S3_SECRET_ACCESS_KEY:-unset}
+      S3_FORCE_PATH_STYLE: ${DRILL_S3_FORCE_PATH_STYLE:-true}
+      BACKUP_PREFIX: ${DRILL_S3_BACKUP_PREFIX:-backups/postgres}
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  auth:
+    build: { context: ../.., target: auth }
+    image: cyano-drill-auth:drill
+    environment:
+      <<: *app-env
+      AUTH_BIND_ADDR: 0.0.0.0:3001
+      COOKIE_SECURE: "false"
+      REGISTRATION_MODE: invite
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  assets:
+    build: { context: ../.., target: assets }
+    image: cyano-drill-assets:drill
+    environment:
+      <<: [*app-env, *s3-env]
+      ASSETS_BIND_ADDR: 0.0.0.0:3002
+      TRASH_RETENTION_DAYS: "30"
+      COOKIE_SECURE: "false"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      seaweedfs-init: { condition: service_completed_successfully }
+
+  worker:
+    build: { context: ../.., target: worker }
+    image: cyano-drill-worker:drill
+    environment:
+      <<: [*app-env, *s3-env]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      seaweedfs-init: { condition: service_completed_successfully }
+
+  # The same gateway routes as the real stack (/auth, /assets); no web UI behind it.
+  gateway:
+    image: caddy:2-alpine
+    ports: ["127.0.0.1:${DRILL_GATEWAY_PORT:-3397}:3000"]
+    volumes: ["../caddy:/etc/caddy:ro"]
+    depends_on: [auth, assets]
+
+  # The production backup job, unchanged (infra/backup).
+  backup:
+    build: { context: ../backup }
+    image: cyano-drill-backup:drill
+    profiles: [backup]
+    environment:
+      <<: *s3-env
+      DATABASE_URL: postgres://cyanotype:cyanotype@postgres:5432/cyanotype
+      BACKUP_KEEP: "14"
+    depends_on:
+      postgres: { condition: service_healthy }
+      seaweedfs-init: { condition: service_completed_successfully }
+
+volumes:
+  pgdata:
+  seaweeddata:
