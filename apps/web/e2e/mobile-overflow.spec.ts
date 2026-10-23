@@ -1007,9 +1007,15 @@ for (const { width, scheme } of RUNS) {
       await check("select-archive-hide");
       await page.getByRole("button", { name: "Done" }).click();
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().click();
-      await page.getByRole("button", { name: "Hide", exact: true }).waitFor();
+      // Hide is inline in the bar on wide screens and in the More menu on phones.
+      await page.getByRole("button", { name: /^(Hide|More)$/ }).first().waitFor();
+      if (await page.getByRole("button", { name: "More", exact: true }).isVisible()) {
+        await page.getByRole("button", { name: "More", exact: true }).click();
+        await page.getByRole("menuitem", { name: "Hide", exact: true }).waitFor();
+      }
       await check("viewer-menu");
       await page.keyboard.press("Escape");
+      if (await page.getByRole("menu").count()) await page.keyboard.press("Escape");
 
       // On this day: the page behind the strip, and selecting for "Not this one".
       await page.goto("/memories");

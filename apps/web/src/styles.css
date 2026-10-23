@@ -1212,26 +1212,7 @@ textarea.text-input {
     flex: 1 1 auto;
   }
 
-  /* Lightbox: Close and the counter on row 1, the actions as equal buttons on row 2. */
-  .lightbox-bar {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 0.4rem;
-    padding: max(0.5rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) 0.5rem
-      max(1rem, env(safe-area-inset-left));
-  }
-  .lightbox-count {
-    position: static;
-    transform: none;
-    text-align: right;
-  }
-  .lightbox-actions {
-    grid-column: 1 / -1;
-    display: grid;
-    grid-auto-flow: column;
-    grid-auto-columns: minmax(0, 1fr);
-    gap: 0.4rem;
-  }
+  /* Lightbox: the bar's phone layout is the one rule at the end of this file; this is the actions row's buttons. */
   .lightbox-actions .btn {
     padding: 0 0.4rem;
     font-size: 0.875rem;
@@ -1628,18 +1609,6 @@ body:has(.selection-bar) .scrubber {
   }
   body:has(.selection-bar):has(.tray) .scrubber {
     --bottom: 14.5rem;
-  }
-  .lightbox-bar {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-  .lightbox-right {
-    display: contents;
-  }
-  .lightbox-heart {
-    width: 2.75rem;
-  }
-  .lightbox-count {
-    grid-column: 2;
   }
   .lightbox-downloads {
     padding-inline: max(1rem, env(safe-area-inset-left));
@@ -2467,13 +2436,6 @@ body:has(.selection-bar) .scrubber {
 }
 @media (max-width: 600px) {
   /* The phone bar is Close, the counter and icons: the words stay for screen readers. */
-  .lightbox-bar {
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
-  }
-  .lightbox-similar {
-    width: 2.75rem;
-    padding: 0;
-  }
   .lightbox-similar-label {
     position: absolute;
     width: 1px;
@@ -2685,13 +2647,6 @@ body:has(.selection-bar) .scrubber {
   }
 }
 @media (max-width: 600px) {
-  .lightbox-bar {
-    grid-template-columns: auto minmax(0, 1fr) auto auto auto;
-  }
-  .lightbox-info {
-    width: 2.75rem;
-    padding: 0;
-  }
   .lightbox-info-label {
     position: absolute;
     width: 1px;
@@ -3723,11 +3678,6 @@ body:has(.selection-bar) .scrubber {
     white-space: nowrap;
   }
 }
-@media (max-width: 600px) {
-  .lightbox-text {
-    width: 2.75rem;
-  }
-}
 .text-actions {
   display: flex;
   flex-wrap: wrap;
@@ -4596,9 +4546,95 @@ a.tag-chip-name:hover {
     white-space: nowrap;
   }
 }
+
+/* The More menu: only on phones (elsewhere every action is inline in the bar). The viewer is dark in either colour scheme. */
+.lightbox-more {
+  display: none;
+  position: relative;
+  min-width: 0;
+}
+.lightbox-more > .btn {
+  width: 100%;
+}
+.lightbox-menu {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 0.3rem);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: min(13rem, calc(100vw - 1.5rem));
+  padding: 0.3rem;
+  border: 1px solid rgb(255 255 255 / 0.16);
+  border-radius: 10px;
+  background: color-mix(in srgb, #0f1d28 94%, transparent);
+  backdrop-filter: blur(12px);
+  box-shadow: var(--shadow);
+}
+.lightbox-menu-item {
+  min-height: 2.75rem;
+  padding: 0 0.8rem;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.lightbox-menu-item:hover,
+.lightbox-menu-item:focus-visible {
+  background: rgb(255 255 255 / 0.16);
+}
+
+/* Lightbox on a phone, in one place: Close, the counter and the icon buttons (Info, Text, Similar photos, heart, crop,
+   whichever show) share row 1 down to 320 px, and the actions (Download, Share, More) span row 2. */
 @media (max-width: 600px) {
+  .lightbox-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.25rem;
+    padding: max(0.5rem, env(safe-area-inset-top)) max(0.5rem, env(safe-area-inset-right)) 0.5rem
+      max(0.5rem, env(safe-area-inset-left));
+  }
+  .lightbox-bar > :first-child {
+    margin-right: 0;
+    padding-inline: 0.55rem;
+    font-size: 0.9rem;
+  }
+  .lightbox-right {
+    display: contents;
+  }
+  .lightbox-count {
+    position: static;
+    transform: none;
+    flex: 1 1 0;
+    min-width: 0;
+    text-align: center;
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+  .lightbox-info,
+  .lightbox-text,
+  .lightbox-similar,
+  .lightbox-heart,
   .lightbox-crop {
-    width: 2.75rem;
-    justify-self: start;
+    flex: none;
+    width: 2.125rem;
+    padding: 0;
+  }
+  .lightbox-actions {
+    flex: 0 0 100%;
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: 0.4rem;
+  }
+  /* The rest of the actions sit in the More menu here. */
+  .lightbox-overflow {
+    display: none;
+  }
+  .lightbox-more {
+    display: block;
   }
 }
