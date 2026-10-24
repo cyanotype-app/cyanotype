@@ -16,6 +16,12 @@ Docker images, compose files and gateway configuration in this repository.
 Out of scope: vulnerabilities in third-party dependencies that do not affect Cyanotype (report
 those upstream), and problems in a deployment's own host, network or secrets handling.
 
+## Browser hardening
+
+The gateway sends a strict Content-Security-Policy (no inline script, no `'unsafe-inline'`, `frame-ancestors 'none'`),
+`X-Content-Type-Options`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, `Cross-Origin-Resource-Policy` and HSTS; share pages also send
+`Referrer-Policy: no-referrer`. What they are and how to configure them: "Security headers" in `docs/deploy.md`.
+
 ## Supported versions
 
 Only the latest `main` and the latest release get security fixes.

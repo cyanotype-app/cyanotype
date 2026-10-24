@@ -37,11 +37,10 @@ import /etc/caddy/gateway.caddy
 
 {$CYANOTYPE_HOSTNAME} {
 	import /etc/caddy/tls/{$CADDY_TLS_MODE:auto}/site.caddy
-	import gateway
+	import gateway "; upgrade-insecure-requests"
 
 	header {
 		Strict-Transport-Security "max-age=31536000"
-		X-Content-Type-Options nosniff
 		-Server
 	}
 	# `header` here SETS the value, replacing whatever the upstream sent, so a blanket Referrer-Policy would

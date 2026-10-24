@@ -597,6 +597,43 @@ core of a 2 vCPU host, so thumbnails of a simultaneous big import slow down; mea
 off (search then answers 503 for a library without vectors, filters keep working). The images pull the model as layers that
 change only when the model does, so later deploys do not download it again.
 
+## Security headers (Content-Security-Policy and friends)
+
+The gateway (not the web container, so the API is covered too and nothing is sent twice) adds these to every response;
+the definitions are `infra/caddy/gateway.caddy` and `infra/caddy/csp.caddy`:
+
+| Header | Value |
+| --- | --- |
+| `Content-Security-Policy` | the web UI (SPA routes, `/static`, `/s/*` share pages): `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: <S3 origin>; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'` plus `upgrade-insecure-requests` in production (TLS) |
+| `Content-Security-Policy` | `/auth/*`, `/assets/*`, `/cli/*`, `/healthz`: `default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Permissions-Policy` | accelerometer, autoplay, bluetooth, camera, display-capture, geolocation, gyroscope, hid, magnetometer, microphone, midi, payment, serial, usb and xr-spatial-tracking all `()` (denied); clipboard-write and fullscreen stay allowed for the app itself |
+| `Cross-Origin-Opener-Policy` / `Cross-Origin-Resource-Policy` | `same-origin` |
+| `Strict-Transport-Security` | `max-age=31536000` (production only) |
+| `Referrer-Policy` | `strict-origin-when-cross-origin`, `no-referrer` on share pages and share API routes (unchanged) |
+
+`X-XSS-Protection` is deliberately not sent. Why each origin is allowed: the bucket for `img-src` because thumbnails and previews are
+presigned S3 URLs in `<img>`; nothing else leaves the origin. Downloads are navigations (not `connect-src`), uploads go through the assets
+service, the map's PMTiles and glyphs are same-origin (`/assets/tiles`, `/map/fonts`), the upload hasher and MapLibre run as bundled
+same-origin workers, and `'wasm-unsafe-eval'` only lets the hasher compile WebAssembly (no `eval`, no inline script, no `'unsafe-inline'`
+anywhere: React and MapLibre style through the CSSOM, which `style-src` does not restrict).
+
+| Variable (`.env.prod`) | Default | Meaning |
+| --- | --- | --- |
+| `CSP_MODE` | `enforce` | `enforce` blocks violations. `report-only` sends `Content-Security-Policy-Report-Only` instead: the browser console lists what would be blocked, nothing breaks. Anything else stops the gateway from starting. |
+| `CSP_S3_ORIGIN` | origin of `S3_PUBLIC_ENDPOINT` | Where presigned photo URLs point. **Origin only**: `scheme://host[:port]`, no path, no trailing slash (a trailing `/` would match only the root). With path-style URLs (`S3_FORCE_PATH_STYLE=true`, the Linode default) the endpoint is already right. With virtual-host style (`false`) the host is `<bucket>.<endpoint host>`: set e.g. `https://*.us-ord-10.linodeobjects.com`. |
+| `CSP_EXTRA_IMG_SRC` | none | Extra space-separated `img-src` sources, e.g. a CDN in front of the bucket. |
+| `CSP_EXTRA_CONNECT_SRC` | none | Extra space-separated `connect-src` sources. |
+
+Enforcement is the default because the policy is tested: `apps/web/e2e/csp-layout.spec.ts` serves the built app with the very policy
+from `csp.caddy` and fails on any violation across the library, viewer, search, map, albums, share page, settings and an upload;
+`scripts/test-gateway-headers.sh` checks the headers per route. The one thing no test can know is your real bucket host, so after
+deploying open the library, a photo, a share link and the map once with the browser console open. If a photo or thumbnail is blocked
+("Refused to load the image ... because it violates ... img-src"), fix `CSP_S3_ORIGIN`. To roll out cautiously, set
+`CSP_MODE=report-only` first, look at the console, then remove it (or set `enforce`) and run
+`docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d gateway`. If anything is blocked in
+production, `CSP_MODE=report-only` in `.env.prod` plus that command is the instant escape hatch.
+
 ## Known limitation: browser direct uploads and Linode CORS
 
 Browsers cannot PUT file parts straight to the bucket without CORS on the bucket. Linode Object Storage in
@@ -623,4 +660,5 @@ Downloads through presigned GET URLs in `<img>` tags are not affected by CORS.
 - [ ] A backup ran (`backup list` shows a dump) and a restore into a scratch database was rehearsed; a lifecycle rule handles old object versions.
 - [ ] GHCR login is via the deploy workflow (no PAT on the server) or a read-only PAT you can revoke.
 - [ ] Datadog: logs arrive with `env:dev` and the right `service` tags (if enabled).
+- [ ] Security headers: `curl -sI https://HOST/` shows `Content-Security-Policy` (with your bucket origin in `img-src`); the library, a photo, a share link and the map show no CSP errors in the browser console ("Security headers" above).
 - [ ] The CORS limitation is understood (no browser direct uploads yet).

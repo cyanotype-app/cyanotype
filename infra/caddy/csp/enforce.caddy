@@ -1,0 +1,4 @@
+# CSP_MODE=enforce (default): the policy is enforced. Usage: import csp_header <matcher> "<policy>"
+(csp_header) {
+	header {args[0]} >Content-Security-Policy {args[1]}
+}

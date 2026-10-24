@@ -167,6 +167,12 @@ services:
       CYANOTYPE_HOSTNAME: ${CYANOTYPE_HOSTNAME:?set CYANOTYPE_HOSTNAME in .env.prod}
       # auto (Let's Encrypt) or cloudflare-origin (Cloudflare proxy + Origin CA cert in ./certs).
       CADDY_TLS_MODE: ${CADDY_TLS_MODE:-auto}
+      # Content-Security-Policy (infra/caddy/csp.caddy; docs/deploy.md "Security headers"). enforce or report-only.
+      CSP_MODE: ${CSP_MODE:-enforce}
+      # Where presigned photo URLs point: the origin of S3_PUBLIC_ENDPOINT (origin only, no path or trailing slash).
+      CSP_S3_ORIGIN: ${CSP_S3_ORIGIN:-${S3_PUBLIC_ENDPOINT:-${S3_ENDPOINT}}}
+      CSP_EXTRA_IMG_SRC: ${CSP_EXTRA_IMG_SRC:-'self'}
+      CSP_EXTRA_CONNECT_SRC: ${CSP_EXTRA_CONNECT_SRC:-'self'}
     volumes:
       # Origin CA certificate for cloudflare-origin mode (origin.pem, origin-key.pem); unused in auto mode.
       - ./certs:/etc/cyanotype-certs:ro

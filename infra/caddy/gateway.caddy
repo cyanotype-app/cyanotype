@@ -7,6 +7,11 @@
 	header_up X-Forwarded-For {client_ip}
 }
 
+# CSP header name by CSP_MODE (enforce, the default, or report-only); defines the csp_header snippet used by csp.caddy.
+import /etc/caddy/csp/{$CSP_MODE:enforce}.caddy
+import /etc/caddy/csp.caddy
+
+# Usage: import gateway ["; extra CSP directive for the web UI"]  (Caddyfile.prod passes "; upgrade-insecure-requests")
 (gateway) {
 	# Every request gets an id (client-supplied ones are kept); the services echo and log it.
 	@noreqid header !X-Request-Id
@@ -27,6 +32,28 @@
 			}
 		}
 	}
+
+	# Security headers on every response, API and web UI alike. `>` defers the write until the upstream answered, so a value
+	# the upstream also sends (the web container sets nosniff itself) is replaced, never doubled. The share pages'
+	# Referrer-Policy is handled separately (Caddyfile.prod) so that `no-referrer` survives. No X-XSS-Protection: the
+	# header is obsolete and the CSP replaces it.
+	header {
+		>X-Content-Type-Options nosniff
+		# Deny every powerful feature the app does not use: no camera, microphone, location, payment, USB/serial/
+		# Bluetooth/HID, sensors or screen capture. Clipboard-write (the copy-link buttons) and fullscreen are not listed,
+		# so they stay allowed for the app's own origin.
+		>Permissions-Policy "accelerometer=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), serial=(), usb=(), xr-spatial-tracking=()"
+		>Cross-Origin-Opener-Policy same-origin
+		# Only this origin may embed our responses. (Presigned photo URLs are the bucket's own responses, which this
+		# header does not touch.)
+		>Cross-Origin-Resource-Policy same-origin
+	}
+
+	# JSON APIs, CLI downloads and the health check get the lock-everything policy; every other path is the web UI.
+	@api path /auth /auth/* /assets /assets/* /cli /cli/* /healthz
+	@page not path /auth /auth/* /assets /assets/* /cli /cli/* /healthz
+	import csp_api @api
+	import csp_spa @page {args[0]}
 
 	handle /healthz {
 		respond `{"ok":true}` 200
