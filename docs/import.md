@@ -201,6 +201,76 @@ assets service; for big archives use the CLI.
 CORS-capable bucket, the web UI can switch to `"transport": "direct"` and PUT presigned URLs itself; the proxy
 route can then be removed.
 
+## Moving from Google Photos
+
+Google Takeout gives you your photos as `.zip` files, each photo next to a small JSON "sidecar" with what Google Photos knew about it
+(when it was taken, where, its caption, whether it is a favorite) and one folder per album. Cyanotype imports the photos and applies
+that metadata, from the browser or the command line.
+
+**Get the export.** At takeout.google.com choose only *Google Photos* (all albums), export as `.zip`, download every part and
+**unzip all of them into one folder** (the parts of one export belong together: a photo and its sidecar can land in different zips).
+
+**In the browser** (Settings > Google Photos): choose the unzipped folder (or drop it on the page). The browser sends only the
+*names* of the files to the server, which pairs each photo with its sidecar and says what would happen: how many photos, how many have
+their details, which albums would be made, what is skipped (videos, since Cyanotype does not import video; the export's trash folder;
+other files), with two options, **Import favorites** and **Create albums from folders**. Nothing is uploaded until you press Import.
+Then the photos go up with the ordinary resumable upload (same hash check: a photo already in the library is not uploaded again).
+Dropping the `.zip` files themselves is **not supported**: reading a multi-gigabyte zip piece by piece in a browser needs a streaming
+unzip library, and the unzipped folder works everywhere; the page says so if you try.
+
+**On the command line:** `cyanotype import --takeout <folder>` (`--takeout-no-albums`, `--takeout-no-favorites`, `--dry-run`). It
+uses the same matcher, so both give the same answer. An `import`-scoped key is enough.
+
+### What is applied
+
+| Takeout says | Cyanotype does |
+|---|---|
+| `photoTakenTime` | the capture time, as an **edit** over the file's own EXIF: revertible with "Revert to original", the file's value kept beside it, written to the bucket like any edit (`docs/library.md`, "Editing a photo"). Not when the two differ only by a time zone (a camera's local time without a zone against Google's true instant: replacing it would shift the displayed time by hours), and never over a date you edited yourself. |
+| `geoData` (else `geoDataExif`) | the location, as an edit: when the file has none, or Google Photos has it more than about 100 m elsewhere (you placed it there). `0, 0` means no location and is ignored. |
+| `description` | the caption, when the photo has none. |
+| `favorited` | a favorite (only ever turned on). |
+| the folder | an album with the folder's name (found by title, or made). Takeout repeats a photo in its year folder and in each album: it ends up in every album it was in. Folders named `Photos from 2019` (and their translations) are not albums; neither are `Archive` or the export's own folders. |
+| `archived` | the photo is archived (off the timeline and map, still in albums and search, with its paired RAW), as the Archive action does. Only ever turned on. |
+| `trashed`, the Trash folder | not imported. |
+
+### How sidecars are matched
+
+By name, in the folder of the photo, with the rules Takeout is known to follow (checked against the current export format and its
+reported oddities: [ente#4953](https://github.com/ente/ente/issues/4953),
+[GooglePhotosTakeoutHelper#353](https://github.com/TheLastGimbus/GooglePhotosTakeoutHelper/issues/353),
+[ExifTool forum](https://exiftool.org/forum/index.php?topic=17536.0)):
+
+- `IMG_1234.JPG` has `IMG_1234.JPG.json`, or since late 2024 `IMG_1234.JPG.supplemental-metadata.json` (the newer one wins if both exist).
+- The sidecar's name is cut to **46 characters** before `.json`: that can bite into `.supplemental-metadata` (`IMG.jpg.supplemen.json`,
+  `IMG.jpg.s.json`, even `IMG.jpg..json`) or into a long photo name itself (the sidecar is then the first 46 characters of the name).
+  Counted in characters, not bytes.
+- A second file with the same name is `IMG_1234(1).JPG`, whose sidecar is `IMG_1234.JPG(1).json` (or `...supplemental-metadata(1).json`):
+  the counter moves behind the extension. A counter is never matched to the sidecar without one.
+- An edited copy `IMG_1234-edited.jpg` (also `-bearbeitet`, `-modifié`, `-editado` and other languages) has no sidecar and shares the
+  original's, including when the original had another extension (an edited HEIC is exported as a JPEG) and no other file could be it.
+- A different letter case between the photo and its sidecar still matches.
+- `metadata.json`, `print-subscriptions.json`, `shared_album_comments.json` and `user-generated-memory-titles.json` are not sidecars.
+
+The matcher is one Rust crate (`crates/cyanotype-takeout`) used by both the command line and the server (the browser asks the server
+for the pairing with `POST /assets/takeout/plan`, names only, nothing stored). One implementation, because the rules are the part that
+goes wrong and a second copy in another language would drift; the cost is one request per 100,000 names. The cases are in a table
+test (`names.rs`), plus a synthetic export that the browser test uploads. A photo whose sidecar cannot be found imports as it is.
+Not done: matching by the `title` field inside a sidecar when the names do not match (it would mean reading every sidecar before the
+preview).
+
+### How the metadata gets applied (and why closing the tab is safe)
+
+The sidecar's text and the album go with the photo's `POST /assets/check` (`takeout` field: `{sidecar, album, favorites}`; an
+`import`-scoped key may send it). The server **holds it by the photo's content hash** (`takeout_imports`, migration 0022) before
+anything else happens, and a `takeout` job applies it **after the photo's metadata job has read the file's own EXIF**, so the edit is
+made over the real values. That is why a closed tab, a stopped `cyanotype import` or a slow worker cannot lose it, and why it works for
+photos that were already in the library (the check call queues the job at once). A sweep once a minute catches photos whose own
+processing failed; metadata for a photo that never arrives is dropped after 30 days. Two copies of one photo (year folder and album)
+merge: albums are added, the first readable sidecar stays.
+
+**Re-running is idempotent.** The same export again uploads nothing new, creates no second album and changes nothing already applied;
+changed metadata is applied once. Nothing is ever removed (a photo moved to another folder is in both albums).
+
 ## Server-side details
 
 - `POST /assets/check` accepts an optional `file_modified_at` (RFC 3339), stored on the upload and then the

@@ -7,6 +7,7 @@ mod places;
 #[cfg(feature = "server-tools")]
 mod reindex;
 mod release;
+mod takeout;
 mod update;
 mod walk;
 

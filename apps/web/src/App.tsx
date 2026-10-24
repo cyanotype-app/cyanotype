@@ -9,6 +9,7 @@ import { AdminLayout } from "./pages/admin/AdminLayout";
 import { Accounts } from "./pages/admin/Accounts";
 import { TwoFactorAdmin } from "./pages/admin/TwoFactorAdmin";
 import { Security } from "./pages/Security";
+import { TakeoutImport } from "./pages/TakeoutImport";
 import { AuditPage } from "./pages/admin/AuditPage";
 import { HealthPage } from "./pages/admin/HealthPage";
 import { Invites } from "./pages/admin/Invites";
@@ -59,6 +60,7 @@ export function App() {
           <Route path="sessions" element={<Sessions />} />
           <Route path="security" element={<Security />} />
           <Route path="api-keys" element={<ApiKeys />} />
+          <Route path="google-photos" element={<TakeoutImport />} />
           <Route path="*" element={<NotFound />} />
         </Route>
         <Route path="/admin" element={<AdminLayout />}>

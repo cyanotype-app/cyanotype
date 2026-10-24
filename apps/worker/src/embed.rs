@@ -101,10 +101,12 @@ impl Embedder {
 
 /// Kinds that must not wait behind embedding.
 fn foreground_kinds() -> impl Iterator<Item = &'static str> {
-    jobs::DEFAULT_PIPELINE
-        .iter()
-        .copied()
-        .chain([jobs::KIND_PAIR, jobs::KIND_GEOCODE, jobs::KIND_SHARE_COPY])
+    jobs::DEFAULT_PIPELINE.iter().copied().chain([
+        jobs::KIND_PAIR,
+        jobs::KIND_GEOCODE,
+        jobs::KIND_SHARE_COPY,
+        jobs::KIND_TAKEOUT,
+    ])
 }
 
 /// The embed loop. `busy` is held for the length of each batch, so shutdown can wait for it.

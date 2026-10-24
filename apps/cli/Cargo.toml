@@ -19,6 +19,7 @@ server-tools = ["dep:cyanotype-core", "dep:sqlx"]
 
 [dependencies]
 cyanotype-core = { workspace = true, optional = true }
+cyanotype-takeout.workspace = true
 sqlx = { workspace = true, optional = true }
 anyhow.workspace = true
 base64.workspace = true

@@ -54,6 +54,7 @@ fn handled_kinds() -> impl Iterator<Item = &'static str> {
         jobs::KIND_GEOCODE,
         jobs::KIND_SHARE_COPY,
         jobs::KIND_BURST,
+        jobs::KIND_TAKEOUT,
     ])
 }
 
@@ -128,6 +129,7 @@ async fn main() -> Result<()> {
     // Instant pickup: a dedicated LISTEN connection (not from the pool) wakes the loop below.
     let waker = jobs::JobWaker::spawn(&db_cfg.url);
     tokio::spawn(sample_gauges(ctx.clone()));
+    tokio::spawn(takeout_sweep(ctx.clone()));
     admin::spawn(ctx.clone());
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
@@ -186,6 +188,24 @@ async fn drain(
         t.abort();
     }
     Ok(())
+}
+
+/// Google Takeout metadata is applied by the metadata job's follow-up; this catches what that cannot: photos whose metadata job
+/// failed for good, and payloads that arrived after it. It also drops payloads whose photo never came.
+async fn takeout_sweep(ctx: Arc<Ctx>) {
+    let mut tick = tokio::time::interval(Duration::from_secs(60));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        match cyanotype_core::takeout::enqueue_ready(&ctx.db).await {
+            Ok(n) if n > 0 => tracing::info!(queued = n, "queued takeout metadata for photos that were waiting"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %format!("{e:#}"), "takeout sweep failed"),
+        }
+        if let Err(e) = cyanotype_core::takeout::purge_stale(&ctx.db).await {
+            tracing::warn!(error = %format!("{e:#}"), "could not drop stale takeout metadata");
+        }
+    }
 }
 
 /// Queue gauges, per kind: queued, running, failed, and the age of the oldest runnable queued job. Every handled

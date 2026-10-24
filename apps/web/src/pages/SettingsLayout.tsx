@@ -9,6 +9,7 @@ export function SettingsLayout() {
         <NavLink to="/settings/sessions">Sessions</NavLink>
         <NavLink to="/settings/security">Security</NavLink>
         <NavLink to="/settings/api-keys">API keys</NavLink>
+        <NavLink to="/settings/google-photos">Google Photos</NavLink>
       </nav>
       <Outlet />
     </>

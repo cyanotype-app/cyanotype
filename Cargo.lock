@@ -1079,6 +1079,7 @@ dependencies = [
  "cyanotype-clip",
  "cyanotype-core",
  "cyanotype-service",
+ "cyanotype-takeout",
  "http-body",
  "http-body-util",
  "rand 0.8.8",
@@ -1126,6 +1127,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "cyanotype-core",
+ "cyanotype-takeout",
  "flate2",
  "futures-util",
  "globset",
@@ -1167,6 +1169,7 @@ dependencies = [
  "argon2",
  "aws-sdk-s3",
  "bytes",
+ "cyanotype-takeout",
  "rand 0.8.8",
  "serde",
  "serde_json",
@@ -1198,6 +1201,14 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "cyanotype-takeout"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

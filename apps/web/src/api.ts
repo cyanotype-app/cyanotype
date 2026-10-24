@@ -727,6 +727,27 @@ export interface CheckRequest {
   /** RFC 3339 (File.lastModified). */
   file_modified_at?: string;
   transport?: "direct" | "proxy";
+  /** Google Takeout metadata for this file: the sidecar's text and the album folder. The server holds it by hash and applies it
+   *  as an edit after the photo is processed (docs/import.md). */
+  takeout?: { sidecar?: string; album?: string; favorites: boolean };
+}
+
+/** POST /assets/takeout/plan: the server's pairing of an export's file names. */
+export interface TakeoutPlanItem {
+  path: string;
+  sidecar: string | null;
+  album: string | null;
+  /** An edited copy that shares its original's sidecar. */
+  edited: boolean;
+}
+
+export interface TakeoutPlan {
+  photos: TakeoutPlanItem[];
+  videos: string[];
+  other: string[];
+  trashed: string[];
+  albums: Record<string, number>;
+  unused_sidecars: string[];
 }
 
 export interface PartUrl {
@@ -1185,6 +1206,7 @@ export const api = {
   getDetails: (id: string) => request<PhotoDetails>(`/assets/${encodeURIComponent(id)}/details`),
   /** Dedupe + part URLs. Defaults to the proxy transport, the only one a browser can use. */
   checkUpload: (req: CheckRequest) => request<CheckResponse>("/assets/check", json({ transport: "proxy", ...req })),
+  takeoutPlan: (paths: string[]) => request<TakeoutPlan>("/assets/takeout/plan", json({ paths })),
   /** `url` is a `parts[].url` from `checkUpload` (relative, same origin). */
   putPart,
   completeUpload: (uploadId: string, parts: DonePart[]) =>

@@ -1,6 +1,6 @@
 // Browser upload queue: hash -> check (proxy transport) -> PUT missing parts -> complete.
 // Framework-free so it can be tested without React; UploadProvider adapts it to the UI.
-import { ApiError, type Api, type DonePart } from "../api";
+import { ApiError, type Api, type CheckRequest, type DonePart } from "../api";
 import { contentTypeOf } from "./files";
 import type { UploadBlock } from "../limitsText";
 
@@ -17,6 +17,8 @@ export interface UploadItem {
   assetId?: string;
   /** Set on the file a quota or daily cap refused and on every file stopped behind it. */
   block?: UploadBlock;
+  /** Google Takeout: builds the metadata sent with this file's check call (read when the file is reached, not up front). */
+  takeout?: () => Promise<CheckRequest["takeout"]>;
 }
 
 export interface QueueDeps {
@@ -101,8 +103,17 @@ export class UploadQueue {
     return () => void this.doneListeners.delete(l);
   }
 
-  add(files: File[]) {
-    for (const file of files) this.items.push({ id: this.nextId++, file, status: "queued", progress: 0 });
+  /** `takeoutOf`: for a Google Takeout import, how to build the metadata that travels with each file (see `takeout.ts`). */
+  add(files: File[], takeoutOf?: (f: File) => Promise<CheckRequest["takeout"]>) {
+    for (const file of files) {
+      this.items.push({
+        id: this.nextId++,
+        file,
+        status: "queued",
+        progress: 0,
+        ...(takeoutOf ? { takeout: () => takeoutOf(file) } : {}),
+      });
+    }
     this.emit();
     this.pump();
   }
@@ -175,10 +186,12 @@ export class UploadQueue {
       if (cur) this.patch(cur, p);
     };
     const file = this.current(id)!.file;
+    const takeoutOf = this.current(id)!.takeout;
     try {
       if (file.size === 0) throw new Error("The file is empty.");
       const sha256 = await this.deps.hash(file, (d) => set({ progress: d / file.size }));
       set({ status: "checking", progress: 1 });
+      const takeout = await takeoutOf?.();
       const check = await this.deps.api.checkUpload({
         sha256,
         size_bytes: file.size,
@@ -186,6 +199,7 @@ export class UploadQueue {
         content_type: contentTypeOf(file),
         file_modified_at: new Date(file.lastModified).toISOString(),
         transport: "proxy",
+        ...(takeout ? { takeout } : {}),
       });
       if (check.status === "exists") {
         set({ status: "duplicate", progress: 1, assetId: check.asset_id });

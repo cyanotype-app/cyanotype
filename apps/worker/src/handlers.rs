@@ -122,6 +122,11 @@ pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job, info: &JobInfo) -> Result<Outc
         return geocode(ctx, job).await;
     }
 
+    // Google Takeout metadata held for this photo: database plus one small bucket write (the edit), no download.
+    if job.kind == jobs::KIND_TAKEOUT {
+        return takeout(ctx, job).await;
+    }
+
     if !formats::is_candidate(&asset.content_type, &asset.original_name) {
         tracing::info!(content_type = %asset.content_type, "unsupported content type; skipping");
         return Ok(Outcome::Skipped("unsupported content type"));
@@ -191,6 +196,25 @@ fn refused(reason: &str, info: &JobInfo) {
         1,
         &[("reason", reason), ("family", info.family())],
     );
+}
+
+async fn takeout(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
+    let done = cyanotype_core::takeout::apply(&ctx.db, &ctx.storage, job.asset_id)
+        .await
+        .context("apply takeout metadata")?;
+    if !done.found {
+        return Ok(Outcome::Skipped("no unapplied takeout metadata"));
+    }
+    tracing::info!(
+        date = done.date,
+        location = done.location,
+        caption = done.caption,
+        favorite = done.favorite,
+        archive = done.archive,
+        album = done.album,
+        "applied takeout metadata"
+    );
+    Ok(Outcome::Done)
 }
 
 async fn pair(ctx: &Arc<Ctx>, job: &jobs::Job) -> Result<Outcome> {
@@ -340,6 +364,10 @@ async fn metadata(ctx: &Arc<Ctx>, job: &jobs::Job, asset: &AssetRow, kind: Kind,
     if let Paired::Linked { raw, primary } = pairing::pair_asset(&ctx.db, job.asset_id).await.context("pair asset")? {
         tracing::info!(%raw, %primary, "paired RAW with its JPEG/HEIC");
     }
+    // Google Takeout metadata held for this photo waits for the file's own values (the edit is made over them).
+    cyanotype_core::takeout::enqueue_for_asset(&ctx.db, job.asset_id)
+        .await
+        .context("queue takeout metadata")?;
     Ok(())
 }
 

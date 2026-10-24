@@ -3653,3 +3653,48 @@ body:has(.selection-bar) .scrubber {
     display: none;
   }
 }
+
+/* Google Takeout import. */
+.dropzone {
+  max-width: 34rem;
+  margin: 1rem 0;
+  padding: 1.5rem 1rem;
+  border: 2px dashed var(--border);
+  border-radius: 12px;
+  text-align: center;
+}
+.dropzone.over {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+.takeout .preview {
+  max-width: 40rem;
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.takeout .preview h2 {
+  margin-top: 0;
+}
+.takeout .preview ul {
+  padding-left: 1.25rem;
+}
+.takeout .album-names {
+  margin: 0.25rem 0;
+}
+.takeout .album-name {
+  overflow-wrap: anywhere;
+}
+.takeout .options {
+  margin: 1rem 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.takeout .options .check {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0.4rem 0;
+}
