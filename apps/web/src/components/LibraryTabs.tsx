@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
+import { usePeopleEnabled } from "../usePeople";
 import { SearchBar } from "./SearchBar";
 
 /**
@@ -28,10 +29,11 @@ export function LibraryTabs() {
   );
 }
 
-/** "More": the views that do not fit as pills (Recently added, On this day, Tags, Duplicates, Archive and Hidden). */
+/** "More": the views that do not fit as pills (Recently added, On this day, Tags, People when it is on, Duplicates, Archive and Hidden). */
 function LibraryMore() {
   const ref = useRef<HTMLDetailsElement>(null);
   const [open, setOpen] = useState(false);
+  const people = usePeopleEnabled() === true;
   const close = () => ref.current?.removeAttribute("open");
   return (
     <details className="library-more" ref={ref} onToggle={(e) => setOpen(e.currentTarget.open)}>
@@ -48,6 +50,7 @@ function LibraryMore() {
             ["/recent", "Recently added"],
             ["/memories", "On this day"],
             ["/tags", "Tags"],
+            ...(people ? ([["/people", "People"]] as const) : []),
             ["/duplicates", "Duplicates"],
             ["/archive", "Archive"],
             ["/hidden", "Hidden"],

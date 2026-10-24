@@ -15,6 +15,9 @@
 //!     face cost", and each found face is fingerprinted and compared with the full-size photo's fingerprint.
 //!  3. Speed per call and false detections on canvases without faces are in `examples/bench.rs`.
 //!
+//! A fourth test, `clustering`, calibrates People (docs/faces.md, "People"): the thresholds of `cyanotype_core::people_math`, read off
+//! the same photos (`--test bakeoff clustering`).
+//!
 //! Skipped (the test passes at once) unless both directories are set.
 use std::{
     path::{Path, PathBuf},
@@ -528,4 +531,303 @@ fn bakeoff() {
         println!("{:>7} {:>7} {:>10.3} {:>13.1}%", size, n, mean, above * 100.0);
     }
     println!("\nresident memory at the end: {} MB", rss_kb() / 1024);
+}
+
+// ---- People: calibrating the grouping thresholds -----------------------------------------------------------------------------
+
+/// Pairwise precision and recall of a grouping against the truth, over all pairs of faces.
+fn pair_scores(groups: &[Vec<usize>], who: &[&str]) -> (f64, f64) {
+    let mut together = std::collections::HashSet::new();
+    for g in groups {
+        for (a, &i) in g.iter().enumerate() {
+            for &j in &g[a + 1..] {
+                together.insert((i.min(j), i.max(j)));
+            }
+        }
+    }
+    let right = together.iter().filter(|(i, j)| who[*i] == who[*j]).count();
+    let mut same = 0;
+    for i in 0..who.len() {
+        for j in i + 1..who.len() {
+            same += usize::from(who[i] == who[j]);
+        }
+    }
+    (
+        right as f64 / together.len().max(1) as f64,
+        right as f64 / same.max(1) as f64,
+    )
+}
+
+#[test]
+#[ignore = "needs the models and the evaluation photos (see the top of this file)"]
+fn clustering() {
+    use cyanotype_core::people_math::{self as pm, Node};
+    let (Some(eval), models) = (
+        std::env::var_os("FACES_EVAL_DIR").map(PathBuf::from),
+        cyanotype_faces::model_dir(),
+    ) else {
+        eprintln!("FACES_EVAL_DIR is not set: skipped");
+        return;
+    };
+    if !cyanotype_faces::models_installed(&models) {
+        eprintln!("no models in {}: skipped", models.display());
+        return;
+    }
+    let photos = load_photos(&eval);
+    let detector = Detector::load(&models.join("yunet.onnx"), 2, DetectorConfig::default()).unwrap();
+    let rec = Recognizer::load(&models.join("sface.onnx"), 2).unwrap();
+    let mut who: Vec<&str> = Vec::new();
+    let mut emb: Vec<Vec<f32>> = Vec::new();
+    for p in &photos {
+        let dets = detector.detect(&p.rgb, p.w, p.h).unwrap();
+        if let Some(d) = main_face(&dets) {
+            let crop = align::align(&p.rgb, p.w, p.h, &d.landmarks).unwrap();
+            who.push(p.person.as_str());
+            emb.push(rec.embed(&crop).unwrap());
+        }
+    }
+    let n = emb.len();
+    let mut names: Vec<&str> = who.clone();
+    names.sort_unstable();
+    names.dedup();
+    println!(
+        "\n== People: {n} faces of {} people (one face per photo, so every face is its own photo)",
+        names.len()
+    );
+
+    // 1. The pair similarities: how far into the genuine and impostor distributions each threshold cuts.
+    let pr = pairs(&who, &emb);
+    let mut imp = pr.impostor.clone();
+    imp.sort_by(|a, b| b.total_cmp(a));
+    println!(
+        "\n-- 1. pairs: {} genuine, {} impostor. Impostor maxima: {:?}",
+        pr.genuine.len(),
+        imp.len(),
+        &imp[..6]
+    );
+    println!(
+        "{:>6} {:>12} {:>16} {:>22}",
+        "cos >=", "genuine kept", "impostor pairs", "impostor per 1e6 pairs"
+    );
+    for t in [0.30f32, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65] {
+        let g = pr.genuine.iter().filter(|x| **x >= t).count();
+        let i = imp.iter().filter(|x| **x >= t).count();
+        println!(
+            "{t:>6.2} {:>11.1}% {i:>16} {:>22.0}",
+            g as f64 * 100.0 / pr.genuine.len() as f64,
+            i as f64 * 1e6 / imp.len() as f64
+        );
+    }
+    // The tail of the impostor distribution, fitted as an exponential above the 95th percentile, to say what a library much
+    // bigger than this set sees: the chance that at least one of M strangers is above t.
+    let q95 = imp[imp.len() / 20];
+    let tail: Vec<f32> = imp.iter().copied().filter(|x| *x >= q95).collect();
+    let lambda = 1.0 / (tail.iter().map(|x| (x - q95) as f64).sum::<f64>() / tail.len() as f64);
+    println!("impostor tail above {q95:.3} (top 5 %): exponential, rate {lambda:.1} per unit cosine");
+    println!(
+        "chance that at least one of M strangers' faces is above t:\n{:>6} {:>10} {:>10} {:>10}",
+        "cos >=", "M=100", "M=1000", "M=10000"
+    );
+    for t in [0.40f32, 0.45, 0.50, 0.55, 0.60] {
+        let p = 0.05 * (-lambda * (t - q95) as f64).exp();
+        let any = |m: f64| 1.0 - (1.0 - p).powf(m);
+        println!(
+            "{t:>6.2} {:>10.4} {:>10.4} {:>10.4}",
+            any(100.0),
+            any(1000.0),
+            any(10000.0)
+        );
+    }
+
+    // 2. A new face meeting the people already known (leave one out): the nearest face of each other person decides.
+    println!("\n-- 2. a new face against everyone else's faces (leave one out); right / wrong / left alone");
+    println!(
+        "{:>6} {:>7} {:>8} {:>8} {:>8}",
+        "assign", "margin", "right", "wrong", "alone"
+    );
+    for margin in [0.0f32, 0.08] {
+        for t in [0.40f32, 0.45, 0.50, 0.55, 0.60, 0.65] {
+            let (mut right, mut wrong, mut alone) = (0, 0, 0);
+            for i in 0..n {
+                // A person with no other face cannot be found: not a case of this test.
+                if !who.iter().enumerate().any(|(j, w)| j != i && *w == who[i]) {
+                    continue;
+                }
+                let neigh: Vec<(&str, f32)> = (0..n)
+                    .filter(|j| *j != i)
+                    .map(|j| (who[j], pm::dot(&emb[i], &emb[j])))
+                    .collect();
+                match pm::choose_person(&neigh, &Default::default(), t, margin) {
+                    Some(p) if p == who[i] => right += 1,
+                    Some(_) => wrong += 1,
+                    None => alone += 1,
+                }
+            }
+            let tot = (right + wrong + alone) as f64;
+            println!(
+                "{t:>6.2} {margin:>7.2} {:>7.1}% {:>7.1}% {:>7.1}%",
+                right as f64 * 100.0 / tot,
+                wrong as f64 * 100.0 / tot,
+                alone as f64 * 100.0 / tot
+            );
+        }
+    }
+
+    // 3. Suggestions: a face against the centre of each person's other faces.
+    println!("\n-- 3. \"Is this X?\": a face against the centre of a person's other faces (every face, every person)");
+    println!(
+        "{:>8} {:>10} {:>12} {:>12}",
+        "suggest", "right", "suggested", "precision"
+    );
+    for t in [0.30f32, 0.35, 0.40, 0.45, 0.50] {
+        let (mut hit, mut shown, mut total_right) = (0, 0, 0);
+        for i in 0..n {
+            for &p in &names {
+                let others: Vec<&[f32]> = (0..n)
+                    .filter(|j| *j != i && who[*j] == p)
+                    .map(|j| emb[j].as_slice())
+                    .collect();
+                let Some(c) = pm::centre(others) else { continue };
+                let mine = who[i] == p;
+                total_right += usize::from(mine);
+                if pm::dot(&emb[i], &c) >= t {
+                    shown += 1;
+                    hit += usize::from(mine);
+                }
+            }
+        }
+        println!(
+            "{t:>8.2} {:>9.1}% {shown:>12} {:>11.1}%",
+            hit as f64 * 100.0 / total_right as f64,
+            hit as f64 * 100.0 / shown.max(1) as f64
+        );
+    }
+
+    // 4. Grouping all the faces at once. Single-link components for contrast, then the rule over a grid.
+    println!(
+        "\n-- 4. grouping every face (pairwise precision / recall over all {} pairs; groups of 3 or more; the biggest group)",
+        n * (n - 1) / 2
+    );
+    let nodes: Vec<Node> = emb
+        .iter()
+        .enumerate()
+        .map(|(i, e)| Node {
+            embedding: e,
+            photo: i as u32,
+        })
+        .collect();
+    let edges_at = |t: f32| -> Vec<(f32, u32, u32)> {
+        let mut v = Vec::new();
+        for i in 0..n {
+            for j in i + 1..n {
+                let s = pm::dot(&emb[i], &emb[j]);
+                if s >= t {
+                    v.push((s, i as u32, j as u32));
+                }
+            }
+        }
+        v
+    };
+    println!(
+        "{:<26} {:>9} {:>9} {:>8} {:>8} {:>8}",
+        "rule", "precision", "recall", "groups", "of 3+", "biggest"
+    );
+    let report = |label: String, groups: &[Vec<usize>]| {
+        let (p, r) = pair_scores(groups, &who);
+        println!(
+            "{label:<26} {:>8.1}% {:>8.1}% {:>8} {:>8} {:>8}",
+            p * 100.0,
+            r * 100.0,
+            groups.len(),
+            groups.iter().filter(|g| g.len() >= 3).count(),
+            groups.iter().map(Vec::len).max().unwrap_or(0)
+        );
+    };
+    for t in [0.40f32, 0.45, 0.50, 0.55, 0.60] {
+        // Single link: a merge threshold of -1 lets every edge join (the photos are all different).
+        let mut e = edges_at(t);
+        report(format!("single link at {t:.2}"), &pm::group(&nodes, &mut e, -1.0));
+    }
+    for link in [0.40f32, 0.45, 0.50, 0.55] {
+        for merge in [0.30f32, 0.35, 0.40, 0.45, 0.50] {
+            if merge > link {
+                continue;
+            }
+            let mut e = edges_at(link);
+            report(
+                format!("link {link:.2} centre {merge:.2}"),
+                &pm::group(&nodes, &mut e, merge),
+            );
+        }
+    }
+    // 5. A whole group against a whole person (the join of a new group to a known person): halves of each person's faces.
+    {
+        let (mut same, mut diff) = (Vec::new(), Vec::new());
+        let halves: Vec<(&str, Vec<f32>, Vec<f32>)> = names
+            .iter()
+            .filter_map(|p| {
+                let mine: Vec<&[f32]> = (0..n).filter(|j| who[*j] == *p).map(|j| emb[j].as_slice()).collect();
+                if mine.len() < 4 {
+                    return None;
+                }
+                let (a, b) = (mine.iter().step_by(2), mine.iter().skip(1).step_by(2));
+                Some((*p, pm::centre(a.copied())?, pm::centre(b.copied())?))
+            })
+            .collect();
+        for (i, (pi, ai, _)) in halves.iter().enumerate() {
+            for (j, (pj, _, bj)) in halves.iter().enumerate() {
+                let c = pm::dot(ai, bj);
+                if i == j {
+                    same.push(c);
+                } else if pi != pj {
+                    diff.push(c);
+                }
+            }
+        }
+        same.sort_by(f32::total_cmp);
+        diff.sort_by(|a, b| b.total_cmp(a));
+        println!(
+            "\n-- 5. centre of half a person's faces against the centre of the other half ({} people), against other people's ({} pairs)",
+            same.len(),
+            diff.len()
+        );
+        println!(
+            "same person: lowest {:?}; different people: highest {:?}",
+            &same[..3.min(same.len())],
+            &diff[..3.min(diff.len())]
+        );
+    }
+
+    let mut e = edges_at(pm::LINK);
+    let shipped = pm::group(&nodes, &mut e, pm::MERGE);
+    println!(
+        "\nshipped (LINK {}, MERGE {}): groups of {} faces or more:",
+        pm::LINK,
+        pm::MERGE,
+        pm::MIN_FACES
+    );
+    for g in shipped.iter().filter(|g| pm::big_enough(g.len(), g.len())) {
+        let mut count: std::collections::BTreeMap<&str, usize> = Default::default();
+        for i in g {
+            *count.entry(who[*i]).or_default() += 1;
+        }
+        let top = count.values().max().copied().unwrap_or(0);
+        println!("  {} faces, {} of one person, {} people", g.len(), top, count.len());
+    }
+    let mut per_person: std::collections::BTreeMap<&str, std::collections::BTreeSet<usize>> = Default::default();
+    for (gi, g) in shipped
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| pm::big_enough(g.len(), g.len()))
+    {
+        for i in g {
+            per_person.entry(who[*i]).or_default().insert(gi);
+        }
+    }
+    println!(
+        "  {} of {} people are in a group of their own; split over more than one group: {}",
+        per_person.len(),
+        names.len(),
+        per_person.values().filter(|s| s.len() > 1).count()
+    );
 }

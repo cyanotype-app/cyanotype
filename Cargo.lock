@@ -1220,6 +1220,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "cyanotype-clip",
+ "cyanotype-core",
  "fast_image_resize",
  "image",
  "ort",

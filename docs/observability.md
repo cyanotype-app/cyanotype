@@ -108,6 +108,9 @@ configuration in Datadog (distributions would need percentile aggregation enable
 | `cyanotype.faces.duration` | histogram (ms) | `model` | Wall time per photo scanned for faces (download of the preview, decode, detection, fingerprints, store). |
 | `cyanotype.faces.per_photo` | histogram | `model` | Faces found per photo scanned. |
 | `cyanotype.faces.model_load_ms` | histogram (ms) | `model` | Time to load the face models (once per load). |
+| `cyanotype.people.run_ms` | histogram (ms) | | Wall time of one grouping of an owner's faces into people (`docs/faces.md`, "People"). |
+| `cyanotype.people.assigned` / `.created` | count | | Faces that joined a known person, and new unnamed people, per run. |
+| `cyanotype.people.ungrouped_faces` | gauge | | Faces the last run left without a person (too few alike, or not alike enough). |
 | `cyanotype.search.queries` | count | `mode` (`text`, `text_filters`, `filters`, `similar`), `plan` (`exact`, `hnsw`, `timeline`, `none`), `outcome` (`ok`, `bad_request`, `unavailable`, `error`; `similar` also `not_found`, `not_indexed`) | Searches served by the assets service. `unavailable` is a deployment without the model files. `mode:similar` is "More like this" (`GET /assets/{id}/similar`); its `not_indexed` outcome is the photo having no vector yet for the serving model (HTTP 409). |
 | `cyanotype.search.latency_ms` | histogram (ms) | same as `search.queries` | Time to answer a search: query embedding, ranking and building the page (for `mode:similar` there is no query embedding). |
 | `cyanotype.search.model` | count | `model` (`siglip2-b16`, `clip-b32`) | Ranked searches by the model that answered them: during a model change the old model's count falls as the new one's rises, and the day it reaches zero the previous model's text tower is no longer needed. |

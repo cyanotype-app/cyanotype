@@ -109,7 +109,7 @@ impl Finder {
 }
 
 /// Kinds that must not wait behind scanning faces: everything else, embedding and text included.
-fn foreground_kinds() -> impl Iterator<Item = &'static str> {
+pub(crate) fn foreground_kinds() -> impl Iterator<Item = &'static str> {
     jobs::DEFAULT_PIPELINE.iter().copied().chain([
         jobs::KIND_EMBED,
         jobs::KIND_OCR,
@@ -550,19 +550,49 @@ mod tests {
             );
             assert!(score > 0.7);
         }
+        // The owner names the person; scanning the photo again (a new version, or the same job) keeps the person and who decided.
+        let person: Uuid =
+            sqlx::query_scalar("INSERT INTO people (owner_id, name) VALUES ($1, 'Person A') RETURNING id")
+                .bind(owner)
+                .fetch_one(&env.pool)
+                .await
+                .unwrap();
+        sqlx::query("UPDATE faces SET person_id = $1, assigned_by = 'user' WHERE asset_id = $2")
+            .bind(person)
+            .bind(id)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+        assert!(matches!(process(&env.ctx, &finder, &job).await.unwrap(), Outcome::Done));
+        let kept: Vec<(Option<Uuid>, String)> =
+            sqlx::query_as("SELECT person_id, assigned_by FROM faces WHERE asset_id = $1")
+                .bind(id)
+                .fetch_all(&env.pool)
+                .await
+                .unwrap();
+        assert_eq!(kept, vec![(Some(person), "user".to_string())]);
         jobs::complete(&env.pool, job.id).await.unwrap();
-        // The picture changes (a rotate or crop): its faces are forgotten and the photo is queued to be scanned again.
+        // The picture changes (a rotate or crop): the scan is forgotten and the photo queued again. The face in a person waits, unread,
+        // and the new scan hands the person over to the face it finds.
         assert!(
             store::forget_and_requeue(&env.pool, id, store::VERSION, true)
                 .await
                 .unwrap()
         );
-        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM faces")
-            .fetch_one(&env.pool)
-            .await
-            .unwrap();
-        assert_eq!(n, 0);
-        assert!(jobs::claim(&env.pool, jobs::KIND_FACES).await.unwrap().is_some());
+        assert_eq!(scans(&env.pool).await, vec![]);
+        let job = jobs::claim(&env.pool, jobs::KIND_FACES).await.unwrap().unwrap();
+        assert!(matches!(process(&env.ctx, &finder, &job).await.unwrap(), Outcome::Done));
+        let kept: Vec<(Option<Uuid>, String)> =
+            sqlx::query_as("SELECT person_id, assigned_by FROM faces WHERE asset_id = $1")
+                .bind(id)
+                .fetch_all(&env.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            kept,
+            vec![(Some(person), "user".to_string())],
+            "a rescan after an edit keeps the person"
+        );
         env.teardown().await;
     }
 

@@ -1,16 +1,17 @@
 # Faces in photos
 
-The worker can find the faces in every photo and keep a fingerprint (an *embedding*, 128 numbers) of each. That is the groundwork for a
-People page: grouping the fingerprints into people, naming them and showing them is the next piece of work, not this one. Nothing in the API
-or the web app reads this data yet.
+The worker can find the faces in every photo and keep a fingerprint (an *embedding*, 128 numbers) of each, and group the fingerprints into
+people that the owner names and corrects: a People page, a page for each person, the people in a photo's Info panel, "Is this X?" suggestions and
+"Not this person". It finds groups to propose; it never claims to know who anyone is.
 
-**It is off by default.** `FACES_ENABLED=1` turns it on (worker and assets service); leave it unset and no job is queued, no model is read and
-nothing is stored. A face fingerprint is biometric data about the people in a library, some of whom never agreed to anything: read
+**It is off by default.** `FACES_ENABLED=1` turns it on (worker and assets service); leave it unset and no job is queued, no model is read, nothing
+is stored, the People routes of the API answer `404` as if they did not exist and the web app shows no People entry anywhere. A face fingerprint is biometric data about the people in a library, some of whom never agreed to anything: read
 "Privacy" below before switching it on.
 
 ## Contents
 
 - [What it does](#what-it-does)
+- [People: grouping, naming and fixing](#people-grouping-naming-and-fixing)
 - [Privacy](#privacy)
 - [Models, licences and provenance](#models-licences-and-provenance)
 - [Bake-off](#bake-off)
@@ -34,7 +35,8 @@ nothing is stored. A face fingerprint is biometric data about the people in a li
    `crates/cyanotype-faces/src/align.rs`) and SFace turns the crop into a unit-length 128-dimension fingerprint. Smaller faces are stored
    without one (a guess at 20 px would only join strangers).
 5. The result replaces the photo's rows for this model in one transaction (`faces`) and records that the photo was scanned, also when it has no
-   faces (`face_scans`), so running the job again never duplicates a face.
+   faces (`face_scans`), so running the job again never duplicates a face. What the owner decided about the photo's earlier faces (their person,
+   rejections, a chosen cover) is carried over to the new ones, see below.
 
 ### Is the preview enough?
 
@@ -45,21 +47,129 @@ would reach smaller faces and was not worth the memory risk for a first version;
 about (the table below). If the People
 page needs it, the way is a second, optional job that decodes the original in strips, not a bigger preview.
 
+## People: grouping, naming and fixing
+
+Migration 0030 adds `people` (owner, optional name, hidden, optional cover face), `face_rejections` (face, person: "this face is not that
+person"), `people_runs` (the request and state of a grouping run, one row per owner), and gives `faces.person_id` its foreign key (a deleted
+person frees its faces) and `faces.assigned_by` (`auto` or `user`).
+
+### The grouping run (worker)
+
+A run is per owner. It is not a row of the job queue (those are per photo) but follows the near-duplicate scan: the faces job asks for a run when it
+stores faces (`people_runs.requested_at`), and the loop in `apps/worker/src/people.rs` takes an owner when **none of that owner's photos has a
+`faces` job queued or running and the last request is two minutes old** (`QUIET_SECS`), so a backfill of thousands of photos groups once, and
+only when no thumbnail, metadata, embed, text or other foreground job is runnable. A request made while a run is going stays wanted. On start and
+hourly, owners with fingerprinted faces and no run on record (faces stored before People existed) are asked once. A run does this, in order:
+
+1. **Joining people already known.** Every unassigned, fingerprinted face of a live photo asks the model's HNSW index (the same expression and
+   predicate as the migration, with the search's iterative-scan settings, because most of the index is other owners' and assigned faces) for its 12
+   nearest faces that have a person. It joins the person of the single most similar one when that is at least **0.60**, the next person is at least
+   **0.08** behind, and the face was not rejected from that person. All decisions are made against the people as they were when the run began (a
+   face that joins now is not an anchor for the next), then applied.
+2. **Grouping the rest.** The still unassigned faces get a 12-nearest-neighbours graph among themselves; edges are pairs at least **0.55** alike. Edges
+   are taken strongest first, and two groups join only if **no photo is in both** (two faces in one photo are two people) and the cosine of their
+   centres (the mean fingerprint of each) is at least **0.50**: a single link joins strangers' chains through look-alikes, a centre does not.
+3. **What a group becomes.** A group of two or more faces whose centre is at least **0.55** from exactly one known person (none of its faces
+   rejected from them) joins that person; if two people are that near it is left alone. Otherwise a group of at least **3 faces from at least 2
+   photos** becomes a new unnamed person. Smaller or uncertain groups stay unassigned until they grow.
+4. Unnamed people left without any face are removed. **Named people are never deleted or merged automatically.**
+
+**The owner's decisions always win.** A face the owner put in a person (`assigned_by = 'user'`) is never moved; a face is never assigned to a person it
+was rejected from; every write of a run is guarded in SQL (`person_id IS NULL AND NOT EXISTS (rejection)`), so a decision made while a run is going
+is not overwritten. Faces without a fingerprint (under 32 px) are never grouped. Automatic assignments are not revisited: a wrong one is fixed with
+"Not this person", which also stops it coming back.
+
+### A new scan keeps the decisions
+
+`faces::store` matches each new face of a photo to one of its earlier faces (one to one, strongest first): first by fingerprint (cosine at least 0.363, the
+same-person threshold, only when both come from the same model: a rotate, a crop or a new version of the model), then by box overlap (IoU at least 0.5: a face
+without a fingerprint, or another model). The new face takes over the person and who decided, the rejections and being a cover. After a rotate or crop
+the photo's scan is forgotten, and the faces the owner decided about wait, unread (every reader asks for a photo with a scan), until the new scan finds
+them again. Faces of another model keep their rows until the sweep prunes them, but give up what moved on, so a person is counted once. Tests:
+`crates/cyanotype-core/tests/people.rs` and the faces job test in `apps/worker/src/faces.rs`.
+
+### How the thresholds were chosen
+
+`cargo test --release -p cyanotype-faces --test bakeoff clustering -- --ignored --nocapture` (the evaluation set above, the largest face of each of 130 photos
+of 22 people; setup as for the bake-off). The set is small and every face is in its own photo, so it measures how far apart fingerprints are, not
+how a library behaves. The numbers that matter, and the reasoning that goes beyond them:
+
+| cosine at least | genuine pairs kept | impostor pairs (of 8,049) | chance that one of M strangers' faces is this alike (tail fitted to the top 5 %) M=1,000 / 10,000 |
+| --- | --- | --- | --- |
+| 0.40 | 92.0 % | 1 | 36 % / 99 % |
+| 0.45 | 86.3 % | 0 | 10 % / 63 % |
+| 0.50 | 78.6 % | 0 | 2 % / 20 % |
+| 0.55 | 69.0 % | 0 | 0.5 % / 5 % |
+| 0.60 | 58.6 % | 0 | 0.1 % / 1 % |
+
+- **Why not 0.363.** That figure is per pair of photos (0.1 % of pairs). A new face is compared with *all* the faces of everyone already known, so
+  what matters is the chance that any of thousands looks like a stranger: the table's last columns. A false join costs the owner's trust, a missed one
+  costs a click, so the numbers lean to splitting.
+- **Joining a person (0.60, margin 0.08).** A new face against everyone else's faces, leave one out: at 0.60, 80.8 % went to the right person, none to a wrong one and
+  19.2 % stayed alone (they are grouped later or suggested); at 0.55, 90.8 % right and none wrong; at 0.50, 95.4 % and none wrong. 0.60 was chosen over what the set
+  supports because the tail estimate says 0.55 would make about one in twenty faces meet a stranger at least that alike once a library has 10,000 known faces.
+- **Grouping (link 0.55, centres 0.50).** Single-link components of the set are 100 % pure from 0.45 up (91.6 % at 0.40, with one group of 11 made of two people) but
+  chain strangers in a big library; at link 0.55 the grouping is 100 % pure with 82.1 % pair recall, 35 groups for the 22 people (20 of them of 3 or more faces:
+  people split in two rather than joined), and in the shipped rule 20 of 22 people have a group of their own. The centres of two halves of one person's faces are at
+  least 0.574 apart, those of two different people at most 0.450, which is where the 0.50 and 0.55 for groups come from.
+- **Suggestions (0.45 to the centre of the person).** A face against the centre of a person's other faces, for every face and person: at 0.45 every suggestion was right and
+  98.5 % of the right ones were made; 0.40 is also 100 % precise (99.2 %), 0.35 only 90.9 %. The owner answers each, so this is lower than the automatic threshold,
+  but a stranger in the list is an annoyance, so it stays at 0.45.
+
+Not measured: children, profiles, masks, ageing over decades inside one person, siblings and twins, and any demographic difference. Those make people split (a miss) and
+look-alikes join (the risk the margin and the high thresholds exist for); the owner's tools below are the answer to both.
+
+### Cost of a run
+
+Measured on 30,000 synthetic fingerprints (1,200 identities, 25 faces each, one owner; `cargo test --release -p cyanotype-core --test people big_library -- --ignored
+--nocapture`, shared 4-core machine, Postgres in a container): the first run, nothing known, **76 s** (all 30,000 faces grouped into 1,200 people); a later run for 1,500
+new faces against 1,200 known people **5 s** (about 3 ms a face). That is one nearest-neighbour query per face against the HNSW index and about 30,000 x 12 edges
+in memory (a few MB) plus the fingerprints (15 MB per 30,000 faces): **for 50,000 photos expect two to three minutes for the first run and seconds afterwards**, in the
+background and behind everything else. Synthetic identities are easier than real ones (real runs leave more faces unassigned), but the cost is the queries, not the
+data. The run reads and writes only the database: no model, no photo, none of the worker's byte budget.
+
+### What the owner can do
+
+All of it is the owner's own session (or API key) and nothing else:
+
+| | |
+| --- | --- |
+| `GET /assets/people/status` | `{enabled}`: the only People route that answers while the feature is off. |
+| `GET /assets/people`, `GET /assets/people/{id}` | `{id, name, hidden, faces, photos, cover}`; `cover` is `{face_id, asset_id, box, preview_url}` (the box is fractions of the preview; the web app crops it with CSS, no new file). Counts and covers are of the photos this session may see (not trashed, not hidden unless the Hidden view is unlocked); a person only hidden photos have is not listed to a locked session. |
+| `PATCH /assets/people/{id}` | `{name?, hidden?, cover_face_id?}`: rename (null or blank clears), hide, cover. |
+| `DELETE /assets/people/{id}` | The person goes, its faces are free (they may be grouped again; to keep someone out of sight, hide them). |
+| `POST /assets/people/{id}/merge {into}` | All faces to the other person, which keeps its name unless it has none; "not the first" becomes "not the second". Audited as a count only. |
+| `GET /assets/people/{id}/photos?limit&cursor` | The person's photos, same items and keyset paging as `GET /assets`. |
+| `POST /assets/people/{id}/faces/remove {asset_ids?, face_ids?}` | "Not this person": the faces become unassigned and a rejection is written. |
+| `GET /assets/people/{id}/suggestions` | "Is this X?": unassigned faces at least 0.45 like the person's centre, best first, none rejected. |
+| `POST /assets/faces/{id}/assign {person_id}` or `{new: true, name?}`, `POST /assets/faces/{id}/reject {person_id}` | Accept a suggestion or name a face; refuse one. Moving a face from a person rejects it from them. |
+| `GET /assets/{id}/faces` | The faces in one photo and their people (the viewer's chips); faces of hidden people are left out. |
+
+Every change asks for a new run. Key scopes: reads need a read key, changes a write key (`key_scope_tests`). The web app: **People** in the library's More menu (only when the
+feature is on) opens a grid of round faces with name or "Add a name" and counts, hidden people in a collapsed section; a person's page has the photos in the usual grid and
+selection, inline rename, Hide, Merge into, Delete person, selected photos to **Not this person** or **Use as cover**, and "Is this X?" with Yes and No; the Info panel of a
+photo shows its people as chips (a face nobody claimed offers "Who is this?"). Metrics (`docs/observability.md`): `cyanotype.people.run_ms`, `.assigned`, `.created`,
+`.ungrouped_faces`.
+
 ## Privacy
 
 - **Off by default** (`FACES_ENABLED`, in `.env.prod`). Switch it on deliberately.
-- **Data stays in your database.** Two new tables, `faces` and `face_scans` (migration 0029): box and landmarks as fractions of the preview, a
-  score, the fingerprint (`halfvec(128)`), and a `person_id` column that is empty until the grouping step exists. No model is called over
-  the network: the models are baked into the worker image and run in the worker process.
+- **Data stays in your database.** `faces` and `face_scans` (migration 0029): box and landmarks as fractions of the preview, a score, the fingerprint
+  (`halfvec(128)`); `people`, `face_rejections` and `people_runs` (migration 0030). **A name you give a person is personal data too**, about the person and
+  about you: it is stored in `people.name`, shown only in your own session, and never written to the bucket, the audit trail or a log. No model is called
+  over the network: the models are baked into the worker image and run in the worker process.
 - **Deleted with the photo.** A permanent delete (`apps/assets/src/purge.rs`) removes the photo's face rows in the same transaction as
   the photo; the foreign keys cascade from `assets` and from `users` too, so deleting an account removes its faces.
-  A rotate or crop forgets the photo's faces (their positions are wrong for the new picture) and scans it again.
-- **Not shared.** No API reads these tables yet, and share links, the public pages, downloads, the recovery manifests (`manifest/`) and
-  the CLI import never include them. A recovery from the bucket (`cyanotype reindex`) does not bring faces back; they are
-  derived data, found again from the previews when the feature is on. Nothing in `apps/assets` reads the tables except the owner's own progress
-  counts (`/assets/processing`) and the purge that deletes from them.
-- **One command removes everything.** `cyanotype faces delete [--email ADDRESS] --apply` deletes every face, every scan record and every queued or
-  finished `faces` job, for one account or for all. It is a dry run (counts only) without `--apply`; it touches nothing else.
+  A rotate or crop forgets the photo's scan and the faces nobody decided about (their positions are wrong for the new picture) and scans it again; faces you put in a person wait for the new scan to hand them over. A person you named stays when its photos are purged; an unnamed one left without a face goes.
+- **Owner-only, never shared.** Share links, the public pages, downloads, the recovery manifests (`manifest/`) and the CLI import never include faces,
+  people or names (a test creates a share of a photo with a named person and searches every public response). The People routes are for the signed-in
+  owner (`404` for anyone else's ids and while the feature is off), and a photo in the Hidden view (or a person only hidden photos have) is invisible to a session that has
+  not unlocked it. A recovery from the bucket (`cyanotype reindex`) does not bring faces or people back: **names and corrections are not in the
+  recovery manifests either**, so they are lost with the database if it is lost and not backed up (the Postgres dumps do hold them). Faces are found again from the previews when the
+  feature is on.
+- **One command removes everything.** `cyanotype faces delete [--email ADDRESS] --apply` deletes every face, every person (names included), every "not this
+  person" decision, every scan record and every queued or finished `faces` job, for one account or for all. The dry run counts faces, people, decisions, scan
+  records and jobs. Deleting an account removes its faces and people with it, a permanent delete of a photo removes its faces and their decisions. It is a dry run (counts only) without `--apply`; it touches nothing else.
   Switch `FACES_ENABLED` off and restart the worker first, or the sweep starts scanning again. Run it where `migrate` runs
   (`docs/deploy.md`: `dc run --rm reindex faces delete --apply`, the one-shot that runs the CLI image).
 - **Owner-only progress.** `GET /assets/processing` has a `faces` entry (photos scanned, faces found, queued, running, failed, percent) for the
@@ -242,4 +352,11 @@ Metrics (`docs/observability.md`): `cyanotype.faces.model_loaded` (gauge), `cyan
   owner, everyone); forgetting after an edit; pruning replaced models.
 - `apps/worker/src/faces.rs`: the job against a real database, bucket and models: a portrait gets a face with a fingerprint and running again replaces
   it; skips and failure classes; the sweep and the pruning.
-- `apps/assets`: the processing report (absent while off, owner-scoped on) and the purge removing a photo's faces.
+- `apps/assets`: the processing report (absent while off, owner-scoped on) and the purge removing a photo's faces, rejections and orphaned unnamed people;
+  `routes/people_tests.rs`: the switch (every People route a `404` while off), the list with counts and covers, owner isolation on every verb, rename/hide/cover
+  with bad input, merge and delete, "not this person", assign and reject, suggestions, the Hidden view, a photo's faces, and that no share link carries anything of it.
+- `crates/cyanotype-core/tests/people.rs`: a rescan after a rotate, a version change and a model change keeps people, rejections and covers; grouping makes people only
+  from enough faces; a new face joins the right person and never one it was rejected from; the owner's decisions win and other owners are invisible; faces of one
+  photo are never one person; the queue (quiet period, queued scans, newer requests); suggestions; cascades; `delete_all`; the HNSW index is used. `people_math`
+  has the unit tests of the arithmetic. Web: `peopleText.test.ts`, `People.test.tsx`, `PersonPage.test.tsx`, `FaceChips.test.tsx` and `e2e/people-layout.spec.ts`
+  (phone widths 320 to 414, desktop, dark).

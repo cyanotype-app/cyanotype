@@ -176,6 +176,8 @@ describe("Trash page", () => {
       .mockResolvedValueOnce({ ...list(0), items: [trashed(3)], total: 3 });
     renderTrash();
     await screen.findByAltText("photo-1.jpg");
+    // The first page renders before the observer is attached (a render later), so wait for it.
+    await waitFor(() => expect(io).toBeDefined());
     io!([{ isIntersecting: true }]);
     await screen.findByAltText("photo-3.jpg");
     expect(lt).toHaveBeenLastCalledWith({ cursor: "c1", limit: 60 });

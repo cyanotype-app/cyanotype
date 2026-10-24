@@ -84,6 +84,20 @@ pub fn app_with(
         purge_wake: Default::default(),
         text,
         search,
+        faces_enabled: false,
+    })
+}
+
+/// An app with People switched on (`FACES_ENABLED`), for the tests of its routes.
+pub fn app_with_people(pool: &PgPool) -> Router {
+    crate::routes::routes().with_state(AppState {
+        db: pool.clone(),
+        storage: dummy_storage(),
+        trash_retention_days: 30,
+        purge_wake: Default::default(),
+        text: Arc::new(FakeText::default()),
+        search: default_search(),
+        faces_enabled: true,
     })
 }
 
@@ -99,6 +113,7 @@ pub fn app_with_s3(pool: &PgPool) -> Option<(Router, Storage)> {
         purge_wake: Default::default(),
         text: Arc::new(FakeText::default()),
         search: default_search(),
+        faces_enabled: false,
     });
     Some((app, storage))
 }

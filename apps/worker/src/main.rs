@@ -16,6 +16,7 @@ mod media;
 #[cfg(test)]
 mod memcal;
 mod ocr;
+mod people;
 mod raw;
 #[cfg(test)]
 mod raw_samples;
@@ -168,11 +169,16 @@ async fn main() -> Result<()> {
         }
         None
     };
+    // Grouping the faces into people (docs/faces.md, "People"): database only, per owner, after the owner's faces have stopped arriving.
+    // It runs whenever the feature is on, also while the face models are missing: what was found before can still be grouped.
+    let people_task = faces_on.then(|| tokio::spawn(people::run_loop(ctx.clone())));
     let embedding = embed_task.is_some();
     let reading_text = ocr_task.is_some();
     let finding_faces = faces_task.is_some();
-    let background: Vec<tokio::task::JoinHandle<()>> =
-        [embed_task, ocr_task, faces_task].into_iter().flatten().collect();
+    let background: Vec<tokio::task::JoinHandle<()>> = [embed_task, ocr_task, faces_task, people_task]
+        .into_iter()
+        .flatten()
+        .collect();
     // Bounds in-flight jobs (each holds a whole original plus decoded pixels in memory).
     let heavy = Arc::new(Semaphore::new(concurrency));
 

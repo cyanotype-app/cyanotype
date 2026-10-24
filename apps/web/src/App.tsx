@@ -20,6 +20,8 @@ import { MemoriesPage } from "./pages/MemoriesPage";
 import { Login } from "./pages/Login";
 import { MapPage } from "./pages/MapPage";
 import { NotFound } from "./pages/NotFound";
+import { PeoplePage } from "./pages/People";
+import { PersonPage } from "./pages/PersonPage";
 import { Register } from "./pages/Register";
 import { ResetPassword } from "./pages/ResetPassword";
 import { ShareView } from "./pages/ShareView";
@@ -31,6 +33,7 @@ import { TagsPage } from "./pages/Tags";
 import { SharedLinks } from "./pages/SharedLinks";
 import { Storage } from "./pages/Storage";
 import { Trash } from "./pages/Trash";
+import { PeopleProvider } from "./usePeople";
 import { UploadProvider } from "./upload/UploadProvider";
 import { UploadTray } from "./upload/UploadTray";
 
@@ -56,6 +59,8 @@ export function App() {
         <Route path="/duplicates" element={<Duplicates />} />
         <Route path="/tags" element={<TagsPage />} />
         <Route path="/tags/:id" element={<TagPage />} />
+        <Route path="/people" element={<PeoplePage />} />
+        <Route path="/people/:id" element={<PersonPage />} />
         <Route path="/albums" element={<Albums />} />
         <Route path="/albums/:id" element={<AlbumPage />} />
         <Route path="/shared" element={<SharedLinks />} />
@@ -95,6 +100,7 @@ function RequireAuth() {
   }
   return (
     <UploadProvider>
+    <PeopleProvider>
     <div className="shell">
       <header className="topbar">
         <Link to="/library" className="brand">
@@ -127,6 +133,7 @@ function RequireAuth() {
       </main>
       <UploadTray />
     </div>
+    </PeopleProvider>
     </UploadProvider>
   );
 }

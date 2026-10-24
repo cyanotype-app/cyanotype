@@ -1487,6 +1487,8 @@ page, a search filter, tag words in text search, and keywords imported from the 
 | `GET /assets/search?tags=a,b&tag_mode=all\|any`, `/assets/{id}/similar` | The tag filter (names containing no comma; at most 20). |
 | `GET /assets/{id}` | `tags: [{id, name, imported}]`. |
 
+People (faces grouped into named people, behind `FACES_ENABLED`, off by default) has its own routes under `/assets/people` and `/assets/faces`: see `docs/faces.md`, "People".
+
 ## Tests
 
 - `apps/assets/src/routes/tags_tests.rs` (Postgres): tags made once whatever the case, bulk apply (ids, scope, pairs, owners, trash), imported

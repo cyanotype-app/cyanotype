@@ -35,6 +35,8 @@ pub struct AppState {
     pub text: Arc<dyn search::TextEmbedder>,
     /// The search model, which model answers while a swap re-indexes, and what the query parser knows.
     pub search: Arc<search::SearchState>,
+    /// People (docs/faces.md) is on: `FACES_ENABLED`. Off, its routes answer as if they did not exist.
+    pub faces_enabled: bool,
 }
 
 #[tokio::main]
@@ -60,6 +62,7 @@ async fn main() -> Result<()> {
                 .unwrap_or(2),
         )),
         search: Arc::new(search::SearchState::from_env()?),
+        faces_enabled: cyanotype_core::faces::enabled(),
     };
     tracing::info!(
         model = state.search.model.name(),
