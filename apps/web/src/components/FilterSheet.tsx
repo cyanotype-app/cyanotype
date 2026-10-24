@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { api, type Album, type Facets, type SearchParams } from "../api";
+import { ratingFilterLabel } from "../ratingText";
 import { TYPE_LABEL, yearRange } from "../searchText";
 
 type Filters = Omit<SearchParams, "q">;
@@ -150,6 +151,26 @@ export function FilterSheet({ value, onApply, onClose, load = defaultLoad }: Pro
             <input type="checkbox" checked={draft.favorite === true} onChange={(e) => set({ favorite: e.target.checked || undefined })} />
             <span>Favorites only{facets ? ` (${n(facets.favorites)})` : ""}</span>
           </label>
+          <div className="sheet-field">
+            <label htmlFor={`${id}-rating`}>Rating</label>
+            <select
+              id={`${id}-rating`}
+              className="text-input"
+              value={draft.rating ?? ""}
+              onChange={(e) => set({ rating: e.target.value ? Number(e.target.value) : undefined })}
+            >
+              <option value="">Any</option>
+              {[5, 4, 3, 2, 1].map((r) => {
+                const c = facets?.ratings?.find((f) => f.value === String(r))?.count;
+                return (
+                  <option key={r} value={r}>
+                    {ratingFilterLabel(r)}
+                    {c !== undefined ? ` (${n(c)})` : ""}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
           <label className="sheet-check">
             <input
               type="checkbox"

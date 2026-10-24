@@ -119,7 +119,7 @@ async fn library(t: &TestDb) -> Library {
     set(
         &t.pool,
         v1,
-        "taken_at = '2023-10-19T10:00:00Z', latitude = 38.72, longitude = -9.14, place_city = 'Lisbon', place_country = 'Portugal', favorite = true",
+        "taken_at = '2023-10-19T10:00:00Z', latitude = 38.72, longitude = -9.14, place_city = 'Lisbon', place_country = 'Portugal', favorite = true, rating = 4, rating_source = 'user'",
     )
     .await;
     set(&t.pool, v2, "taken_at = '2023-10-18T10:00:00Z', burst_id = id").await;
@@ -128,7 +128,7 @@ async fn library(t: &TestDb) -> Library {
         h,
         "taken_at = '2023-10-19T11:00:00Z', latitude = 38.71, longitude = -9.13, place_city = 'Hiddenville', place_country = 'Portugal',
          camera_make = 'Hidden', camera_model = 'Cam', lens_model = 'Hidden Lens', favorite = true,
-         caption = 'secret cat', burst_id = (SELECT burst_id FROM assets WHERE id = (SELECT id FROM assets WHERE original_name = 'v2.jpg'))",
+         caption = 'secret cat', rating = 5, rating_source = 'user', burst_id = (SELECT burst_id FROM assets WHERE id = (SELECT id FROM assets WHERE original_name = 'v2.jpg'))",
     )
     .await;
     // The hidden photo is v2's burst-mate and the album's cover.
@@ -212,6 +212,9 @@ async fn a_hidden_photo_is_in_no_list_search_map_album_share_or_similar_result()
         "/assets/search?q=secret",
         "/assets/search?q=cat&favorite=true",
         "/assets/search?favorite=true",
+        "/assets/search?rating=5",
+        "/assets/search?rating=1",
+        "/assets/search?q=cat&rating=1&cutoff=false",
         "/assets/search?place=Hiddenville",
         "/assets/search?camera=Hidden%20Cam",
         "/assets/search?lens=Hidden%20Lens",
@@ -288,6 +291,13 @@ async fn a_hidden_photo_is_in_no_list_search_map_album_share_or_similar_result()
         (facets["total"].as_i64(), facets["favorites"].as_i64()),
         (Some(2), Some(1))
     );
+    // The hidden photo's five stars are in no rating filter or facet.
+    assert_eq!(
+        facets["ratings"],
+        json!([{"value": "4", "count": 1}, {"value": "3", "count": 1}, {"value": "2", "count": 1}, {"value": "1", "count": 1}])
+    );
+    let (_, five) = get(app, c, "/assets/search?rating=5").await;
+    assert!(item_ids(&five).is_empty());
     let (_, map) = get(app, c, "/assets/map?zoom=22").await;
     assert_eq!(map["total"], 1);
 
@@ -317,6 +327,57 @@ async fn a_hidden_photo_is_in_no_list_search_map_album_share_or_similar_result()
         .map(|s| s["item_count"].as_i64().unwrap())
         .collect();
     assert_eq!(counts.iter().sum::<i64>(), 2 + 1, "{shares}");
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn a_hidden_photo_is_rated_only_from_an_unlocked_session() {
+    let Some(t) = TestDb::new().await else { return };
+    let l = library(&t).await;
+    let stars = || async {
+        sqlx::query_scalar::<_, i16>("SELECT rating FROM assets WHERE id = $1")
+            .bind(l.hidden)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap()
+    };
+    // Locked: by id the request quietly does nothing, by scope the Hidden view is refused.
+    let (st, r) = post(
+        &l.app,
+        &l.cookie,
+        "/assets/rating",
+        json!({"ids": [l.hidden], "rating": 1}),
+    )
+    .await;
+    assert_eq!((st, r["count"].as_i64()), (StatusCode::OK, Some(0)), "{r}");
+    let (st, _) = post(
+        &l.app,
+        &l.cookie,
+        "/assets/rating",
+        json!({"scope": "hidden", "rating": 1}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert_eq!(stars().await, 5);
+    unlock(&t.pool, &l.cookie, 10).await;
+    let (_, r) = post(
+        &l.app,
+        &l.cookie,
+        "/assets/rating",
+        json!({"ids": [l.hidden], "rating": 2}),
+    )
+    .await;
+    assert_eq!(r["count"], 1);
+    assert_eq!(stars().await, 2);
+    let (_, r) = post(
+        &l.app,
+        &l.cookie,
+        "/assets/rating",
+        json!({"scope": "hidden", "rating": 3}),
+    )
+    .await;
+    assert_eq!(r["count"], 1);
+    assert_eq!(stars().await, 3);
     t.teardown().await;
 }
 

@@ -78,7 +78,7 @@ const MAX_SCAN_TUPLES: i32 = 20_000;
 
 const SORT_TIME: &str = "coalesce(a.taken_at, a.file_modified_at, a.created_at)";
 const LIST_COLS: &str = "a.id, a.original_name, a.content_type, a.size_bytes, a.width, a.height,
-        coalesce(a.taken_at, a.file_modified_at, a.created_at) AS sort_time, a.favorite, a.archived, a.hidden, a.thumbhash, a.burst_id";
+        coalesce(a.taken_at, a.file_modified_at, a.created_at) AS sort_time, a.favorite, a.rating, a.archived, a.hidden, a.thumbhash, a.burst_id";
 /// The camera as the facets list it ("Canon EOS R5", "Apple iPhone 15"): a stored generated column (migration 0011).
 const CAMERA_LABEL: &str = "a.camera_label";
 /// Lowercase extension of the original's file name (a stored generated column, migration 0011).
@@ -95,6 +95,8 @@ pub(super) struct SearchQuery {
     /// Last day (inclusive), `YYYY-MM-DD`, UTC.
     pub to: Option<String>,
     pub favorite: Option<bool>,
+    /// At least this many stars (1 to 5; `assets_rating_idx` holds the rated photos). Unrated photos never match.
+    pub rating: Option<i16>,
     /// `false` leaves archived photos out. They are in by default (they are only off the timeline, the map and the memories) and
     /// each result carries `archived`, which the app shows as a badge. Hidden photos are never in a search.
     pub include_archived: Option<bool>,
@@ -137,6 +139,8 @@ pub(super) struct Filters {
     from: Option<OffsetDateTime>,
     to_exclusive: Option<OffsetDateTime>,
     favorite: bool,
+    /// At least this many stars.
+    rating_min: Option<i16>,
     /// Leave archived photos out (`include_archived=false`).
     exclude_archived: bool,
     camera: Option<String>,
@@ -182,11 +186,17 @@ impl Filters {
             Some("other") => Some(FileType::Other),
             Some(_) => return Err(ApiError::BadRequest("type must be jpeg, heic, raw or other".into())),
         };
+        let rating_min = match q.rating {
+            None | Some(0) => None,
+            Some(n @ 1..=5) => Some(n),
+            Some(_) => return Err(ApiError::BadRequest("rating must be 1 to 5 (stars or more)".into())),
+        };
         let midnight = |d: Date| d.with_time(Time::MIDNIGHT).assume_utc();
         Ok(Self {
             from: from.map(midnight),
             to_exclusive: to.map(|d| midnight(d) + time::Duration::days(1)),
             favorite: q.favorite.unwrap_or(false),
+            rating_min,
             exclude_archived: q.include_archived == Some(false),
             camera: clean(&q.camera),
             lens: clean(&q.lens),
@@ -212,6 +222,7 @@ impl Filters {
         self.from.is_some()
             || self.to_exclusive.is_some()
             || self.favorite
+            || self.rating_min.is_some()
             || self.camera.is_some()
             || self.lens.is_some()
             || self.place.is_some()
@@ -249,6 +260,9 @@ impl Filters {
         }
         if self.favorite {
             qb.push(" AND a.favorite");
+        }
+        if let Some(n) = self.rating_min {
+            qb.push(" AND a.rating >= ").push_bind(n);
         }
         if let Some(c) = &self.camera {
             qb.push(format!(" AND lower({CAMERA_LABEL}) = lower("))
@@ -1287,6 +1301,8 @@ pub(super) struct Facets {
     with_location: i64,
     /// Photos with text read off them (the "has text" filter).
     with_text: i64,
+    /// "At least N stars" for N = 5 down to 1: how many photos have that many stars or more (0 entries left out).
+    ratings: Vec<Facet>,
     /// Photos that are, or have behind them, a file of each type (a JPEG + RAW pair counts under both).
     types: Vec<Facet>,
     cameras: Vec<Facet>,
@@ -1305,22 +1321,59 @@ const MAX_PLACES: i64 = 120;
 /// already chosen). Visible live photos only, like search itself.
 pub(super) async fn facets(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<Facets>> {
     let base = "FROM assets a WHERE a.owner_id = $1 AND a.deleted_at IS NULL AND a.primary_id IS NULL AND NOT a.hidden";
-    let (total, favorites, with_location, with_text, jpeg, heic, raw, other): (i64, i64, i64, i64, i64, i64, i64, i64) =
-        sqlx::query_as(&format!(
-            "SELECT count(*), count(*) FILTER (WHERE a.favorite),
-                    count(*) FILTER (WHERE a.latitude IS NOT NULL AND a.longitude IS NOT NULL),
-                    count(*) FILTER (WHERE EXISTS (SELECT 1 FROM asset_text xt WHERE xt.asset_id = a.id AND xt.has_text)),
-                    count(*) FILTER (WHERE {j}), count(*) FILTER (WHERE {h}), count(*) FILTER (WHERE {r}),
-                    count(*) FILTER (WHERE {o})
+    #[derive(FromRow)]
+    struct Counts {
+        total: i64,
+        favorites: i64,
+        with_location: i64,
+        with_text: i64,
+        r5: i64,
+        r4: i64,
+        r3: i64,
+        r2: i64,
+        r1: i64,
+        jpeg: i64,
+        heic: i64,
+        raw: i64,
+        other: i64,
+    }
+    let Counts {
+        total,
+        favorites,
+        with_location,
+        with_text,
+        r5,
+        r4,
+        r3,
+        r2,
+        r1,
+        jpeg,
+        heic,
+        raw,
+        other,
+    } = sqlx::query_as(&format!(
+        "SELECT count(*) AS total, count(*) FILTER (WHERE a.favorite) AS favorites,
+                    count(*) FILTER (WHERE a.latitude IS NOT NULL AND a.longitude IS NOT NULL) AS with_location,
+                    count(*) FILTER (WHERE EXISTS (SELECT 1 FROM asset_text xt WHERE xt.asset_id = a.id AND xt.has_text)) AS with_text,
+                    count(*) FILTER (WHERE a.rating >= 5) AS r5, count(*) FILTER (WHERE a.rating >= 4) AS r4,
+                    count(*) FILTER (WHERE a.rating >= 3) AS r3, count(*) FILTER (WHERE a.rating >= 2) AS r2,
+                    count(*) FILTER (WHERE a.rating >= 1) AS r1,
+                    count(*) FILTER (WHERE {j}) AS jpeg, count(*) FILTER (WHERE {h}) AS heic,
+                    count(*) FILTER (WHERE {r}) AS raw, count(*) FILTER (WHERE {o}) AS other
              {base}",
-            j = type_sql(FileType::Jpeg),
-            h = type_sql(FileType::Heic),
-            r = type_sql(FileType::Raw),
-            o = type_sql(FileType::Other),
-        ))
-        .bind(user.id)
-        .fetch_one(&s.db)
-        .await?;
+        j = type_sql(FileType::Jpeg),
+        h = type_sql(FileType::Heic),
+        r = type_sql(FileType::Raw),
+        o = type_sql(FileType::Other),
+    ))
+    .bind(user.id)
+    .fetch_one(&s.db)
+    .await?;
+    let ratings = [("5", r5), ("4", r4), ("3", r3), ("2", r2), ("1", r1)]
+        .into_iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(v, count)| Facet { value: v.into(), count })
+        .collect();
     let types = [("jpeg", jpeg), ("heic", heic), ("raw", raw), ("other", other)]
         .into_iter()
         .filter(|(_, n)| *n > 0)
@@ -1371,6 +1424,7 @@ pub(super) async fn facets(State(s): State<AppState>, user: AuthUser) -> ApiResu
         favorites,
         with_location,
         with_text,
+        ratings,
         types,
         cameras,
         lenses,

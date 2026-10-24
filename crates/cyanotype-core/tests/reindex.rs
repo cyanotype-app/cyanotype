@@ -1446,3 +1446,68 @@ async fn manifests_without_hidden_and_archived_still_read_and_hide_nothing() {
     assert!(!hidden && !archived);
     fx.teardown().await;
 }
+
+/// Star ratings (migration 0024) survive a bucket-only rebuild, with who set them; an unrated photo and a manifest from before
+/// ratings existed bring nothing back.
+#[tokio::test]
+async fn star_ratings_come_back_with_a_rebuilt_database() {
+    let Some(fx) = Fx::new().await else { return };
+    for (name, body) in [
+        ("five.jpg", &b"five"[..]),
+        ("file3.jpg", b"file3"),
+        ("cleared.jpg", b"cleared"),
+        ("none.jpg", b"none"),
+    ] {
+        let (k, s) = fx.put_original(fx.user, name, body, None).await;
+        fx.insert_row(fx.user, &k, &s, name).await;
+    }
+    for (name, stars, source) in [
+        ("five.jpg", 5i16, Some("user")),
+        ("file3.jpg", 3, Some("file")),
+        ("cleared.jpg", 0, Some("user")),
+    ] {
+        sqlx::query("UPDATE assets SET rating = $2, rating_source = $3 WHERE original_name = $1")
+            .bind(name)
+            .bind(stars)
+            .bind(source)
+            .execute(&fx.pool)
+            .await
+            .unwrap();
+    }
+    manifest::write_user(&fx.pool, &fx.storage, fx.user, 14).await.unwrap();
+    let key = manifest::list_all(&fx.storage).await.unwrap()[&fx.user][0].clone();
+    let text = String::from_utf8(fx.storage.get_bytes_limited(&key, 1 << 20).await.unwrap().to_vec()).unwrap();
+    // Additive fields on the asset lines, and only where they say something.
+    assert_eq!(text.matches("\"rating\":").count(), 3, "{text}");
+    assert_eq!(
+        text.matches("\"rating\":0,").count(),
+        1,
+        "a rating cleared on purpose is kept: {text}"
+    );
+    assert_eq!(text.matches("\"rating_source\":\"file\"").count(), 1, "{text}");
+
+    sqlx::query("DELETE FROM assets").execute(&fx.pool).await.unwrap();
+    let dry = fx.run(|_| {}).await;
+    assert_eq!(dry.ratings_restored, 3);
+    assert_eq!(fx.count("assets").await, 0);
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!((r.orphans_recreated, r.ratings_restored, r.errors), (4, 3, 0));
+    let got: Vec<(String, i16, Option<String>)> =
+        sqlx::query_as("SELECT original_name, rating, rating_source FROM assets ORDER BY original_name COLLATE \"C\"")
+            .fetch_all(&fx.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        got,
+        [
+            ("cleared.jpg".to_string(), 0, Some("user".to_string())),
+            ("file3.jpg".to_string(), 3, Some("file".to_string())),
+            ("five.jpg".to_string(), 5, Some("user".to_string())),
+            ("none.jpg".to_string(), 0, None),
+        ]
+    );
+    // A second run restores nothing more and changes nothing.
+    let again = fx.run(|o| o.apply = true).await;
+    assert_eq!((again.orphans, again.ratings_restored), (0, 0));
+    fx.teardown().await;
+}

@@ -3792,3 +3792,91 @@ body:has(.selection-bar) .scrubber {
   border-color: rgb(255 214 102 / 0.95);
   background: rgb(255 214 102 / 0.18);
 }
+
+/* ---- Star ratings ---------------------------------------------------------------------------------------------- */
+:root {
+  --star: #b7791f;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --star: #f0c040;
+  }
+}
+.stars {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  color: var(--muted);
+}
+.star {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 0.4rem;
+}
+.stars-readonly .star {
+  width: 1.2rem;
+  height: 1.2rem;
+  cursor: default;
+}
+.star.on {
+  color: var(--star);
+}
+.star:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--star) 18%, transparent);
+}
+.star:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.star:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+@media (pointer: coarse), (max-width: 640px) {
+  .stars:not(.stars-readonly) .star {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+}
+.lightbox-rating {
+  display: flex;
+  justify-content: center;
+  padding: 0.25rem 1rem 0;
+  max-width: 100%;
+}
+.lightbox .stars,
+.details-panel .stars {
+  color: #9db4c6;
+}
+.lightbox .star.on,
+.details-panel .star.on {
+  color: #f0c040;
+}
+.lightbox .star:hover:not(:disabled),
+.details-panel .star:hover:not(:disabled) {
+  background: rgb(255 255 255 / 0.14);
+}
+.rate-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.75rem 0 0.25rem;
+}
+.rate-option {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.75rem;
+  min-height: 2.75rem;
+  text-align: left;
+}

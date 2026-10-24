@@ -13,6 +13,7 @@ import { SortToggle } from "../components/SortToggle";
 import { usePrefs } from "../usePrefs";
 import { archiveMessage, emptyView, viewTitle, type ViewKind } from "../viewText";
 import { SelectionBar } from "../components/SelectionBar";
+import { RateTools } from "../components/RateTools";
 import { EditDialog, type EditKind } from "../components/EditDialog";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
 import { MAX_BULK_IDS } from "../api";
@@ -435,6 +436,20 @@ function LibraryView({
     },
     [items, setFavorite],
   );
+  // Stars: shown at once, taken back if the server refuses.
+  const rateOne = useCallback(
+    async (it: AssetListItem, rating: number) => {
+      const was = it.rating ?? 0;
+      patch(new Set([it.id]), { rating });
+      try {
+        await api.rateAssets([it.id], rating);
+      } catch (e) {
+        patch(new Set([it.id]), { rating: was });
+        failure(e, "Couldn’t rate.");
+      }
+    },
+    [patch, failure],
+  );
   const selectedItems = useMemo(() => {
     const ids = new Set(sel.ids);
     return items.filter((i) => ids.has(i.id));
@@ -579,6 +594,17 @@ function LibraryView({
           <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || bulkBusy} onClick={favoriteSelected}>
             {allSelectedFavorite ? "Unfavorite" : "Favorite"}
           </button>
+          <RateTools
+            target={sel.target(scope)}
+            count={sel.count}
+            disabled={sel.count === 0 || bulkBusy}
+            onDone={(_r, _n, message) => {
+              sel.setSelecting(false);
+              void refresh();
+              show({ message });
+            }}
+            onError={(e) => failure(e, "Couldn’t rate.")}
+          />
           {!hidden && (
             <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || bulkBusy} onClick={archiveSelected}>
               {archive ? "Restore" : "Archive"}
@@ -657,6 +683,7 @@ function LibraryView({
           onUnpair={(it) => void unpairItem(it)}
           onSimilar={(it) => navigate(similarUrl(it.id))}
           onFavorite={(it, value) => void setFavorite([it], value)}
+          onRate={(it, n) => void rateOne(it, n)}
           onArchive={hidden ? undefined : (it) => void archiveItems([it], it.archived !== true)}
           onHide={(it) => void hideItems([it.id], [it.id], !hidden)}
           refreshKey={albumsVersion}

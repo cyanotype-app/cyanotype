@@ -259,7 +259,7 @@ static PENDING: Mutex<Option<HashSet<Uuid>>> = Mutex::new(None);
 /// the daily one is up to a day old, so a photo hidden this morning would come back visible. Writing the owner's manifest
 /// shortly after every hide, unhide or archive (debounced per owner) shrinks that window to about half a minute. Best effort:
 /// a failure is only logged, the daily pass still runs.
-fn manifest_soon(s: &AppState, owner: Uuid) {
+pub(super) fn manifest_soon(s: &AppState, owner: Uuid) {
     {
         let mut guard = PENDING.lock().unwrap_or_else(|p| p.into_inner());
         if !guard.get_or_insert_with(HashSet::new).insert(owner) {
