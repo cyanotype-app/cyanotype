@@ -1,6 +1,7 @@
 mod admin;
 mod budget;
 mod burst;
+mod dup;
 mod embed;
 mod embedded;
 mod exif;
@@ -160,6 +161,9 @@ async fn main() -> Result<()> {
     let waker = jobs::JobWaker::spawn(&db_cfg.url);
     tokio::spawn(sample_gauges(ctx.clone()));
     tokio::spawn(takeout_sweep(ctx.clone()));
+    if embedding {
+        tokio::spawn(dup::run_loop(ctx.clone()));
+    }
     admin::spawn(ctx.clone());
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);

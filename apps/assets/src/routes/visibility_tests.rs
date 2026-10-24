@@ -109,6 +109,8 @@ struct Library {
     /// A smart album (favorites) that matches the hidden photo too, and a link to it.
     smart: Uuid,
     smart_token: String,
+    /// The near-duplicate group of v1, v2 and the hidden photo.
+    dup: Uuid,
 }
 
 /// A library in which `h.jpg` is as exposed as a photo can be, then hidden through the API.
@@ -149,6 +151,18 @@ async fn library(t: &TestDb) -> Library {
             .await
             .unwrap();
     }
+    // A near-duplicate group of the two visible photos and the hidden one.
+    let dup: Uuid = sqlx::query_scalar("INSERT INTO duplicate_groups (owner_id) VALUES ($1) RETURNING id")
+        .bind(uid)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO duplicate_members (group_id, asset_id) SELECT $1, unnest($2::uuid[])")
+        .bind(dup)
+        .bind(vec![v1, v2, h])
+        .execute(&t.pool)
+        .await
+        .unwrap();
     // The hidden photo is v2's burst-mate and the album's cover.
     set(&t.pool, h, &format!("burst_id = '{v2}'")).await;
 
@@ -199,6 +213,7 @@ async fn library(t: &TestDb) -> Library {
         selection_token: selection_share["token"].as_str().unwrap().into(),
         smart,
         smart_token: smart_share["token"].as_str().unwrap().into(),
+        dup,
     }
 }
 
@@ -246,6 +261,8 @@ async fn a_hidden_photo_is_in_no_list_search_map_album_share_or_similar_result()
         "/assets/search?q=cat&favorite=true",
         "/assets/search?favorite=true",
         "/assets/search?rating=5",
+        "/assets/duplicates",
+        "/assets/duplicates?limit=1",
         "/assets/tags",
         "/assets/tags?q=secret",
         "/assets/tags?sort=count",
@@ -519,6 +536,80 @@ async fn a_hidden_photo_is_tagged_only_from_an_unlocked_session_and_its_tags_are
     .await;
     assert_eq!(r["removed"], 2);
     t.teardown().await;
+}
+
+#[tokio::test]
+async fn a_hidden_photo_is_in_a_duplicate_group_only_for_an_unlocked_session_and_is_never_merged_or_trashed_by_a_locked_one()
+ {
+    let Some(t) = TestDb::new().await else { return };
+    let l = library(&t).await;
+    let members = |v: &Value| -> Vec<Uuid> {
+        v["groups"][0]["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().parse().unwrap())
+            .collect()
+    };
+    // Locked: two members, never the hidden one; the total counts the group once.
+    let (_, v) = get(&l.app, &l.cookie, "/assets/duplicates").await;
+    assert_eq!(v["total"], 1);
+    assert_eq!(sorted_ids(members(&v)), sorted_ids(vec![l.v1, l.v2]));
+    // Unlocked: all three.
+    unlock(&t.pool, &l.cookie, 10).await;
+    let (_, v) = get(&l.app, &l.cookie, "/assets/duplicates").await;
+    assert_eq!(members(&v).len(), 3);
+    // A session that is locked again (another one of the same user) keeps v1: only v2 goes to the trash, the hidden photo is untouched.
+    let other = second_session(&t.pool, l.uid).await;
+    let (st, r) = post(
+        &l.app,
+        &other,
+        &format!("/assets/duplicates/{}/keep", l.dup),
+        json!({"keep": l.v1}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{r}");
+    assert_eq!(r["trashed"], json!([l.v2]));
+    let (deleted, hidden): (bool, bool) =
+        sqlx::query_as("SELECT deleted_at IS NOT NULL, hidden FROM assets WHERE id = $1")
+            .bind(l.hidden)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+    assert!(
+        !deleted && hidden,
+        "a locked session neither trashes nor unhides a hidden photo"
+    );
+    // The hidden photo's caption, tag and place were not merged onto v1 (nor anything of v1 onto it).
+    let tags: i64 = sqlx::query_scalar("SELECT count(*) FROM asset_tags WHERE asset_id = $1 AND tag_id IN (SELECT id FROM tags WHERE name = 'secret-tag')")
+        .bind(l.v1)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(tags, 0);
+    let caption: Option<String> = sqlx::query_scalar("SELECT caption FROM assets WHERE id = $1")
+        .bind(l.v1)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(caption, None, "the hidden photo's caption stays with it");
+    // A group a locked session cannot see at all (fewer than two visible members) is a 404-free empty list, and keeping it is refused.
+    let (_, v) = get(&l.app, &other, "/assets/duplicates").await;
+    assert_eq!(v["total"], 0);
+    let (st, _) = post(
+        &l.app,
+        &other,
+        &format!("/assets/duplicates/{}/keep", l.dup),
+        json!({"keep": l.hidden}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    t.teardown().await;
+}
+
+fn sorted_ids(mut v: Vec<Uuid>) -> Vec<Uuid> {
+    v.sort();
+    v
 }
 
 #[tokio::test]

@@ -9,6 +9,7 @@
 //! ("Semantic search model") for the licences, the bake-off between them and the measured sizes.
 mod burst;
 mod cutoff;
+mod duplicates;
 mod image_tower;
 pub mod split;
 mod text_tower;
@@ -17,6 +18,7 @@ use std::path::PathBuf;
 
 pub use burst::BurstRules;
 pub use cutoff::{ImageRules, MIN_BEFORE_GAP, Rules, Tiers, image_tiers, image_tiers_with, tiers};
+pub use duplicates::DuplicateRules;
 pub use image_tower::{ImageEncoder, preprocess_rgb8};
 pub use text_tower::TextEncoder;
 

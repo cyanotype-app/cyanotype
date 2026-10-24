@@ -13,6 +13,7 @@ import { TakeoutImport } from "./pages/TakeoutImport";
 import { AuditPage } from "./pages/admin/AuditPage";
 import { HealthPage } from "./pages/admin/HealthPage";
 import { Invites } from "./pages/admin/Invites";
+import { Duplicates } from "./pages/Duplicates";
 import { HiddenPage } from "./pages/HiddenPage";
 import { Library } from "./pages/Library";
 import { MemoriesPage } from "./pages/MemoriesPage";
@@ -52,6 +53,7 @@ export function App() {
         <Route path="/memories" element={<MemoriesPage />} />
         <Route path="/map" element={<MapPage />} />
         <Route path="/search" element={<SearchPage />} />
+        <Route path="/duplicates" element={<Duplicates />} />
         <Route path="/tags" element={<TagsPage />} />
         <Route path="/tags/:id" element={<TagPage />} />
         <Route path="/albums" element={<Albums />} />

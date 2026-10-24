@@ -1560,3 +1560,79 @@ a photo that starts to match appears and one that stops disappears, in the album
   without it; `key_scope_tests.rs`: the new route.
 - `crates/cyanotype-core/tests/reindex.rs`: a smart album's rules and link come back, with no members.
 - Web: `smartText.test.ts`, `SmartAlbumEditor.test.tsx` (the editor, the Albums list, the album page); `e2e/smart-layout.spec.ts` (Playwright).
+
+# Near-duplicates
+
+Photos that are the same picture twice (a resized or re-saved copy, an export, a shot repeated moments later) are found in the background and
+offered for review: side by side, the best one preselected, the others to the trash after what they carry has been merged onto the one kept
+(migration 0027). Exact copies cannot exist (the content hash is unique per owner); this is for re-encodes and near-identical shots.
+
+## What the user sees
+
+- *More*, *Duplicates*: **Find duplicates** (and, for an admin, *Check every account*), a line with the state of the check ("Last checked 3 min ago
+  (12,345 photos): 2 groups found."), then the groups. Each photo of a group is a card with its thumbnail (click: look at it full size and
+  step through the group), **Keep this one** (the suggested photo is preselected and marked *Suggested*), its **resolution**, **size**
+  (with how it compares to the largest), **date**, and how much **metadata** it carries (EXIF fields, location, caption, tags), a heart and the stars.
+- **Keep selected, trash N others**: the others go to the trash, the toast says what was merged and has **Undo**. **Not duplicates** dismisses
+  the group **permanently**.
+- A check also runs by itself a few minutes after the last upload of an import has been embedded; the page follows a running check.
+
+## How it works
+
+- **Finding** (`cyanotype_core::duplicates`, run by the worker's `dup.rs` loop): for each live photo of the owner that has an image vector (not
+  the hidden RAW half of a pair, never a trashed one) the HNSW index gives its 12 nearest neighbours, and a pair is a duplicate when the cosine
+  reaches a threshold that depends on what else the two share: **the same camera and capture times within 60 s** (0.85), **the same pixel
+  dimensions** (0.92), or **neither has a capture time** (a copy that lost its EXIF: 0.94); anything else is not a duplicate. (SigLIP 2; CLIP's are one
+  point lower. Calibration, precision and recall: `docs/build.md`, "Near-duplicate threshold".) A pair from **one burst** is never a duplicate (bursts
+  have their own grouping), nor a pair the owner dismissed. Pairs join into groups by connected components; a group of more than 50 photos is left out and
+  counted (`too_big`). The groups of a scan replace the owner's previous ones; they are derived data (nothing to back up: the next check finds them).
+- **Requests** (`duplicate_scans`): *Find duplicates* is a manual request (runs at once); an embedded photo makes an automatic one that waits until
+  the owner's uploads have been quiet for 5 minutes (each new embedding moves it back), so one check follows a whole import. A manual request is never
+  downgraded by an automatic one, a request made while a check runs stays wanted, a check that died is retried after 10 minutes, a failed one is
+  recorded and not retried in a loop. Admins can ask for every account (`POST /assets/admin/duplicates/scan`, audited with a count).
+- **Best photo**: most pixels, then most metadata (EXIF fields, plus a place, a capture time, a caption and one per tag), then a favorite, then the
+  larger file, then the lowest id.
+- **Keeping one** (`POST /assets/duplicates/{id}/keep {keep}`): merged onto the kept photo, additively (nothing it has is taken away): the **favorite**
+  flag, the **highest rating** (as the owner's), **albums** (and a cover that was one of the others), **tags** (the owner's mark wins over an imported
+  one), **captions** (every distinct one, the kept photo's first, separated by a blank line, cut at 2,000 characters), a **location** and a **capture
+  time** only if the kept photo has none. Captions, place and time are written as the photo's **edits** (the object in the bucket first, as every edit is),
+  so a rebuild keeps them. Then the others go to the **trash** (a RAW behind a copy goes with it), where **Undo** (or the trash page) restores them: **the
+  merge stays after an undo**, on purpose: it only adds to the kept photo, and undoing it would need a copy of what was there. Audited as
+  `duplicates.keep` with counts only (no ids, no names). The group is dropped.
+- **Hidden photos.** Hidden photos are grouped like any other, but a session that has not unlocked the Hidden view neither sees them in a group nor a
+  group with fewer than two visible photos, and *Keep* acts on the visible members only: a locked session never trashes or merges a hidden photo, and
+  nothing of a hidden photo (caption, tag, place) is copied onto a visible one. API keys never have the unlock. Another owner's group is a 404.
+- **Exclusions**: bursts, hidden photos (unless unlocked), trashed photos, the RAW half of a pair, other users' photos (the index is shared; a
+  neighbour that is not the owner's is skipped).
+- **Not duplicates** writes every pair of the group to `duplicate_dismissals` (`a < b`), which a check honours and which goes with the photos when
+  they are purged. Dismissals are not in the recovery manifest (below).
+- **Recovery.** Groups and dismissals are database-only: after a bucket-only rebuild the groups are found again by the first check (an automatic one
+  follows the re-embedding), and **dismissed groups come back for review**. The merges that "Keep" made (captions, place and time) are edits in
+  the bucket, tags/albums/ratings/favorites are in the manifests, and the trashed photos are in the trash state the manifest carries.
+- **Measured** (50,000 photos for one owner plus 10,000 for another, 768-dimension random vectors, so the HNSW graph is as hard as it gets): the
+  candidate list 90 ms; 500 photos' twelve neighbours each 1.1 s through `asset_embeddings_siglip2_b16_hnsw`, so a whole scan is about two minutes
+  of background database work (the worker holds one connection and nothing else; searches keep their latency); listing groups is a small indexed
+  query over `duplicate_groups` and the members' own primary keys.
+
+## API (assets service, owner-scoped)
+
+| Request | Effect |
+|---|---|
+| `GET /assets/duplicates?limit=&cursor=` | `{groups: [{id, members: [...]}], total, next_cursor, scan}`; each member is a list item plus `exif_fields`, `has_location`, `has_caption`, `tag_count`, `best`. |
+| `POST /assets/duplicates/scan` | Check this library now. `{scan: {state: wanted\|running\|idle\|never, ...}}`. |
+| `POST /assets/admin/duplicates/scan` | Admins: every account with photos. `{accounts}`. |
+| `POST /assets/duplicates/{id}/keep {keep}` | Merge and trash. `{kept, trashed: [ids], merged: {...counts}}`. `400` when `keep` is not a visible member or there is nothing to merge. |
+| `POST /assets/duplicates/{id}/dismiss` | "Not duplicates", permanent. `{dismissed}`. |
+
+## Tests
+
+- `crates/cyanotype-core/src/duplicates.rs` (unit): the three rules and what none of them admits, bursts, components. `apps/assets/src/routes/duplicates.rs`
+  (unit): the best photo and the merged caption. `duplicates_tests.rs` (Postgres, S3 for the edits): the scan on stored vectors (each rule, the
+  exclusions, a rescan, a trashed member), chains and a group that is too big, dismissals (permanent, audited, owner only, cascade), the review
+  (resolution, size, metadata, best, paging), keeping one (favorite, rating, albums, cover, tags, captions, location, the edits object, trash and
+  the RAW, audit, Undo), what is never overwritten, the request state machine (manual, automatic and quiet, a request during a scan, the admin button),
+  and the plan of the neighbour lookup. `visibility_tests.rs`: a group with a hidden member (locked and unlocked lists, a locked keep never trashes or
+  merges it); `key_scope_tests.rs`: the routes.
+- `cyanotype-clip` `duplicate_bakeoff` (ignored, `just bakeoff`-style): the calibration.
+- Web: `dupText` and `Duplicates.test.tsx` (the page, keep and Undo, dismiss, a check with polling, the admin button, paging); `e2e/duplicates-layout.spec.ts`
+  (Playwright).

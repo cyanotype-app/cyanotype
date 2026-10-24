@@ -649,3 +649,158 @@ fn burst_bakeoff() {
         }
     }
 }
+
+// ---- near-duplicates ------------------------------------------------------------------------------------------------------
+
+/// Re-encodes and resizes of a photo, the way a copy comes about: a smaller export, a messaging app's recompression, a screenshot-size
+/// copy, a copy with a thin border cropped off. Each is a (name, pixels) pair of the same picture.
+fn duplicate_variants(p: &image::RgbImage) -> Vec<(&'static str, image::RgbImage)> {
+    use image::{codecs::jpeg::JpegEncoder, imageops, imageops::FilterType};
+    let jpeg = |img: &image::RgbImage, q: u8| -> image::RgbImage {
+        let mut out = Vec::new();
+        JpegEncoder::new_with_quality(&mut out, q)
+            .encode_image(img)
+            .expect("encode");
+        image::load_from_memory_with_format(&out, image::ImageFormat::Jpeg)
+            .expect("decode")
+            .to_rgb8()
+    };
+    let scaled = |f: f32| {
+        imageops::resize(
+            p,
+            ((p.width() as f32 * f) as u32).max(32),
+            ((p.height() as f32 * f) as u32).max(32),
+            FilterType::Lanczos3,
+        )
+    };
+    let (w, h) = (p.width(), p.height());
+    let (dx, dy) = (w * 3 / 100, h * 3 / 100);
+    vec![
+        ("half size", scaled(0.5)),
+        ("quarter size", scaled(0.25)),
+        ("same size, JPEG q70", jpeg(p, 70)),
+        ("same size, JPEG q40", jpeg(p, 40)),
+        ("half size, JPEG q60", jpeg(&scaled(0.5), 60)),
+        (
+            "3 % border cropped",
+            imageops::crop_imm(p, dx, dy, w - 2 * dx, h - 2 * dy).to_image(),
+        ),
+    ]
+}
+
+/// The calibration of the near-duplicate threshold (`docs/build.md`, "Near-duplicate threshold"): copies of every photo of the
+/// evaluation set (resized, recompressed, cropped) against pairs of different photos, and against the hardest different pairs (the
+/// same category: other dogs, other beaches). Prints precision and recall for a sweep of cosine thresholds.
+#[test]
+#[ignore = "the near-duplicate calibration: needs the evaluation set and the models, prints tables"]
+fn duplicate_bakeoff() {
+    let Some(dir) = eval_dir() else {
+        panic!("evaluation set not found: scripts/fetch-eval-set.sh, then SEARCH_EVAL_DIR=models/eval");
+    };
+    let photos = photos(&dir);
+    // `DUP_MODEL=CLIP` (or `SigLIP`) runs one model; by default both shipped ones.
+    let only = std::env::var("DUP_MODEL").unwrap_or_default();
+    for v in variants()
+        .into_iter()
+        .filter(|v| v.name.contains("shipped") && v.name.contains(&only))
+    {
+        let enc = ImageEncoder::load_file(v.model, &v.vision, 4).unwrap();
+        let embed = |img: &image::RgbImage| {
+            let pre = preprocess_rgb8(v.model, img.width(), img.height(), img.as_raw()).unwrap();
+            enc.embed(&[pre]).unwrap().remove(0)
+        };
+        let originals: Vec<Vec<f32>> = photos.iter().map(|p| embed(&p.pixels)).collect();
+        // Positives: (original, copy) for every photo and kind of copy, and per kind.
+        let mut kinds: BTreeMap<&'static str, Vec<f32>> = BTreeMap::new();
+        for (i, p) in photos.iter().enumerate() {
+            for (name, img) in duplicate_variants(&p.pixels) {
+                kinds.entry(name).or_default().push(cosine(&originals[i], &embed(&img)));
+            }
+        }
+        // Negatives: every pair of different photos; and the same-category ones among them.
+        let (mut distinct, mut same_category): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
+        for i in 0..photos.len() {
+            for j in i + 1..photos.len() {
+                let c = cosine(&originals[i], &originals[j]);
+                distinct.push(c);
+                if photos[i].category == photos[j].category {
+                    same_category.push(c);
+                }
+            }
+        }
+        let mut positives: Vec<f32> = kinds.values().flatten().copied().collect();
+        for list in [&mut positives, &mut distinct, &mut same_category] {
+            list.sort_by(f32::total_cmp);
+        }
+        let at = |v: &[f32], p: f64| v[((v.len() - 1) as f64 * p) as usize];
+        println!("\n== {} ==", v.name);
+        println!(
+            "copies ({} pairs): min {:.4}, 1 % {:.4}, 5 % {:.4}, median {:.4}",
+            positives.len(),
+            positives[0],
+            at(&positives, 0.01),
+            at(&positives, 0.05),
+            at(&positives, 0.5)
+        );
+        for (name, list) in &mut kinds {
+            list.sort_by(f32::total_cmp);
+            println!(
+                "  {name:<22} min {:.4}, 1 % {:.4}, 5 % {:.4}, median {:.4}",
+                list[0],
+                at(list, 0.01),
+                at(list, 0.05),
+                at(list, 0.5)
+            );
+        }
+        println!(
+            "different photos ({} pairs): median {:.3}, 99 % {:.3}, 99.9 % {:.4}, max {:.4}",
+            distinct.len(),
+            at(&distinct, 0.5),
+            at(&distinct, 0.99),
+            at(&distinct, 0.999),
+            distinct[distinct.len() - 1]
+        );
+        println!(
+            "same-category pairs ({}): median {:.3}, 99 % {:.3}, max {:.4}",
+            same_category.len(),
+            at(&same_category, 0.5),
+            at(&same_category, 0.99),
+            same_category[same_category.len() - 1]
+        );
+        println!(
+            "\nthreshold sweep over {} copies and {} different pairs",
+            positives.len(),
+            distinct.len()
+        );
+        println!("  min cosine | recall (copies found) | different pairs merged | precision | same-category merged");
+        for t in [
+            0.70f32, 0.75, 0.80, 0.85, 0.88, 0.90, 0.92, 0.94, 0.95, 0.96, 0.97, 0.98, 0.99,
+        ] {
+            let tp = positives.iter().filter(|c| **c >= t).count();
+            let fp = distinct.iter().filter(|c| **c >= t).count();
+            let fp_cat = same_category.iter().filter(|c| **c >= t).count();
+            println!(
+                "  {t:>9.3}  | {:>6.2} % ({tp:>4}/{}) | {fp:>5} ({:.3} %) | {:>6.2} % | {fp_cat}",
+                tp as f64 * 100.0 / positives.len() as f64,
+                positives.len(),
+                fp as f64 * 100.0 / distinct.len() as f64,
+                tp as f64 * 100.0 / (tp + fp).max(1) as f64
+            );
+        }
+        // Which different pairs are at the top (are they the same picture twice?).
+        let mut top: Vec<(f32, usize, usize)> = Vec::new();
+        for i in 0..photos.len() {
+            for j in i + 1..photos.len() {
+                top.push((cosine(&originals[i], &originals[j]), i, j));
+            }
+        }
+        top.sort_by(|a, b| b.0.total_cmp(&a.0));
+        println!("\nthe closest different pairs:");
+        for (c, i, j) in top.iter().take(8) {
+            println!(
+                "  {c:.4}  photo {i} ({}) and {j} ({})",
+                photos[*i].category, photos[*j].category
+            );
+        }
+    }
+}

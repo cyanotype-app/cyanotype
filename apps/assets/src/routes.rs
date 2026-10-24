@@ -29,6 +29,9 @@ mod details;
 #[cfg(test)]
 mod details_tests;
 mod download;
+mod duplicates;
+#[cfg(test)]
+mod duplicates_tests;
 mod edits;
 #[cfg(test)]
 mod edits_tests;
@@ -149,6 +152,11 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/tags/apply", post(tags::apply))
         .route("/assets/tags/{id}", patch(tags::rename).delete(tags::remove))
         .route("/assets/tags/{id}/merge", post(tags::merge))
+        .route("/assets/duplicates", get(duplicates::list))
+        .route("/assets/duplicates/scan", post(duplicates::scan))
+        .route("/assets/duplicates/{id}/keep", post(duplicates::keep))
+        .route("/assets/duplicates/{id}/dismiss", post(duplicates::dismiss))
+        .route("/assets/admin/duplicates/scan", post(duplicates::scan_all))
         .route("/assets/edits", post(edits::edit))
         .route("/assets/places", get(edits::places))
         .route("/assets/processing", get(processing::status))
@@ -955,7 +963,7 @@ async fn complete(
     Ok((StatusCode::CREATED, Json(serde_json::json!({"asset_id": asset_id}))))
 }
 
-#[derive(Serialize, FromRow)]
+#[derive(Serialize, FromRow, Clone)]
 struct AssetSummary {
     id: Uuid,
     original_name: String,
