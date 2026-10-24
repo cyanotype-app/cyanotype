@@ -1,4 +1,4 @@
-import type { Album, AssetDetail, AssetListItem, PhotoDetails, TrashItem } from "../api";
+import type { Album, AssetDetail, AssetListItem, Person, PhotoDetails, TrashItem } from "../api";
 
 export const item = (n: number, over: Partial<AssetListItem> = {}): AssetListItem => ({
   id: `id-${n}`,
@@ -113,3 +113,14 @@ export const withRaw = (n: number, over: Partial<AssetListItem> = {}): AssetList
     ],
     ...over,
   });
+
+/** A person with a cover face. */
+export const person = (id: string, name: string | null, photos = 3, over: Partial<Person> = {}): Person => ({
+  id,
+  name,
+  hidden: false,
+  faces: photos,
+  photos,
+  cover: { face_id: `f-${id}`, asset_id: `a-${id}`, box: [0.4, 0.3, 0.2, 0.2], preview_url: `https://s3.test/preview-${id}` },
+  ...over,
+});

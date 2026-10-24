@@ -15,5 +15,7 @@ ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "
 [dev-dependencies]
 # Only the memory benchmark (examples/bench.rs) loads the search model next to the face models.
 cyanotype-clip.workspace = true
+# The grouping thresholds (cyanotype_core::people_math) are measured by tests/bakeoff.rs on the evaluation photos.
+cyanotype-core.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 serde_json.workspace = true

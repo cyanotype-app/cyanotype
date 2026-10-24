@@ -51,6 +51,7 @@ async fn ranges_of_the_installed_archives_are_relayed_and_nothing_else_is() {
         purge_wake: Default::default(),
         text: std::sync::Arc::new(crate::testutil::FakeText::default()),
         search: crate::testutil::default_search(),
+        faces_enabled: false,
     });
     let (_, key) = user(&t.pool, "tiles@example.com").await;
     // A stand-in archive: 5000 recognisable bytes, bigger than the range cap is not needed to test the cap itself

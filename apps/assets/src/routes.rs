@@ -50,6 +50,9 @@ mod map_tests;
 mod memories;
 #[cfg(test)]
 mod pair_tests;
+mod people;
+#[cfg(test)]
+mod people_tests;
 mod processing;
 mod ratings;
 #[cfg(test)]
@@ -154,6 +157,18 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/tags/apply", post(tags::apply))
         .route("/assets/tags/{id}", patch(tags::rename).delete(tags::remove))
         .route("/assets/tags/{id}/merge", post(tags::merge))
+        .route("/assets/people/status", get(people::status))
+        .route("/assets/people", get(people::list))
+        .route(
+            "/assets/people/{id}",
+            get(people::get).patch(people::patch).delete(people::remove),
+        )
+        .route("/assets/people/{id}/merge", post(people::merge))
+        .route("/assets/people/{id}/photos", get(people::photos))
+        .route("/assets/people/{id}/faces/remove", post(people::remove_faces))
+        .route("/assets/people/{id}/suggestions", get(people::suggestions))
+        .route("/assets/faces/{id}/assign", post(people::assign))
+        .route("/assets/faces/{id}/reject", post(people::reject))
         .route("/assets/duplicates", get(duplicates::list))
         .route("/assets/duplicates/scan", post(duplicates::scan))
         .route("/assets/duplicates/{id}/keep", post(duplicates::keep))
@@ -194,6 +209,7 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/{id}/similar", get(similar::similar))
         .route("/assets/{id}/details", get(details::get))
         .route("/assets/{id}/text", get(text::get))
+        .route("/assets/{id}/faces", get(people::of_photo))
         .route("/assets/{id}/download", get(download::download))
         .route("/assets/{id}/download/edited", get(download::download_edited))
         .route("/assets/{id}", get(get_one))
@@ -1460,6 +1476,7 @@ mod tests {
             purge_wake: Default::default(),
             text: std::sync::Arc::new(crate::testutil::FakeText::default()),
             search: crate::testutil::default_search(),
+            faces_enabled: false,
         });
 
         let mut seen = Vec::new();
@@ -1618,6 +1635,7 @@ mod tests {
             purge_wake: Default::default(),
             text: std::sync::Arc::new(crate::testutil::FakeText::default()),
             search: crate::testutil::default_search(),
+            faces_enabled: false,
         });
         let url = |n: i32| proxy_part_url(upload_id, n);
 
@@ -1872,6 +1890,7 @@ mod tests {
             purge_wake: Default::default(),
             text: std::sync::Arc::new(crate::testutil::FakeText::default()),
             search: crate::testutil::default_search(),
+            faces_enabled: false,
         });
 
         let list = get_json(&app, "/assets", key).await;

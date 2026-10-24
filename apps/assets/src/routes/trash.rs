@@ -563,6 +563,49 @@ mod tests {
             .await
             .unwrap();
         }
+        // ... and so must the people and rejections: the unnamed person who only had that face goes, the one the owner named stays
+        // (without the photo), and the "not this person" decisions about the purged photo's face go with it.
+        let face_of = |a: Uuid| {
+            let pool = t.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, Uuid>("SELECT id FROM faces WHERE asset_id = $1")
+                    .bind(a)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        let (gone_face, kept_face) = (face_of(gone).await, face_of(kept).await);
+        let unnamed: Uuid = sqlx::query_scalar("INSERT INTO people (owner_id) VALUES ($1) RETURNING id")
+            .bind(uid)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+        let named: Uuid =
+            sqlx::query_scalar("INSERT INTO people (owner_id, name) VALUES ($1, 'Person A') RETURNING id")
+                .bind(uid)
+                .fetch_one(&t.pool)
+                .await
+                .unwrap();
+        sqlx::query("UPDATE faces SET person_id = $2 WHERE id = $1")
+            .bind(gone_face)
+            .bind(unnamed)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE faces SET person_id = $2 WHERE id = $1")
+            .bind(kept_face)
+            .bind(named)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO face_rejections (face_id, person_id) VALUES ($1, $2), ($3, $2)")
+            .bind(gone_face)
+            .bind(named)
+            .bind(kept_face)
+            .execute(&t.pool)
+            .await
+            .unwrap();
 
         // A live item is not purgeable ("only items already in trash").
         assert_eq!(
@@ -616,6 +659,25 @@ mod tests {
         assert_eq!(
             *objects.deleted.lock().unwrap(),
             vec![(format!("originals/{uid}/gone.jpg"), format!("derived/{uid}/{gone}/"))]
+        );
+        let people: Vec<Option<String>> = sqlx::query_scalar("SELECT name FROM people ORDER BY name")
+            .fetch_all(&t.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            people,
+            vec![Some("Person A".to_string())],
+            "the unnamed person with no face left went, the named one stayed"
+        );
+        assert_eq!(
+            count(
+                &t.pool,
+                "SELECT count(*) FROM face_rejections WHERE person_id = $1",
+                named
+            )
+            .await,
+            1,
+            "only the kept photo's rejection is left"
         );
         // Re-running is a no-op; the live and the merely trashed item are untouched.
         assert_eq!(purge::sweep(&t.pool, &objects).await.unwrap(), purge::Swept::default());

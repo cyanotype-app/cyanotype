@@ -760,6 +760,7 @@ async fn search_performance_on_50k_photos() {
         purge_wake: Default::default(),
         text: fixed.clone(),
         search: Arc::new(crate::search::SearchState::uncached(model, 95)),
+        faces_enabled: false,
     };
     let mut texts: Vec<String> = Vec::new();
     for _ in 0..40 {
@@ -912,6 +913,7 @@ async fn similar_performance_on_50k_photos() {
         text: Arc::new(crate::testutil::FakeText::default()),
         // The seed script writes CLIP vectors.
         search: Arc::new(crate::search::SearchState::uncached(cyanotype_clip::Model::ClipB32, 95)),
+        faces_enabled: false,
     };
     let sources: Vec<Uuid> =
         sqlx::query_scalar("SELECT asset_id FROM (SELECT asset_id FROM asset_embeddings ORDER BY random() LIMIT 40) s")
