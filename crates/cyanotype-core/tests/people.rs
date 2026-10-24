@@ -166,12 +166,12 @@ async fn count(pool: &PgPool, sql: &str) -> i64 {
 async fn a_rescan_after_a_rotate_keeps_people_rejections_and_the_cover_even_though_the_faces_moved() {
     let Some(t) = TestDb::new().await else { return };
     let owner = user(&t.pool).await;
-    let (ann, bob) = (identity(1), identity(2));
+    let (alpha, bravo) = (identity(1), identity(2));
     let a = asset(&t.pool, owner).await;
     store(
         &t.pool,
         a,
-        &[nf(B1, Some(shot(&ann, 10))), nf(B2, Some(shot(&bob, 11)))],
+        &[nf(B1, Some(shot(&alpha, 10))), nf(B2, Some(shot(&bravo, 11)))],
     )
     .await;
     let (f0, f1) = (face_of(&t.pool, a, 0).await, face_of(&t.pool, a, 1).await);
@@ -195,8 +195,8 @@ async fn a_rescan_after_a_rotate_keeps_people_rejections_and_the_cover_even_thou
         &t.pool,
         a,
         &[
-            nf([0.3, 0.6, 0.2, 0.2], Some(shot(&bob, 21))),
-            nf([0.7, 0.7, 0.2, 0.2], Some(shot(&ann, 20))),
+            nf([0.3, 0.6, 0.2, 0.2], Some(shot(&bravo, 21))),
+            nf([0.7, 0.7, 0.2, 0.2], Some(shot(&alpha, 20))),
         ],
     )
     .await;
@@ -325,9 +325,9 @@ async fn photos_of(pool: &PgPool, owner: Uuid, who: &[f32], n: u64, seed: u64) -
 async fn unassigned_faces_become_people_only_when_there_are_enough_of_them() {
     let Some(t) = TestDb::new().await else { return };
     let owner = user(&t.pool).await;
-    let (ann, bob, cy) = (identity(10), identity(11), identity(12));
-    let a = photos_of(&t.pool, owner, &ann, 4, 1).await;
-    let b = photos_of(&t.pool, owner, &bob, 3, 2).await;
+    let (alpha, bravo, cy) = (identity(10), identity(11), identity(12));
+    let a = photos_of(&t.pool, owner, &alpha, 4, 1).await;
+    let b = photos_of(&t.pool, owner, &bravo, 3, 2).await;
     let c = photos_of(&t.pool, owner, &cy, 2, 3).await;
     // A face too small for a fingerprint is never grouped, and a lone stranger stays alone.
     let (_, tiny) = {
@@ -381,29 +381,33 @@ async fn unassigned_faces_become_people_only_when_there_are_enough_of_them() {
 async fn a_new_face_joins_the_person_it_looks_like_unless_it_was_rejected_from_them_or_two_people_look_alike() {
     let Some(t) = TestDb::new().await else { return };
     let owner = user(&t.pool).await;
-    let (ann, bob) = (identity(20), identity(21));
+    let (alpha, bravo) = (identity(20), identity(21));
     let pa = person(&t.pool, owner, Some("Person E")).await;
     let pb = person(&t.pool, owner, None).await;
-    for f in photos_of(&t.pool, owner, &ann, 3, 1).await {
+    for f in photos_of(&t.pool, owner, &alpha, 3, 1).await {
         put(&t.pool, f, pa, "user").await;
     }
-    for f in photos_of(&t.pool, owner, &bob, 3, 2).await {
+    for f in photos_of(&t.pool, owner, &bravo, 3, 2).await {
         put(&t.pool, f, pb, "auto").await;
     }
-    let new_ann = photo_with(&t.pool, owner, shot(&ann, 500)).await.1;
-    let rejected_ann = photo_with(&t.pool, owner, shot(&ann, 501)).await.1;
-    reject(&t.pool, rejected_ann, pa).await;
+    let new_ann = photo_with(&t.pool, owner, shot(&alpha, 500)).await.1;
+    let rejected_alpha = photo_with(&t.pool, owner, shot(&alpha, 501)).await.1;
+    reject(&t.pool, rejected_alpha, pa).await;
     let stranger = photo_with(&t.pool, owner, identity(22)).await.1;
-    // Halfway between Ann and Bob: two people alike, so neither.
-    let between = photo_with(&t.pool, owner, unit(ann.iter().zip(&bob).map(|(a, b)| a + b).collect()))
-        .await
-        .1;
+    // Halfway between Alpha and Bravo: two people alike, so neither.
+    let between = photo_with(
+        &t.pool,
+        owner,
+        unit(alpha.iter().zip(&bravo).map(|(a, b)| a + b).collect()),
+    )
+    .await
+    .1;
 
     let r = people::run(&t.pool, owner).await.unwrap();
     assert_eq!(r.assigned, 1);
     assert_eq!(who(&t.pool, new_ann).await, (Some(pa), "auto".to_string()));
     assert_eq!(
-        who(&t.pool, rejected_ann).await.0,
+        who(&t.pool, rejected_alpha).await.0,
         None,
         "never to a person it was rejected from"
     );
@@ -416,13 +420,13 @@ async fn a_new_face_joins_the_person_it_looks_like_unless_it_was_rejected_from_t
 async fn decisions_of_the_owner_win_and_other_owners_are_invisible() {
     let Some(t) = TestDb::new().await else { return };
     let (me, other) = (user(&t.pool).await, user(&t.pool).await);
-    let ann = identity(30);
+    let alpha = identity(30);
     // Mine: three faces of one look, put by me in a person named for someone else's face.
-    let mine = photos_of(&t.pool, me, &ann, 3, 1).await;
+    let mine = photos_of(&t.pool, me, &alpha, 3, 1).await;
     let wrong_person = person(&t.pool, me, Some("Person F")).await;
     put(&t.pool, mine[0], wrong_person, "user").await;
     // Another owner has people of the same look: nothing crosses.
-    let theirs = photos_of(&t.pool, other, &ann, 4, 2).await;
+    let theirs = photos_of(&t.pool, other, &alpha, 4, 2).await;
     let their_person = person(&t.pool, other, None).await;
     for f in &theirs[..3] {
         put(&t.pool, *f, their_person, "auto").await;
@@ -459,14 +463,14 @@ async fn decisions_of_the_owner_win_and_other_owners_are_invisible() {
 async fn faces_of_one_photo_are_never_grouped_as_one_person() {
     let Some(t) = TestDb::new().await else { return };
     let owner = user(&t.pool).await;
-    let ann = identity(40);
+    let alpha = identity(40);
     // Twins in every photo: the same look twice in each of three photos.
     for i in 0..3 {
         let a = asset(&t.pool, owner).await;
         store(
             &t.pool,
             a,
-            &[nf(B1, Some(shot(&ann, 600 + i))), nf(B2, Some(shot(&ann, 700 + i)))],
+            &[nf(B1, Some(shot(&alpha, 600 + i))), nf(B2, Some(shot(&alpha, 700 + i)))],
         )
         .await;
     }
@@ -486,16 +490,16 @@ async fn faces_of_one_photo_are_never_grouped_as_one_person() {
 async fn a_group_next_to_one_known_person_joins_them_instead_of_making_a_duplicate() {
     let Some(t) = TestDb::new().await else { return };
     let owner = user(&t.pool).await;
-    let ann = identity(50);
+    let alpha = identity(50);
     let p = person(&t.pool, owner, Some("Person H")).await;
-    for f in photos_of(&t.pool, owner, &ann, 3, 1).await {
+    for f in photos_of(&t.pool, owner, &alpha, 3, 1).await {
         put(&t.pool, f, p, "user").await;
     }
     // Faces of her at an angle: each a little too far from any single known face to join alone (below the assign threshold), but
-    // alike among themselves and, as a group, near enough the centre of the person. (Built as ann plus a shared direction.)
+    // alike among themselves and, as a group, near enough the centre of the person. (Built as alpha plus a shared direction.)
     let mut r = Rng(77);
     let tilt = unit((0..DIM).map(|_| r.next()).collect());
-    let angled = |s: u64| shot(&unit(ann.iter().zip(&tilt).map(|(a, t)| a + 1.3 * t).collect()), s);
+    let angled = |s: u64| shot(&unit(alpha.iter().zip(&tilt).map(|(a, t)| a + 1.3 * t).collect()), s);
     let mut tilted = Vec::new();
     for s in 1..=3 {
         tilted.push(photo_with(&t.pool, owner, angled(s)).await.1);
@@ -573,28 +577,28 @@ async fn a_run_is_due_when_the_faces_have_stopped_arriving_and_none_is_queued() 
 async fn suggestions_are_the_unassigned_faces_near_a_person_never_the_ones_rejected_or_in_the_trash() {
     let Some(t) = TestDb::new().await else { return };
     let (owner, other) = (user(&t.pool).await, user(&t.pool).await);
-    let ann = identity(70);
+    let alpha = identity(70);
     let p = person(&t.pool, owner, Some("Person I")).await;
-    for f in photos_of(&t.pool, owner, &ann, 3, 1).await {
+    for f in photos_of(&t.pool, owner, &alpha, 3, 1).await {
         put(&t.pool, f, p, "user").await;
     }
-    let (near_a, near) = photo_with(&t.pool, owner, shot(&ann, 800)).await;
-    let (_, rejected) = photo_with(&t.pool, owner, shot(&ann, 801)).await;
+    let (near_a, near) = photo_with(&t.pool, owner, shot(&alpha, 800)).await;
+    let (_, rejected) = photo_with(&t.pool, owner, shot(&alpha, 801)).await;
     reject(&t.pool, rejected, p).await;
-    let (trashed_a, _) = photo_with(&t.pool, owner, shot(&ann, 802)).await;
+    let (trashed_a, _) = photo_with(&t.pool, owner, shot(&alpha, 802)).await;
     sqlx::query("UPDATE assets SET deleted_at = now() WHERE id = $1")
         .bind(trashed_a)
         .execute(&t.pool)
         .await
         .unwrap();
-    let (hidden_a, _) = photo_with(&t.pool, owner, shot(&ann, 803)).await;
+    let (hidden_a, _) = photo_with(&t.pool, owner, shot(&alpha, 803)).await;
     sqlx::query("UPDATE assets SET hidden = true WHERE id = $1")
         .bind(hidden_a)
         .execute(&t.pool)
         .await
         .unwrap();
     photo_with(&t.pool, owner, identity(71)).await;
-    photo_with(&t.pool, other, shot(&ann, 804)).await;
+    photo_with(&t.pool, other, shot(&alpha, 804)).await;
 
     let s = people::suggestions(&t.pool, owner, p, false, 10).await.unwrap();
     assert_eq!(

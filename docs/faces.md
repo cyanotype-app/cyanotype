@@ -198,10 +198,10 @@ places (so "in Lisbon" stays a place), with these rules (`query_parse.rs`):
 
 - A name counts at the **start** or the **end** of the query, or right after **with, of, and, featuring, plus, including** ("beach with Person A",
   "Person A and Person B"). In the middle of a query with nothing to introduce it, it is just words.
-- The **longest name wins** ("Ann Lee" over "Ann"). A name that **two people share is never matched** (and "Anna Lee" is not read as "Anna" plus
+- The **longest name wins** ("Alpha Bravo" over "Alpha"). A name that **two people share is never matched** (and "Delta Echo" is not read as "Delta" plus
   a leftover), names of **fewer than three letters** are not matched, and the same person named twice is one filter (at most 10).
 - A single word that is also an ordinary word, a month or season, a preposition, filler or a place the library often has (`COMMON_NAMES`,
-  `AMBIGUOUS`: will, rose, grace, may, hope, dog, mom...) counts **only after an introducing word**: "with Rose" is a person, "rose garden" is a garden.
+  `AMBIGUOUS`: will, rose, grace, may, hope, dog, mom...) counts **only after an introducing word**: "with Sky" is a person, "sky garden" is a garden.
 - What was understood is a removable chip (`parsed.chips[].kind = "people"` with `people: [{id, name}]`); its x searches again with `skip=people`,
   which gives the words back. An explicit `people` filter wins over the words (they stay in the query). While People is off nothing is read.
 - False positives are possible by nature (a leading first name that is also a book title); the chip says what was understood and one click undoes it.

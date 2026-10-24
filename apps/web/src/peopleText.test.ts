@@ -26,7 +26,7 @@ describe("names", () => {
   it("checks what the server checks; blank is allowed because it clears the name", () => {
     expect(tidyName("  Person A ")).toBe("Person A");
     expect(nameProblem("")).toBeNull();
-    expect(nameProblem("Jo-Ann O'Neil")).toBeNull();
+    expect(nameProblem("Alpha-Bravo O'Charlie")).toBeNull();
     expect(nameProblem("é".repeat(100))).toBeNull();
     expect(nameProblem("x".repeat(101))).toMatch(/at most 100/);
     expect(nameProblem("a\u0007b")).toMatch(/control/);

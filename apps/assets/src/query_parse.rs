@@ -26,9 +26,9 @@
 //! **People** are only those the user has named and not hidden (`FACES_ENABLED`; the caller passes none while it is off). A name
 //! counts when it is introduced by "with", "of", "and", "featuring", "plus" or "including" ("beach with Person A"), or is the first or
 //! the last words of the query ("Person A beach", "beach Person A"): "Person A and Person B 2023" is both, together. The longest name
-//! wins ("Ann Lee" over "Ann"). A name two people share is never matched (it would be a guess), a name of fewer than three letters is
+//! wins ("Alpha Bravo" over "Alpha"). A name two people share is never matched (it would be a guess), a name of fewer than three letters is
 //! not matched, and a single word that is also an ordinary word, a month or a place often enough ([`COMMON_NAMES`], [`AMBIGUOUS`], the
-//! filler words) counts only after one of those introducing words: "with Rose" is a person, "rose garden" is a garden. A date or a
+//! filler words) counts only after one of those introducing words: "with Sky" is a person, "sky garden" is a garden. A date or a
 //! place that was read first keeps its words.
 //!
 //! If only filler words are left once the filters are taken out ("photos from 2023"), the search is a plain filter: the
@@ -174,7 +174,7 @@ pub const AMBIGUOUS: &[&str] = &[
 /// Words that introduce a name ("with Person A", "Person A and Person B").
 const PEOPLE_INTRO: &[&str] = &["with", "of", "and", "featuring", "plus", "including"];
 /// Single words that are also people's names and ordinary words (or what a family calls its members and pets): a name like these is
-/// a person only after one of [`PEOPLE_INTRO`], "with Rose", not "rose garden".
+/// a person only after one of [`PEOPLE_INTRO`], "with Sky", not "sky garden".
 pub const COMMON_NAMES: &[&str] = &[
     "will", "mark", "rose", "grace", "joy", "faith", "summer", "autumn", "winter", "spring", "dawn", "bill", "pat",
     "art", "rich", "frank", "sue", "dean", "gene", "bob", "jack", "pearl", "ruby", "amber", "violet", "lily", "daisy",
@@ -1130,36 +1130,36 @@ mod tests {
 
     #[test]
     fn the_longest_name_wins_and_a_shared_name_is_never_guessed() {
-        let p = with("Ann Lee beach", &["Ann", "Ann Lee"]);
-        assert_eq!((who(&p), p.text.as_str()), (vec!["Ann Lee"], "beach"));
-        let p = with("Ann beach", &["Ann", "Ann Lee"]);
-        assert_eq!(who(&p), vec!["Ann"]);
-        // Two people called Anna: "Anna" is nobody in particular, and "Anna Lee" is not read as "Anna" and a leftover.
-        let p = with("Anna beach", &["Anna", "Anna"]);
+        let p = with("Alpha Bravo beach", &["Alpha", "Alpha Bravo"]);
+        assert_eq!((who(&p), p.text.as_str()), (vec!["Alpha Bravo"], "beach"));
+        let p = with("Alpha beach", &["Alpha", "Alpha Bravo"]);
+        assert_eq!(who(&p), vec!["Alpha"]);
+        // Two people called Delta: "Delta" is nobody in particular, and "Delta Echo" is not read as "Delta" and a leftover.
+        let p = with("Delta beach", &["Delta", "Delta"]);
         assert!(p.people.is_empty());
-        assert_eq!(p.text, "Anna beach");
-        let p = with("Anna Lee beach", &["Anna", "Anna", "Anna Lee"]);
-        assert_eq!(who(&p), vec!["Anna Lee"]);
-        let p = with("Anna Lee beach", &["Anna", "Anna", "Anna Lee", "Anna Lee"]);
+        assert_eq!(p.text, "Delta beach");
+        let p = with("Delta Echo beach", &["Delta", "Delta", "Delta Echo"]);
+        assert_eq!(who(&p), vec!["Delta Echo"]);
+        let p = with("Delta Echo beach", &["Delta", "Delta", "Delta Echo", "Delta Echo"]);
         assert!(p.people.is_empty());
     }
 
     #[test]
     fn names_that_are_ordinary_words_need_an_introducing_word() {
-        let p = with("rose garden", &["Rose"]);
-        assert!(p.people.is_empty(), "rose garden is a garden");
-        let p = with("garden rose", &["Rose"]);
+        let p = with("sky garden", &["Sky"]);
+        assert!(p.people.is_empty(), "sky garden is a garden");
+        let p = with("garden sky", &["Sky"]);
         assert!(p.people.is_empty(), "a trailing common word is not a person");
-        let p = with("garden with Rose", &["Rose"]);
-        assert_eq!((who(&p), p.text.as_str()), (vec!["Rose"], "garden"));
+        let p = with("garden with Sky", &["Sky"]);
+        assert_eq!((who(&p), p.text.as_str()), (vec!["Sky"], "garden"));
         // Months and the places' own ambiguous words are common too.
         assert!(with("may beach", &["May"]).people.is_empty());
         assert_eq!(who(&with("beach with May", &["May"])), vec!["May"]);
         assert!(with("hope", &["Hope"]).people.is_empty());
         // Short names are never matched.
-        assert!(with("Al beach", &["Al"]).people.is_empty());
+        assert!(with("Ox beach", &["Ox"]).people.is_empty());
         // A name that is not common matches at the start.
-        assert_eq!(who(&with("Maria sunset", &["Maria"])), vec!["Maria"]);
+        assert_eq!(who(&with("Foxtrot sunset", &["Foxtrot"])), vec!["Foxtrot"]);
     }
 
     #[test]
