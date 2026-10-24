@@ -34,6 +34,12 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
+      # Download the crates up front so `cargo metadata --offline` in the check can resolve (a fresh runner has none).
+      - name: Fetch crates
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: cargo fetch --locked
+
       - name: Decide and tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

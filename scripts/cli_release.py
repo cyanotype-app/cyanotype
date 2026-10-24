@@ -57,14 +57,30 @@ def closure(metadata, root_dir):
     return sorted(dirs), sorted(fingerprint, key=json.dumps)
 
 
-def metadata_at(directory):
-    # Features are resolved the way the downloadable CLI is built (no default features).
+class MetadataError(Exception):
+    """`cargo metadata` could not resolve a commit. Never a reason to call the CLI changed."""
+
+
+def _cargo(args, directory):
     env = dict(os.environ, RUSTUP_TOOLCHAIN=os.environ.get("RUSTUP_TOOLCHAIN", "stable"))
-    out = subprocess.run(
-        ["cargo", "metadata", "--format-version", "1", "--locked", "--offline"],
-        cwd=directory, check=True, capture_output=True, text=True, env=env,
-    ).stdout
-    return json.loads(out)
+    return subprocess.run(["cargo", *args], cwd=directory, capture_output=True, text=True, env=env)
+
+
+def metadata_at(directory):
+    """Resolved package graph at a checkout. Features are resolved the way the downloadable CLI is built (no default
+    features). Works offline; if the crates for this commit's Cargo.lock are not downloaded yet (the base commit can
+    have a different lock file from the one the workflow fetched), fetches them once and retries. Raises MetadataError
+    if it still cannot resolve."""
+    args = ["metadata", "--format-version", "1", "--locked", "--offline"]
+    res = _cargo(args, directory)
+    if res.returncode != 0:
+        fetch = _cargo(["fetch", "--locked"], directory)
+        if fetch.returncode != 0:
+            raise MetadataError(f"cargo fetch --locked failed in {directory}: {fetch.stderr[-300:]}")
+        res = _cargo(args, directory)
+    if res.returncode != 0:
+        raise MetadataError(f"cargo metadata failed in {directory}: {res.stderr[-300:]}")
+    return json.loads(res.stdout)
 
 
 def under(path, dirs):
@@ -83,12 +99,9 @@ def changed(base, head, repo="."):
         try:
             results = {}
             for name, path in trees.items():
-                try:
-                    results[name] = closure(metadata_at(path), path)
-                except subprocess.CalledProcessError as e:
-                    # An older commit that cannot be resolved offline: be safe and call it a change.
-                    sys.stderr.write(f"cargo metadata failed at {name}: {e.stderr[-300:]}\n")
-                    return True
+                # A failure raises MetadataError: an unanswerable question is not a "yes", or every broken runner
+                # would cut a release.
+                results[name] = closure(metadata_at(path), path)
         finally:
             for path in trees.values():
                 subprocess.run(["git", "worktree", "remove", "--force", path], cwd=repo, capture_output=True)
@@ -160,7 +173,11 @@ def current_version(tags):
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else ""
     if cmd == "changed" and len(argv) == 4:
-        print("true" if changed(argv[2], argv[3]) else "false")
+        try:
+            print("true" if changed(argv[2], argv[3]) else "false")
+        except MetadataError as e:
+            sys.stderr.write(f"error: cannot tell whether the CLI changed, so no release was decided: {e}\n")
+            return 1
     elif cmd == "bump" and len(argv) == 4:
         body = sys.stdin.read() if argv[3] == "-" else (open(argv[3]).read() if os.path.exists(argv[3]) else "")
         print(bump_from([x for x in argv[2].split(",") if x], body))
