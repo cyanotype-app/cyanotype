@@ -17,6 +17,8 @@ pub mod metrics;
 pub mod objmeta;
 pub mod ocr;
 pub mod pairing;
+pub mod people;
+pub mod people_math;
 pub mod places;
 pub mod recipe;
 pub mod reindex;

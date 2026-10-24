@@ -1,13 +1,14 @@
 //! Faces found in photos (`faces`, `face_scans`) and the jobs that find them (docs/faces.md). The models live in the `cyanotype-faces`
 //! crate (this crate must not link ONNX Runtime), so the worker passes what it found in.
 //!
-//! Everything here is owner-scoped data that no route reads yet. The feature is off unless `FACES_ENABLED` says otherwise
-//! ([`enabled`]): the worker neither queues nor runs the job, and the assets service reports nothing about it.
+//! Everything here is owner-scoped data, read only by the owner's own People pages (`crate::people` groups the faces into people).
+//! The feature is off unless `FACES_ENABLED` says otherwise ([`enabled`]): the worker neither queues nor runs the job, and the
+//! assets service answers as if People did not exist.
 use anyhow::Result;
 use sqlx::{PgExecutor, PgPool};
 use uuid::Uuid;
 
-use crate::{embeddings::pg_literal, jobs};
+use crate::{embeddings::pg_literal, jobs, people, people_math};
 
 /// The models that find faces: YuNet (2026-05 export) and SFace (2021-12), `models/faces.lock`. A new model gets a new id (and its own
 /// index, in its own migration), a change of how faces are made (a different threshold, a fixed bug) a new version: either scans
@@ -47,6 +48,11 @@ pub struct NewFace {
 /// Store the faces found in a photo for `(model, version)`, replacing that model's previous rows for it (so running the job
 /// again never duplicates a face), and note that the photo has been looked at, also when it has no faces. Nothing is stored
 /// for a photo that is gone or being deleted. Returns whether anything was stored.
+///
+/// What the owner decided about the photo's earlier faces is carried over to the new ones ([`people_math::match_faces`]): the person
+/// a face was put in and who put it there, the people it was rejected from, and being a person's chosen cover. The earlier faces
+/// are those of every model, so a new scan after a rotate or crop, a new version of the model and a new model all keep their people.
+/// Faces of another model stay (the sweep removes them once the library is covered) but give up what moved to the new ones.
 pub async fn store(db: &PgPool, asset_id: Uuid, model: &str, version: i32, faces: &[NewFace]) -> Result<bool> {
     let mut tx = db.begin().await?;
     // The scan row first: its lock serialises two workers that scan the same photo.
@@ -65,15 +71,18 @@ pub async fn store(db: &PgPool, asset_id: Uuid, model: &str, version: i32, faces
     if scanned == 0 {
         return Ok(false);
     }
+    let earlier = Earlier::load(&mut tx, asset_id).await?;
     sqlx::query("DELETE FROM faces WHERE asset_id = $1 AND model = $2")
         .bind(asset_id)
         .bind(model)
         .execute(&mut *tx)
         .await?;
+    let mut ids: Vec<Uuid> = Vec::with_capacity(faces.len());
     for (i, f) in faces.iter().enumerate() {
-        sqlx::query(
+        let (id,): (Uuid,) = sqlx::query_as(
             "INSERT INTO faces (asset_id, owner_id, model, version, idx, box_x, box_y, box_w, box_h, landmarks, score, embedding)
-             SELECT id, owner_id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text::halfvec FROM assets WHERE id = $1",
+             SELECT id, owner_id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text::halfvec FROM assets WHERE id = $1
+             RETURNING id",
         )
         .bind(asset_id)
         .bind(model)
@@ -86,11 +95,137 @@ pub async fn store(db: &PgPool, asset_id: Uuid, model: &str, version: i32, faces
         .bind(f.landmarks.to_vec())
         .bind(f.score)
         .bind(f.embedding.as_deref().map(pg_literal))
-        .execute(&mut *tx)
+        .fetch_one(&mut *tx)
         .await?;
+        ids.push(id);
+    }
+    earlier.carry(&mut tx, model, faces, &ids).await?;
+    // Grouping into people follows once the owner's faces have stopped arriving.
+    if faces.iter().any(|f| f.embedding.is_some()) || earlier.carries() {
+        people::request_for_asset(&mut tx, asset_id).await?;
     }
     tx.commit().await?;
     Ok(true)
+}
+
+/// A photo's faces before a new scan replaces them, and what was decided about them.
+struct Earlier {
+    rows: Vec<EarlierFace>,
+    /// `(face, person)`: the people each face was rejected from.
+    rejections: Vec<(Uuid, Uuid)>,
+    /// `(person, face)`: people whose chosen cover is one of these faces.
+    covers: Vec<(Uuid, Uuid)>,
+}
+
+#[derive(sqlx::FromRow)]
+struct EarlierFace {
+    id: Uuid,
+    model: String,
+    box_x: f32,
+    box_y: f32,
+    box_w: f32,
+    box_h: f32,
+    embedding: Option<String>,
+    person_id: Option<Uuid>,
+    assigned_by: String,
+}
+
+impl Earlier {
+    async fn load(db: &mut sqlx::PgConnection, asset_id: Uuid) -> Result<Self> {
+        let rows: Vec<EarlierFace> = sqlx::query_as(
+            "SELECT id, model, box_x, box_y, box_w, box_h, embedding::text AS embedding, person_id, assigned_by
+             FROM faces WHERE asset_id = $1 ORDER BY model, idx",
+        )
+        .bind(asset_id)
+        .fetch_all(&mut *db)
+        .await?;
+        let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+        let rejections = sqlx::query_as("SELECT face_id, person_id FROM face_rejections WHERE face_id = ANY($1)")
+            .bind(&ids)
+            .fetch_all(&mut *db)
+            .await?;
+        let covers = sqlx::query_as("SELECT id, cover_face_id FROM people WHERE cover_face_id = ANY($1)")
+            .bind(&ids)
+            .fetch_all(&mut *db)
+            .await?;
+        Ok(Self {
+            rows,
+            rejections,
+            covers,
+        })
+    }
+
+    /// Is there anything the owner decided?
+    fn carries(&self) -> bool {
+        !self.rejections.is_empty() || !self.covers.is_empty() || self.rows.iter().any(|r| r.person_id.is_some())
+    }
+
+    /// Hand the decisions on to the new faces `ids` (stored from `new`, in order).
+    async fn carry(&self, db: &mut sqlx::PgConnection, model: &str, new: &[NewFace], ids: &[Uuid]) -> Result<()> {
+        if !self.carries() || new.is_empty() {
+            // Nothing to hand on, or nothing to hand it to: the person stays, the face is gone.
+            return Ok(());
+        }
+        let vectors: Vec<Option<Vec<f32>>> = self
+            .rows
+            .iter()
+            .map(|r| r.embedding.as_deref().and_then(people_math::parse_literal))
+            .collect();
+        let old: Vec<people_math::Seen> = self
+            .rows
+            .iter()
+            .zip(&vectors)
+            .map(|(r, v)| people_math::Seen {
+                bbox: [r.box_x, r.box_y, r.box_w, r.box_h],
+                embedding: v.as_deref().map(|v| (r.model.as_str(), v)),
+            })
+            .collect();
+        let fresh: Vec<people_math::Seen> = new
+            .iter()
+            .map(|f| people_math::Seen {
+                bbox: f.bbox,
+                embedding: f.embedding.as_deref().map(|v| (model, v)),
+            })
+            .collect();
+        for (i, from) in people_math::match_faces(&old, &fresh).into_iter().enumerate() {
+            let Some(j) = from else { continue };
+            let (was, to) = (&self.rows[j], ids[i]);
+            if let Some(person) = was.person_id {
+                sqlx::query("UPDATE faces SET person_id = $2, assigned_by = $3 WHERE id = $1")
+                    .bind(to)
+                    .bind(person)
+                    .bind(&was.assigned_by)
+                    .execute(&mut *db)
+                    .await?;
+            }
+            for (_, person) in self.rejections.iter().filter(|(f, _)| *f == was.id) {
+                sqlx::query("INSERT INTO face_rejections (face_id, person_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+                    .bind(to)
+                    .bind(person)
+                    .execute(&mut *db)
+                    .await?;
+            }
+            for (person, _) in self.covers.iter().filter(|(_, f)| *f == was.id) {
+                sqlx::query("UPDATE people SET cover_face_id = $2 WHERE id = $1")
+                    .bind(person)
+                    .bind(to)
+                    .execute(&mut *db)
+                    .await?;
+            }
+            if was.model != model {
+                // The earlier face of another model stays until the sweep removes it, without the decisions that moved on.
+                sqlx::query("DELETE FROM face_rejections WHERE face_id = $1")
+                    .bind(was.id)
+                    .execute(&mut *db)
+                    .await?;
+                sqlx::query("UPDATE faces SET person_id = NULL, assigned_by = 'auto' WHERE id = $1")
+                    .bind(was.id)
+                    .execute(&mut *db)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Queue a `faces` job at backfill priority for every visible photo that has a preview and has not been scanned by
@@ -121,15 +256,21 @@ pub async fn enqueue_for_asset(db: impl PgExecutor<'_>, asset_id: Uuid, version:
 }
 
 /// A photo's picture changed (a rotate or crop): the faces found in the old one, and where they were, are wrong now. Forget
-/// them and, with `requeue` (the feature is on), scan the new preview again (queued again even if the photo was scanned before).
-/// Nothing is queued for a photo that was never scanned (the ordinary sweep will, if the feature is on). Returns whether there
-/// was anything to forget.
+/// the scan and the faces nobody decided anything about; the faces the owner put in a person, took out of one or chose as a
+/// cover stay, unread (every reader asks for a photo with a scan) until the new scan hands what was decided over to its faces
+/// ([`store`]). With `requeue` (the feature is on), scan the new preview again (queued again even if the photo was scanned
+/// before). Nothing is queued for a photo that was never scanned (the ordinary sweep will, if the feature is on). Returns whether
+/// there was anything to forget.
 pub async fn forget_and_requeue(db: &PgPool, asset_id: Uuid, version: i32, requeue: bool) -> Result<bool> {
     let mut tx = db.begin().await?;
-    sqlx::query("DELETE FROM faces WHERE asset_id = $1")
-        .bind(asset_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "DELETE FROM faces f WHERE f.asset_id = $1 AND f.person_id IS NULL
+           AND NOT EXISTS (SELECT 1 FROM face_rejections r WHERE r.face_id = f.id)
+           AND NOT EXISTS (SELECT 1 FROM people p WHERE p.cover_face_id = f.id)",
+    )
+    .bind(asset_id)
+    .execute(&mut *tx)
+    .await?;
     let forgot = sqlx::query("DELETE FROM face_scans WHERE asset_id = $1")
         .bind(asset_id)
         .execute(&mut *tx)
@@ -218,11 +359,15 @@ pub struct Deleted {
     pub faces: u64,
     pub scans: u64,
     pub jobs: u64,
+    /// The people (with their names) and the "not this person" decisions.
+    pub people: u64,
+    pub rejections: u64,
 }
 
-/// Delete all face data: every face, every scan record and every queued, running or finished `faces` job, of one owner or of
-/// everyone. With `dry_run` it only counts. Nothing else is touched (the photos, the search index and the rest of the
-/// queue are not). With the feature still on the sweep would start scanning again, so switch `FACES_ENABLED` off first.
+/// Delete all face data: every face, every scan record, every person (names included) and rejection, and every queued, running or
+/// finished `faces` job, of one owner or of everyone. With `dry_run` it only counts. Nothing else is touched (the photos, the search
+/// index and the rest of the queue are not). With the feature still on the sweep would start scanning again, so switch
+/// `FACES_ENABLED` off first.
 pub async fn delete_all(db: &PgPool, owner: Option<Uuid>, dry_run: bool) -> Result<Deleted> {
     let mut tx = db.begin().await?;
     let scope = " WHERE ($1::uuid IS NULL OR owner_id = $1)";
@@ -240,7 +385,26 @@ pub async fn delete_all(db: &PgPool, owner: Option<Uuid>, dry_run: bool) -> Resu
         .bind(owner)
         .fetch_one(&mut *tx)
         .await?;
+    let (people,): (i64,) = sqlx::query_as(&count("people", scope))
+        .bind(owner)
+        .fetch_one(&mut *tx)
+        .await?;
+    let (rejections,): (i64,) = sqlx::query_as(&format!(
+        "SELECT count(*) FROM face_rejections WHERE face_id IN (SELECT id FROM faces{scope})"
+    ))
+    .bind(owner)
+    .fetch_one(&mut *tx)
+    .await?;
     if !dry_run {
+        // People first: their faces are set free, and every rejection goes with a person or a face.
+        sqlx::query(&format!("DELETE FROM people{scope}"))
+            .bind(owner)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(&format!("DELETE FROM people_runs{scope}"))
+            .bind(owner)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(&format!("DELETE FROM faces{scope}"))
             .bind(owner)
             .execute(&mut *tx)
@@ -259,6 +423,8 @@ pub async fn delete_all(db: &PgPool, owner: Option<Uuid>, dry_run: bool) -> Resu
         faces: faces as u64,
         scans: scans as u64,
         jobs: jobs_n as u64,
+        people: people as u64,
+        rejections: rejections as u64,
     })
 }
 

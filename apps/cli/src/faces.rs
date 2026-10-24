@@ -10,8 +10,8 @@ use cyanotype_core::{
 
 #[derive(Subcommand)]
 pub enum FacesCommand {
-    /// Delete the faces found in photos, their fingerprints, the record of which photos were scanned and the queued scan jobs
-    /// (for one account or for everyone). The photos and everything else are untouched. Dry run unless --apply.
+    /// Delete the faces found in photos, their fingerprints, the people made of them (names included) and the "not this person"
+    /// decisions, the record of which photos were scanned and the queued scan jobs (for one account or for everyone). The photos and everything else are untouched. Dry run unless --apply.
     Delete(DeleteArgs),
 }
 
@@ -57,8 +57,8 @@ async fn delete(a: DeleteArgs) -> Result<ExitCode> {
     };
     if a.apply {
         println!(
-            "Deleted {} faces, {} scan records and {} queued or finished scan jobs of {scope}.",
-            d.faces, d.scans, d.jobs
+            "Deleted {} faces, {} people, {} \"not this person\" decisions, {} scan records and {} queued or finished scan jobs of {scope}.",
+            d.faces, d.people, d.rejections, d.scans, d.jobs
         );
         if faces::enabled() {
             println!(
@@ -67,8 +67,8 @@ async fn delete(a: DeleteArgs) -> Result<ExitCode> {
         }
     } else {
         println!(
-            "Would delete {} faces, {} scan records and {} queued or finished scan jobs of {scope}. Run again with --apply to delete them.",
-            d.faces, d.scans, d.jobs
+            "Would delete {} faces, {} people, {} \"not this person\" decisions, {} scan records and {} queued or finished scan jobs of {scope}. Run again with --apply to delete them.",
+            d.faces, d.people, d.rejections, d.scans, d.jobs
         );
     }
     Ok(ExitCode::SUCCESS)
