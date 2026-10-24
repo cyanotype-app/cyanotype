@@ -236,6 +236,8 @@ struct ShareRow {
     album_id: Option<Uuid>,
     title: Option<String>,
     album_title: Option<String>,
+    /// The rules of a smart album the link follows (`smart.rs`); None for an ordinary album or a selection.
+    album_rules: Option<serde_json::Value>,
     password_hash: Option<String>,
     allow_download: bool,
     include_originals: bool,
@@ -248,20 +250,41 @@ impl ShareRow {
         format!("cy_share_{}", &self.id.simple().to_string()[..16])
     }
 
-    /// FROM and WHERE (parameter `$2` is the album or share id) for the photos this link shows, with `x` the photo.
-    /// `$1` is always the owner: photos of anyone else never show, whatever the join tables say.
-    fn source(&self) -> (&'static str, &'static str, Uuid) {
+    /// FROM and WHERE (parameter `$2` is a uuid array: the album or the share, or the photos a smart album matches) for the photos
+    /// this link shows, with `x` the photo. `$1` is always the owner: photos of anyone else never show, whatever the join tables say.
+    ///
+    /// A **smart album** link resolves the album's rules when it is viewed (the newest [`SMART_SHARE_MAX`] matches, by the search's
+    /// own SQL, which never includes a hidden photo), so a photo that starts to match appears in the link and one that stops
+    /// disappears, with nothing stored.
+    async fn source(&self, s: &AppState) -> PubResult<(&'static str, &'static str, Vec<Uuid>)> {
         match (self.kind.as_str(), self.album_id) {
-            ("album", Some(album)) => (
+            ("album", Some(_)) if self.album_rules.is_some() => {
+                let rules = super::smart::Rules::from_json(self.album_rules.as_ref().expect("checked"))?;
+                let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT a.id FROM assets a WHERE");
+                rules.filters().push_where(&mut qb, self.owner_id);
+                qb.push(" ORDER BY coalesce(a.taken_at, a.file_modified_at, a.created_at) DESC, a.id DESC LIMIT ")
+                    .push_bind(SMART_SHARE_MAX);
+                let ids = qb
+                    .build_query_scalar::<Uuid>()
+                    .persistent(false)
+                    .fetch_all(&s.db)
+                    .await?;
+                Ok((
+                    "unnest($2::uuid[]) AS aa(asset_id) JOIN assets x ON x.id = aa.asset_id",
+                    "TRUE",
+                    ids,
+                ))
+            }
+            ("album", Some(album)) => Ok((
                 "album_assets aa JOIN assets x ON x.id = aa.asset_id",
-                "aa.album_id = $2",
-                album,
-            ),
-            _ => (
+                "aa.album_id = ANY($2)",
+                vec![album],
+            )),
+            _ => Ok((
                 "share_assets aa JOIN assets x ON x.id = aa.asset_id",
-                "aa.share_id = $2",
-                self.id,
-            ),
+                "aa.share_id = ANY($2)",
+                vec![self.id],
+            )),
         }
     }
 }
@@ -278,7 +301,7 @@ async fn find(s: &AppState, st: &ShareState, ip: IpAddr, token: &str) -> PubResu
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     {
         sqlx::query_as::<_, ShareRow>(
-            "SELECT s.id, s.owner_id, s.kind, s.album_id, s.title, a.title AS album_title, s.password_hash,
+            "SELECT s.id, s.owner_id, s.kind, s.album_id, s.title, a.title AS album_title, a.rules AS album_rules, s.password_hash,
                     s.allow_download, s.include_originals, s.expires_at,
                     extract(epoch FROM s.pw_locked_until - now())::float8 AS pw_locked_for_secs
              FROM shares s LEFT JOIN albums a ON a.id = s.album_id
@@ -324,13 +347,18 @@ async fn open(s: &AppState, st: &ShareState, ip: IpAddr, token: &str, jar: &Cook
     Ok(share)
 }
 
-async fn item_count(s: &AppState, share: &ShareRow) -> sqlx::Result<i64> {
-    let (from, wh, r) = share.source();
-    sqlx::query_scalar(&format!("SELECT count(*) FROM {from} WHERE {wh} AND {VISIBLE}"))
-        .bind(share.owner_id)
-        .bind(r)
-        .fetch_one(&s.db)
-        .await
+/// The most photos a link to a smart album shows (the newest that match).
+const SMART_SHARE_MAX: i64 = 10_000;
+
+async fn item_count(s: &AppState, share: &ShareRow) -> PubResult<i64> {
+    let (from, wh, r) = share.source(s).await?;
+    Ok(
+        sqlx::query_scalar(&format!("SELECT count(*) FROM {from} WHERE {wh} AND {VISIBLE}"))
+            .bind(share.owner_id)
+            .bind(r)
+            .fetch_one(&s.db)
+            .await?,
+    )
 }
 
 async fn info(
@@ -584,7 +612,7 @@ async fn items(
         Some(c) => Some(decode_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
         None => None,
     };
-    let (from, wh, r) = share.source();
+    let (from, wh, r) = share.source(&s).await?;
     let cols = item_columns();
     let select = format!("SELECT {cols} FROM {from} WHERE {wh} AND {VISIBLE}");
     let rows = match after {
@@ -620,7 +648,7 @@ async fn items(
 
 /// One photo of the link, or the `404` of a photo that is not (or no longer) in it.
 async fn one(s: &AppState, share: &ShareRow, id: Uuid) -> PubResult<ItemRow> {
-    let (from, wh, r) = share.source();
+    let (from, wh, r) = share.source(s).await?;
     let cols = item_columns();
     let row = sqlx::query_as::<_, ItemRow>(&format!(
         "SELECT {cols} FROM {from} WHERE {wh} AND {VISIBLE} AND x.id = $3"

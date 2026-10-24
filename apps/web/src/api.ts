@@ -583,12 +583,35 @@ export interface AlbumCover {
   thumb_url: string | null;
 }
 
+/** One rule of a smart album (`smart.rs` in the assets service). */
+export type SmartRule =
+  | { field: "date"; from?: string; to?: string }
+  | { field: "place" | "camera" | "lens"; value: string }
+  | { field: "type"; value: "jpeg" | "heic" | "raw" | "other" | string }
+  | { field: "favorite"; value: true }
+  | { field: "rating"; min: number }
+  | { field: "tags"; names: string[]; mode: "all" | "any" }
+  | { field: "has_location" | "has_text"; value: boolean }
+  | { field: "caption"; text: string };
+
+/** The saved definition of a smart album: its rules, how they are joined, and whether archived photos are in. */
+export interface SmartRules {
+  match: "all" | "any";
+  archived: "include" | "exclude";
+  rules: SmartRule[];
+}
+
 /** An entry of GET /assets/albums and the body of GET /assets/albums/{id}. Counts and dates skip trashed photos. */
 export interface Album {
   id: string;
   title: string;
   description: string | null;
+  /** A smart album: its photos are what its rules match when it is opened. Absent on older servers. */
+  smart?: boolean;
+  rules?: SmartRules | null;
   photo_count: number;
+  /** A smart album with more matches than are counted (`photo_count` is then 10,000). */
+  photo_count_capped?: boolean;
   /** Members that are hidden: still in the album, listed nowhere in it. Absent on older servers. */
   hidden_count?: number;
   /** Null while the album is empty. */
@@ -600,11 +623,22 @@ export interface Album {
   updated_at: string;
 }
 
+/** POST /assets/albums/preview: what the rules would match now. */
+export interface SmartPreview {
+  count: number;
+  /** More matches than are counted (`count` is then 10,000). */
+  capped: boolean;
+  items: AssetListItem[];
+  rules: SmartRules;
+}
+
 /** PATCH /assets/albums/{id}: omitted fields stay; `null` clears the description or the chosen cover. */
 export interface AlbumPatch {
   title?: string;
   description?: string | null;
   cover_asset_id?: string | null;
+  /** New rules of a smart album. */
+  rules?: SmartRules;
 }
 
 /** A tag of the signed-in user, with how many photos have it (as this session may see them). */
@@ -1243,6 +1277,12 @@ export const api = {
   listAlbums: () => request<{ items: Album[] }>("/assets/albums"),
   getAlbum: (id: string) => request<Album>(`/assets/albums/${encodeURIComponent(id)}`),
   /** Create an album, optionally with photos (lists longer than the server's bulk cap are added in further requests). */
+  /** Make a smart album: its photos are whatever the rules match, looked up each time the album is opened. */
+  createSmartAlbum: (input: { title: string; description?: string; rules: SmartRules }) =>
+    request<Album>("/assets/albums", json(input)),
+  /** How many photos (and which first ones) rules would match now; nothing is saved. */
+  previewSmartAlbum: (rules: SmartRules, signal?: AbortSignal) =>
+    request<SmartPreview>("/assets/albums/preview", { ...json({ rules }), signal }),
   createAlbum: async (input: { title: string; description?: string; asset_ids?: readonly string[] }): Promise<Album> => {
     const ids = input.asset_ids ?? [];
     const album = await request<Album>(

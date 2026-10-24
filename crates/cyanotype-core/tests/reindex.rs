@@ -1675,3 +1675,65 @@ async fn an_existing_tag_is_only_given_to_photos_that_were_recreated() {
     assert_eq!(names, ["b.jpg"], "photo a stays without the tag the owner took off");
     fx.teardown().await;
 }
+
+/// A smart album's definition (its saved rules) survives a bucket-only rebuild; it has no members to restore, and its link keeps working.
+#[tokio::test]
+async fn smart_albums_come_back_with_their_rules() {
+    let Some(fx) = Fx::new().await else { return };
+    let (k, s) = fx.put_original(fx.user, "a.jpg", b"aaa", None).await;
+    fx.insert_row(fx.user, &k, &s, "a.jpg").await;
+    let rules = serde_json::json!({"match": "any", "archived": "exclude",
+        "rules": [{"field": "place", "value": "Lisbon"}, {"field": "rating", "min": 4}]});
+    let smart: Uuid = sqlx::query_scalar(
+        "INSERT INTO albums (owner_id, title, rules) VALUES ($1, 'Lisbon or great', $2) RETURNING id",
+    )
+    .bind(fx.user)
+    .bind(&rules)
+    .fetch_one(&fx.pool)
+    .await
+    .unwrap();
+    let plain: Uuid = sqlx::query_scalar("INSERT INTO albums (owner_id, title) VALUES ($1, 'Plain') RETURNING id")
+        .bind(fx.user)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO shares (owner_id, token, kind, album_id) VALUES ($1, 'tok-smart-0123456789abcdef', 'album', $2)",
+    )
+    .bind(fx.user)
+    .bind(smart)
+    .execute(&fx.pool)
+    .await
+    .unwrap();
+    manifest::write_user(&fx.pool, &fx.storage, fx.user, 14).await.unwrap();
+    let key = manifest::list_all(&fx.storage).await.unwrap()[&fx.user][0].clone();
+    let text = String::from_utf8(fx.storage.get_bytes_limited(&key, 1 << 20).await.unwrap().to_vec()).unwrap();
+    assert_eq!(
+        text.matches("\"items\":[],\"rules\":").count(),
+        1,
+        "only the smart album carries rules: {text}"
+    );
+
+    sqlx::query("DELETE FROM assets").execute(&fx.pool).await.unwrap();
+    sqlx::query("DELETE FROM albums").execute(&fx.pool).await.unwrap();
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!((r.albums_restored, r.smart_albums_restored, r.errors), (2, 1, 0));
+    let got: Vec<(Uuid, Option<serde_json::Value>)> = sqlx::query_as("SELECT id, rules FROM albums ORDER BY title")
+        .fetch_all(&fx.pool)
+        .await
+        .unwrap();
+    assert_eq!(got, [(smart, Some(rules)), (plain, None)]);
+    let members: i64 = sqlx::query_scalar("SELECT count(*) FROM album_assets")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert_eq!(members, 0, "nothing is materialised for a smart album");
+    let link: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM shares WHERE token = 'tok-smart-0123456789abcdef' AND album_id = $1")
+            .bind(smart)
+            .fetch_one(&fx.pool)
+            .await
+            .unwrap();
+    assert_eq!(link, 1, "the link to the smart album is back");
+    fx.teardown().await;
+}

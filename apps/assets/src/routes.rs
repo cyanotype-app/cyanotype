@@ -66,6 +66,9 @@ mod shares;
 mod similar;
 #[cfg(test)]
 mod similar_tests;
+mod smart;
+#[cfg(test)]
+mod smart_tests;
 mod tags;
 #[cfg(test)]
 mod tags_tests;
@@ -170,6 +173,7 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         // Static segments win over `/assets/{id}`. Albums live under /assets because the gateway sends only
         // /auth/* and /assets/* to the APIs; `/albums` is the web app's page.
         .route("/assets/albums", get(albums::list).post(albums::create))
+        .route("/assets/albums/preview", post(albums::preview))
         .route(
             "/assets/albums/{id}",
             get(albums::get).patch(albums::update).delete(albums::remove),

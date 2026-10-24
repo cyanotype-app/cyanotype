@@ -4070,3 +4070,141 @@ a.tag-chip-name:hover {
   background: var(--surface-2);
   font-weight: 600;
 }
+
+/* ---- Smart albums ---------------------------------------------------------------------------------------------- */
+.smart-badge {
+  margin-left: 0.5rem;
+  vertical-align: middle;
+  background: color-mix(in srgb, var(--pb-500) 24%, var(--surface));
+  flex: none;
+}
+.album-card-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.album-card-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.album-card-rules {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.smart-summary {
+  overflow-wrap: anywhere;
+  margin: 0.25rem 0;
+}
+.album-head h1 {
+  overflow-wrap: anywhere;
+}
+.smart-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+  width: min(36rem, calc(100vw - 2rem));
+}
+.smart-editor h2 {
+  margin: 0;
+}
+.smart-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.smart-rules {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.smart-rule {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--surface-2);
+  min-width: 0;
+}
+.smart-rule-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.smart-rule-body > .text-input {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+.smart-rule-label {
+  flex: 0 0 100%;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.smart-rule-tags {
+  flex-direction: column;
+  align-items: stretch;
+}
+.smart-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.8rem;
+  flex: 1 1 8rem;
+  min-width: 0;
+}
+.smart-mini .text-input {
+  min-width: 0;
+}
+.smart-rule-x {
+  align-self: flex-end;
+}
+.smart-add {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.smart-add .text-input {
+  flex: 1;
+  min-width: 0;
+}
+.smart-note {
+  margin: 0;
+}
+.smart-preview {
+  min-height: 3rem;
+}
+.smart-thumbs {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: flex;
+  gap: 0.3rem;
+  overflow: hidden;
+}
+.smart-thumbs li {
+  flex: 0 0 auto;
+}
+.smart-thumbs img,
+.smart-thumb-blank {
+  display: block;
+  width: 2.75rem;
+  height: 2.75rem;
+  object-fit: cover;
+  border-radius: 0.3rem;
+  background: var(--surface-2);
+}

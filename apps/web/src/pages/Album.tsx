@@ -8,6 +8,8 @@ import { Lightbox } from "../components/Lightbox";
 import { SelectionBar } from "../components/SelectionBar";
 import { RateTools } from "../components/RateTools";
 import { TagTools } from "../components/TagTools";
+import { SmartAlbumEditor } from "../components/SmartAlbumEditor";
+import { describeRules, smartCount } from "../smartText";
 import { ShareDialog, type ShareTarget } from "../components/ShareDialog";
 import { useToast } from "../components/Toast";
 import { similarUrl } from "../searchText";
@@ -31,6 +33,8 @@ function AlbumView({ id }: { id: string }) {
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [editingRules, setEditingRules] = useState(false);
+  const [ruleError, setRuleError] = useState<string | null>(null);
   const [sharing, setSharing] = useState<ShareTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
@@ -100,6 +104,21 @@ function AlbumView({ id }: { id: string }) {
       setEditing(false);
     } catch (e) {
       failure(e, "Couldn’t save.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveRules(title: string, rules: import("../api").SmartRules) {
+    setBusy(true);
+    setRuleError(null);
+    try {
+      setAlbum(await api.updateAlbum(id, { title, rules }));
+      setEditingRules(false);
+      reset();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) setAnonymous();
+      else setRuleError(e instanceof Error ? e.message : "Could not save the rules.");
     } finally {
       setBusy(false);
     }
@@ -242,19 +261,42 @@ function AlbumView({ id }: { id: string }) {
       ) : (
         <div className="page-head album-head">
           <div>
-            <h1>{album.title}</h1>
+            <h1>
+              {album.title}
+              {album.smart && <span className="badge smart-badge">Smart</span>}
+            </h1>
             {album.description && <p className="album-description">{album.description}</p>}
+            {album.smart && album.rules && (
+              <p className="small smart-summary">
+                <strong>Rules:</strong> {describeRules(album.rules)}
+              </p>
+            )}
             <p className="muted small">
-              {[photoCount(album.photo_count), hiddenNote(album.hidden_count), dateRange(album.first_at, album.last_at)].filter(Boolean).join(" · ")}
+              {[
+                album.smart ? smartCount(album.photo_count, album.photo_count_capped) : photoCount(album.photo_count),
+                hiddenNote(album.hidden_count),
+                dateRange(album.first_at, album.last_at),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </p>
+            {album.smart && <p className="muted small">Smart albums update by themselves: they show whatever matches the rules when you open them.</p>}
           </div>
           <div className="album-head-actions">
-            <button type="button" className="btn btn-quiet" onClick={() => setEditing(true)}>
-              Edit
-            </button>
-            <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
-              Add photos
-            </button>
+            {album.smart ? (
+              <button type="button" className="btn btn-primary" onClick={() => setEditingRules(true)}>
+                Edit rules
+              </button>
+            ) : (
+              <>
+                <button type="button" className="btn btn-quiet" onClick={() => setEditing(true)}>
+                  Edit
+                </button>
+                <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
+                  Add photos
+                </button>
+              </>
+            )}
             <button
               type="button"
               className="btn btn-quiet"
@@ -286,14 +328,16 @@ function AlbumView({ id }: { id: string }) {
           onClear={sel.clear}
           onDone={() => sel.setSelecting(false)}
         >
-          <button
-            type="button"
-            className="btn btn-quiet"
-            disabled={sel.count !== 1 || sel.all || busy}
-            onClick={() => void setCover()}
-          >
-            Set as cover
-          </button>
+          {!album.smart && (
+            <button
+              type="button"
+              className="btn btn-quiet"
+              disabled={sel.count !== 1 || sel.all || busy}
+              onClick={() => void setCover()}
+            >
+              Set as cover
+            </button>
+          )}
           <RateTools
             target={sel.target({ album: id })}
             count={sel.count}
@@ -324,20 +368,22 @@ function AlbumView({ id }: { id: string }) {
           >
             Share
           </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={sel.count === 0 || busy}
-            onClick={() => void removeSelected()}
-          >
-            Remove from album
-          </button>
+          {!album.smart && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={sel.count === 0 || busy}
+              onClick={() => void removeSelected()}
+            >
+              Remove from album
+            </button>
+          )}
         </SelectionBar>
       )}
       {items.length === 0 ? (
         <div className="empty">
-          <h2>This album is empty</h2>
-          <p>Add photos from your library.</p>
+          <h2>{album.smart ? "No photo matches these rules" : "This album is empty"}</h2>
+          <p>{album.smart ? "It fills by itself when photos match." : "Add photos from your library."}</p>
         </div>
       ) : (
         <Grid
@@ -388,6 +434,21 @@ function AlbumView({ id }: { id: string }) {
         </ConfirmDialog>
       )}
       {sharing && <ShareDialog target={sharing} onClose={() => setSharing(null)} />}
+      {editingRules && album.rules && (
+        <SmartAlbumEditor
+          title="Edit rules"
+          submitLabel="Save"
+          initialTitle={album.title}
+          initialRules={album.rules}
+          busy={busy}
+          error={ruleError}
+          onSubmit={(t, r) => void saveRules(t, r)}
+          onCancel={() => {
+            setEditingRules(false);
+            setRuleError(null);
+          }}
+        />
+      )}
       {adding && <PhotoPicker albumId={id} onCancel={() => setAdding(false)} onAdded={(n) => void onPhotosAdded(n)} />}
       {toast}
     </div>
