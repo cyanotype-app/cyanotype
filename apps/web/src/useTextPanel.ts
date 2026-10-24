@@ -63,9 +63,8 @@ export function useImageRect(stage: RefObject<HTMLElement | null>, img: RefObjec
       return;
     }
     const measure = () => {
-      const sb = s.getBoundingClientRect();
-      const ib = i.getBoundingClientRect();
-      const next = ib.width > 0 ? { left: ib.left - sb.left, top: ib.top - sb.top, width: ib.width, height: ib.height } : null;
+      // Layout position inside the zoomable layer the boxes are drawn in (so zooming moves both together, and is not measured).
+      const next = i.offsetWidth > 0 ? { left: i.offsetLeft, top: i.offsetTop, width: i.offsetWidth, height: i.offsetHeight } : null;
       setRect((prev) =>
         prev && next && Math.abs(prev.left - next.left) < 0.5 && Math.abs(prev.top - next.top) < 0.5 && Math.abs(prev.width - next.width) < 0.5 && Math.abs(prev.height - next.height) < 0.5
           ? prev

@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { ApiError } from "../api";
 import { photoCount } from "../albumText";
 import { Logo } from "../components/Logo";
+import { fitStyle } from "../photoFit";
 import { fileSize } from "../pairText";
 import { publicDownloadHref, shareApi, type PublicInfo, type PublicItem } from "../shareApi";
 import { expiryText } from "../shareText";
@@ -310,6 +311,8 @@ function ShareLightbox({
   const item = items[index]!;
   const dialogRef = useRef<HTMLDivElement>(null);
   const [loadedId, setLoadedId] = useState<string | null>(null);
+  // The size of the picture on show (read when it loads): the CSS fits the photo to the area from its shape.
+  const [photoSize, setPhotoSize] = useState<{ id: string; w: number; h: number } | null>(null);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [gaveUp, setGaveUp] = useState<string | null>(null);
   const go = useCallback(
@@ -395,6 +398,7 @@ function ShareLightbox({
 
   const downloads = allowDownload ? item.downloads : [];
   const src = item.preview_url ?? item.thumb_url;
+  const fit = photoSize?.id === item.id ? photoSize : null;
   const bg = placeholderUrl(item.thumbhash);
   const date = new Date(item.sort_time);
   const menuOpen = menuFor === item.id;
@@ -448,14 +452,21 @@ function ShareLightbox({
           ‹
         </button>
         {src ? (
-          <img
-            key={item.id}
-            src={src}
-            alt=""
-            className={item.preview_url && loadedId !== item.id ? "loading" : "loaded"}
-            onLoad={() => setLoadedId(item.id)}
-            onError={onImageError}
-          />
+          <div className="lightbox-photo">
+            <img
+              key={item.id}
+              src={src}
+              alt=""
+              className={`${item.preview_url && loadedId !== item.id ? "loading" : "loaded"}${fit ? " sized" : ""}`}
+              style={fitStyle(fit)}
+              draggable={false}
+              onLoad={(e) => {
+                setLoadedId(item.id);
+                setPhotoSize({ id: item.id, w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight });
+              }}
+              onError={onImageError}
+            />
+          </div>
         ) : (
           <p className="lightbox-msg">This photo is still being processed.</p>
         )}

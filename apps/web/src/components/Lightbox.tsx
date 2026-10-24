@@ -17,6 +17,7 @@ import { TagDialog } from "./TagDialog";
 import { ratingKey } from "../ratingText";
 import { fromServer, toRequest, type Recipe } from "../recipeText";
 import { CropIcon, RotateCrop } from "./RotateCrop";
+import { fitStyle } from "../photoFit";
 
 /** How often the viewer asks whether the worker has finished a picture or an edited download, and how many times. */
 const POLL_MS = 1500;
@@ -151,6 +152,9 @@ export function Lightbox({
   };
   const stageRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+  const photoRef = useRef<HTMLDivElement>(null);
+  // The size of the picture on show (read when it loads): the CSS fits the photo to the area from its shape.
+  const [photoSize, setPhotoSize] = useState<{ id: string; w: number; h: number } | null>(null);
   const imageRect = useImageRect(stageRef, imgRef, [currentId, imgLoaded, text.open, text.boxes, info.open]);
   // The editor (date, location, caption) of the open photo, from the panel.
   const [editing, setEditing] = useState<EditKind | null>(null);
@@ -376,6 +380,7 @@ export function Lightbox({
 
   if (!item) return null;
   const detail = details[item.id];
+  const fit = photoSize?.id === item.id ? photoSize : null;
   const src = detail?.preview_url ?? null;
   const fallback = detail?.thumb_url ?? item.thumb_url;
   const bg = placeholderUrl(item.thumbhash);
@@ -643,17 +648,24 @@ export function Lightbox({
         >
           ‹
         </button>
-        {(src ?? fallback) && (
-          <img
-            key={item.id}
-            ref={imgRef}
-            src={src ?? fallback ?? undefined}
-            alt={item.original_name}
-            className={src && imgLoaded === item.id ? "loaded" : src ? "loading" : "loaded"}
-            onLoad={() => setImgLoaded(item.id)}
-          />
-        )}
-        {text.open && text.boxes && text.current && imageRect && <TextBoxes text={text.current} style={imageRect} />}
+        <div className="lightbox-photo" ref={photoRef}>
+          {(src ?? fallback) && (
+            <img
+              key={item.id}
+              ref={imgRef}
+              src={src ?? fallback ?? undefined}
+              alt={item.original_name}
+              className={`${src && imgLoaded === item.id ? "loaded" : src ? "loading" : "loaded"}${fit ? " sized" : ""}`}
+              style={fitStyle(fit)}
+              draggable={false}
+              onLoad={(e) => {
+                setImgLoaded(item.id);
+                setPhotoSize({ id: item.id, w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight });
+              }}
+            />
+          )}
+          {text.open && text.boxes && text.current && imageRect && <TextBoxes text={text.current} style={imageRect} />}
+        </div>
         {failed[item.id] && <p className="lightbox-msg">Could not load this photo.</p>}
         {rendering && (
           <p className="lightbox-updating" role="status">
