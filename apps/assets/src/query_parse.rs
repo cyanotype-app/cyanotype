@@ -23,9 +23,18 @@
 //! also ordinary words or common names ([`AMBIGUOUS`]: nice, reading, victoria, may, march...) count only after one of those
 //! prepositions: "in Nice" is the city, "nice view" is a view, "kid reading" is not Reading. Country codes are never matched.
 //!
+//! **People** are only those the user has named and not hidden (`FACES_ENABLED`; the caller passes none while it is off). A name
+//! counts when it is introduced by "with", "of", "and", "featuring", "plus" or "including" ("beach with Person A"), or is the first or
+//! the last words of the query ("Person A beach", "beach Person A"): "Person A and Person B 2023" is both, together. The longest name
+//! wins ("Ann Lee" over "Ann"). A name two people share is never matched (it would be a guess), a name of fewer than three letters is
+//! not matched, and a single word that is also an ordinary word, a month or a place often enough ([`COMMON_NAMES`], [`AMBIGUOUS`], the
+//! filler words) counts only after one of those introducing words: "with Rose" is a person, "rose garden" is a garden. A date or a
+//! place that was read first keeps its words.
+//!
 //! If only filler words are left once the filters are taken out ("photos from 2023"), the search is a plain filter: the
 //! timeline of that year.
 use time::{Date, Duration, Month, OffsetDateTime};
+use uuid::Uuid;
 
 /// A place in the user's library, as the place facet lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,11 +51,19 @@ pub enum PlaceKind {
     Country,
 }
 
-/// Which kinds of understanding are off for this query (`skip=date,place`).
+/// A person the user has named (and not hidden), as the search parser knows them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Named {
+    pub id: Uuid,
+    pub name: String,
+}
+
+/// Which kinds of understanding are off for this query (`skip=date,place,people`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Skip {
     pub date: bool,
     pub place: bool,
+    pub people: bool,
 }
 
 impl Skip {
@@ -56,6 +73,7 @@ impl Skip {
             match part.as_str() {
                 "date" => skip.date = true,
                 "place" => skip.place = true,
+                "people" => skip.people = true,
                 _ => {}
             }
         }
@@ -82,13 +100,26 @@ pub struct PlaceFilter {
     pub matched: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PersonFilter {
+    pub id: Uuid,
+    /// The name as the owner wrote it ("Person A").
+    pub name: String,
+    pub matched: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Parsed {
     /// What is left to search for (empty: a filter-only search).
     pub text: String,
     pub date: Option<DateFilter>,
     pub place: Option<PlaceFilter>,
+    /// The named people in the query, in the order they were written: photos where they all are.
+    pub people: Vec<PersonFilter>,
 }
+
+/// Most people one search can name (the `people` filter's limit).
+pub const MAX_PEOPLE: usize = 10;
 
 /// Single words that are also ordinary words, months or common given names, and are cities or regions often enough to be in
 /// a library: they are a place only after a preposition ("in nice").
@@ -140,6 +171,17 @@ pub const AMBIGUOUS: &[&str] = &[
     "stoke",
 ];
 
+/// Words that introduce a name ("with Person A", "Person A and Person B").
+const PEOPLE_INTRO: &[&str] = &["with", "of", "and", "featuring", "plus", "including"];
+/// Single words that are also people's names and ordinary words (or what a family calls its members and pets): a name like these is
+/// a person only after one of [`PEOPLE_INTRO`], "with Rose", not "rose garden".
+pub const COMMON_NAMES: &[&str] = &[
+    "will", "mark", "rose", "grace", "joy", "faith", "summer", "autumn", "winter", "spring", "dawn", "bill", "pat",
+    "art", "rich", "frank", "sue", "dean", "gene", "bob", "jack", "pearl", "ruby", "amber", "violet", "lily", "daisy",
+    "holly", "ivy", "olive", "sandy", "penny", "crystal", "sky", "star", "baby", "mom", "mum", "dad", "mama", "papa",
+    "nana", "grandma", "grandpa", "uncle", "aunt", "friend", "friends", "family", "kid", "kids", "dog", "cat", "puppy",
+    "kitten", "bird", "horse", "beach", "sunset",
+];
 const PLACE_PREPOSITIONS: &[&str] = &["in", "at", "near", "around", "from", "across", "within"];
 const DATE_PREPOSITIONS: &[&str] = &["in", "from", "during", "of", "since", "on", "at", "around"];
 /// Words that mean nothing on their own once a filter has been taken out of the query.
@@ -535,8 +577,108 @@ fn find_place(toks: &mut [Tok], places: &[Place]) -> Option<PlaceFilter> {
     })
 }
 
-/// Take the dates and the user's own places out of `query`.
+/// Is this (folded) name an ordinary word, a month, a season or a place often enough that it needs an introducing word?
+fn is_common(name: &str) -> bool {
+    !name.contains(' ')
+        && (COMMON_NAMES.contains(&name)
+            || AMBIGUOUS.contains(&name)
+            || FILLER.contains(&name)
+            || PLACE_PREPOSITIONS.contains(&name)
+            || month_of(name).is_some()
+            || season_of(name).is_some())
+}
+
+fn find_people(toks: &mut [Tok], people: &[Named]) -> Vec<PersonFilter> {
+    if people.is_empty() {
+        return Vec::new();
+    }
+    // A name two people share is never matched: None.
+    let mut lookup: std::collections::HashMap<String, Option<&Named>> = std::collections::HashMap::new();
+    for p in people {
+        let f = fold(&p.name);
+        if f.chars().count() >= 3 {
+            lookup.entry(f).and_modify(|e| *e = None).or_insert(Some(p));
+        }
+    }
+    // (position of the first word, person); put back in reading order at the end.
+    let mut found: Vec<(usize, PersonFilter)> = Vec::new();
+    // A second pass lets "beach Person A Person B" match: B is the last words, and then A is next to a name that was taken.
+    loop {
+        let before = found.len();
+        let mut start = 0;
+        while start < toks.len() && found.len() < MAX_PEOPLE {
+            if toks[start].used {
+                start += 1;
+                continue;
+            }
+            let mut hit: Option<(usize, &Named, bool)> = None; // end (exclusive), person, introduced
+            for len in (1..=4).rev() {
+                let end = start + len;
+                if end > toks.len() || toks[start..end].iter().any(|t| t.used || t.fold.is_empty()) {
+                    continue;
+                }
+                let name = toks[start..end]
+                    .iter()
+                    .map(|t| t.fold.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let Some(entry) = lookup.get(&name) else { continue };
+                // The longest name that is somebody's is the one meant: if that is a shared name, nothing is guessed here.
+                let Some(person) = entry else { break };
+                let introduced =
+                    start > 0 && !toks[start - 1].used && PEOPLE_INTRO.contains(&toks[start - 1].core.as_str());
+                let leading = toks[..start].iter().all(|t| t.used);
+                let trailing = toks[end..].iter().all(|t| t.used);
+                let ok = if is_common(&name) {
+                    introduced
+                } else {
+                    introduced || leading || trailing
+                };
+                if ok {
+                    hit = Some((end, person, introduced));
+                }
+                break;
+            }
+            let Some((end, person, introduced)) = hit else {
+                start += 1;
+                continue;
+            };
+            let from = if introduced { start - 1 } else { start };
+            let matched = matched_text(toks, from, end);
+            toks[from..end].iter_mut().for_each(|t| t.used = true);
+            found.push((
+                start,
+                PersonFilter {
+                    id: person.id,
+                    name: person.name.clone(),
+                    matched,
+                },
+            ));
+            start = end;
+        }
+        if found.len() == before || found.len() >= MAX_PEOPLE {
+            break;
+        }
+    }
+    found.sort_by_key(|(at, _)| *at);
+    // The same person named twice is one filter.
+    let mut out: Vec<PersonFilter> = Vec::new();
+    for (_, p) in found {
+        if !out.iter().any(|o| o.id == p.id) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// Take the dates and the user's own places out of `query` (the tests of those; the server reads people too: [`parse_with`]).
+#[cfg(test)]
 pub fn parse(query: &str, today: Date, places: &[Place], skip: Skip) -> Parsed {
+    parse_with(query, today, places, &[], skip)
+}
+
+/// Take the dates, the user's own places and the people they have named out of `query` (a date, then a place, then the people).
+pub fn parse_with(query: &str, today: Date, places: &[Place], people: &[Named], skip: Skip) -> Parsed {
     let mut toks = tokenize(query);
     let date = if skip.date { None } else { find_date(&mut toks, today) };
     let place = if skip.place {
@@ -544,8 +686,13 @@ pub fn parse(query: &str, today: Date, places: &[Place], skip: Skip) -> Parsed {
     } else {
         find_place(&mut toks, places)
     };
+    let people = if skip.people {
+        Vec::new()
+    } else {
+        find_people(&mut toks, people)
+    };
     let rest: Vec<&Tok> = toks.iter().filter(|t| !t.used).collect();
-    let filtered = date.is_some() || place.is_some();
+    let filtered = date.is_some() || place.is_some() || !people.is_empty();
     let only_filler = rest
         .iter()
         .all(|t| t.core.is_empty() || FILLER.contains(&t.core.as_str()));
@@ -554,7 +701,12 @@ pub fn parse(query: &str, today: Date, places: &[Place], skip: Skip) -> Parsed {
     } else {
         rest.iter().map(|t| t.raw.as_str()).collect::<Vec<_>>().join(" ")
     };
-    Parsed { text, date, place }
+    Parsed {
+        text,
+        date,
+        place,
+        people,
+    }
 }
 
 /// Today in UTC.
@@ -883,7 +1035,7 @@ mod tests {
             &places(),
             Skip {
                 date: true,
-                place: false,
+                ..Skip::default()
             },
         );
         assert!(p.date.is_none());
@@ -894,8 +1046,8 @@ mod tests {
             TODAY,
             &places(),
             Skip {
-                date: false,
                 place: true,
+                ..Skip::default()
             },
         );
         assert!(p.place.is_none());
@@ -907,6 +1059,7 @@ mod tests {
             Skip {
                 date: true,
                 place: true,
+                ..Skip::default()
             },
         );
         assert_eq!(p.text, q);
@@ -914,11 +1067,131 @@ mod tests {
             Skip::parse(Some("date, PLACE")),
             Skip {
                 date: true,
-                place: true
+                place: true,
+                people: false
             }
         );
+        assert!(Skip::parse(Some("people")).people);
         assert_eq!(Skip::parse(Some("nonsense")), Skip::default());
         assert_eq!(Skip::parse(None), Skip::default());
+    }
+
+    fn named(names: &[&str]) -> Vec<Named> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| Named {
+                id: Uuid::from_u128(i as u128 + 1),
+                name: (*n).into(),
+            })
+            .collect()
+    }
+
+    fn with(q: &str, names: &[&str]) -> Parsed {
+        parse_with(q, TODAY, &places(), &named(names), Skip::default())
+    }
+
+    fn who(p: &Parsed) -> Vec<&str> {
+        p.people.iter().map(|x| x.name.as_str()).collect()
+    }
+
+    #[test]
+    fn people_lead_trail_or_follow_an_introducing_word() {
+        let names = ["Person A", "Person B"];
+        let p = with("Person A beach", &names);
+        assert_eq!((who(&p), p.text.as_str()), (vec!["Person A"], "beach"));
+        let p = with("beach Person A", &names);
+        assert_eq!((who(&p), p.text.as_str()), (vec!["Person A"], "beach"));
+        let p = with("beach with Person A at dusk", &names);
+        assert_eq!((who(&p), p.text.as_str()), (vec!["Person A"], "beach at dusk"));
+        assert_eq!(p.people[0].matched, "with Person A");
+        // In the middle of the query, with nothing to introduce it: left alone.
+        let p = with("beach Person A dusk", &names);
+        assert!(p.people.is_empty());
+        assert_eq!(p.text, "beach Person A dusk");
+    }
+
+    #[test]
+    fn several_people_and_a_date_make_a_filter_only_search() {
+        let names = ["Person A", "Person B"];
+        let p = with("Person A and Person B 2023", &names);
+        assert_eq!(who(&p), vec!["Person A", "Person B"]);
+        assert_eq!(p.text, "");
+        assert_eq!(range(&p).0, date!(2023 - 01 - 01));
+        let p = with("photos of Person B with Person A", &names);
+        assert_eq!(who(&p), vec!["Person B", "Person A"]);
+        assert_eq!(p.text, "");
+        // Next to each other, in either order of discovery.
+        let p = with("beach Person A Person B", &names);
+        assert_eq!((who(&p), p.text.as_str()), (vec!["Person A", "Person B"], "beach"));
+        // The same person twice is one filter.
+        assert_eq!(who(&with("Person A and Person A", &names)), vec!["Person A"]);
+    }
+
+    #[test]
+    fn the_longest_name_wins_and_a_shared_name_is_never_guessed() {
+        let p = with("Ann Lee beach", &["Ann", "Ann Lee"]);
+        assert_eq!((who(&p), p.text.as_str()), (vec!["Ann Lee"], "beach"));
+        let p = with("Ann beach", &["Ann", "Ann Lee"]);
+        assert_eq!(who(&p), vec!["Ann"]);
+        // Two people called Anna: "Anna" is nobody in particular, and "Anna Lee" is not read as "Anna" and a leftover.
+        let p = with("Anna beach", &["Anna", "Anna"]);
+        assert!(p.people.is_empty());
+        assert_eq!(p.text, "Anna beach");
+        let p = with("Anna Lee beach", &["Anna", "Anna", "Anna Lee"]);
+        assert_eq!(who(&p), vec!["Anna Lee"]);
+        let p = with("Anna Lee beach", &["Anna", "Anna", "Anna Lee", "Anna Lee"]);
+        assert!(p.people.is_empty());
+    }
+
+    #[test]
+    fn names_that_are_ordinary_words_need_an_introducing_word() {
+        let p = with("rose garden", &["Rose"]);
+        assert!(p.people.is_empty(), "rose garden is a garden");
+        let p = with("garden rose", &["Rose"]);
+        assert!(p.people.is_empty(), "a trailing common word is not a person");
+        let p = with("garden with Rose", &["Rose"]);
+        assert_eq!((who(&p), p.text.as_str()), (vec!["Rose"], "garden"));
+        // Months and the places' own ambiguous words are common too.
+        assert!(with("may beach", &["May"]).people.is_empty());
+        assert_eq!(who(&with("beach with May", &["May"])), vec!["May"]);
+        assert!(with("hope", &["Hope"]).people.is_empty());
+        // Short names are never matched.
+        assert!(with("Al beach", &["Al"]).people.is_empty());
+        // A name that is not common matches at the start.
+        assert_eq!(who(&with("Maria sunset", &["Maria"])), vec!["Maria"]);
+    }
+
+    #[test]
+    fn a_place_or_date_read_first_keeps_its_words_and_skip_turns_people_off() {
+        // "in Lisbon" is a place before it is a person's name.
+        let p = with("dinner in Lisbon", &["Lisbon"]);
+        assert_eq!(p.place.as_ref().unwrap().value, "Lisbon");
+        assert!(p.people.is_empty());
+        let q = "Person A beach";
+        let off = parse_with(
+            q,
+            TODAY,
+            &places(),
+            &named(&["Person A"]),
+            Skip {
+                people: true,
+                ..Skip::default()
+            },
+        );
+        assert!(off.people.is_empty());
+        assert_eq!(off.text, q);
+        // No people known (People is off, or nobody is named): nothing is read.
+        assert!(parse_with(q, TODAY, &places(), &[], Skip::default()).people.is_empty());
+    }
+
+    #[test]
+    fn at_most_ten_people_are_read() {
+        let names: Vec<String> = (0..12).map(|i| format!("Person {}", (b'A' + i) as char)).collect();
+        let list: Vec<&str> = names.iter().map(String::as_str).collect();
+        let q = names.join(" and ");
+        let p = with(&q, &list);
+        assert_eq!(p.people.len(), MAX_PEOPLE);
     }
 
     #[test]

@@ -105,7 +105,8 @@ pub struct AlbumLine {
     #[serde(default)]
     pub items: Vec<String>,
     /// The saved rules of a smart album (migration 0026), as the API stores them; such an album has no `items`. Absent for an
-    /// ordinary album and in older manifests (an older reader restores a smart album as an empty ordinary one).
+    /// ordinary album and in older manifests (an older reader restores a smart album as an empty ordinary one). Also absent for a
+    /// smart album with a people rule (`docs/faces.md`, "Privacy"): a manifest never holds a person's id, so it is restored empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rules: Option<serde_json::Value>,
 }
@@ -176,6 +177,17 @@ pub struct UserManifest {
     pub tags_known: bool,
     pub files: usize,
     pub bad_lines: usize,
+}
+
+/// Does a smart album's saved rules name people? (Their ids are the owner's private data: the manifest leaves such rules out.)
+fn has_people_rule(rules: &serde_json::Value) -> bool {
+    rules
+        .get("rules")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|list| {
+            list.iter()
+                .any(|r| r.get("field").and_then(serde_json::Value::as_str) == Some("people"))
+        })
 }
 
 pub fn today_utc() -> String {
@@ -276,7 +288,10 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
             created_at: r.try_get("created_at")?,
             updated_at: r.try_get("updated_at")?,
             items: items.remove(&id).unwrap_or_default(),
-            rules: r.try_get::<Option<serde_json::Value>, _>("rules")?.filter(|v| !v.is_null()),
+            rules: r
+                .try_get::<Option<serde_json::Value>, _>("rules")?
+                .filter(|v| !v.is_null())
+                .filter(|v| !has_people_rule(v)),
         }));
     }
 
@@ -549,6 +564,15 @@ pub fn keep_from_env() -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_people_rule_keeps_the_album_rules_out_of_the_manifest() {
+        let with = serde_json::json!({"match": "all", "rules": [{"field": "favorite", "value": true}, {"field": "people", "ids": ["x"]}]});
+        let without = serde_json::json!({"match": "all", "rules": [{"field": "favorite", "value": true}]});
+        assert!(has_people_rule(&with));
+        assert!(!has_people_rule(&without));
+        assert!(!has_people_rule(&serde_json::json!({})));
+    }
 
     #[test]
     fn key_dates() {

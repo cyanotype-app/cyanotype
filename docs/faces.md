@@ -12,6 +12,7 @@ is stored, the People routes of the API answer `404` as if they did not exist an
 
 - [What it does](#what-it-does)
 - [People: grouping, naming and fixing](#people-grouping-naming-and-fixing)
+- [People in search, albums and bulk actions](#people-in-search-albums-and-bulk-actions)
 - [Privacy](#privacy)
 - [Models, licences and provenance](#models-licences-and-provenance)
 - [Bake-off](#bake-off)
@@ -151,6 +152,76 @@ selection, inline rename, Hide, Merge into, Delete person, selected photos to **
 photo shows its people as chips (a face nobody claimed offers "Who is this?"). Metrics (`docs/observability.md`): `cyanotype.people.run_ms`, `.assigned`, `.created`,
 `.ungrouped_faces`.
 
+## People in search, albums and bulk actions
+
+A person is one more way into the library. Everything here follows `FACES_ENABLED` and the owner's own people, and none of it is ever visible to
+anyone but the owner (see "Privacy": a share link made from a person carries photos, never people).
+
+### The person's page is a timeline
+
+`GET /assets/people/{id}/timeline` is `{total, days: [{day, count}]}`, the person's photos per day, and `GET /assets/people/{id}/photos` also takes
+`before` (as `GET /assets` does), so the page is the library's own timeline component over the person's endpoints: month and day headers, the
+scrubber, "Select all" without listing ids. The photos are the ones the person's page has always listed (live, **archived ones too**, hidden ones
+only with the Hidden view unlocked). The page reads the person's counts every 15 s while it is open and lays the timeline out again when they
+change (the worker grouped new photos), unless a selection is open (it waits for the end of the selection).
+
+### The `{"person": id}` scope
+
+A bulk request (`favorite`, `rating`, `tags/apply`, `hide`, `archive`, `trash`, `restore`, `edits`, albums, `shares`) takes
+`{"scope": {"person": "<id>"}, "except": [...]}` like it takes `{"album": id}` or `{"search": ...}`: the server resolves the photos inside the
+request's transaction, as the person's page lists them. An id that is not the owner's, or one that never existed, is `404` (the same), and so is
+every `person` scope while People is off. A `search` scope with a `people` filter is **refused (404) while People is off**, never read as "no filter":
+a bulk trash must not widen to the whole library because a switch was flipped.
+
+### "Save as album"
+
+A person's page (the header, or the selection bar for a part of it) and a filter-only search with people in it offer **Save as album**: the album is
+created empty (`POST /assets/albums {title}`) and then filled by scope (`POST /assets/albums/{id}/assets {scope: {person}}` or
+`{scope: {search: {people, from, ...}}}`), so a person with 4,000 photos is one request and the browser never lists ids. The album is an ordinary
+one, a snapshot: it does not follow the person afterwards (a smart album with a People rule does). **The title starts empty and the dialog says
+why**: an album's title is shown to everyone it is shared with and is written into the recovery manifest, so it must not be a person's name
+by default.
+
+### The People filter of search
+
+`GET /assets/search?people=<id>,<id>` (also `similar` and the `search` scope; at most 10 ids): photos where **all** of the people are, **together** in the
+same photo (one `IN (SELECT asset_id FROM faces ...)` test per person, through `faces_person_idx`, joined to the owner's `people` and to the face's own scan
+like the person's page, so the filter and the page agree). An id that is not the owner's matches nothing, exactly like an id that never existed (the
+answers are identical); a malformed id or more than 10 is `400`. While People is off the parameter is ignored. In the web app: a **People** group in the
+Filters sheet (named people who are not hidden, a box to narrow the list, "Photos with all of the chosen people in them"), shown as one chip
+("Person A and Person B"), in the address as `people=`, combinable with everything else. The person's page has **Search with filters**, which is how to
+get "Person A in 2023" and save it as an album.
+
+**Names in the words of a query.** "Person A and Person B 2023", "beach with Person A", "Person A beach": the parser reads the owner's **named, not
+hidden** people with a photo a search can show (the list is read per query, never cached: a rename or a hide counts at once), after dates and
+places (so "in Lisbon" stays a place), with these rules (`query_parse.rs`):
+
+- A name counts at the **start** or the **end** of the query, or right after **with, of, and, featuring, plus, including** ("beach with Person A",
+  "Person A and Person B"). In the middle of a query with nothing to introduce it, it is just words.
+- The **longest name wins** ("Ann Lee" over "Ann"). A name that **two people share is never matched** (and "Anna Lee" is not read as "Anna" plus
+  a leftover), names of **fewer than three letters** are not matched, and the same person named twice is one filter (at most 10).
+- A single word that is also an ordinary word, a month or season, a preposition, filler or a place the library often has (`COMMON_NAMES`,
+  `AMBIGUOUS`: will, rose, grace, may, hope, dog, mom...) counts **only after an introducing word**: "with Rose" is a person, "rose garden" is a garden.
+- What was understood is a removable chip (`parsed.chips[].kind = "people"` with `people: [{id, name}]`); its x searches again with `skip=people`,
+  which gives the words back. An explicit `people` filter wins over the words (they stay in the query). While People is off nothing is read.
+- False positives are possible by nature (a leading first name that is also a book title); the chip says what was understood and one click undoes it.
+
+### Smart albums
+
+Rule `{"field": "people", "ids": [...]}`: **all of these people are in the photo** (1 to 10), in the rule editor as a *People* rule (offered only while People is
+on). Saving checks every id is the owner's (`404` otherwise, the same as an unknown id) and that People is on (`404` while it is off). The album stores only
+ids, so a rename changes nothing, a deleted person leaves a rule that matches **nothing** (never "everything"), and a merge is not followed (edit the rule). While
+People is off a saved people rule matches nothing, in the album, its counts, its bulk scope and its share link. Because ids are the owner's private data, the
+**recovery manifest leaves the rules out of a smart album that has a people rule** (`manifest::has_people_rule`): `reindex` restores it as an empty album with
+its title. The rules are in the owner's own album responses (they are an owner-only API); public share responses never carry them.
+
+### Cost
+
+The filter is one semi-join per person on `faces_person_idx`: with a person's few thousand faces it is the same shape as a tag filter (measure of "Together" below).
+"Together" on a very large library intersects the persons' photo sets (hash semi-join of the smaller one against `assets`), so it is as fast as the rarest
+person is rare; the planner may instead walk the timeline index newest first and test each photo when nobody is very rare, which is the plan a tag filter
+has too. The parser's one extra query per text search reads the owner's named people (`people_owner_idx`, one `EXISTS` on `faces_person_idx` each).
+
 ## Privacy
 
 - **Off by default** (`FACES_ENABLED`, in `.env.prod`). Switch it on deliberately.
@@ -162,7 +233,9 @@ photo shows its people as chips (a face nobody claimed offers "Who is this?"). M
   the photo; the foreign keys cascade from `assets` and from `users` too, so deleting an account removes its faces.
   A rotate or crop forgets the photo's scan and the faces nobody decided about (their positions are wrong for the new picture) and scans it again; faces you put in a person wait for the new scan to hand them over. A person you named stays when its photos are purged; an unnamed one left without a face goes.
 - **Owner-only, never shared.** Share links, the public pages, downloads, the recovery manifests (`manifest/`) and the CLI import never include faces,
-  people or names (a test creates a share of a photo with a named person and searches every public response). The People routes are for the signed-in
+  people or names (a test creates a share of a photo with a named person and searches every public response; another makes an album from a person with
+  "Save as album", shares it, and searches every public response, the owner's album and share lists and the recovery manifest for names, person ids and
+  face ids). The People routes are for the signed-in
   owner (`404` for anyone else's ids and while the feature is off), and a photo in the Hidden view (or a person only hidden photos have) is invisible to a session that has
   not unlocked it. A recovery from the bucket (`cyanotype reindex`) does not bring faces or people back: **names and corrections are not in the
   recovery manifests either**, so they are lost with the database if it is lost and not backed up (the Postgres dumps do hold them). Faces are found again from the previews when the
@@ -360,3 +433,10 @@ Metrics (`docs/observability.md`): `cyanotype.faces.model_loaded` (gauge), `cyan
   photo are never one person; the queue (quiet period, queued scans, newer requests); suggestions; cascades; `delete_all`; the HNSW index is used. `people_math`
   has the unit tests of the arithmetic. Web: `peopleText.test.ts`, `People.test.tsx`, `PersonPage.test.tsx`, `FaceChips.test.tsx` and `e2e/people-layout.spec.ts`
   (phone widths 320 to 414, desktop, dark).
+- People in search, albums and bulk actions: `query_parse.rs` (unit: the name rules above), `routes/people_tests.rs` (the person's timeline and its paging, the `person`
+  scope on every bulk verb and its owner isolation, "Save as album" from a person and from a filtered subset, the shared album that leaks nothing, the filter
+  alone and together, with dates, favorites, the trash and hidden photos, another owner's id, malformed and too many, names in a query and their chips, smart
+  albums with a people rule, and with the switch off: the parameter ignored, the scopes and rule refused, the parser silent, a saved rule matching nothing),
+  `manifest.rs` (a people rule stays out). Web: `peopleText.test.ts`, `searchText.test.ts`, `smartText.test.ts`, `PeoplePicker.test.tsx`, `FilterSheet.test.tsx`,
+  `SmartAlbumEditor.test.tsx`, `Search.test.tsx`, `PersonPage.test.tsx` (the timeline, live refresh, select all through the scope) and
+  `e2e/people-search-layout.spec.ts`.

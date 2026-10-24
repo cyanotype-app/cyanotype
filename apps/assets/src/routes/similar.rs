@@ -47,6 +47,8 @@ pub(super) struct SimilarQuery {
     camera: Option<String>,
     lens: Option<String>,
     place: Option<String>,
+    /// Person ids, as in search (ignored while People is off).
+    people: Option<String>,
     #[serde(rename = "type")]
     kind: Option<String>,
     album: Option<Uuid>,
@@ -59,8 +61,9 @@ pub(super) struct SimilarQuery {
 }
 
 impl SimilarQuery {
-    fn as_search(&self) -> SearchQuery {
+    fn as_search(&self, faces: bool) -> SearchQuery {
         SearchQuery {
+            people: self.people.clone().filter(|_| faces),
             from: self.from.clone(),
             to: self.to.clone(),
             favorite: self.favorite,
@@ -152,7 +155,7 @@ pub(super) async fn run(s: &AppState, owner: Uuid, id: Uuid, q: &SimilarQuery) -
     .fetch_optional(&s.db)
     .await?;
     let (burst,) = source.ok_or(ApiError::NotFound)?;
-    let filters = Filters::parse(&q.as_search())?.excluding(id, burst);
+    let filters = Filters::parse(&q.as_search(s.faces_enabled))?.excluding(id, burst);
 
     let serving = s
         .search

@@ -1040,3 +1040,682 @@ async fn a_share_link_carries_nothing_of_the_people_in_the_photos_it_shows() {
     assert_eq!(visit(&app, "/assets/people").await.0, StatusCode::UNAUTHORIZED);
     t.teardown().await;
 }
+
+// ---- People 3: the person's timeline, the {person} scope, saving as an album, the search filter, smart albums --------------------
+
+/// The whole app (share links included), with People `faces`.
+fn full_app(pool: &PgPool, faces: bool) -> Router {
+    routes_with(ShareState::new(false, vec![]).with_limits((10_000, 10_000), (10_000, 10_000), (10_000, 10_000)))
+        .with_state(AppState {
+            db: pool.clone(),
+            storage: dummy_storage(),
+            trash_retention_days: 30,
+            purge_wake: Default::default(),
+            text: std::sync::Arc::new(crate::testutil::FakeText::default()),
+            search: crate::testutil::default_search(),
+            faces_enabled: faces,
+        })
+}
+
+/// A photo taken on `day` (`YYYY-MM-DD`, noon UTC) with one face of `who` in `person_id`.
+async fn shot_of(
+    pool: &PgPool,
+    owner: Uuid,
+    name: &str,
+    day: &str,
+    person_id: Uuid,
+    who: &[f32],
+    seed: u64,
+) -> (Uuid, Uuid) {
+    let a = photo(pool, owner, name).await;
+    sqlx::query("UPDATE assets SET taken_at = ($2 || ' 12:00:00+00')::timestamptz WHERE id = $1")
+        .bind(a)
+        .bind(day)
+        .execute(pool)
+        .await
+        .unwrap();
+    let f = face(pool, a, Some(shot(who, seed)), [0.1, 0.1, 0.2, 0.2]).await;
+    put(pool, f, person_id).await;
+    (a, f)
+}
+
+/// Person A in three photos (2022-05-01, 2023-06-01, 2023-06-02), Person B in the last two of them and in one more (2023-07-01).
+struct Scene {
+    owner: Uuid,
+    key: String,
+    a: Uuid,
+    b: Uuid,
+    a_photos: Vec<Uuid>,
+    b_photos: Vec<Uuid>,
+}
+
+async fn scene(pool: &PgPool, email: &str) -> Scene {
+    let (owner, key) = user(pool, email).await;
+    let a = person(pool, owner, Some("Person A")).await;
+    let b = person(pool, owner, Some("Person B")).await;
+    let (ia, ib) = (identity(11), identity(12));
+    let (a1, _) = shot_of(pool, owner, "a1.jpg", "2022-05-01", a, &ia, 1).await;
+    let (a2, _) = shot_of(pool, owner, "a2.jpg", "2023-06-01", a, &ia, 2).await;
+    let (a3, _) = shot_of(pool, owner, "a3.jpg", "2023-06-02", a, &ia, 3).await;
+    // Person B is in a2 and a3 too (a second face in the same photos) and has a photo of their own.
+    let mut b_photos = Vec::new();
+    for (asset, seed) in [(a2, 4), (a3, 5)] {
+        sqlx::query("DELETE FROM face_scans WHERE asset_id = $1")
+            .bind(asset)
+            .execute(pool)
+            .await
+            .unwrap();
+        let both = [
+            NewFace {
+                bbox: [0.1, 0.1, 0.2, 0.2],
+                landmarks: [0.1; 10],
+                score: 0.9,
+                embedding: Some(shot(&ia, seed)),
+            },
+            NewFace {
+                bbox: [0.5, 0.5, 0.2, 0.2],
+                landmarks: [0.1; 10],
+                score: 0.9,
+                embedding: Some(shot(&ib, seed)),
+            },
+        ];
+        assert!(faces::store(pool, asset, MODEL, VERSION, &both).await.unwrap());
+        sqlx::query("UPDATE faces SET person_id = CASE WHEN box_x < 0.3 THEN $2 ELSE $3 END WHERE asset_id = $1")
+            .bind(asset)
+            .bind(a)
+            .bind(b)
+            .execute(pool)
+            .await
+            .unwrap();
+        b_photos.push(asset);
+    }
+    let (b3, _) = shot_of(pool, owner, "b3.jpg", "2023-07-01", b, &ib, 6).await;
+    b_photos.push(b3);
+    Scene {
+        owner,
+        key,
+        a,
+        b,
+        a_photos: vec![a1, a2, a3],
+        b_photos,
+    }
+}
+
+fn sorted(mut v: Vec<Uuid>) -> Vec<Uuid> {
+    v.sort_unstable();
+    v
+}
+
+#[tokio::test]
+async fn a_person_has_a_timeline_that_counts_what_the_photos_list_returns() {
+    let Some(t) = TestDb::new().await else { return };
+    let s = scene(&t.pool, "a@example.com").await;
+    let app = app_with_people(&t.pool);
+    let (st, days) = get(&app, &s.key, &format!("/assets/people/{}/timeline", s.a)).await;
+    assert_eq!(st, StatusCode::OK, "{days}");
+    assert_eq!(
+        days,
+        json!({"total": 3, "days": [
+            {"day": "2023-06-02", "count": 1}, {"day": "2023-06-01", "count": 1}, {"day": "2022-05-01", "count": 1}]})
+    );
+    // The list pages the same photos, from any day (`before`) or by cursor, newest first.
+    let (_, all) = get(&app, &s.key, &format!("/assets/people/{}/photos", s.a)).await;
+    assert_eq!(item_ids(&all), vec![s.a_photos[2], s.a_photos[1], s.a_photos[0]]);
+    let (_, older) = get(
+        &app,
+        &s.key,
+        &format!("/assets/people/{}/photos?before=2023-06-02T12:00:00Z", s.a),
+    )
+    .await;
+    assert_eq!(item_ids(&older), vec![s.a_photos[1], s.a_photos[0]]);
+    // Trashed photos, and hidden ones for a locked session, are in neither.
+    sqlx::query("UPDATE assets SET deleted_at = now() WHERE id = $1")
+        .bind(s.a_photos[0])
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE assets SET hidden = true WHERE id = $1")
+        .bind(s.a_photos[2])
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let (_, days) = get(&app, &s.key, &format!("/assets/people/{}/timeline", s.a)).await;
+    assert_eq!(days["total"], 1);
+    // Archived photos stay (the person's page is not the timeline).
+    sqlx::query("UPDATE assets SET archived = true WHERE id = $1")
+        .bind(s.a_photos[1])
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let (_, days) = get(&app, &s.key, &format!("/assets/people/{}/timeline", s.a)).await;
+    assert_eq!(days, json!({"total": 1, "days": [{"day": "2023-06-01", "count": 1}]}));
+    // Someone else's person, or none, is a 404.
+    let (_, other) = user(&t.pool, "b@example.com").await;
+    for who in [Uuid::new_v4().to_string(), s.a.to_string()] {
+        assert_eq!(
+            get(&app, &other, &format!("/assets/people/{who}/timeline")).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn the_person_scope_works_for_the_bulk_actions_and_belongs_to_its_owner() {
+    let Some(t) = TestDb::new().await else { return };
+    let s = scene(&t.pool, "a@example.com").await;
+    let (_, other) = user(&t.pool, "b@example.com").await;
+    let app = full_app(&t.pool, true);
+    // Favorite everything of Person A except one photo, without listing ids.
+    let (st, v) = post(
+        &app,
+        &s.key,
+        "/assets/favorite",
+        json!({"scope": {"person": s.a}, "except": [s.a_photos[0]], "favorite": true}),
+    )
+    .await;
+    assert_eq!((st, v["count"].as_i64()), (StatusCode::OK, Some(2)), "{v}");
+    let favs: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM assets WHERE favorite")
+        .fetch_all(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(sorted(favs), sorted(vec![s.a_photos[1], s.a_photos[2]]));
+    // Rate, tag, archive and hide take the same scope.
+    let (st, v) = post(
+        &app,
+        &s.key,
+        "/assets/rating",
+        json!({"scope": {"person": s.a}, "except": [], "rating": 4}),
+    )
+    .await;
+    assert_eq!((st, v["count"].as_i64()), (StatusCode::OK, Some(3)), "{v}");
+    let (st, v) = post(
+        &app,
+        &s.key,
+        "/assets/tags/apply",
+        json!({"scope": {"person": s.a}, "except": [], "add": ["Trip"]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(
+        count(&t.pool, "SELECT count(*) FROM asset_tags").await,
+        3,
+        "the tag went on all of Person A's photos"
+    );
+    let (st, v) = post(
+        &app,
+        &s.key,
+        "/assets/archive",
+        json!({"scope": {"person": s.a}, "except": [], "archived": true}),
+    )
+    .await;
+    assert_eq!((st, v["count"].as_i64()), (StatusCode::OK, Some(3)), "{v}");
+    // Archived photos are still the person's (the page keeps them, flagged); hiding takes them out of a locked session's page.
+    let (_, days) = get(&app, &s.key, &format!("/assets/people/{}/timeline", s.a)).await;
+    assert_eq!(days["total"], 3);
+    let (st, v) = post(
+        &app,
+        &s.key,
+        "/assets/hide",
+        json!({"scope": {"person": s.a}, "except": [], "hidden": true}),
+    )
+    .await;
+    assert_eq!((st, v["count"].as_i64()), (StatusCode::OK, Some(3)), "{v}");
+    // (A person only hidden photos have is not for a locked session to see at all.)
+    let (st, _) = get(&app, &s.key, &format!("/assets/people/{}/timeline", s.a)).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    sqlx::query("UPDATE assets SET hidden = false, archived = false")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    // Trash, and Undo through the batch.
+    let (st, v) = post(
+        &app,
+        &s.key,
+        "/assets/trash",
+        json!({"scope": {"person": s.b}, "except": [s.b_photos[0]]}),
+    )
+    .await;
+    assert_eq!((st, v["count"].as_i64()), (StatusCode::OK, Some(2)), "{v}");
+    let (st, v) = post(
+        &app,
+        &s.key,
+        "/assets/restore",
+        json!({"scope": {"trash_batch": v["batch"]}, "except": []}),
+    )
+    .await;
+    assert_eq!((st, v["count"].as_i64()), (StatusCode::OK, Some(2)), "{v}");
+
+    // Another user's person, and one that never existed, are the same 404, on every verb that takes a scope.
+    for who in [Uuid::new_v4(), s.a] {
+        for (path, body) in [
+            ("/assets/favorite", json!({"favorite": true})),
+            ("/assets/rating", json!({"rating": 3})),
+            ("/assets/archive", json!({"archived": true})),
+            ("/assets/hide", json!({"hidden": true})),
+            ("/assets/trash", json!({})),
+        ] {
+            let mut b = body.clone();
+            b["scope"] = json!({"person": who});
+            b["except"] = json!([]);
+            let (st, v) = post(&app, &other, path, b).await;
+            assert_eq!(st, StatusCode::NOT_FOUND, "{path} with {who}: {v}");
+        }
+    }
+    assert_eq!(
+        count(
+            &t.pool,
+            "SELECT count(*) FROM assets WHERE deleted_at IS NOT NULL OR archived OR hidden"
+        )
+        .await,
+        0
+    );
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn saving_a_person_as_an_album_adds_the_photos_from_the_scope_and_the_filtered_subset() {
+    let Some(t) = TestDb::new().await else { return };
+    let s = scene(&t.pool, "a@example.com").await;
+    let app = full_app(&t.pool, true);
+    // The album dialog's two steps: create it empty, then add by scope (no ids from the browser).
+    let (st, album) = post(&app, &s.key, "/assets/albums", json!({"title": "Holiday"})).await;
+    assert_eq!(st, StatusCode::CREATED, "{album}");
+    let id: Uuid = album["id"].as_str().unwrap().parse().unwrap();
+    let (st, v) = post(
+        &app,
+        &s.key,
+        &format!("/assets/albums/{id}/assets"),
+        json!({"scope": {"person": s.a}, "except": []}),
+    )
+    .await;
+    assert_eq!((st, v["count"].as_i64()), (StatusCode::OK, Some(3)), "{v}");
+    // A snapshot: an ordinary album that no longer follows the person.
+    let (_, listed) = get(&app, &s.key, &format!("/assets/albums/{id}/assets")).await;
+    assert_eq!(sorted(item_ids(&listed)), sorted(s.a_photos.clone()));
+    sqlx::query("DELETE FROM people WHERE id = $1")
+        .bind(s.a)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let (_, listed) = get(&app, &s.key, &format!("/assets/albums/{id}/assets")).await;
+    assert_eq!(item_ids(&listed).len(), 3);
+
+    // The filtered subset: Person B in 2023, through the search scope.
+    let (_, album) = post(&app, &s.key, "/assets/albums", json!({"title": "B in 2023"})).await;
+    let id: Uuid = album["id"].as_str().unwrap().parse().unwrap();
+    let (st, v) = post(
+        &app,
+        &s.key,
+        &format!("/assets/albums/{id}/assets"),
+        json!({"scope": {"search": {"people": s.b.to_string(), "from": "2023-01-01", "to": "2023-12-31"}}, "except": []}),
+    )
+    .await;
+    assert_eq!((st, v["count"].as_i64()), (StatusCode::OK, Some(3)), "{v}");
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn an_album_saved_from_a_person_and_shared_leaks_nothing_of_the_people() {
+    let Some(t) = TestDb::new().await else { return };
+    let s = scene(&t.pool, "a@example.com").await;
+    let app = full_app(&t.pool, true);
+    let (_, album) = post(&app, &s.key, "/assets/albums", json!({"title": "Holiday"})).await;
+    let id: Uuid = album["id"].as_str().unwrap().parse().unwrap();
+    let (st, _) = post(
+        &app,
+        &s.key,
+        &format!("/assets/albums/{id}/assets"),
+        json!({"scope": {"person": s.a}, "except": []}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, share) = post(
+        &app,
+        &s.key,
+        "/assets/shares",
+        json!({"album_id": id, "allow_download": true}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{share}");
+    let token = share["token"].as_str().unwrap();
+    let a1 = s.a_photos[0];
+    let mut bodies = vec![share.to_string()];
+    for path in [
+        format!("/assets/public/s/{token}"),
+        format!("/assets/public/s/{token}/items"),
+        format!("/assets/public/s/{token}/items/{a1}"),
+    ] {
+        let (st, body) = visit(&app, &path).await;
+        assert_eq!(st, StatusCode::OK, "{path}: {body}");
+        bodies.push(body);
+    }
+    let face_ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM faces")
+        .fetch_all(&t.pool)
+        .await
+        .unwrap();
+    let mut needles = vec![
+        "Person A".to_string(),
+        "Person B".into(),
+        "people".into(),
+        "face".into(),
+        "person".into(),
+    ];
+    needles.extend([s.a.to_string(), s.b.to_string()]);
+    needles.extend(face_ids.iter().map(Uuid::to_string));
+    for body in &bodies {
+        for needle in &needles {
+            assert!(!body.contains(needle.as_str()), "{needle:?} leaked into: {body}");
+        }
+    }
+    // The owner's album and share lists do not name people either, and neither does the recovery manifest.
+    for path in [format!("/assets/albums/{id}"), "/assets/shares".to_string()] {
+        let (_, v) = get(&app, &s.key, &path).await;
+        for needle in &needles {
+            assert!(!v.to_string().contains(needle.as_str()), "{needle:?} in {path}: {v}");
+        }
+    }
+    let (bytes, _) = cyanotype_core::manifest::build(&t.pool, s.owner).await.unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    for needle in &needles {
+        assert!(!text.contains(needle.as_str()), "{needle:?} in the manifest");
+    }
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn the_people_filter_finds_photos_where_all_of_them_are_together() {
+    let Some(t) = TestDb::new().await else { return };
+    let s = scene(&t.pool, "a@example.com").await;
+    let (bob, kb) = user(&t.pool, "b@example.com").await;
+    let app = app_with_people(&t.pool);
+    let ids = |v: &Value| sorted(item_ids(v));
+    let (st, one) = get(&app, &s.key, &format!("/assets/search?people={}", s.a)).await;
+    assert_eq!(st, StatusCode::OK, "{one}");
+    assert_eq!(ids(&one), sorted(s.a_photos.clone()));
+    assert_eq!(one["total"], 3);
+    // Together: only the two photos both are in.
+    let (_, both) = get(&app, &s.key, &format!("/assets/search?people={},{}", s.a, s.b)).await;
+    assert_eq!(ids(&both), sorted(vec![s.a_photos[1], s.a_photos[2]]));
+    // Combined with the other filters.
+    let (_, y) = get(
+        &app,
+        &s.key,
+        &format!("/assets/search?people={}&from=2023-01-01&to=2023-12-31", s.a),
+    )
+    .await;
+    assert_eq!(ids(&y), sorted(vec![s.a_photos[1], s.a_photos[2]]));
+    let (_, f) = get(&app, &s.key, &format!("/assets/search?people={}&favorite=true", s.a)).await;
+    assert!(item_ids(&f).is_empty());
+    // Not the trash, not hidden photos.
+    sqlx::query("UPDATE assets SET deleted_at = now() WHERE id = $1")
+        .bind(s.a_photos[1])
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE assets SET hidden = true WHERE id = $1")
+        .bind(s.a_photos[2])
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let (_, both) = get(&app, &s.key, &format!("/assets/search?people={},{}", s.a, s.b)).await;
+    assert!(item_ids(&both).is_empty());
+    // Another user's person id behaves like one that never existed: nothing matches, and the answers are the same.
+    let theirs = person(&t.pool, bob, Some("Person C")).await;
+    let ghost = Uuid::new_v4();
+    for who in [theirs, ghost, s.a] {
+        let (st, v) = get(&app, &kb, &format!("/assets/search?people={who}")).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert!(item_ids(&v).is_empty(), "{who}: {v}");
+    }
+    let (_, v1) = get(&app, &kb, &format!("/assets/search?people={ghost}")).await;
+    let (_, v2) = get(&app, &kb, &format!("/assets/search?people={}", s.a)).await;
+    assert_eq!(v1, v2);
+    // Malformed and too many.
+    for bad in [
+        "not-an-id".to_string(),
+        (0..11)
+            .map(|_| Uuid::new_v4().to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    ] {
+        assert_eq!(
+            get(&app, &s.key, &format!("/assets/search?people={bad}")).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    // The same id twice is one person; an empty value is no filter.
+    let (_, dup) = get(&app, &s.key, &format!("/assets/search?people={0},{0}", s.b)).await;
+    assert_eq!(
+        item_ids(&dup).len(),
+        1,
+        "Person B has one photo left that is not in the trash or hidden"
+    );
+    let (_, none) = get(&app, &s.key, "/assets/search?people=").await;
+    assert!(none["total"].as_i64().unwrap() > 0);
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn a_query_that_names_people_becomes_the_filter_and_a_chip() {
+    let Some(t) = TestDb::new().await else { return };
+    let s = scene(&t.pool, "a@example.com").await;
+    let (bob, kb) = user(&t.pool, "b@example.com").await;
+    person(&t.pool, bob, Some("Person C")).await;
+    let app = app_with_people(&t.pool);
+    let q = |text: &str| format!("/assets/search?q={}", text.replace(' ', "%20"));
+    let (st, v) = get(&app, &s.key, &q("Person A and Person B")).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(sorted(item_ids(&v)), sorted(vec![s.a_photos[1], s.a_photos[2]]));
+    assert_eq!(v["ranked"], false, "nothing is left to rank: a filter-only search");
+    let chip = &v["parsed"]["chips"][0];
+    assert_eq!(chip["kind"], "people");
+    assert_eq!(chip["label"], "Person A and Person B");
+    assert_eq!(
+        chip["people"],
+        json!([{"id": s.a, "name": "Person A"}, {"id": s.b, "name": "Person B"}])
+    );
+    // With a date: "Person A 2023".
+    let (_, v) = get(&app, &s.key, &q("Person A 2023")).await;
+    assert_eq!(sorted(item_ids(&v)), sorted(vec![s.a_photos[1], s.a_photos[2]]));
+    let kinds: Vec<&str> = v["parsed"]["chips"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, vec!["date", "people"]);
+    // Names that are not people's: not hidden ones, not unnamed ones, not someone else's, not a person without a photo to find.
+    let no_chip = |v: &Value| {
+        v["parsed"]["chips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["kind"] != "people")
+    };
+    sqlx::query("UPDATE people SET hidden = true WHERE id = $1")
+        .bind(s.b)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let (_, v) = get(&app, &s.key, &q("Person B 2023")).await;
+    assert!(no_chip(&v), "{v}");
+    sqlx::query("UPDATE people SET hidden = false, name = NULL WHERE id = $1")
+        .bind(s.b)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let (_, v) = get(&app, &s.key, &q("Person B 2023")).await;
+    assert!(no_chip(&v), "{v}");
+    let (_, v) = get(&app, &kb, &q("Person A 2023")).await;
+    assert!(no_chip(&v), "{v}");
+    let (_, v) = get(&app, &kb, &q("Person C 2023")).await;
+    assert!(no_chip(&v), "no photos, no match: {v}");
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn smart_albums_can_follow_a_person_or_several_together() {
+    let Some(t) = TestDb::new().await else { return };
+    let s = scene(&t.pool, "a@example.com").await;
+    let (_, other) = user(&t.pool, "b@example.com").await;
+    let app = full_app(&t.pool, true);
+    let make = |rules: Value| post(&app, &s.key, "/assets/albums", json!({"title": "Live", "rules": rules}));
+    let (st, album) = make(json!({"rules": [{"field": "people", "ids": [s.a]}]})).await;
+    assert_eq!(st, StatusCode::CREATED, "{album}");
+    assert_eq!(album["photo_count"], 3);
+    let id: Uuid = album["id"].as_str().unwrap().parse().unwrap();
+    let (_, listed) = get(&app, &s.key, &format!("/assets/albums/{id}/assets")).await;
+    assert_eq!(sorted(item_ids(&listed)), sorted(s.a_photos.clone()));
+    // Live: a new photo of Person A appears with nothing stored.
+    let (new, _) = shot_of(&t.pool, s.owner, "a4.jpg", "2024-01-01", s.a, &identity(11), 9).await;
+    let (_, listed) = get(&app, &s.key, &format!("/assets/albums/{id}/assets")).await;
+    assert!(item_ids(&listed).contains(&new));
+    // Together, combined with another rule, and as a bulk scope.
+    let (st, together) =
+        make(json!({"rules": [{"field": "people", "ids": [s.a, s.b]}, {"field": "date", "from": "2023-06-02"}]})).await;
+    assert_eq!(st, StatusCode::CREATED, "{together}");
+    let tid: Uuid = together["id"].as_str().unwrap().parse().unwrap();
+    let (_, listed) = get(&app, &s.key, &format!("/assets/albums/{tid}/assets")).await;
+    assert_eq!(item_ids(&listed), vec![s.a_photos[2]]);
+    let (st, v) = post(
+        &app,
+        &s.key,
+        "/assets/favorite",
+        json!({"scope": {"album": tid}, "except": [], "favorite": true}),
+    )
+    .await;
+    assert_eq!((st, v["count"].as_i64()), (StatusCode::OK, Some(1)), "{v}");
+    // The rules are checked: another owner's person and one that never existed are the same 404; none is a 400.
+    let ghost = Uuid::new_v4();
+    for who in [ghost, s.a] {
+        let (st, v) = post(
+            &app,
+            &other,
+            "/assets/albums",
+            json!({"title": "x", "rules": {"rules": [{"field": "people", "ids": [who]}]}}),
+        )
+        .await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{who}: {v}");
+        let (st, _) = post(
+            &app,
+            &other,
+            "/assets/albums/preview",
+            json!({"rules": {"rules": [{"field": "people", "ids": [who]}]}}),
+        )
+        .await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "preview {who}");
+    }
+    let (st, _) = post(
+        &app,
+        &s.key,
+        "/assets/albums",
+        json!({"title": "x", "rules": {"rules": [{"field": "people", "ids": []}]}}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    // The public link resolves the rules and never names the person; the manifest leaves the rules out.
+    let (st, share) = post(&app, &s.key, "/assets/shares", json!({"album_id": id})).await;
+    assert_eq!(st, StatusCode::CREATED, "{share}");
+    let token = share["token"].as_str().unwrap();
+    for path in [
+        format!("/assets/public/s/{token}"),
+        format!("/assets/public/s/{token}/items"),
+    ] {
+        let (st, body) = visit(&app, &path).await;
+        assert_eq!(st, StatusCode::OK, "{path}");
+        for needle in [s.a.to_string(), s.b.to_string(), "Person A".into(), "people".into()] {
+            assert!(!body.contains(&needle), "{needle:?} in {body}");
+        }
+    }
+    let (_, items) = visit(&app, &format!("/assets/public/s/{token}/items")).await;
+    assert!(
+        items.contains(&new.to_string()),
+        "the link shows what the rules match now"
+    );
+    let (bytes, _) = cyanotype_core::manifest::build(&t.pool, s.owner).await.unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        !text.contains(&s.a.to_string()) && !text.contains("\"people\""),
+        "{text}"
+    );
+    // Deleting the person leaves a rule that matches nothing (not "everything").
+    sqlx::query("DELETE FROM people WHERE id = $1")
+        .bind(s.a)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let (_, listed) = get(&app, &s.key, &format!("/assets/albums/{id}/assets")).await;
+    assert!(item_ids(&listed).is_empty());
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn with_the_feature_off_the_people_parameters_are_ignored_or_refused_and_nothing_is_parsed() {
+    let Some(t) = TestDb::new().await else { return };
+    let s = scene(&t.pool, "a@example.com").await;
+    let on = full_app(&t.pool, true);
+    let off = full_app(&t.pool, false);
+    // A smart album made while it was on.
+    let (_, album) = post(
+        &on,
+        &s.key,
+        "/assets/albums",
+        json!({"title": "Live", "rules": {"rules": [{"field": "people", "ids": [s.a]}]}}),
+    )
+    .await;
+    let id: Uuid = album["id"].as_str().unwrap().parse().unwrap();
+    // The person's timeline: a 404.
+    assert_eq!(
+        get(&off, &s.key, &format!("/assets/people/{}/timeline", s.a)).await.0,
+        StatusCode::NOT_FOUND
+    );
+    // The search parameter is ignored (the search lists the library, as for an unknown parameter).
+    let (st, v) = get(&off, &s.key, &format!("/assets/search?people={}", s.b)).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(item_ids(&v).len(), 4, "every photo: the filter is not applied");
+    // The parser does not match names.
+    let (_, v) = get(&off, &s.key, "/assets/search?q=Person%20A%20and%20Person%20B%202023").await;
+    assert!(
+        v["parsed"]["chips"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["kind"] != "people"),
+        "{v}"
+    );
+    // A bulk action never reads the person (or a people filter) as "no filter": it is refused.
+    for scope in [json!({"person": s.a}), json!({"search": {"people": s.a.to_string()}})] {
+        let (st, v) = post(&off, &s.key, "/assets/trash", json!({"scope": scope, "except": []})).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{v}");
+    }
+    assert_eq!(
+        count(&t.pool, "SELECT count(*) FROM assets WHERE deleted_at IS NOT NULL").await,
+        0
+    );
+    // A saved people rule matches nothing while it is off, and cannot be saved.
+    let (_, listed) = get(&off, &s.key, &format!("/assets/albums/{id}/assets")).await;
+    assert!(item_ids(&listed).is_empty());
+    let (st, _) = post(
+        &off,
+        &s.key,
+        "/assets/albums",
+        json!({"title": "x", "rules": {"rules": [{"field": "people", "ids": [s.a]}]}}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    // The smart album as a scope matches nothing either, and its share link shows nothing.
+    let (st, v) = post(
+        &off,
+        &s.key,
+        "/assets/favorite",
+        json!({"scope": {"album": id}, "except": [], "favorite": true}),
+    )
+    .await;
+    assert_eq!((st, v["count"].as_i64()), (StatusCode::OK, Some(0)), "{v}");
+    let (_, share) = post(&on, &s.key, "/assets/shares", json!({"album_id": id})).await;
+    let token = share["token"].as_str().unwrap();
+    let (_, body) = visit(&off, &format!("/assets/public/s/{token}/items")).await;
+    assert!(!body.contains(&s.a_photos[0].to_string()), "{body}");
+    t.teardown().await;
+}

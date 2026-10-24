@@ -97,7 +97,7 @@ pub(super) async fn hide(
     if !req.hidden {
         unlock.require()?;
     }
-    let pick = req.pick.validated(unlock)?;
+    let pick = req.pick.validated(unlock, s.faces_enabled)?;
     let mut tx = s.db.begin().await?;
     let ids: Vec<Uuid> = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();
     let n = set_flag(&mut tx, user.id, &ids, "hidden", req.hidden).await?;
@@ -140,7 +140,7 @@ pub(super) async fn archive(
     unlock: Unlock,
     Json(req): Json<ArchiveRequest>,
 ) -> ApiResult<Json<ArchiveCount>> {
-    let pick = req.pick.validated(unlock)?;
+    let pick = req.pick.validated(unlock, s.faces_enabled)?;
     let mut tx = s.db.begin().await?;
     let (now,): (time::OffsetDateTime,) = sqlx::query_as("SELECT now()").fetch_one(&mut *tx).await?;
     let ids: Vec<Uuid> = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();

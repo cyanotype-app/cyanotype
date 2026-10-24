@@ -72,6 +72,8 @@ pub(super) const MAX_LIMIT: i64 = 200;
 const MAX_QUERY_CHARS: usize = 200;
 /// Most tags one filter names.
 const MAX_TAG_FILTERS: usize = 20;
+/// Most people one filter names.
+pub(super) const MAX_PEOPLE_FILTERS: usize = query_parse::MAX_PEOPLE;
 /// HNSW candidates examined per query before the iterative scan widens (pgvector's default is 40). The ranked list is
 /// [`DEPTH`] deep, and recall at that depth needs `ef_search` near it (measured in docs/library.md).
 const EF_SEARCH: i32 = 400;
@@ -113,6 +115,9 @@ pub(super) struct SearchQuery {
     pub lens: Option<String>,
     /// A city, region or country name (or country code) as the facets list it; case-insensitive.
     pub place: Option<String>,
+    /// Ids of the owner's people, comma-separated: photos where all of them are (`FACES_ENABLED`; ignored while it is off). An id that
+    /// is not one of the owner's people matches nothing.
+    pub people: Option<String>,
     /// `jpeg`, `heic` (HEIC, HEIF and AVIF), `raw` (a RAW file, or a photo with a RAW paired behind it) or `other`.
     #[serde(rename = "type")]
     pub kind: Option<String>,
@@ -128,7 +133,7 @@ pub(super) struct SearchQuery {
     /// `false`: no cut-off, the whole ranked list (up to 300) with every result's tier shown. For tooling and tests; the
     /// app uses the default.
     pub cutoff: Option<bool>,
-    /// Do not read this kind of thing out of `q`: `date`, `place`, or both (`date,place`). What the chips' "x" sends.
+    /// Do not read this kind of thing out of `q`: `date`, `place`, `people`, or several (`date,place`). What the chips' "x" sends.
     pub skip: Option<String>,
 }
 
@@ -157,12 +162,16 @@ pub(super) struct Filters {
     camera: Option<String>,
     lens: Option<String>,
     place: Option<String>,
+    /// Photos with all of these people in them (the owner's own; `FACES_ENABLED`).
+    people: Vec<Uuid>,
     kind: Option<FileType>,
     album: Option<Uuid>,
     has_location: Option<bool>,
     has_text: Option<bool>,
     /// The caption contains this text (case-insensitive). Not a search parameter: smart albums use it.
     caption_contains: Option<String>,
+    /// Matches nothing: a smart album's people rule while People is off (a stored rule is never read as "no rule").
+    never: bool,
     /// Rules joined by AND (`all`) or OR (smart albums): each member is a `Filters` of its own, of which only the filters count.
     group: Option<Group>,
     /// "More like this": never the source photo itself, nor the other photos of its burst.
@@ -230,6 +239,24 @@ impl Filters {
             Some("any") => true,
             Some(_) => return Err(ApiError::BadRequest("tag_mode must be all or any".into())),
         };
+        let mut people: Vec<Uuid> = Vec::new();
+        for p in q
+            .people
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
+            let id = Uuid::parse_str(p)
+                .map_err(|_| ApiError::BadRequest("people must be person ids, comma-separated".into()))?;
+            if !people.contains(&id) {
+                people.push(id);
+            }
+        }
+        if people.len() > MAX_PEOPLE_FILTERS {
+            return Err(ApiError::BadRequest(format!("at most {MAX_PEOPLE_FILTERS} people")));
+        }
         let midnight = |d: Date| d.with_time(Time::MIDNIGHT).assume_utc();
         Ok(Self {
             from: from.map(midnight),
@@ -242,11 +269,13 @@ impl Filters {
             camera: clean(&q.camera),
             lens: clean(&q.lens),
             place: clean(&q.place),
+            people,
             kind,
             album: q.album,
             has_location: q.has_location,
             has_text: q.has_text,
             caption_contains: None,
+            never: false,
             group: None,
             exclude: None,
             exclude_burst: None,
@@ -299,6 +328,15 @@ impl Filters {
         self.place = Some(v);
         self
     }
+    pub(super) fn with_people(mut self, ids: Vec<Uuid>) -> Self {
+        self.people = ids;
+        self
+    }
+    /// A filter that matches no photo.
+    pub(super) fn nothing(mut self) -> Self {
+        self.never = true;
+        self
+    }
     pub(super) fn with_kind(mut self, k: FileType) -> Self {
         self.kind = Some(k);
         self
@@ -333,6 +371,8 @@ impl Filters {
             || self.camera.is_some()
             || self.lens.is_some()
             || self.place.is_some()
+            || !self.people.is_empty()
+            || self.never
             || self.kind.is_some()
             || self.album.is_some()
             || self.has_location.is_some()
@@ -433,6 +473,17 @@ impl Filters {
             qb.push(") OR lower(a.place_country_code) = lower(")
                 .push_bind(p.clone())
                 .push("))");
+        }
+        if self.never {
+            qb.push(" AND FALSE");
+        }
+        // Together: one test per person, each through the person's own faces (`faces_person_idx`) and the owner's own people.
+        for person in &self.people {
+            qb.push(" AND a.id IN (SELECT f.asset_id FROM faces f JOIN people pe ON pe.id = f.person_id WHERE pe.owner_id = ")
+                .push_bind(owner)
+                .push(" AND f.person_id = ")
+                .push_bind(*person)
+                .push(format!(" AND {})", super::people::SCANNED));
         }
         if let Some(k) = self.kind {
             qb.push(" AND ");
@@ -549,9 +600,9 @@ pub(super) struct ParsedQuery {
 
 #[derive(Serialize)]
 pub(super) struct Chip {
-    /// `date` or `place`; the `skip` value that turns it off.
+    /// `date`, `place` or `people`; the `skip` value that turns it off.
     kind: &'static str,
-    /// What the chip says: "June 2023", "Maui".
+    /// What the chip says: "June 2023", "Maui", "Person A and Person B".
     label: String,
     /// The words of the query it replaced ("in June 2023").
     matched: String,
@@ -564,6 +615,15 @@ pub(super) struct Chip {
     value: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     place_kind: Option<query_parse::PlaceKind>,
+    /// For people: who was read out of the query (the owner's own people, in the order written).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    people: Option<Vec<ChipPerson>>,
+}
+
+#[derive(Serialize)]
+pub(super) struct ChipPerson {
+    id: Uuid,
+    name: String,
 }
 
 /// The weaker matches that exist beyond the strong ones, when they were not asked for.
@@ -700,22 +760,52 @@ pub(super) async fn search(
     result.map(|(r, _)| Json(r))
 }
 
-/// Read the dates and places out of `q` (unless the request already filters on them or turned them off), and return the
-/// request as it is to be run, with what was understood.
+/// The owner's named people who are not hidden and have a photo a search can show (a name nobody can find is not read out of a query).
+/// Not cached: a rename, a hide or a merge counts at once.
+async fn named_people(db: &sqlx::PgPool, owner: Uuid) -> ApiResult<Vec<query_parse::Named>> {
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(&format!(
+        "SELECT p.id, p.name FROM people p
+         WHERE p.owner_id = $1 AND p.name IS NOT NULL AND NOT p.hidden
+           AND EXISTS (SELECT 1 FROM faces f JOIN assets a ON a.id = f.asset_id
+                       WHERE f.person_id = p.id AND {} AND a.deleted_at IS NULL AND a.primary_id IS NULL AND NOT a.hidden)",
+        super::people::SCANNED
+    ))
+    .bind(owner)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name)| query_parse::Named { id, name })
+        .collect())
+}
+
+/// Read the dates, places and people out of `q` (unless the request already filters on them or turned them off), and return the
+/// request as it is to be run, with what was understood. While People is off, `people` is ignored and never read out of the query.
 async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(SearchQuery, Option<ParsedQuery>)> {
+    let mut q = q.clone();
+    if !s.faces_enabled {
+        q.people = None;
+    }
+    let q = &q;
     let Some(text) = clean(&q.q) else {
         return Ok((q.clone(), None));
     };
     let mut skip = Skip::parse(q.skip.as_deref());
-    // A date or place chosen in the filters wins: the words stay in the query.
+    // A date, place or person chosen in the filters wins: the words stay in the query.
     skip.date |= clean(&q.from).is_some() || clean(&q.to).is_some();
     skip.place |= clean(&q.place).is_some();
+    skip.people |= !s.faces_enabled || clean(&q.people).is_some();
     let places = if skip.place {
         Default::default()
     } else {
         s.search.places(&s.db, owner).await.map_err(ApiError::Internal)?
     };
-    let parsed = query_parse::parse(&text, query_parse::today(), &places, skip);
+    let people = if skip.people {
+        Vec::new()
+    } else {
+        named_people(&s.db, owner).await?
+    };
+    let parsed = query_parse::parse_with(&text, query_parse::today(), &places, &people, skip);
     let mut eff = q.clone();
     let mut chips = Vec::new();
     if let Some(d) = &parsed.date {
@@ -730,6 +820,7 @@ async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(Se
             to: Some(day(d.to)),
             value: None,
             place_kind: None,
+            people: None,
         });
     }
     if let Some(p) = &parsed.place {
@@ -742,6 +833,46 @@ async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(Se
             to: None,
             value: Some(p.value.clone()),
             place_kind: Some(p.kind),
+            people: None,
+        });
+    }
+    if !parsed.people.is_empty() {
+        eff.people = Some(
+            parsed
+                .people
+                .iter()
+                .map(|p| p.id.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        chips.push(Chip {
+            kind: "people",
+            label: parsed
+                .people
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(" and "),
+            matched: parsed
+                .people
+                .iter()
+                .map(|p| p.matched.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+            from: None,
+            to: None,
+            value: None,
+            place_kind: None,
+            people: Some(
+                parsed
+                    .people
+                    .iter()
+                    .map(|p| ChipPerson {
+                        id: p.id,
+                        name: p.name.clone(),
+                    })
+                    .collect(),
+            ),
         });
     }
     eff.q = (!parsed.text.is_empty()).then(|| parsed.text.clone());

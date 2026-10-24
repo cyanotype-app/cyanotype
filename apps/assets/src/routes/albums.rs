@@ -154,6 +154,7 @@ const SMART_COUNT_CAP: i64 = 10_000;
 /// of the timeline), and the newest one as the cover.
 async fn smart_summary(
     db: &sqlx::PgPool,
+    faces: bool,
     owner: Uuid,
     rules: &super::smart::Rules,
 ) -> ApiResult<(
@@ -162,7 +163,7 @@ async fn smart_summary(
     Option<OffsetDateTime>,
     Option<(Uuid, Option<Vec<u8>>)>,
 )> {
-    let filters = rules.filters();
+    let filters = rules.filters(faces);
     let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT count(*) FROM (SELECT 1 FROM assets a WHERE");
     filters.push_where(&mut qb, owner);
     qb.push(" LIMIT ").push_bind(SMART_COUNT_CAP + 1).push(") c");
@@ -201,7 +202,7 @@ async fn to_albums(s: &AppState, owner: Uuid, rows: Vec<AlbumRow>) -> ApiResult<
     for mut r in rows {
         // A smart album has no members: what it shows is looked up from its rules each time.
         if let Some(rules) = r.rules.as_ref().and_then(|v| super::smart::Rules::from_json(v).ok()) {
-            let (n, first, last, cover) = smart_summary(&s.db, owner, &rules).await?;
+            let (n, first, last, cover) = smart_summary(&s.db, s.faces_enabled, owner, &rules).await?;
             (r.photo_count, r.hidden_count, r.first_at, r.last_at) = (n, 0, first, last);
             (r.cover_id, r.cover_thumbhash) = cover.map_or((None, None), |(id, th)| (Some(id), th));
         }
@@ -278,6 +279,31 @@ pub(super) struct PreviewBody {
     rules: serde_json::Value,
 }
 
+/// The people a smart album's rules name must be the caller's own, and People must be on: anything else is a `404`, as for an
+/// unknown person anywhere else (another owner's id is not told apart from one that never existed).
+async fn check_people(s: &AppState, owner: Uuid, rules: &super::smart::Rules) -> ApiResult<()> {
+    let ids = rules.people();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    if !s.faces_enabled {
+        return Err(ApiError::NotFound);
+    }
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM people WHERE owner_id = $1 AND id = ANY($2)")
+        .bind(owner)
+        .bind(&ids)
+        .fetch_one(&s.db)
+        .await?;
+    // (`ids` has no duplicates: the rules were normalised, but one rule per person can repeat across rules)
+    let mut unique = ids.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    if n != unique.len() as i64 {
+        return Err(ApiError::NotFound);
+    }
+    Ok(())
+}
+
 /// `POST /assets/albums/preview {rules}`: how many photos the rules would match now and a few of them, for the editor's live
 /// preview. Nothing is saved.
 pub(super) async fn preview(
@@ -286,8 +312,9 @@ pub(super) async fn preview(
     Json(req): Json<PreviewBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let rules = super::smart::Rules::from_json(&req.rules)?;
-    let filters = rules.filters();
-    let (count, _, _, _) = smart_summary(&s.db, user.id, &rules).await?;
+    check_people(&s, user.id, &rules).await?;
+    let filters = rules.filters(s.faces_enabled);
+    let (count, _, _, _) = smart_summary(&s.db, s.faces_enabled, user.id, &rules).await?;
     let rows = super::search::timeline_rows(&s.db, user.id, &filters, 8, None).await?;
     let items = list_items(&s, user.id, rows.into_iter().map(|r| r.row).collect()).await?;
     Ok(Json(serde_json::json!({
@@ -350,7 +377,9 @@ pub(super) async fn create(
                     "a smart album has rules, not photos: send one or the other".into(),
                 ));
             }
-            Some(super::smart::Rules::from_json(v)?.to_json())
+            let rules = super::smart::Rules::from_json(v)?;
+            check_people(&s, user.id, &rules).await?;
+            Some(rules.to_json())
         }
         None => None,
     };
@@ -396,11 +425,12 @@ pub(super) async fn update(
         .as_ref()
         .map(|d| clean_description(d.as_deref()))
         .transpose()?;
-    let new_rules = req
-        .rules
-        .as_ref()
-        .map(|v| super::smart::Rules::from_json(v).map(|r| r.to_json()))
-        .transpose()?;
+    let mut new_rules = None;
+    if let Some(v) = &req.rules {
+        let rules = super::smart::Rules::from_json(v)?;
+        check_people(&s, user.id, &rules).await?;
+        new_rules = Some(rules.to_json());
+    }
     let mut tx = s.db.begin().await?;
     lock_album(&mut tx, user.id, id).await?;
     let smart = is_smart(&mut tx, id).await?;
@@ -483,7 +513,7 @@ pub(super) async fn assets(
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
     if let Some(rules) = rules {
         // A smart album lists what its rules match now, newest first, with the search's own SQL and cursor.
-        let filters = super::smart::Rules::from_json(&rules)?.filters();
+        let filters = super::smart::Rules::from_json(&rules)?.filters(s.faces_enabled);
         let after = match &q.cursor {
             Some(c) => Some(decode_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
             None => None,
@@ -555,7 +585,7 @@ pub(super) async fn add(
     Path(id): Path<Uuid>,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated(unlock)?;
+    let pick = req.validated(unlock, s.faces_enabled)?;
     let mut tx = s.db.begin().await?;
     lock_album(&mut tx, user.id, id).await?;
     refuse_smart(&mut tx, id).await?;
@@ -579,7 +609,7 @@ pub(super) async fn remove_assets(
     Path(id): Path<Uuid>,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated(unlock)?;
+    let pick = req.validated(unlock, s.faces_enabled)?;
     let mut tx = s.db.begin().await?;
     lock_album(&mut tx, user.id, id).await?;
     refuse_smart(&mut tx, id).await?;

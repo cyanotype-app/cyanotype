@@ -34,7 +34,7 @@ Every bulk endpoint (`POST /assets/trash`, `restore`, `purge`, `favorite`, `albu
 `albums/{id}/assets/remove`) accepts, instead of `ids`, a **scope** and an optional `except` list:
 
 ```json
-{"scope": "library" | "favorites" | "trash" | {"album": "<id>"} | {"trash_batch": "<time>"}, "except": ["<id>", ...]}
+{"scope": "library" | "favorites" | "trash" | {"album": "<id>"} | {"person": "<id>"} | {"trash_batch": "<time>"}, "except": ["<id>", ...]}
 ```
 
 The scope names the photos the matching view lists (hidden RAW files are not part of it, so a RAW + JPEG pair is one
@@ -586,11 +586,13 @@ search model").
 - **Dates and places in the words.** "sunset Maui", "dog in Lisbon", "beach June 2023", "snow last year" become **chips**
   ("2023 x", "Maui x") above the results, and what is left of the words is what the model searches for; the chips are
   filters like the ones in the Filters sheet. A wrong guess is one click: the x on a chip searches again with those words left in
-  the query (`skip=date` or `skip=place` in the URL). Only places in the library count ("in Tokyo" is just words if no
+  the query (`skip=date`, `skip=place` or `skip=people` in the URL; the people the owner has named are read out of it too while People is
+  on, `docs/faces.md`, "People in search, albums and bulk actions"). Only places in the library count ("in Tokyo" is just words if no
   photo was taken there), and words that are also ordinary words ("nice", "reading", "may", "victoria") are never a place
   or a date without the right context ("in Nice", "May 2023"). The rules are below.
 - **Filters** (button under the header; a bottom sheet on a phone, a dialog on a wide screen): year or a date range,
-  favorites, camera, place (city, region or country), file type (JPEG, HEIC, RAW, other), has a location, album. The
+  favorites, camera, place (city, region or country), file type (JPEG, HEIC, RAW, other), has a location, album, and with People on
+  (`docs/faces.md`) the people who must all be in the photo. The
   choices come from what the library has, with counts. Each active filter is a chip with an x; filters work alone (then
   they list photos newest first, with no limit) or together with the text.
 - While the worker is still embedding the library for the first time search says **"Still indexing 12,345 photos: results may
@@ -944,7 +946,7 @@ ways that are unknown (real recall with the real model on a real library is not 
 
 | Request | Effect |
 |---|---|
-| `GET /assets/search?q=&from=&to=&favorite=&camera=&lens=&place=&type=&album=&has_location=&limit=&cursor=&weaker=&skip=&cutoff=` | Ranked results for `q` (the strong tier; at most 300 altogether, best first) or, without `q`, the photos matching the filters, newest first. Every parameter is optional; `from`/`to` are inclusive UTC days (`2024-03-01`), `camera` and `place` are the facet values below (case-insensitive; `place` matches a city, region, country or country code), `type` is `jpeg`, `heic` (also HEIF and AVIF), `raw` or `other`, `limit` defaults to 60 (at most 200). `weaker=true` also lists the weaker tier (continue with `weaker.cursor`); `skip=date`, `skip=place` or `skip=date,place` does not read that kind of thing out of `q`; `cutoff=false` returns the whole ranked list. Items have the shape of `GET /assets` plus `score` (cosine similarity, null without `q`), `probability` (the model's calibrated estimate, SigLIP 2 only) and `tier` (`strong`/`weak`). The response has `next_cursor`, `ranked`, `total` (first page of a filter-only search), and with `q`: `strong_count`, `weaker` (`{count, cursor}` or null), `parsed` (`{text, chips}`), `model` (which model answered) and `reindexing` (null, or how far the configured model is while an older one answers). `400` for a bad date, type, album id, cursor or a `q` over 200 characters; `503` when the model is not installed and `q` is set. |
+| `GET /assets/search?q=&from=&to=&favorite=&camera=&lens=&place=&people=&type=&album=&has_location=&limit=&cursor=&weaker=&skip=&cutoff=` | Ranked results for `q` (the strong tier; at most 300 altogether, best first) or, without `q`, the photos matching the filters, newest first. Every parameter is optional; `from`/`to` are inclusive UTC days (`2024-03-01`), `camera` and `place` are the facet values below (case-insensitive; `place` matches a city, region, country or country code), `type` is `jpeg`, `heic` (also HEIF and AVIF), `raw` or `other`, `limit` defaults to 60 (at most 200). `weaker=true` also lists the weaker tier (continue with `weaker.cursor`); `skip=date`, `skip=place`, `skip=people` or several (`date,place`) does not read that kind of thing out of `q`; `people` is a comma-separated list of person ids (at most 10, all of them in the photo; People only, ignored while it is off); `cutoff=false` returns the whole ranked list. Items have the shape of `GET /assets` plus `score` (cosine similarity, null without `q`), `probability` (the model's calibrated estimate, SigLIP 2 only) and `tier` (`strong`/`weak`). The response has `next_cursor`, `ranked`, `total` (first page of a filter-only search), and with `q`: `strong_count`, `weaker` (`{count, cursor}` or null), `parsed` (`{text, chips}`), `model` (which model answered) and `reindexing` (null, or how far the configured model is while an older one answers). `400` for a bad date, type, album id, cursor or a `q` over 200 characters; `503` when the model is not installed and `q` is set. |
 | `GET /assets/{id}/similar?from=&to=&favorite=&camera=&place=&type=&album=&has_location=&limit=&cursor=&weaker=&cutoff=` | "More like this": the caller's photos most similar to this one (see above), the strong tier by default, `weaker=true` for the weaker one too (continue with `weaker.cursor`), the filters of search, no text. Response as search's, plus `similar_to`. `404` when the photo is not the caller's, is in the trash or is the hidden half of a pair; `409` when it has no vector yet for the model that serves searches; `400` for a bad filter or cursor. |
 | (search and similar results) | Items of a ranked list may carry `burst` (`{size, members: [{...list item, score}]}`), see "Bursts". `strong_count`, `weaker.count`, `limit` and the cursors count groups (a burst is one). The `search` bulk scope is unchanged: it only exists for filter-only searches, which are never collapsed, and a ranked list's actions send the ids of the photos selected, members of collapsed bursts included. |
 | `GET /assets/search/facets` | What the filters can be set to, with counts over the whole library: `total`, `favorites`, `with_location`, `types`, `cameras` (top 50), `places` (top 120, each with its `kind`), `years`. |
@@ -1508,8 +1510,8 @@ a photo that starts to match appears and one that stops disappears, in the album
 
 - *Albums*, *New smart album*: a title, **match all / any** over a list of rules, *Include archived photos*, and a **live preview** (how many photos
   match right now and eight of them). Rules: *Date range*, *Place*, *Camera*, *Lens*, *File type*, *Favorites*, *Rating* (N stars and up), *Tags*
-  (with all / any), *Location* (has or has none), *Text in the photo* (has or has none), *Caption contains*. Place, camera and lens suggest what the
-  library has.
+  (with all / any), *Location* (has or has none), *Text in the photo* (has or has none), *Caption contains*, and with People on *People* (all of the chosen
+  people are in the photo, `docs/faces.md`). Place, camera and lens suggest what the library has.
 - **A text query is not a rule**, and the editor says why: a semantic search such as "dog on the beach" ranks by a model, so the album's contents
   would change without a photo changing. The caption rule (a plain substring) and the tag rule are stable.
 - In *Albums* a smart album has a **Smart** badge, its rules in words and its live count (`10,000+` for a big one). Its page says *Smart*, shows the
