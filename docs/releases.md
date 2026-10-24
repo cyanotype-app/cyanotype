@@ -51,7 +51,7 @@ not stop it (a browser download would be stopped; use the install script).
   them against Rust's signed manifest. Alternatives that were not chosen: `cross` (needs Docker-in-Docker, no macOS), one
   runner per OS (three CI jobs, a macOS minutes premium, slower), osxcross (needs an Apple SDK).
 * **Dependencies per target** are cooked with cargo-chef in their own layers, so a source-only change recompiles just the
-  `cyanotype-cli` crate five times. `CARGO_BUILD_JOBS` (default 2) bounds memory on small builders.
+  `cyanotype-cli` crate five times. `CARGO_BUILD_JOBS` (default 2) bounds memory on small builders; CI and publish use 4.
 * **Version:** `CYANOTYPE_CLI_VERSION` (the `cli-vX.Y.Z` tag) and `CYANOTYPE_GIT_SHA` are build arguments, read by
   `apps/cli/build.rs`. `cyanotype --version` prints `0.3.1 (abc1234)`. A build without a version is a development build:
   it reports `<Cargo version>-dev`, never checks for updates and is never refused for being old.
@@ -75,8 +75,8 @@ is already in its dependency tree (rustls): no new crate, no new runtime depende
 * The **private key** is a GitHub Actions secret `CLI_RELEASE_KEY` in the `release` environment. Only the `cli-dist` job of
   `publish.yml` runs in that environment, and it hands the key to BuildKit as a secret mount
   (`--set 'cli-dist.secrets=id=cli_release_key,env=CLI_RELEASE_KEY'`): never a build argument, never in an image layer, never
-  printed. The job that pushes images never sees it. Pull-request builds (CI's `images` job) have no key and produce an
-  unsigned dist, marked `UNSIGNED` with `"signed": false` in `latest.json`.
+  printed. The job that pushes images never sees it. Pull-request builds (CI's `images` job, when the CLI changed) have no
+  key and produce an unsigned dist, marked `UNSIGNED` with `"signed": false` in `latest.json`.
 * `make-dist.sh` checks its own signature against `apps/cli/release-key.pub` and fails the build on a mismatch (a private
   key with a missing or different public key), so a dist that `cyanotype update` would reject is never published.
 * **Until the first signed release exists, `cyanotype update` refuses to install anything** (no key compiled in, or an unsigned
@@ -206,9 +206,9 @@ incremental builds of the one crate. The builder's cache for the five targets is
 ## Checks
 
 * `scripts/test-cli-dist.sh` (no Docker): `make-dist.sh` with a throwaway key: files, signature, wrong key, missing newline.
-* `scripts/test-cli-dist.sh --docker` (CI, `images` job): bakes the real stage, checks the five programs (ELF/Mach-O/PE
-  headers, machine type), runs the Linux one, serves everything with the real web `Caddyfile`, runs `install.sh` against it
-  and checks that a tampered archive is refused.
+* `scripts/test-cli-dist.sh --docker` (CI, `images` job, on pull requests that change the CLI): bakes the real stage,
+  checks the five programs (ELF/Mach-O/PE headers, machine type), runs the Linux one, serves everything with the real web
+  `Caddyfile`, runs `install.sh` against it and checks that a tampered archive is refused.
 * `python3 -I -m unittest discover -s scripts -p 'test_cli_release.py'`: bump rules, version arithmetic, what counts as a
   CLI change (including against this repository's `cargo metadata`).
 * `cargo test -p cyanotype-cli` (also with `--no-default-features`): version comparison, `latest.json`, signature verification

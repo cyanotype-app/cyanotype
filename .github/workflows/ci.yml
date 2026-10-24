@@ -20,6 +20,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       images: ${{ steps.filter.outputs.images }}
       compose: ${{ steps.filter.outputs.compose }}
+      cli: ${{ steps.filter.outputs.cli }}
       web: ${{ steps.filter.outputs.web }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -51,6 +52,20 @@ jobs:
               - 'infra/backup/**'
               - 'models/**'
               - 'scripts/fetch-models.sh'
+              - '.github/workflows/ci.yml'
+            # What the CLI downloads (Dockerfile stage cli-dist) are built from. The CLI uses one workspace crate,
+            # cyanotype-takeout (`cargo tree -p cyanotype-cli --no-default-features`): add any new one here. A miss only
+            # skips the PR check; the publish workflow still builds the downloads on main.
+            cli:
+              - 'apps/cli/**'
+              - 'crates/cyanotype-takeout/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'Dockerfile'
+              - 'docker-bake.hcl'
+              - 'apps/web/Dockerfile'
+              - 'apps/web/Caddyfile'
+              - 'scripts/test-cli-dist.sh'
               - '.github/workflows/ci.yml'
             web:
               - 'apps/web/**'
@@ -169,23 +184,38 @@ jobs:
       - run: just web-check
       - run: just web-build
 
+  # Pull requests only: on main the publish workflow builds the same images (same cache scopes) and pushes them.
   images:
     name: Images (buildx bake, no push)
     needs: changes
-    if: needs.changes.outputs.images == 'true'
+    if: needs.changes.outputs.images == 'true' && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     env:
       CACHE: gha
+      CARGO_BUILD_JOBS: "4" # the same as publish.yml (docker-bake.hcl)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       # Exposes ACTIONS_CACHE_URL / ACTIONS_RUNTIME_TOKEN to `docker buildx bake` for type=gha.
       - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3.1.0
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.0.0
-      # One bake = one shared builder stage = the workspace compiles once for all the Rust images. It also builds the
-      # CLI downloads (cross-compiled, own cache scope cyanotype-cli-dist) into the web image; no signing key here, so unsigned.
-      - run: just images
+      # One bake = one shared builder stage = the workspace compiles once for all the Rust images. When the CLI changed it
+      # also builds the CLI downloads (five cross-compiles, own cache scope cyanotype-cli-dist) into the web image, unsigned
+      # (no key here). Otherwise the web image gets an empty /cli, as a plain `docker build apps/web` does.
+      - name: Bake the images
+        env:
+          CLI: ${{ needs.changes.outputs.cli }}
+        run: |
+          set -euo pipefail
+          if [ "$CLI" = true ]; then
+            just images
+          else
+            # Inside the checkout: bake refuses a context outside it without an extra entitlement.
+            mkdir -p cli-dist-out
+            docker buildx bake -f docker-bake.hcl --set 'web.contexts.cli-dist-ctx=cli-dist-out'
+          fi
       - name: CLI downloads (all targets, install scripts, served by the web Caddyfile)
+        if: needs.changes.outputs.cli == 'true'
         run: scripts/test-cli-dist.sh --docker
 
   compose:

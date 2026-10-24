@@ -35,6 +35,13 @@ variable "CLI_VERSION" {
   default = ""
 }
 
+# Parallel compile jobs for the CLI cross-builds (Dockerfile stage cli-deps). 2 keeps a small builder from running out of
+# memory; the GitHub runners (4 CPUs, 16 GB) use 4. CI and publish must use the same value, or they invalidate each other's
+# cached dependency layers.
+variable "CARGO_BUILD_JOBS" {
+  default = "2"
+}
+
 # Set CACHE=gha in CI (GitHub Actions cache; needs ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN, which
 # docker/build-push-action-style runners or crazy-max/ghaction-github-runtime export).
 # Set CACHE=local to keep a portable cache in ./.buildcache (useful for CI that cannot use gha).
@@ -126,7 +133,7 @@ target "cli-dist" {
   inherits   = ["_common"]
   target     = "cli-dist"
   output     = ["type=local,dest=cli-dist-out"]
-  args       = { CYANOTYPE_CLI_VERSION = CLI_VERSION, CYANOTYPE_GIT_SHA = REVISION }
+  args       = { CYANOTYPE_CLI_VERSION = CLI_VERSION, CYANOTYPE_GIT_SHA = REVISION, CARGO_BUILD_JOBS = CARGO_BUILD_JOBS }
   cache-from = CACHE == "gha" ? ["type=gha,scope=cyanotype-cli-dist"] : CACHE == "local" ? ["type=local,src=.buildcache-cli"] : []
   cache-to   = CACHE == "gha" ? ["type=gha,scope=cyanotype-cli-dist,mode=max"] : CACHE == "local" ? ["type=local,dest=.buildcache-cli,mode=max"] : []
 }

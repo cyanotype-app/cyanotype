@@ -36,6 +36,7 @@ jobs:
       actions: read # wait-for-cli-tag.sh reads the tag workflow's run
     env:
       CACHE: gha
+      CARGO_BUILD_JOBS: "4" # the same as CI's images job (docker-bake.hcl)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
