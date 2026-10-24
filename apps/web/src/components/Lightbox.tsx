@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { api, downloadHref, editedHref, type AssetDetail, type AssetListItem, type PhotoDetails, type PhotoTag, type PhotoText } from "../api";
 import { useInfoHistory, useVerticalSwipe } from "../useInfoPanel";
 import { useImageRect, useTextPanel } from "../useTextPanel";
@@ -87,6 +87,12 @@ export function Lightbox({
   // Which photo's file chooser is open (it closes by itself when the photo changes).
   const [downloadsFor, setDownloadsFor] = useState<string | null>(null);
   const downloadsOpen = item !== undefined && downloadsFor === item.id;
+  // Which photo's "More" menu is open (phones; it closes by itself when the photo changes, like the file chooser).
+  const [moreFor, setMoreFor] = useState<string | null>(null);
+  const moreOpen = item !== undefined && moreFor === item.id;
+  const moreRef = useRef<HTMLDivElement>(null);
+  const moreButton = useRef<HTMLButtonElement>(null);
+  const moreMenu = useRef<HTMLDivElement>(null);
   const [details, setDetails] = useState<Record<string, AssetDetail>>({});
   const [failed, setFailed] = useState<Record<string, true>>({});
   const requested = useRef(new Set<string>());
@@ -256,8 +262,11 @@ export function Lightbox({
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        // The panel closes first; a second Escape closes the lightbox.
-        if (info.open) closeInfo();
+        // The More menu closes first (focus goes back to its button), then the panel; the next Escape closes the lightbox.
+        if (moreOpen) {
+          setMoreFor(null);
+          moreButton.current?.focus();
+        } else if (info.open) closeInfo();
         else if (text.open) closeText();
         else close();
       } else if (
@@ -321,7 +330,18 @@ export function Lightbox({
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [go, close, onTrash, onRate, items, index, info, closeInfo, loadDetails, text, closeText, pictureOpen, canEditPicture]);
+  }, [go, close, onTrash, onRate, items, index, info, closeInfo, loadDetails, text, closeText, pictureOpen, canEditPicture, moreOpen]);
+
+  // The More menu: focus its first item when it opens, and close it on a tap or click anywhere else.
+  useEffect(() => {
+    if (!moreOpen) return;
+    moreMenu.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    const onDown = (e: Event) => {
+      if (!moreRef.current?.contains(e.target as Node)) setMoreFor(null);
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [moreOpen]);
 
   // Focus management: move focus in, give it back to the tile on close; lock page scroll.
   useEffect(() => {
@@ -399,6 +419,36 @@ export function Lightbox({
       setEditVersion((v) => v + 1);
     } catch (e) {
       setTagError(e instanceof Error ? e.message : "Could not remove the tag.");
+    }
+  }
+  // The actions that sit in the More menu on a phone (and inline in the bar elsewhere; CSS decides which), in one list so
+  // both places run the same handler.
+  const overflow = [
+    onAddToAlbum && { key: "album", label: "Add to album", run: onAddToAlbum },
+    onArchive && { key: "archive", label: item.archived === true ? "Restore" : "Archive", run: onArchive },
+    onHide && { key: "hide", label: item.hidden === true ? "Unhide" : "Hide", run: onHide },
+    onTrash && { key: "trash", label: "Move to trash", run: onTrash },
+  ].filter((a): a is { key: string; label: string; run: (item: AssetListItem) => void } => !!a);
+  const inlineAction = (a: { key: string; label: string; run: (item: AssetListItem) => void }) => (
+    <button key={a.key} type="button" className="btn btn-glass lightbox-overflow" onClick={() => a.run(item)}>
+      {a.label}
+    </button>
+  );
+  const toggleMore = () => {
+    setDownloadsFor(null);
+    setMoreFor(moreOpen ? null : item.id);
+  };
+  function onMenuKey(e: ReactKeyboardEvent<HTMLDivElement>) {
+    const entries = Array.from(moreMenu.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+    const at = entries.indexOf(document.activeElement as HTMLElement);
+    const to =
+      e.key === "ArrowDown" ? (at + 1) % entries.length : e.key === "ArrowUp" ? (at <= 0 ? entries.length - 1 : at - 1) : e.key === "Home" ? 0 : e.key === "End" ? entries.length - 1 : -1;
+    if (to >= 0) {
+      e.preventDefault();
+      entries[to]?.focus();
+    } else if (e.key === "Tab") {
+      setMoreFor(null);
+      moreButton.current?.focus();
     }
   }
   const retryInfo = () => {
@@ -491,35 +541,54 @@ export function Lightbox({
                 className="btn btn-glass"
                 aria-expanded={downloadsOpen}
                 aria-controls="lightbox-downloads"
-                onClick={() => setDownloadsFor(downloadsOpen ? null : item.id)}
+                onClick={() => {
+                  setMoreFor(null);
+                  setDownloadsFor(downloadsOpen ? null : item.id);
+                }}
               >
                 Download
               </button>
             )}
-            {onAddToAlbum && (
-              <button type="button" className="btn btn-glass" onClick={() => onAddToAlbum(item)}>
-                Add to album
-              </button>
-            )}
+            {overflow.filter((a) => a.key === "album").map(inlineAction)}
             {onShare && (
               <button type="button" className="btn btn-glass" onClick={() => onShare(item)}>
                 Share
               </button>
             )}
-            {onArchive && (
-              <button type="button" className="btn btn-glass" onClick={() => onArchive(item)}>
-                {item.archived === true ? "Restore" : "Archive"}
-              </button>
-            )}
-            {onHide && (
-              <button type="button" className="btn btn-glass" onClick={() => onHide(item)}>
-                {item.hidden === true ? "Unhide" : "Hide"}
-              </button>
-            )}
-            {onTrash && (
-              <button type="button" className="btn btn-glass" onClick={() => onTrash(item)}>
-                Move to trash
-              </button>
+            {overflow.filter((a) => a.key !== "album").map(inlineAction)}
+            {overflow.length > 0 && (
+              <div className="lightbox-more" ref={moreRef}>
+                <button
+                  type="button"
+                  ref={moreButton}
+                  className="btn btn-glass"
+                  aria-haspopup="menu"
+                  aria-expanded={moreOpen}
+                  aria-controls="lightbox-more-menu"
+                  onClick={toggleMore}
+                >
+                  More
+                </button>
+                {moreOpen && (
+                  <div className="lightbox-menu" id="lightbox-more-menu" role="menu" aria-label="More actions" ref={moreMenu} onKeyDown={onMenuKey}>
+                    {overflow.map((a) => (
+                      <button
+                        key={a.key}
+                        type="button"
+                        role="menuitem"
+                        className="lightbox-menu-item"
+                        onClick={() => {
+                          setMoreFor(null);
+                          moreButton.current?.focus();
+                          a.run(item);
+                        }}
+                      >
+                        {a.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </div>
