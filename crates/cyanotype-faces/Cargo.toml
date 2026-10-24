@@ -1,0 +1,19 @@
+[package]
+name = "cyanotype-faces"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Face detection (YuNet) and recognition (SFace) with ONNX Runtime, run by the worker's faces job."
+
+[dependencies]
+anyhow.workspace = true
+fast_image_resize = "6.1.0"
+# The same ONNX Runtime build as cyanotype-clip (one copy is linked into the worker).
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
+
+[dev-dependencies]
+# Only the memory benchmark (examples/bench.rs) loads the search model next to the face models.
+cyanotype-clip.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+serde_json.workspace = true

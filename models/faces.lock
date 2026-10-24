@@ -1,0 +1,15 @@
+# The face models the worker's `faces` job runs when FACES_ENABLED is on (docs/faces.md), from the OpenCV Zoo:
+#   yunet.onnx  YuNet face detector with five landmarks per face (MIT, Shiqi Yu), the zoo's 2026-05 export with dynamic input
+#               size, pinned to the opencv_zoo commit that added it (2026-05-22). Its LFS pointer's oid is the sha256 below.
+#   sface.onnx  SFace face recognition, a MobileFaceNet trained with the sigmoid-constrained hypersphere loss (Apache 2.0,
+#               Yaoyao Zhong), 128-dimension embeddings, as published at https://huggingface.co/opencv/face_recognition_sface
+#               pinned to one commit (2025-06-20).
+# The two licence texts travel with the weights (both licences require it) and are installed next to them.
+# `cyanotype-faces` expects exactly these files (crates/cyanotype-faces/src/lib.rs). Changing a line here is a model change:
+# bump VERSION (or MODEL) in crates/cyanotype-core/src/faces.rs in the same commit, so photos are scanned again.
+#
+# sha256                                                            file               url
+ebafce4e3c118d6554634be5c27ab333b4c047a9a8c3faf1d7cf93101c22f0f0  yunet.onnx         https://media.githubusercontent.com/media/opencv/opencv_zoo/26cc381e4d2594bb9f47a26eb8fd96c94a13660d/models/face_detection_yunet/face_detection_yunet_2026may.onnx
+0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79  sface.onnx         https://huggingface.co/opencv/face_recognition_sface/resolve/3d7082438a6e4551e840c9b2bb60b71e8da4b524/face_recognition_sface_2021dec.onnx
+c83b8120c50ccbd4c4f96edf53141bdd566ebb8f8e9227e415326aa1b1aba958  LICENSE-yunet.txt  https://raw.githubusercontent.com/opencv/opencv_zoo/26cc381e4d2594bb9f47a26eb8fd96c94a13660d/models/face_detection_yunet/LICENSE
+cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30  LICENSE-sface.txt https://huggingface.co/opencv/face_recognition_sface/resolve/3d7082438a6e4551e840c9b2bb60b71e8da4b524/LICENSE

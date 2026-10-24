@@ -1215,6 +1215,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cyanotype-faces"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "cyanotype-clip",
+ "fast_image_resize",
+ "image",
+ "ort",
+ "serde_json",
+]
+
+[[package]]
 name = "cyanotype-ocr"
 version = "0.0.1"
 dependencies = [
@@ -1260,6 +1272,7 @@ dependencies = [
  "anyhow",
  "cyanotype-clip",
  "cyanotype-core",
+ "cyanotype-faces",
  "cyanotype-ocr",
  "fast_image_resize",
  "image",
