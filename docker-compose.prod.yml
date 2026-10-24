@@ -104,6 +104,8 @@ services:
       # model keeps answering until SEARCH_SWITCH_PERCENT of the photos are done (docs/library.md, "Changing the search model").
       SEARCH_MODEL: ${SEARCH_MODEL:-siglip2-b16}
       SEARCH_SWITCH_PERCENT: ${SEARCH_SWITCH_PERCENT:-95}
+      # Only decides whether the processing report mentions faces; must be the same as the worker's (docs/faces.md).
+      FACES_ENABLED: ${FACES_ENABLED:-0}
       TRASH_RETENTION_DAYS: ${TRASH_RETENTION_DAYS:-30}
       COOKIE_SECURE: "true"
     depends_on: !override
@@ -134,6 +136,10 @@ services:
       WORKER_EMBED_THREADS: ${WORKER_EMBED_THREADS:-1}
       # Reading text off photos (search, copy, QR codes): threads of its ONNX sessions (same trade-off), WORKER_OCR=0 turns it off.
       WORKER_OCR_THREADS: ${WORKER_OCR_THREADS:-1}
+      # Finding faces in photos (the People feature's groundwork, docs/faces.md): OFF unless set to 1. Threads of its ONNX sessions,
+      # the same trade-off. Must be the same as the assets service's.
+      FACES_ENABLED: ${FACES_ENABLED:-0}
+      WORKER_FACES_THREADS: ${WORKER_FACES_THREADS:-1}
       # Must be the same as the assets service's.
       SEARCH_MODEL: ${SEARCH_MODEL:-siglip2-b16}
     depends_on: !override

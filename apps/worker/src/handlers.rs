@@ -649,6 +649,15 @@ async fn store_render(
         cyanotype_core::ocr::forget_and_requeue(&ctx.db, job.asset_id, cyanotype_core::ocr::VERSION)
             .await
             .context("read the text again")?;
+        // (Likewise the faces: stale ones are forgotten even when the feature is off, and found again only when it is on.)
+        cyanotype_core::faces::forget_and_requeue(
+            &ctx.db,
+            job.asset_id,
+            cyanotype_core::faces::VERSION,
+            cyanotype_core::faces::enabled(),
+        )
+        .await
+        .context("find the faces again")?;
         jobs::requeue(&ctx.db, jobs::KIND_EMBED, job.asset_id, ctx.search_model.version()).await
     } else {
         jobs::enqueue(&ctx.db, jobs::KIND_EMBED, job.asset_id, ctx.search_model.version()).await

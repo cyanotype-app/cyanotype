@@ -9,7 +9,7 @@
 //! "Processing..." banner is about getting photos on screen). Failed embed jobs do show in `failed` and `failures`, like
 //! any other failure, and "Retry failed" requeues them.
 use axum::{Json, extract::State};
-use cyanotype_core::{embeddings, ocr};
+use cyanotype_core::{embeddings, faces, ocr};
 use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -57,6 +57,25 @@ pub(super) struct Processing {
     embedding: Embedding,
     /// Reading text off photos (`ocr` jobs), reported apart like search indexing: a backfill takes hours on a big library.
     text: TextProgress,
+    /// Finding faces in photos (`faces` jobs), reported apart as well. Present only when the feature is switched on
+    /// (`FACES_ENABLED`, off by default); nothing about faces is reported otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    faces: Option<FacesProgress>,
+}
+
+#[derive(Serialize, Debug)]
+pub(super) struct FacesProgress {
+    /// Photos the current model has looked at, and photos that can be looked at (they have a preview).
+    scanned: i64,
+    total: i64,
+    /// Faces found so far.
+    found: i64,
+    queued: i64,
+    running: i64,
+    failed: i64,
+    model: &'static str,
+    /// Whole percent of the library scanned (100 for an empty library).
+    percent: u8,
 }
 
 #[derive(Serialize, Debug)]
@@ -111,7 +130,7 @@ pub(super) async fn status(State(s): State<AppState>, user: ImportUser) -> ApiRe
          FROM jobs j JOIN assets a ON a.id = j.asset_id
          WHERE a.owner_id = $1 AND a.purging_at IS NULL AND j.state <> 'done'
            AND j.kind NOT IN ('share_copy', 'burst') -- share_copy is made on demand for share links; burst grouping is background work
-           AND (j.kind NOT IN ('embed', 'ocr') OR j.state = 'failed') -- indexing for search and reading text are reported separately
+           AND (j.kind NOT IN ('embed', 'ocr', 'faces') OR j.state = 'failed') -- indexing for search, reading text and finding faces are reported separately
          GROUP BY j.kind ORDER BY j.kind",
     )
     .bind(user.id)
@@ -187,6 +206,8 @@ pub(super) async fn status(State(s): State<AppState>, user: ImportUser) -> ApiRe
         (text.read * 100 / text.total).clamp(0, 100) as u8
     };
 
+    let faces = faces_progress(&s.db, user.id, faces::enabled()).await?;
+
     let (queued, running, failed) = by_kind
         .iter()
         .fold((0, 0, 0), |(q, r, f), k| (q + k.queued, r + k.running, f + k.failed));
@@ -220,6 +241,42 @@ pub(super) async fn status(State(s): State<AppState>, user: ImportUser) -> ApiRe
             model: ocr::MODEL,
             percent: text_percent,
         },
+        faces,
+    }))
+}
+
+/// How far finding faces has got for one owner; `None` while the feature is off.
+async fn faces_progress(db: &sqlx::PgPool, owner: Uuid, enabled: bool) -> ApiResult<Option<FacesProgress>> {
+    if !enabled {
+        return Ok(None);
+    }
+    let (queued, running, failed): (i64, i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE j.state = 'queued'), count(*) FILTER (WHERE j.state = 'running'),
+                count(*) FILTER (WHERE j.state = 'failed')
+         FROM jobs j JOIN assets a ON a.id = j.asset_id
+         WHERE a.owner_id = $1 AND a.purging_at IS NULL AND j.kind = 'faces' AND j.version = $2",
+    )
+    .bind(owner)
+    .bind(faces::VERSION)
+    .fetch_one(db)
+    .await?;
+    let p = faces::progress(db, owner, faces::MODEL, faces::VERSION)
+        .await
+        .map_err(cyanotype_service::ApiError::Internal)?;
+    let percent = if p.total <= 0 {
+        100
+    } else {
+        (p.scanned * 100 / p.total).clamp(0, 100) as u8
+    };
+    Ok(Some(FacesProgress {
+        scanned: p.scanned,
+        total: p.total,
+        found: p.faces,
+        queued,
+        running,
+        failed,
+        model: faces::MODEL,
+        percent,
     }))
 }
 
@@ -402,6 +459,71 @@ mod tests {
             (json!(1), json!(1))
         );
         assert_eq!(body["failures"][0]["kind"], json!("embed"));
+        t.teardown().await;
+    }
+
+    #[tokio::test]
+    async fn faces_are_not_mentioned_until_the_feature_is_on_and_then_reported_apart() {
+        let Some(t) = TestDb::new().await else { return };
+        let app = app(&t.pool);
+        let (alice, ak) = user(&t.pool, "a@example.com").await;
+        let (bob, _) = user(&t.pool, "b@example.com").await;
+        let a1 = asset(&t.pool, alice, "a1.jpg").await;
+        let a2 = asset(&t.pool, alice, "a2.jpg").await;
+        let b1 = asset(&t.pool, bob, "b1.jpg").await;
+        for id in [a1, a2, b1] {
+            sqlx::query("UPDATE assets SET thumbhash = '\\x01' WHERE id = $1")
+                .bind(id)
+                .execute(&t.pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM jobs WHERE asset_id = $1")
+                .bind(id)
+                .execute(&t.pool)
+                .await
+                .unwrap();
+        }
+        // A scan (with two faces), a queued job and a failed one, and one of Bob's.
+        faces::store(
+            &t.pool,
+            a1,
+            faces::MODEL,
+            faces::VERSION,
+            &std::array::from_fn::<_, 2, _>(|_| faces::NewFace {
+                bbox: [0.1, 0.1, 0.2, 0.2],
+                landmarks: [0.1; 10],
+                score: 0.9,
+                embedding: None,
+            }),
+        )
+        .await
+        .unwrap();
+        faces::store(&t.pool, b1, faces::MODEL, faces::VERSION, &[])
+            .await
+            .unwrap();
+        for (id, state) in [(a2, "queued"), (b1, "failed")] {
+            sqlx::query("INSERT INTO jobs (kind, asset_id, version, state) VALUES ('faces', $1, $2, $3)")
+                .bind(id)
+                .bind(faces::VERSION)
+                .bind(state)
+                .execute(&t.pool)
+                .await
+                .unwrap();
+        }
+        // Off (the default): the report has no faces entry at all, and the library is not "busy" with them.
+        let (_, body) = send(&app, "GET", "/assets/processing", &ak, None).await;
+        assert!(body.get("faces").is_none(), "{body}");
+        assert_eq!(body["active"], json!(false));
+        // On: this owner's progress.
+        let p = faces_progress(&t.pool, alice, true).await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(&p).unwrap(),
+            json!({"scanned": 1, "total": 2, "found": 2, "queued": 1, "running": 0, "failed": 0,
+                   "model": faces::MODEL, "percent": 50})
+        );
+        let p = faces_progress(&t.pool, bob, true).await.unwrap().unwrap();
+        assert_eq!((p.scanned, p.failed, p.found), (1, 1, 0));
+        assert!(faces_progress(&t.pool, alice, false).await.unwrap().is_none());
         t.teardown().await;
     }
 

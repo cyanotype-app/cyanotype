@@ -146,6 +146,8 @@ services:
       TRASH_RETENTION_DAYS: ${TRASH_RETENTION_DAYS:-30}
       # Cookie of a password-protected share link (same setting as the session cookie).
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # Finding faces in photos is off unless set to 1 (docs/faces.md); the worker's setting must match.
+      FACES_ENABLED: ${FACES_ENABLED:-0}
     labels:
       com.datadoghq.ad.logs: '[{"source":"rust","service":"cyanotype-assets"}]'
     depends_on:
@@ -158,6 +160,7 @@ services:
     environment:
       <<: [*app-env, *s3-env, *metrics-env]
       DD_SERVICE: cyanotype-worker
+      FACES_ENABLED: ${FACES_ENABLED:-0}
     labels:
       com.datadoghq.ad.logs: '[{"source":"rust","service":"cyanotype-worker"}]'
     depends_on:

@@ -4,7 +4,7 @@
 //!    than the retention period). From here the row is hidden from the trash, cannot be restored, and uploads of the
 //!    same content are refused until it is gone.
 //! 2. *Sweep*: for each marked row, remove every version and delete marker of the original and of everything under
-//!    its `derived/` prefix, then delete the `jobs`, `asset_embeddings` and `assets` rows in one transaction. If
+//!    its `derived/` prefix, then delete the `jobs`, `asset_embeddings`, `faces`, `face_scans` and `assets` rows in one transaction. If
 //!    storage fails the row stays marked and the next sweep retries; deleting what is already gone is not an error.
 use std::future::Future;
 
@@ -142,7 +142,7 @@ async fn purge_one<O: Objects>(
     objects
         .delete_asset_objects(original_key, &keys::derived_prefix(owner, id))
         .await?;
-    // Jobs and embeddings cascade from assets, but delete them explicitly so the order is obvious and a
+    // Jobs, embeddings and faces cascade from assets, but delete them explicitly so the order is obvious and a
     // running job's later `complete` simply matches nothing.
     let mut tx = db.begin().await?;
     sqlx::query("DELETE FROM jobs WHERE asset_id = $1")
@@ -150,6 +150,15 @@ async fn purge_one<O: Objects>(
         .execute(&mut *tx)
         .await?;
     sqlx::query("DELETE FROM asset_embeddings WHERE asset_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    // The faces found in the photo (docs/faces.md) go with it, with the record of the scan.
+    sqlx::query("DELETE FROM faces WHERE asset_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM face_scans WHERE asset_id = $1")
         .bind(id)
         .execute(&mut *tx)
         .await?;

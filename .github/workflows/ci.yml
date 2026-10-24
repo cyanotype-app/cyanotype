@@ -106,7 +106,7 @@ jobs:
         with: { cache: false, rustflags: "" }
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.0.0
-      # The search models (CLIP 150 MB, SigLIP 2 380 MB, pinned by sha256 in models/*.lock) for the tokenizer/preprocessing
+      # The search models (CLIP 150 MB, SigLIP 2 380 MB) and the face models (38 MB), pinned by sha256 in models/*.lock, for the tokenizer/preprocessing
       # parity and the search-quality tests: cached by the lock files' hash, and the tests fail (instead of skipping) without
       # them. Runners differ in CPU (the 8-bit kernels are a little different with and without AVX-512 VNNI); the model name
       # is printed so a parity failure can be read against it (crates/cyanotype-clip/tests/model.rs).
@@ -116,7 +116,8 @@ jobs:
           path: |
             models/clip
             models/siglip2
-          key: search-models-${{ hashFiles('models/clip.lock', 'models/siglip2.lock') }}
+            models/faces
+          key: search-models-${{ hashFiles('models/clip.lock', 'models/siglip2.lock', 'models/faces.lock') }}
       - run: scripts/fetch-models.sh
       - run: |
           echo "SEARCH_MODEL_DIR=$PWD/models" >> "$GITHUB_ENV"

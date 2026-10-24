@@ -1419,6 +1419,166 @@
     },
     {
       "definition": {
+        "type": "timeseries",
+        "title": "Faces backlog (queued and running; off unless FACES_ENABLED)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "queued",
+                "query": "sum:cyanotype.queue.queued{$env,kind:faces}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "running",
+                "query": "sum:cyanotype.queue.running{$env,kind:faces}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "queued"
+              },
+              {
+                "formula": "running"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 54,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Photos scanned for faces per minute",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "done",
+                "query": "sum:cyanotype.jobs.completed{$env,kind:faces,outcome:done}.as_count().rollup(sum, 60)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "done"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 54,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Faces time per photo p50 / p95 (ms)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "p50",
+                "query": "avg:cyanotype.faces.duration.median{$env}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "p95",
+                "query": "max:cyanotype.faces.duration.95percentile{$env}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "p50"
+              },
+              {
+                "formula": "p95"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 57,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Faces found per photo p50 / p95, face model loaded (0 or 1)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "p50",
+                "query": "avg:cyanotype.faces.per_photo.median{$env}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "p95",
+                "query": "max:cyanotype.faces.per_photo.95percentile{$env}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "loaded",
+                "query": "max:cyanotype.faces.model_loaded{$env}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "p50"
+              },
+              {
+                "formula": "p95"
+              },
+              {
+                "formula": "loaded"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 57,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
         "type": "log_stream",
         "title": "Worker errors and warnings",
         "logset": "",
@@ -1438,7 +1598,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 54,
+        "y": 60,
         "width": 12,
         "height": 5
       }
