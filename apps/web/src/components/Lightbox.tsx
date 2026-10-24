@@ -18,6 +18,12 @@ import { ratingKey } from "../ratingText";
 import { fromServer, toRequest, type Recipe } from "../recipeText";
 import { CropIcon, RotateCrop } from "./RotateCrop";
 import { fitStyle } from "../photoFit";
+import { usePhotoZoom } from "../usePhotoZoom";
+import { sharperUrl } from "../zoomMath";
+import { ZoomControls } from "./ZoomControls";
+
+/** The keys that zoom the photo: + and = in, - and _ out, z between fit and zoomed. */
+const ZOOM_KEYS = ["+", "=", "-", "_", "z"];
 
 /** How often the viewer asks whether the worker has finished a picture or an edited download, and how many times. */
 const POLL_MS = 1500;
@@ -138,7 +144,6 @@ export function Lightbox({
       live = false;
     };
   }, [peopleOn, info.open, loadDetails, currentId, facesVersion]);
-  const swipe = useVerticalSwipe({ onUp: info.show, enabled: !!loadDetails && !info.open });
   const closeInfo = info.hide;
   // The Text panel: the Text button or `t`. It takes the Info panel's place (one panel at a time) and, like it, stays open while paging.
   const text = useTextPanel(loadDetails ? loadText : undefined, currentId);
@@ -154,7 +159,57 @@ export function Lightbox({
   const imgRef = useRef<HTMLImageElement>(null);
   const photoRef = useRef<HTMLDivElement>(null);
   // The size of the picture on show (read when it loads): the CSS fits the photo to the area from its shape.
-  const [photoSize, setPhotoSize] = useState<{ id: string; w: number; h: number } | null>(null);
+  const [photoSize, setPhotoSize] = useState<{ id: string; w: number; h: number; preview: boolean } | null>(null);
+  // Zoom: the preview's size, and the sharper picture (the original file of an unedited JPEG, PNG or WebP) to swap in once the
+  // zoom goes past what the preview shows. Edited photos, HEIC and RAW have none: their preview is simply scaled.
+  const levelRef = useRef<HTMLSpanElement>(null);
+  const announceRef = useRef<HTMLSpanElement>(null);
+  const here0 = items[index];
+  const detail0 = currentId ? details[currentId] : undefined;
+  const baseSize = photoSize?.id === currentId ? photoSize : null;
+  // (Only the preview counts: the thumbnail shown while it loads says nothing about what the preview can resolve.)
+  const previewLong = baseSize?.preview ? Math.max(baseSize.w, baseSize.h) : 0;
+  const sharpUrl =
+    here0 && detail0?.preview_url
+      ? sharperUrl({
+          contentType: here0.content_type,
+          edited: here0.edited === true || !!detail0.recipe,
+          rendering: detail0.rendering === true,
+          originalUrl: detail0.original_url,
+          width: detail0.file_width ?? here0.width,
+          height: detail0.file_height ?? here0.height,
+          previewLong,
+        })
+      : null;
+  const zoom = usePhotoZoom({
+    stage: stageRef,
+    layer: photoRef,
+    photo: imgRef,
+    level: levelRef,
+    announce: announceRef,
+    resetKey: currentId,
+    active: !!here0,
+    previewLong,
+    naturalLong: sharpUrl ? Math.max(detail0?.file_width ?? here0?.width ?? 0, detail0?.file_height ?? here0?.height ?? 0) : previewLong,
+  });
+  const [sharpReady, setSharpReady] = useState<string | null>(null);
+  const wantSharp = zoom.wantSharp;
+  useEffect(() => {
+    if (!wantSharp || !sharpUrl) return;
+    let live = true;
+    const probe = new Image();
+    probe.src = sharpUrl;
+    // Swap once the sharper picture is decoded, so the photo never blanks; if it cannot be loaded the preview stays.
+    probe.decode().then(
+      () => live && setSharpReady(sharpUrl),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [wantSharp, sharpUrl]);
+  const showingSharp = wantSharp && !!sharpUrl && sharpReady === sharpUrl;
+  const swipe = useVerticalSwipe({ onUp: info.show, enabled: !!loadDetails && !info.open && !zoom.zoomed });
   const imageRect = useImageRect(stageRef, imgRef, [currentId, imgLoaded, text.open, text.boxes, info.open]);
   // The editor (date, location, caption) of the open photo, from the panel.
   const [editing, setEditing] = useState<EditKind | null>(null);
@@ -283,6 +338,20 @@ export function Lightbox({
         setPicture({ cropping: e.key === "c", turned: e.key === "r" });
         return;
       }
+      // Zoom: + and = in, - out, z between fit and zoomed. (0 to 5 are the rating, and Ctrl with +/- is the browser's page zoom.)
+      if (
+        ZOOM_KEYS.includes(e.key) &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        [null, dialogRef.current].includes((e.target as HTMLElement | null)?.closest('[role="dialog"]') ?? null)
+      ) {
+        e.preventDefault();
+        if (e.key === "+" || e.key === "=") zoom.zoomIn();
+        else if (e.key === "-" || e.key === "_") zoom.zoomOut();
+        else if (!e.repeat) zoom.toggle();
+        return;
+      }
       if (e.key === "Escape") {
         e.preventDefault();
         // The More menu closes first (focus goes back to its button), then the panel; the next Escape closes the lightbox.
@@ -353,7 +422,7 @@ export function Lightbox({
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [go, close, onTrash, onRate, items, index, info, closeInfo, loadDetails, text, closeText, pictureOpen, canEditPicture, moreOpen]);
+  }, [go, close, onTrash, onRate, items, index, info, closeInfo, loadDetails, text, closeText, pictureOpen, canEditPicture, moreOpen, zoom]);
 
   // The More menu: focus its first item when it opens, and close it on a tap or click anywhere else.
   useEffect(() => {
@@ -638,7 +707,27 @@ export function Lightbox({
       )}
       <div className={`lightbox-body${info.open || text.open ? " with-info" : ""}`}>
       <div className="lightbox-main">
-      <div className="lightbox-stage" ref={stageRef} {...swipe} style={bg ? { backgroundImage: `url(${bg})` } : undefined}>
+      <div
+        className={`lightbox-stage${zoom.zoomed ? " zoomed" : ""}`}
+        ref={stageRef}
+        onPointerDown={(e) => {
+          swipe.onPointerDown(e);
+          zoom.handlers.onPointerDown(e);
+        }}
+        onPointerMove={(e) => {
+          swipe.onPointerMove(e);
+          zoom.handlers.onPointerMove(e);
+        }}
+        onPointerUp={(e) => {
+          swipe.onPointerUp(e);
+          zoom.handlers.onPointerUp(e);
+        }}
+        onPointerCancel={(e) => {
+          swipe.onPointerCancel(e);
+          zoom.handlers.onPointerCancel(e);
+        }}
+        style={bg ? { backgroundImage: `url(${bg})` } : undefined}
+      >
         <button
           type="button"
           className="nav nav-prev"
@@ -653,14 +742,15 @@ export function Lightbox({
             <img
               key={item.id}
               ref={imgRef}
-              src={src ?? fallback ?? undefined}
+              src={(showingSharp ? sharpUrl : null) ?? src ?? fallback ?? undefined}
               alt={item.original_name}
               className={`${src && imgLoaded === item.id ? "loaded" : src ? "loading" : "loaded"}${fit ? " sized" : ""}`}
               style={fitStyle(fit)}
               draggable={false}
               onLoad={(e) => {
                 setImgLoaded(item.id);
-                setPhotoSize({ id: item.id, w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight });
+                // The sharper picture is drawn in the box the preview made: its own size must not change the layout.
+                if (!showingSharp) setPhotoSize({ id: item.id, w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight, preview: !!src });
               }}
             />
           )}
@@ -682,6 +772,9 @@ export function Lightbox({
         >
           ›
         </button>
+        {(src ?? fallback) && (
+          <ZoomControls zoomed={zoom.zoomed} onIn={zoom.zoomIn} onOut={zoom.zoomOut} onFit={zoom.fit} levelRef={levelRef} announceRef={announceRef} />
+        )}
       </div>
       {onRate && (
         <div className="lightbox-rating">

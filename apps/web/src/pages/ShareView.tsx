@@ -3,7 +3,9 @@ import { useParams } from "react-router-dom";
 import { ApiError } from "../api";
 import { photoCount } from "../albumText";
 import { Logo } from "../components/Logo";
+import { ZoomControls } from "../components/ZoomControls";
 import { fitStyle } from "../photoFit";
+import { usePhotoZoom } from "../usePhotoZoom";
 import { fileSize } from "../pairText";
 import { publicDownloadHref, shareApi, type PublicInfo, type PublicItem } from "../shareApi";
 import { expiryText } from "../shareText";
@@ -315,6 +317,25 @@ function ShareLightbox({
   const [photoSize, setPhotoSize] = useState<{ id: string; w: number; h: number } | null>(null);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [gaveUp, setGaveUp] = useState<string | null>(null);
+  // Zoom the photo (pinch, ctrl + wheel, double tap, + - z, the buttons). A share link has no sharper picture than the
+  // preview (its downloads are attachments, not for display), so zooming scales the preview.
+  const stageRef = useRef<HTMLDivElement>(null);
+  const layerRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const levelRef = useRef<HTMLSpanElement>(null);
+  const announceRef = useRef<HTMLSpanElement>(null);
+  const previewLong = photoSize?.id === item.id ? Math.max(photoSize.w, photoSize.h) : 0;
+  const zoom = usePhotoZoom({
+    stage: stageRef,
+    layer: layerRef,
+    photo: imgRef,
+    level: levelRef,
+    announce: announceRef,
+    resetKey: item.id,
+    active: true,
+    previewLong,
+    naturalLong: previewLong,
+  });
   const go = useCallback(
     (d: number) => {
       const n = index + d;
@@ -325,7 +346,12 @@ function ShareLightbox({
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
+      if (["+", "=", "-", "_", "z"].includes(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        if (e.key === "+" || e.key === "=") zoom.zoomIn();
+        else if (e.key === "-" || e.key === "_") zoom.zoomOut();
+        else if (!e.repeat) zoom.toggle();
+      } else if (e.key === "Escape") {
         e.preventDefault();
         onClose();
       } else if (e.key === "ArrowLeft") {
@@ -350,7 +376,7 @@ function ShareLightbox({
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [go, onClose]);
+  }, [go, onClose, zoom]);
 
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
@@ -447,14 +473,20 @@ function ShareLightbox({
           ))}
         </div>
       )}
-      <div className="lightbox-stage" style={bg ? { backgroundImage: `url(${bg})` } : undefined}>
+      <div
+        className={`lightbox-stage${zoom.zoomed ? " zoomed" : ""}`}
+        ref={stageRef}
+        {...zoom.handlers}
+        style={bg ? { backgroundImage: `url(${bg})` } : undefined}
+      >
         <button type="button" className="nav nav-prev" aria-label="Previous photo" onClick={() => go(-1)} disabled={index === 0}>
           ‹
         </button>
         {src ? (
-          <div className="lightbox-photo">
+          <div className="lightbox-photo" ref={layerRef}>
             <img
               key={item.id}
+              ref={imgRef}
               src={src}
               alt=""
               className={`${item.preview_url && loadedId !== item.id ? "loading" : "loaded"}${fit ? " sized" : ""}`}
@@ -479,6 +511,7 @@ function ShareLightbox({
         >
           ›
         </button>
+        {src && <ZoomControls zoomed={zoom.zoomed} onIn={zoom.zoomIn} onOut={zoom.zoomOut} onFit={zoom.fit} levelRef={levelRef} announceRef={announceRef} />}
       </div>
       <p className="lightbox-caption">
         <span className="muted">

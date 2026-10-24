@@ -91,6 +91,11 @@ export async function openPhoto(page: Page, index = 0) {
   await page.getByRole("button", { name: new RegExp(`Open IMG_${String(index).padStart(5, "0")}`) }).first().click();
   const viewer = page.getByRole("dialog");
   await viewer.waitFor();
-  await viewer.locator(".lightbox-stage img.loaded").waitFor();
+  // The preview (not the thumbnail shown while it loads), laid out in the box its own shape gives it.
+  await viewer.locator(".lightbox-photo img.loaded.sized[src*='fixture-preview']").waitFor();
+  await page.waitForFunction(() => {
+    const i = document.querySelector<HTMLImageElement>(".lightbox-photo img");
+    return !!i && i.naturalWidth >= 960 && i.style.getPropertyValue("--ar") !== "";
+  });
   return viewer;
 }

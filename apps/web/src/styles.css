@@ -366,8 +366,15 @@ main {
   container-type: size;
   background-size: cover;
   background-position: center;
-  /* One finger moving vertically is the swipe that opens the details; pinch stays the browser's. */
-  touch-action: pinch-zoom;
+  /* The photo area owns every touch gesture: pinch and double tap zoom the photo, one finger pans it (zoomed) or swipes
+     up for the details (at fit). The page outside it zooms as usual: this is not set anywhere else. */
+  touch-action: none;
+}
+.lightbox-stage.zoomed {
+  cursor: grab;
+}
+.lightbox-stage.zoomed:active {
+  cursor: grabbing;
 }
 .lightbox-stage::before {
   /* the blurred ThumbHash placeholder sits under a dark veil so it never competes with the photo */
@@ -394,24 +401,64 @@ main {
 }
 .lightbox-photo img {
   flex: none;
-  /* Before the picture's shape is known: its own size, never past the area. */
-  max-width: var(--fit-w);
-  max-height: 100cqh;
+  /* The photo's own size, never past the layer (which has a definite size of its own). */
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
   user-select: none;
   -webkit-user-drag: none;
   transition: opacity 0.2s;
 }
-.lightbox-photo img.sized {
-  /* Once it is (--ar is width / height): as large as the area allows, up to twice its own pixels. */
-  width: min(var(--fit-w), calc(100cqh * var(--ar)), var(--cap));
-  height: auto;
-  aspect-ratio: var(--ar);
-  max-width: none;
-  max-height: none;
+@supports (width: 1cqw) {
+  .lightbox-photo img.sized {
+    /* Once the picture's shape is known (--ar is width / height): as large as the area allows, up to twice its own pixels. */
+    width: min(var(--fit-w), calc(100cqh * var(--ar)), var(--cap));
+    height: auto;
+    aspect-ratio: var(--ar);
+    max-width: none;
+    max-height: none;
+  }
 }
 .lightbox-photo img.loading {
   opacity: 0;
+}
+/* The zoom buttons: the photo area's bottom corner. Touch screens show them only while zoomed (pinch is how it is done). */
+.zoom-controls {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border-radius: 0.8rem;
+  background: rgb(0 10 17 / 0.6);
+}
+.zoom-btn {
+  min-width: 2.5rem;
+  padding: 0 0.6rem;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+.zoom-fit {
+  font-size: 0.9rem;
+}
+.zoom-level {
+  min-width: 3.4rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9rem;
+  color: #e6eef5;
+}
+@media (pointer: coarse) {
+  .zoom-controls:not(.on) {
+    display: none;
+  }
+  .zoom-btn {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
 }
 .lightbox-msg {
   position: absolute;

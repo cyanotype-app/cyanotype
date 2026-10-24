@@ -1753,3 +1753,43 @@ restored by `reindex`, and "Revert to original" puts the picture back.
   keys, saving and waiting for the render, an edited photo's own picture, the edited download), `api` (the redirect that is not
   followed, the request bodies); Playwright `e2e/rotate-layout.spec.ts` (320 to 414, 1280, dark 360: no overflow, handles are 44 px
   touch targets with `touch-action: none`, a touch-pointer drag and a mouse drag move the crop).
+
+# Viewer: fit and zoom
+
+## What the user sees
+
+- **The photo fits.** In the viewer (library, favorites, albums, search, map and the public share page) the photo is as large as the
+  area between the bar and the stars allows, with its shape kept, and never runs past the bottom of the screen: phones, a landscape
+  phone, a tablet, a desktop, with the Info or Text panel open. It is not drawn at more than twice its own pixels.
+- **Zoom the photo, not the page.** Pinch with two fingers, pinch on a trackpad (or hold Ctrl and turn the wheel), or double-tap /
+  double-click (back to fit on the next one) to zoom around that point. A plain mouse wheel does nothing, as before. While zoomed,
+  one finger or the mouse drags the photo, and it cannot be dragged off the screen. Keys: **+** / **=** zoom in, **-** out, **z**
+  between fit and zoomed (**0** to **5** stay the rating; Ctrl with +/- is still the browser's own page zoom). On a computer the
+  corner of the photo has **-**, the level (fit = 100 %), **+** and **Fit** buttons; a touch screen shows them once zoomed.
+- **Limits.** From fit (the smallest) up to 4 device pixels per picture pixel, at least 2x and at most 8x fit.
+- **Zoomed, the gestures that move you away are off:** the swipe up for the Info panel does not fire (the finger pans). It works
+  again at fit. Zoom starts over when you go to another photo or close the viewer. The rest of the app, and the page around the
+  viewer, zoom as before: only the photo area has `touch-action: none`, and the viewport meta has no `user-scalable` or
+  `maximum-scale`.
+- **Sharper when it matters.** The viewer shows the ~1,440 px preview. Once the zoom shows the photo at more device pixels than the
+  preview has, the original file replaces it, if browsers can show it: an **unedited JPEG, PNG or WebP** (its `original_url`, the
+  presigned link the viewer already has, so the same authorization as everything else). HEIC and RAW (browsers cannot show them), an
+  edited photo (its original is not the edited picture) and a file not larger than the preview have none: the preview is scaled.
+  The swap happens once the original is decoded, in the box the preview made, so nothing jumps. The public share page has no such
+  link (its downloads are attachments), so it scales the preview.
+
+## How it works
+
+- Layout: `.lightbox-stage` is a size container (`container-type: size`), so its box comes from the flex column alone, and the photo is
+  sized in `cqw` / `cqh` from its shape (`photoFit.ts`: `--ar`, `--cap`). The old grid with an auto row let the picture's own height size
+  the row, so `max-height: 100%` had nothing to shrink to and a 1,440 px preview ran past a 720 px screen.
+- Zoom: `zoomMath.ts` (pure: limits, clamping, zoom around a point, pinch, steps, the sharper-picture rule) and `usePhotoZoom.ts`
+  (Pointer Events and `wheel`; the transform is written straight to the layer, `will-change` only while a gesture runs, and React hears
+  only "zoomed" and "past the preview").
+
+## Tests
+
+- Web: `zoomMath` (29 cases). Playwright `e2e/viewer-fit-layout.spec.ts` (the photo inside the stage, filling it, shape kept, never under
+  the bar or stars, at 320x568 to 1920x1080, light and dark, with the Info panel, and on the share page) and
+  `e2e/viewer-zoom-layout.spec.ts` (ctrl + wheel, double click, keys, buttons, pan clamping, reset, a two-finger pinch and double tap by
+  CDP touch events, swipe up off while zoomed, page zoom untouched, and the original requested only past the preview's resolution).
