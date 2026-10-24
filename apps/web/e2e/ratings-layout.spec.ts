@@ -89,6 +89,7 @@ for (const { width, scheme } of RUNS) {
       await check("lightbox-info-rating");
       await page.keyboard.press("Escape");
       await page.keyboard.press("Escape");
+      await expect(page).toHaveURL(/\/library/);
 
       // The filter: the sheet with its counts and the chip it leaves behind.
       await page.goto("/search");
