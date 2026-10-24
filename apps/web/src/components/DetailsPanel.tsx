@@ -7,7 +7,8 @@ import { fileSize } from "../pairText";
 import type { EditKind } from "./EditDialog";
 import { useVerticalSwipe } from "../useInfoPanel";
 import { RatingStars } from "./Stars";
-import type { PhotoTag } from "../api";
+import type { PhotoFace, PhotoTag } from "../api";
+import { UNNAMED } from "../peopleText";
 import { tagSearchHref } from "../tagText";
 import { fromServer, recipeText } from "../recipeText";
 
@@ -42,6 +43,9 @@ interface Props {
   onUntag?: (tag: PhotoTag) => void;
   /** Open the rotate/crop editor. The panel then has a Picture row describing the recipe, with the button. */
   onEditPicture?: () => void;
+  /** The faces found in the photo (People is on): a row of chips, each opening its person; a face nobody has claimed offers `onNameFace`. */
+  faces?: PhotoFace[];
+  onNameFace?: (face: PhotoFace) => void;
 }
 
 type Follow = (e: MouseEvent<HTMLAnchorElement>, to: string) => void;
@@ -69,7 +73,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
  * files, albums and burst. A row appears only when the photo has the information. The camera, lens, place and date
  * are links to the search or the timeline for the same thing.
  */
-export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, onEdit, rating, onRate, tags, onTag, onUntag, onEditPicture }: Props) {
+export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, onEdit, rating, onRate, tags, onTag, onUntag, onEditPicture, faces, onNameFace }: Props) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const navigate = useNavigate();
   const follow: Follow = (e, to) => {
@@ -112,7 +116,7 @@ export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavi
           </p>
         )}
         {state.status === "ready" && (
-          <Body d={state.details} follow={follow} onEdit={onEdit} rating={rating} onRate={onRate} tags={tags} onTag={onTag} onUntag={onUntag} onEditPicture={onEditPicture} />
+          <Body d={state.details} follow={follow} onEdit={onEdit} rating={rating} onRate={onRate} tags={tags} onTag={onTag} onUntag={onUntag} onEditPicture={onEditPicture} faces={faces} onNameFace={onNameFace} />
         )}
       </div>
     </aside>
@@ -137,6 +141,8 @@ function Body({
   onTag,
   onUntag,
   onEditPicture,
+  faces,
+  onNameFace,
 }: {
   d: PhotoDetails;
   follow: Follow;
@@ -147,6 +153,8 @@ function Body({
   onTag?: () => void;
   onUntag?: (tag: PhotoTag) => void;
   onEditPicture?: () => void;
+  faces?: PhotoFace[];
+  onNameFace?: (face: PhotoFace) => void;
 }) {
   const when = whenText(d.date);
   const loc = d.location;
@@ -198,6 +206,26 @@ function Body({
           <button type="button" className="btn btn-glass details-edit" onClick={onTag}>
             Add tag
           </button>
+        </Row>
+      )}
+
+      {faces && faces.length > 0 && (
+        <Row label="People">
+          <span className="details-tags">
+            {faces.map((f) =>
+              f.person ? (
+                <span key={f.id} className="tag-chip person-chip">
+                  <PanelLink to={`/people/${f.person.id}`} follow={follow} className="tag-chip-name">
+                    {f.person.name?.trim() || UNNAMED}
+                  </PanelLink>
+                </span>
+              ) : onNameFace ? (
+                <button key={f.id} type="button" className="tag-chip person-chip unclaimed" aria-label="Name this face" onClick={() => onNameFace(f)}>
+                  Unknown face
+                </button>
+              ) : null,
+            )}
+          </span>
         </Row>
       )}
 

@@ -691,6 +691,43 @@ export interface AlbumPatch {
   rules?: SmartRules;
 }
 
+/** A face's box: left, top, width, height, as fractions (0 to 1) of the photo's preview image. */
+export type FaceBox = [number, number, number, number];
+
+/** The face a person is shown by: the box is in the picture `preview_url` serves (short-lived, like the other presigned URLs). */
+export interface PersonCover {
+  face_id: string;
+  asset_id: string;
+  box: FaceBox;
+  preview_url: string;
+}
+
+/** A person (docs/faces.md, "People"); `name` is null until the owner gives one. Counts are of the photos this session may see. */
+export interface Person {
+  id: string;
+  name: string | null;
+  hidden: boolean;
+  faces: number;
+  photos: number;
+  cover: PersonCover | null;
+}
+
+/** A face in one photo (GET /assets/{id}/faces); `person` is null for a face nobody has claimed. */
+export interface PhotoFace {
+  id: string;
+  box: FaceBox;
+  person: { id: string; name: string | null } | null;
+}
+
+/** An unassigned face that looks like a person ("Is this X?"). */
+export interface FaceSuggestion {
+  face_id: string;
+  asset_id: string;
+  box: FaceBox;
+  preview_url: string;
+  similarity: number;
+}
+
 /** A tag of the signed-in user, with how many photos have it (as this session may see them). */
 export interface Tag {
   id: string;
@@ -1291,6 +1328,35 @@ export const api = {
   tiles: () => request<TilesInstalled>("/assets/tiles"),
   /** Favorite or unfavorite photos. `count` is how many changed. */
   favoriteAssets: (target: Target, favorite: boolean) => bulk("/assets/favorite", target, { favorite }),
+  /** Is People switched on (`FACES_ENABLED`)? The only People route that answers while it is off. */
+  peopleStatus: () => request<{ enabled: boolean }>("/assets/people/status"),
+  listPeople: () => request<{ items: Person[] }>("/assets/people"),
+  getPerson: (id: string) => request<Person>(`/assets/people/${encodeURIComponent(id)}`),
+  /** Rename (null or blank clears the name), hide or show, choose the cover face. */
+  updatePerson: (id: string, patch: { name?: string | null; hidden?: boolean; cover_face_id?: string }) =>
+    request<Person>(`/assets/people/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deletePerson: (id: string) => request<void>(`/assets/people/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  /** Give every face of the person to `into`, then delete the person. */
+  mergePerson: (id: string, into: string) =>
+    request<{ into: string; faces: number }>(`/assets/people/${encodeURIComponent(id)}/merge`, json({ into })),
+  personPhotos: (id: string, opts: { cursor?: string | null; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts.cursor) q.set("cursor", opts.cursor);
+    const qs = q.toString();
+    return request<AssetList>(`/assets/people/${encodeURIComponent(id)}/photos${qs ? `?${qs}` : ""}`);
+  },
+  /** "Not this person": the person's faces in these photos (or these faces) are taken out and never put back. */
+  removeFromPerson: (id: string, what: { asset_ids?: readonly string[]; face_ids?: readonly string[] }) =>
+    request<{ removed: number }>(`/assets/people/${encodeURIComponent(id)}/faces/remove`, json(what)),
+  personSuggestions: (id: string) => request<{ items: FaceSuggestion[] }>(`/assets/people/${encodeURIComponent(id)}/suggestions`),
+  /** This face is that person, or a new one (with an optional name). */
+  assignFace: (face: string, to: { person_id: string } | { new: true; name?: string }) =>
+    request<{ person: Person | null }>(`/assets/faces/${encodeURIComponent(face)}/assign`, json(to)),
+  /** "No, not them": the face is not suggested for the person again. */
+  rejectFace: (face: string, personId: string) =>
+    request<void>(`/assets/faces/${encodeURIComponent(face)}/reject`, json({ person_id: personId })),
+  photoFaces: (asset: string) => request<{ items: PhotoFace[] }>(`/assets/${encodeURIComponent(asset)}/faces`),
   /** The user's tags with counts: alphabetical (`name`) or most used first (`count`); `q` finds names containing it. */
   listTags: (opts: { q?: string; sort?: "name" | "count"; limit?: number } = {}) => {
     const q = new URLSearchParams();

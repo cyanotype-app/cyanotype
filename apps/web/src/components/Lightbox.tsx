@@ -1,6 +1,8 @@
 import { Link } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { api, downloadHref, editedHref, type AssetDetail, type AssetListItem, type PhotoDetails, type PhotoTag, type PhotoText } from "../api";
+import { api, downloadHref, editedHref, type AssetDetail, type AssetListItem, type PhotoDetails, type PhotoFace, type PhotoTag, type PhotoText } from "../api";
+import { usePeopleEnabled } from "../usePeople";
+import { AssignFaceDialog } from "./FaceChips";
 import { useInfoHistory, useVerticalSwipe } from "../useInfoPanel";
 import { useImageRect, useTextPanel } from "../useTextPanel";
 import { TextBoxes, TextPanel } from "./TextPanel";
@@ -118,6 +120,23 @@ export function Lightbox({
         setInfoFailed((m) => ({ ...m, [id]: true }));
       });
   }, [info.open, loadDetails, currentId, infoRetry]);
+  // The people in the photo (when People is on), for the Info panel's chips; a face nobody has claimed can be named from there.
+  const peopleOn = usePeopleEnabled() === true;
+  const [facesById, setFacesById] = useState<Record<string, PhotoFace[]>>({});
+  const [namingFace, setNamingFace] = useState<PhotoFace | null>(null);
+  const [facesVersion, setFacesVersion] = useState(0);
+  useEffect(() => {
+    if (!peopleOn || !info.open || !loadDetails || !currentId) return;
+    let live = true;
+    const id = currentId;
+    api.photoFaces(id).then(
+      (r) => live && setFacesById((m) => ({ ...m, [id]: r.items })),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [peopleOn, info.open, loadDetails, currentId, facesVersion]);
   const swipe = useVerticalSwipe({ onUp: info.show, enabled: !!loadDetails && !info.open });
   const closeInfo = info.hide;
   // The Text panel: the Text button or `t`. It takes the Info panel's place (one panel at a time) and, like it, stays open while paging.
@@ -726,6 +745,8 @@ export function Lightbox({
           onLeave={leave}
           onNavigate={onClose}
           onEditPicture={canEditPicture ? () => setPicture({ cropping: false, turned: false }) : undefined}
+          faces={peopleOn ? facesById[item.id] : undefined}
+          onNameFace={setNamingFace}
         />
       )}
       </div>
@@ -747,6 +768,16 @@ export function Lightbox({
         <p className="lightbox-msg" role="alert">
           {tagError}
         </p>
+      )}
+      {namingFace && (
+        <AssignFaceDialog
+          face={namingFace}
+          onCancel={() => setNamingFace(null)}
+          onDone={() => {
+            setNamingFace(null);
+            setFacesVersion((v) => v + 1);
+          }}
+        />
       )}
       {tagging && (
         <TagDialog
