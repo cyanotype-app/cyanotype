@@ -11,6 +11,7 @@ cyanotype-core.workspace = true
 cyanotype-clip.workspace = true
 cyanotype-service.workspace = true
 cyanotype-takeout.workspace = true
+cyanotype-ocr.workspace = true
 anyhow.workspace = true
 argon2.workspace = true
 axum.workspace = true

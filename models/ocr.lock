@@ -1,0 +1,13 @@
+# The text-in-photos model (docs/build.md, "Text in photos"): PaddlePaddle's PP-OCRv6 small, text detection and text recognition,
+# as the ONNX exports PaddlePaddle itself publishes on Hugging Face (Apache-2.0 licence), pinned to one commit each. The worker
+# reads them from <models dir>/ocr/ (det.onnx, rec.onnx and rec.yml, whose `character_dict` is the recognition dictionary).
+# det.yml is not read by the code (its postprocessing numbers are copied into apps/worker/src/ocr.rs); it is pinned so a change
+# of those numbers upstream is visible here.
+# Changing a line here is a model change: bump VERSION (or MODEL) in crates/cyanotype-core/src/ocr.rs in the same commit, so
+# photos are read again (at low priority; the old text keeps answering searches until its photo's new text replaces it).
+#
+# sha256                                                            file      url
+d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e  det.onnx  https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/28fe5895c24fd108c19eb3e8479f4ab385fbfc62/inference.onnx
+193f435274bf9f0b5f71a929bbfbcf148282df7e633b34e7c373e8f44741b516  det.yml   https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/28fe5895c24fd108c19eb3e8479f4ab385fbfc62/inference.yml
+5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634  rec.onnx  https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/b8f84f0b80c529de40b4fbb3544b84fa7233a513/inference.onnx
+ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1  rec.yml   https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/b8f84f0b80c529de40b4fbb3544b84fa7233a513/inference.yml

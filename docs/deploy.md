@@ -547,6 +547,14 @@ and whenever the image carries a newer snapshot. The worker then fills in the pl
 lookup per geotagged photo). Place names come from GeoNames, licensed CC BY 4.0, https://www.geonames.org/ ; the map
 page credits GeoNames, OpenStreetMap contributors (ODbL) and Protomaps. How both work: `docs/library.md`, "Map and places".
 
+## Text in photos (nothing to install)
+
+Reading text off photos (`docs/library.md`, "Text in photos") needs **nothing from you on deploy**: the model files (31 MB) are baked into the `worker` image, no
+service is called, and the worker's memory limit already covers it (`docs/build.md`, "Text in photos (OCR)"). After the upgrade the worker reads every existing photo
+in the background, behind uploads and search indexing; `GET /assets/processing` reports its progress (`text`). `WORKER_OCR=0` turns it off, `WORKER_OCR_THREADS` (default
+1; 2 reads about a quarter faster) sets its threads. Migration 0023 creates one table and, with it, the `pg_trgm` extension: it ships with Postgres and is a trusted
+extension, so the database's owner may create it; if your database role cannot, run `CREATE EXTENSION pg_trgm;` once as a superuser before `dc run --rm migrate`.
+
 ## Search (nothing to install)
 
 Photo search runs on the server with no external service and **needs nothing from you on deploy**: the model files are baked

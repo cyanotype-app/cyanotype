@@ -399,6 +399,29 @@ export interface ProcessingFailure {
   attempts: number;
 }
 
+/** One line of recognised text: its words and where they are, all coordinates 0..1 of the picture (x0,y0 ... x3,y3: top-left, top-right, bottom-right, bottom-left). */
+export interface PhotoTextLine {
+  t: string;
+  /** Confidence 0..1. */
+  s: number;
+  q: number[];
+  w: { t: string; q: number[] }[];
+}
+
+export interface PhotoTextQr {
+  /** What the code says. Shown as text; a web address is offered as a link, never opened. */
+  t: string;
+  q: number[];
+}
+
+/** GET /assets/{id}/text. `pending`: the photo has not been read yet (it is, in the background, after processing). */
+export interface PhotoText {
+  status: "read" | "pending";
+  text: string;
+  lines: PhotoTextLine[];
+  qr: PhotoTextQr[];
+}
+
 /** GET /assets/processing: progress of the background work (thumbnails, metadata, pairing) on your own photos. */
 export interface Processing {
   /** Something is queued or running. */
@@ -429,6 +452,8 @@ export interface Processing {
     switch_at_percent?: number;
     serving_model?: string;
   };
+  /** Reading text off photos, reported apart from `active` (a backfill takes hours). Absent on older servers. */
+  text?: { read: number; total: number; queued: number; running: number; failed: number; model: string; percent: number };
 }
 
 /** The structured filters of a search, and the optional natural-language query (`GET /assets/search`). */
@@ -450,6 +475,8 @@ export interface SearchParams {
   /** An album id. */
   album?: string;
   has_location?: boolean;
+  /** Only photos with (true) or without (false) text read off them. */
+  has_text?: boolean;
   /** Dates and places the server should not read out of `q`: `date`, `place` or `date,place` (what a chip's "x" sets). */
   skip?: string;
   /** "More like this": list photos similar to this photo (`GET /assets/{id}/similar`) instead of searching for `q`. */
@@ -520,6 +547,8 @@ export interface Facets {
   total: number;
   favorites: number;
   with_location: number;
+  /** Photos with text read off them. Absent on older servers. */
+  with_text?: number;
   types: Facet[];
   cameras: Facet[];
   /** Absent on older servers. */
@@ -927,8 +956,8 @@ export function searchQuery(
   // (`similar` is part of the path of "More like this", and that endpoint takes neither `q` nor `skip`.)
   const keys = (
     params.similar
-      ? ["from", "to", "favorite", "include_archived", "camera", "lens", "place", "type", "album", "has_location"]
-      : ["q", "from", "to", "favorite", "include_archived", "camera", "lens", "place", "type", "album", "has_location", "skip"]
+      ? ["from", "to", "favorite", "include_archived", "camera", "lens", "place", "type", "album", "has_location", "has_text"]
+      : ["q", "from", "to", "favorite", "include_archived", "camera", "lens", "place", "type", "album", "has_location", "has_text", "skip"]
   ) as readonly (keyof SearchParams)[];
   for (const k of keys) {
     const v = params[k];
@@ -1204,6 +1233,8 @@ export const api = {
     request<PlaceHit[]>(`/assets/places${q ? `?${new URLSearchParams({ q })}` : ""}`, { signal }),
   /** What the details panel shows: date, place, camera, exposure, files, albums, burst. */
   getDetails: (id: string) => request<PhotoDetails>(`/assets/${encodeURIComponent(id)}/details`),
+  /** The text read off a photo (and its QR codes), for the lightbox's Text panel. */
+  getText: (id: string) => request<PhotoText>(`/assets/${encodeURIComponent(id)}/text`),
   /** Dedupe + part URLs. Defaults to the proxy transport, the only one a browser can use. */
   checkUpload: (req: CheckRequest) => request<CheckResponse>("/assets/check", json({ transport: "proxy", ...req })),
   takeoutPlan: (paths: string[]) => request<TakeoutPlan>("/assets/takeout/plan", json({ paths })),

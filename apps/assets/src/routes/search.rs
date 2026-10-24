@@ -109,6 +109,8 @@ pub(super) struct SearchQuery {
     pub kind: Option<String>,
     pub album: Option<Uuid>,
     pub has_location: Option<bool>,
+    /// Photos with (or without) text the worker read off them (`ocr` job, docs/library.md, "Text in photos").
+    pub has_text: Option<bool>,
     pub limit: Option<i64>,
     pub cursor: Option<String>,
     /// Also list the weaker matches after the strong ones (`weaker.cursor` of a response continues where the strong ones
@@ -143,6 +145,7 @@ pub(super) struct Filters {
     kind: Option<FileType>,
     album: Option<Uuid>,
     has_location: Option<bool>,
+    has_text: Option<bool>,
     /// "More like this": never the source photo itself, nor the other photos of its burst.
     exclude: Option<Uuid>,
     exclude_burst: Option<Uuid>,
@@ -191,6 +194,7 @@ impl Filters {
             kind,
             album: q.album,
             has_location: q.has_location,
+            has_text: q.has_text,
             exclude: None,
             exclude_burst: None,
         })
@@ -214,6 +218,7 @@ impl Filters {
             || self.kind.is_some()
             || self.album.is_some()
             || self.has_location.is_some()
+            || self.has_text.is_some()
     }
 
     /// ` a.owner_id = $ AND ...` for `assets a`: ownership, not trashed, not a hidden RAW, then the filters.
@@ -278,6 +283,15 @@ impl Filters {
             }
             Some(false) => {
                 qb.push(" AND (a.latitude IS NULL OR a.longitude IS NULL)");
+            }
+            None => {}
+        }
+        match self.has_text {
+            Some(true) => {
+                qb.push(" AND EXISTS (SELECT 1 FROM asset_text xt WHERE xt.asset_id = a.id AND xt.has_text)");
+            }
+            Some(false) => {
+                qb.push(" AND NOT EXISTS (SELECT 1 FROM asset_text xt WHERE xt.asset_id = a.id AND xt.has_text)");
             }
             None => {}
         }
@@ -642,7 +656,7 @@ pub(super) async fn run(s: &AppState, owner: Uuid, request: &SearchQuery) -> Api
         reindexing: serving.reindexing,
         kind: RankKind::Text,
     };
-    // Photos whose caption has the words come first (see `caption_matches`).
+    // Photos whose caption, or whose text read off the photo itself, has the words come first (see `caption_matches`).
     let lead = caption_matches(&s.db, owner, &filters, &query_text).await?;
     respond_ranked(
         s,
@@ -684,15 +698,47 @@ pub(super) fn caption_words(q: &str) -> Vec<String> {
 /// as good a match as there can be: these go **in front of** the model's ranking and are not part of it (no score, and they
 /// leave the model's cut-off, which is relative to its own best match, alone). A photo that is both a caption match and
 /// ranked is shown once, in front.
+///
+/// The text the worker read off the photo (`asset_text`: signs, receipts, screenshots) is matched the same way and comes after
+/// the captions (a caption is the owner's own words; text in the picture is the picture's), newest first within each; the
+/// two share the [`CAPTION_MAX`] budget, captions first. The trigram index on `asset_text.text` serves the `ILIKE`.
 async fn caption_matches(db: &sqlx::PgPool, owner: Uuid, f: &Filters, q: &str) -> ApiResult<Vec<SearchRow>> {
     let words = caption_words(q);
     if words.is_empty() {
         return Ok(Vec::new());
     }
-    let mut qb = QueryBuilder::<Postgres>::new(format!("SELECT {LIST_COLS}, NULL::float8 AS dist FROM assets a WHERE"));
+    let mut lead = lead_rows(db, owner, f, &words, "a.caption", None, CAPTION_MAX).await?;
+    let room = CAPTION_MAX - lead.len() as i64;
+    if room > 0 {
+        let seen: Vec<Uuid> = lead.iter().map(|r| r.row.summary.id).collect();
+        lead.extend(lead_rows(db, owner, f, &words, "xt.text", Some(&seen), room).await?);
+    }
+    Ok(lead)
+}
+
+/// Photos whose `column` (a caption, or the text read off the photo) contains every word, newest first. `column` is
+/// `a.caption` or `xt.text`; for the latter the photo's `asset_text` row is joined. `skip`: ids already in the list.
+async fn lead_rows(
+    db: &sqlx::PgPool,
+    owner: Uuid,
+    f: &Filters,
+    words: &[String],
+    column: &str,
+    skip: Option<&[Uuid]>,
+    limit: i64,
+) -> ApiResult<Vec<SearchRow>> {
+    let from = if column == "xt.text" {
+        "assets a JOIN asset_text xt ON xt.asset_id = a.id"
+    } else {
+        "assets a"
+    };
+    let mut qb = QueryBuilder::<Postgres>::new(format!("SELECT {LIST_COLS}, NULL::float8 AS dist FROM {from} WHERE"));
     f.push_where(&mut qb, owner);
-    qb.push(" AND a.caption IS NOT NULL");
-    for w in &words {
+    qb.push(format!(" AND {column} IS NOT NULL"));
+    if let Some(skip) = skip {
+        qb.push(" AND a.id <> ALL(").push_bind(skip.to_vec()).push(")");
+    }
+    for w in words {
         // LIKE's own characters are escaped (backslash is its default escape).
         let escaped: String = w
             .chars()
@@ -701,10 +747,11 @@ async fn caption_matches(db: &sqlx::PgPool, owner: Uuid, f: &Filters, q: &str) -
                 c => vec![c],
             })
             .collect();
-        qb.push(" AND a.caption ILIKE ").push_bind(format!("%{escaped}%"));
+        qb.push(format!(" AND {column} ILIKE "))
+            .push_bind(format!("%{escaped}%"));
     }
     qb.push(format!(" ORDER BY {SORT_TIME} DESC, a.id DESC LIMIT "))
-        .push_bind(CAPTION_MAX);
+        .push_bind(limit);
     Ok(qb.build_query_as::<SearchRow>().persistent(false).fetch_all(db).await?)
 }
 
@@ -1238,6 +1285,8 @@ pub(super) struct Facets {
     total: i64,
     favorites: i64,
     with_location: i64,
+    /// Photos with text read off them (the "has text" filter).
+    with_text: i64,
     /// Photos that are, or have behind them, a file of each type (a JPEG + RAW pair counts under both).
     types: Vec<Facet>,
     cameras: Vec<Facet>,
@@ -1256,10 +1305,11 @@ const MAX_PLACES: i64 = 120;
 /// already chosen). Visible live photos only, like search itself.
 pub(super) async fn facets(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<Facets>> {
     let base = "FROM assets a WHERE a.owner_id = $1 AND a.deleted_at IS NULL AND a.primary_id IS NULL AND NOT a.hidden";
-    let (total, favorites, with_location, jpeg, heic, raw, other): (i64, i64, i64, i64, i64, i64, i64) =
+    let (total, favorites, with_location, with_text, jpeg, heic, raw, other): (i64, i64, i64, i64, i64, i64, i64, i64) =
         sqlx::query_as(&format!(
             "SELECT count(*), count(*) FILTER (WHERE a.favorite),
                     count(*) FILTER (WHERE a.latitude IS NOT NULL AND a.longitude IS NOT NULL),
+                    count(*) FILTER (WHERE EXISTS (SELECT 1 FROM asset_text xt WHERE xt.asset_id = a.id AND xt.has_text)),
                     count(*) FILTER (WHERE {j}), count(*) FILTER (WHERE {h}), count(*) FILTER (WHERE {r}),
                     count(*) FILTER (WHERE {o})
              {base}",
@@ -1320,6 +1370,7 @@ pub(super) async fn facets(State(s): State<AppState>, user: AuthUser) -> ApiResu
         total,
         favorites,
         with_location,
+        with_text,
         types,
         cameras,
         lenses,

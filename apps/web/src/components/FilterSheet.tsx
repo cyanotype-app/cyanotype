@@ -225,6 +225,19 @@ export function FilterSheet({ value, onApply, onClose, load = defaultLoad }: Pro
             </select>
           </div>
           <div className="sheet-field">
+            <label htmlFor={`${id}-text`}>Text in the photo</label>
+            <select
+              id={`${id}-text`}
+              className="text-input"
+              value={draft.has_text === undefined ? "" : String(draft.has_text)}
+              onChange={(e) => set({ has_text: e.target.value === "" ? undefined : e.target.value === "true" })}
+            >
+              <option value="">Any</option>
+              <option value="true">Has text (signs, receipts, screenshots){facets?.with_text !== undefined ? ` (${n(facets.with_text)})` : ""}</option>
+              <option value="false">No text</option>
+            </select>
+          </div>
+          <div className="sheet-field">
             <label htmlFor={`${id}-album`}>Album</label>
             <select id={`${id}-album`} className="text-input" value={draft.album ?? ""} onChange={(e) => set({ album: e.target.value })}>
               <option value="">Any</option>

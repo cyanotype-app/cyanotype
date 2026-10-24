@@ -319,6 +319,10 @@ async fn store(ctx: &Arc<Ctx>, model: Model, job: &jobs::Job, v: &[f32]) -> Resu
     embeddings::store(&ctx.db, job.asset_id, model.id(), model.version(), v)
         .await
         .context("store embedding")?;
+    // Its text is read next, after everything else (a failure here is not the embedding's either).
+    if let Err(e) = cyanotype_core::ocr::enqueue_for_asset(&ctx.db, job.asset_id, cyanotype_core::ocr::VERSION).await {
+        tracing::warn!(error = %format!("{e:#}"), "could not queue the text job");
+    }
     // The photo can be compared with its neighbours now: regroup its burst (a failure here is not the embedding's).
     if let Err(e) = bursts::requeue_after_embed(&ctx.db, job.asset_id).await {
         tracing::warn!(error = %format!("{e:#}"), "could not queue the burst regroup");
@@ -563,7 +567,7 @@ mod tests {
             rows,
             [(env.model.id().to_string(), env.model.version(), names.len() as i64)]
         );
-        let states: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT state FROM jobs")
+        let states: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT state FROM jobs WHERE kind = 'embed'")
             .fetch_all(&env.pool)
             .await
             .unwrap();
@@ -618,11 +622,13 @@ mod tests {
         let state = |id: Uuid| {
             let pool = env.pool.clone();
             async move {
-                sqlx::query_as::<_, (String, Option<String>)>("SELECT state, last_error FROM jobs WHERE asset_id = $1")
-                    .bind(id)
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap()
+                sqlx::query_as::<_, (String, Option<String>)>(
+                    "SELECT state, last_error FROM jobs WHERE kind = 'embed' AND asset_id = $1",
+                )
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
             }
         };
         for id in [good, primary, hidden_raw, purging, no_preview_yet] {

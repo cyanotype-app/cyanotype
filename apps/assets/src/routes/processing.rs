@@ -9,7 +9,7 @@
 //! "Processing..." banner is about getting photos on screen). Failed embed jobs do show in `failed` and `failures`, like
 //! any other failure, and "Retry failed" requeues them.
 use axum::{Json, extract::State};
-use cyanotype_core::embeddings;
+use cyanotype_core::{embeddings, ocr};
 use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -55,6 +55,21 @@ pub(super) struct Processing {
     failures: Vec<Failure>,
     /// Search indexing: how many of the library's photos search can find, and what is still queued.
     embedding: Embedding,
+    /// Reading text off photos (`ocr` jobs), reported apart like search indexing: a backfill takes hours on a big library.
+    text: TextProgress,
+}
+
+#[derive(Serialize, Debug)]
+pub(super) struct TextProgress {
+    /// Photos whose text the current model has read, and photos that can be read (they have a preview).
+    read: i64,
+    total: i64,
+    queued: i64,
+    running: i64,
+    failed: i64,
+    model: &'static str,
+    /// Whole percent of the library read (100 for an empty library).
+    percent: u8,
 }
 
 #[derive(Serialize, Debug)]
@@ -96,7 +111,7 @@ pub(super) async fn status(State(s): State<AppState>, user: ImportUser) -> ApiRe
          FROM jobs j JOIN assets a ON a.id = j.asset_id
          WHERE a.owner_id = $1 AND a.purging_at IS NULL AND j.state <> 'done'
            AND j.kind NOT IN ('share_copy', 'burst') -- share_copy is made on demand for share links; burst grouping is background work
-           AND (j.kind <> 'embed' OR j.state = 'failed') -- indexing for search is reported separately
+           AND (j.kind NOT IN ('embed', 'ocr') OR j.state = 'failed') -- indexing for search and reading text are reported separately
          GROUP BY j.kind ORDER BY j.kind",
     )
     .bind(user.id)
@@ -153,6 +168,25 @@ pub(super) async fn status(State(s): State<AppState>, user: ImportUser) -> ApiRe
         (progress.indexed * 100 / progress.total).clamp(0, 100) as u8
     };
 
+    let (t_queued, t_running, t_failed): (i64, i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE j.state = 'queued'), count(*) FILTER (WHERE j.state = 'running'),
+                count(*) FILTER (WHERE j.state = 'failed')
+         FROM jobs j JOIN assets a ON a.id = j.asset_id
+         WHERE a.owner_id = $1 AND a.purging_at IS NULL AND j.kind = 'ocr' AND j.version = $2",
+    )
+    .bind(user.id)
+    .bind(ocr::VERSION)
+    .fetch_one(&s.db)
+    .await?;
+    let text = ocr::progress(&s.db, user.id, ocr::MODEL, ocr::VERSION)
+        .await
+        .map_err(cyanotype_service::ApiError::Internal)?;
+    let text_percent = if text.total <= 0 {
+        100
+    } else {
+        (text.read * 100 / text.total).clamp(0, 100) as u8
+    };
+
     let (queued, running, failed) = by_kind
         .iter()
         .fold((0, 0, 0), |(q, r, f), k| (q + k.queued, r + k.running, f + k.failed));
@@ -176,6 +210,15 @@ pub(super) async fn status(State(s): State<AppState>, user: ImportUser) -> ApiRe
             reindexing: serving.reindexing.is_some(),
             switch_at_percent: s.search.switch_percent,
             serving_model: serving.model.name(),
+        },
+        text: TextProgress {
+            read: text.read,
+            total: text.total,
+            queued: t_queued,
+            running: t_running,
+            failed: t_failed,
+            model: ocr::MODEL,
+            percent: text_percent,
         },
     }))
 }

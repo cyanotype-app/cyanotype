@@ -120,7 +120,8 @@ services:
     restart: unless-stopped
     # Decoding large originals dominates memory; WORKER_HEAVY_CONCURRENCY bounds parallel decodes. 1280m = the 640 MB
     # decode budget below + the image tower (about 150 MB resident while its session is loaded, outside the budget)
-    # + runtime, libheif and allocator slack. It was 1024m before search.
+    # + the text model (about 80 MB resident while loaded, also outside the budget; each text job holds 224 MB of the
+    # budget while it runs, and the two models never work at once) + runtime, libheif and allocator slack. It was 1024m before search.
     mem_limit: 1280m
     environment:
       <<: [*prod-env, *prod-s3]
@@ -131,6 +132,8 @@ services:
       # Background embedding of photos for search: threads of its ONNX session (1 leaves the other core of a 2 vCPU host
       # to thumbnails and Postgres; 2 roughly doubles the backfill speed), WORKER_EMBED=0 turns it off.
       WORKER_EMBED_THREADS: ${WORKER_EMBED_THREADS:-1}
+      # Reading text off photos (search, copy, QR codes): threads of its ONNX sessions (same trade-off), WORKER_OCR=0 turns it off.
+      WORKER_OCR_THREADS: ${WORKER_OCR_THREADS:-1}
       # Must be the same as the assets service's.
       SEARCH_MODEL: ${SEARCH_MODEL:-siglip2-b16}
     depends_on: !override
