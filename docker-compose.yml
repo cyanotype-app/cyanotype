@@ -179,6 +179,13 @@ services:
     image: caddy:2-alpine
     ports: ["3000:3000"]
     volumes: ["./infra/caddy:/etc/caddy:ro"]
+    environment:
+      # Content-Security-Policy (infra/caddy/csp.caddy; docs/deploy.md "Security headers"). The photo origin is where
+      # the presigned URLs point, i.e. S3_PUBLIC_ENDPOINT (origin only, no path or trailing slash).
+      CSP_MODE: ${CSP_MODE:-enforce}
+      CSP_S3_ORIGIN: ${CSP_S3_ORIGIN:-${S3_PUBLIC_ENDPOINT:-http://localhost:9000}}
+      CSP_EXTRA_IMG_SRC: ${CSP_EXTRA_IMG_SRC:-'self'}
+      CSP_EXTRA_CONNECT_SRC: ${CSP_EXTRA_CONNECT_SRC:-'self'}
     labels:
       com.datadoghq.ad.logs: '[{"source":"caddy","service":"cyanotype-gateway"}]'
     depends_on: [auth, assets, web]

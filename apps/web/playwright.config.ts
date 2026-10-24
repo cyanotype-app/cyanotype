@@ -30,6 +30,8 @@ export default defineConfig({
   webServer: {
     command: `pnpm exec vite build && pnpm exec vite preview --port ${PORT} --strictPort`,
     url: `http://localhost:${PORT}`,
+    // The preview serves the app under the gateway's real CSP (e2e/csp.ts reads infra/caddy/csp.caddy).
+    env: { E2E_CSP: "1" },
     reuseExistingServer: true,
     timeout: 120_000,
   },

@@ -237,7 +237,9 @@ jobs:
             docker run --rm -e CYANOTYPE_HOSTNAME=photos-dev.cyanotype.app -v "$PWD/infra/caddy:/etc/caddy:ro" caddy:2-alpine \
               caddy validate --config "/etc/caddy/$f" --adapter caddyfile
           done
-      - name: Share pages send no-referrer through the gateway
+          docker run --rm -e CYANOTYPE_HOSTNAME=photos-dev.cyanotype.app -e CSP_MODE=report-only -v "$PWD/infra/caddy:/etc/caddy:ro" caddy:2-alpine \
+            caddy validate --config /etc/caddy/Caddyfile.prod --adapter caddyfile
+      - name: Security headers (CSP, nosniff, Permissions-Policy, COOP/CORP, Referrer-Policy) through the gateway
         run: scripts/test-gateway-headers.sh
       - name: Backup script (shellcheck)
         run: shellcheck infra/backup/backup.sh

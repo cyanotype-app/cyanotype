@@ -1,0 +1,5 @@
+# CSP_MODE=report-only: the browser reports violations in its console but blocks nothing (rollout aid).
+# Usage: import csp_header <matcher> "<policy>"
+(csp_header) {
+	header {args[0]} >Content-Security-Policy-Report-Only {args[1]}
+}

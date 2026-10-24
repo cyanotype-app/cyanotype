@@ -8,6 +8,8 @@
 	root * /srv
 	encode zstd gzip
 
+	# Content-Security-Policy, Permissions-Policy and the cross-origin headers are set by the gateway
+	# (infra/caddy/gateway.caddy, csp.caddy), which fronts this container; sending them here too would only risk drift.
 	header {
 		X-Content-Type-Options nosniff
 		-Server

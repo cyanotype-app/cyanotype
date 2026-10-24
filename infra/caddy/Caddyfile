@@ -22,5 +22,5 @@
 import /etc/caddy/gateway.caddy
 
 :3000 {
-	import gateway
+	import gateway ""
 }

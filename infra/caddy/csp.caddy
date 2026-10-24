@@ -1,0 +1,32 @@
+# Content-Security-Policy for the gateway. Imported by gateway.caddy; the header NAME (enforced or Report-Only) comes
+# from csp/<CSP_MODE>.caddy. This file is the single source of truth: apps/web/e2e/csp.ts parses the quoted policies
+# below, so the browser test runs under exactly what Caddy sends. Keep each policy on ONE line inside "...".
+#
+# Origins (all from the environment, see docs/deploy.md "Security headers"):
+#   CSP_S3_ORIGIN          the object-storage origin that presigned photo/thumbnail/preview URLs point at
+#                          (compose defaults it to S3_PUBLIC_ENDPOINT). Origin only: scheme://host[:port], no path.
+#   CSP_EXTRA_IMG_SRC      extra space-separated image sources (none by default)
+#   CSP_EXTRA_CONNECT_SRC  extra space-separated fetch/XHR targets (none by default)
+# The defaults are the harmless 'self' (repeating a source is allowed), so an unset variable never breaks the syntax.
+#
+# Why the SPA policy looks like this:
+#   script-src   'self' only, no inline script. 'wasm-unsafe-eval' is for the upload hasher (hash-wasm, WebAssembly in a
+#                Web Worker); it allows compiling WASM, not eval() or inline script.
+#   style-src    'self' only, no 'unsafe-inline': the build emits CSS files, and React/MapLibre set styles through the
+#                CSSOM (element.style), which style-src does not block. There is no style="" attribute in the HTML.
+#   img-src      data: for ThumbHash placeholders, the S3 origin for photos. No blob: (previews are never blob URLs).
+#   connect-src  'self': the API, the same-origin upload parts and the same-origin PMTiles range reads. Photos are never
+#                fetched cross-origin (downloads are navigations), so S3 is not listed here.
+#   worker-src   'self': the hash worker and MapLibre's worker are both Vite-bundled files (setWorkerUrl), no blob: needed.
+#   The basemap (PMTiles) and its glyphs are same-origin, so no third-party map host is allowed.
+
+# The web UI: SPA routes, /static, /s/* share pages. Usage: import csp_spa <matcher> ["; extra-directive"], the second
+# argument being appended, e.g. "; upgrade-insecure-requests" where TLS is on (Caddyfile.prod).
+(csp_spa) {
+	import csp_header {args[0]} "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: {$CSP_S3_ORIGIN:'self'} {$CSP_EXTRA_IMG_SRC:'self'}; connect-src 'self' {$CSP_EXTRA_CONNECT_SRC:'self'}; worker-src 'self'; manifest-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'{args[1]}"
+}
+
+# JSON APIs, the CLI downloads and plain-text endpoints: nothing may load or embed. Usage: import csp_api <matcher>
+(csp_api) {
+	import csp_header {args[0]} "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+}
