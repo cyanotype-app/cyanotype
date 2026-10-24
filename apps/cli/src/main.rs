@@ -1,6 +1,8 @@
 mod api;
 mod cache;
 mod config;
+#[cfg(feature = "server-tools")]
+mod faces;
 mod import;
 #[cfg(feature = "server-tools")]
 mod places;
@@ -45,6 +47,10 @@ enum Command {
     /// passwords, and nobody can sign in to ask an admin for a link). Runs where `migrate` runs.
     #[cfg(feature = "server-tools")]
     ResetLink(reindex::ResetLinkArgs),
+    /// Manage the data of the face-finding feature (off unless FACES_ENABLED is set). Runs where `migrate` runs.
+    #[cfg(feature = "server-tools")]
+    #[command(subcommand)]
+    Faces(faces::FacesCommand),
     /// Log in to a Cyanotype server and store an API key for the other commands.
     Login(LoginArgs),
     /// Import photos and videos from files and directories (resumable; safe to re-run).
@@ -122,6 +128,8 @@ async fn dispatch(command: Command) -> Result<ExitCode> {
         Command::Manifest => reindex::write_manifests().await?,
         #[cfg(feature = "server-tools")]
         Command::ResetLink(a) => reindex::reset_link(a).await?,
+        #[cfg(feature = "server-tools")]
+        Command::Faces(c) => return faces::run(c).await,
         Command::Update(a) => update::run(a).await?,
         Command::Login(a) => login(a).await?,
         Command::Status => status().await?,

@@ -546,6 +546,23 @@ mod tests {
         let kept = asset(&t.pool, uid, "kept.jpg").await;
         let app = app(&t.pool);
         send(&app, "POST", "/assets/trash", &key, Some(ids(&[gone, kept]))).await;
+        // The faces found in the photo (docs/faces.md) must not outlive it.
+        for id in [gone, kept] {
+            cyanotype_core::faces::store(
+                &t.pool,
+                id,
+                cyanotype_core::faces::MODEL,
+                cyanotype_core::faces::VERSION,
+                &[cyanotype_core::faces::NewFace {
+                    bbox: [0.1, 0.1, 0.2, 0.2],
+                    landmarks: [0.1; 10],
+                    score: 0.9,
+                    embedding: Some(vec![0.1; cyanotype_core::faces::DIM]),
+                }],
+            )
+            .await
+            .unwrap();
+        }
 
         // A live item is not purgeable ("only items already in trash").
         assert_eq!(
@@ -577,6 +594,8 @@ mod tests {
             "SELECT count(*) FROM assets WHERE id = $1",
             "SELECT count(*) FROM jobs WHERE asset_id = $1",
             "SELECT count(*) FROM asset_embeddings WHERE asset_id = $1",
+            "SELECT count(*) FROM faces WHERE asset_id = $1",
+            "SELECT count(*) FROM face_scans WHERE asset_id = $1",
         ] {
             assert_eq!(count(&t.pool, sql, gone).await, 1, "{sql}");
         }
@@ -589,6 +608,8 @@ mod tests {
             "SELECT count(*) FROM assets WHERE id = $1",
             "SELECT count(*) FROM jobs WHERE asset_id = $1",
             "SELECT count(*) FROM asset_embeddings WHERE asset_id = $1",
+            "SELECT count(*) FROM faces WHERE asset_id = $1",
+            "SELECT count(*) FROM face_scans WHERE asset_id = $1",
         ] {
             assert_eq!(count(&t.pool, sql, gone).await, 0, "{sql}");
         }
@@ -605,6 +626,11 @@ mod tests {
         assert_eq!(
             count(&t.pool, "SELECT count(*) FROM jobs WHERE asset_id = $1", kept).await,
             1
+        );
+        assert_eq!(
+            count(&t.pool, "SELECT count(*) FROM faces WHERE asset_id = $1", kept).await,
+            1,
+            "the faces of a photo that is only in the trash stay"
         );
         t.teardown().await;
     }

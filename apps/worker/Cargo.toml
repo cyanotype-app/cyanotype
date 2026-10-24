@@ -9,6 +9,7 @@ repository.workspace = true
 cyanotype-core.workspace = true
 cyanotype-clip.workspace = true
 cyanotype-ocr.workspace = true
+cyanotype-faces.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -555,6 +555,16 @@ in the background, behind uploads and search indexing; `GET /assets/processing` 
 1; 2 reads about a quarter faster) sets its threads. Migration 0023 creates one table and, with it, the `pg_trgm` extension: it ships with Postgres and is a trusted
 extension, so the database's owner may create it; if your database role cannot, run `CREATE EXTENSION pg_trgm;` once as a superuser before `dc run --rm migrate`.
 
+## Faces in photos (off by default)
+
+Finding faces in photos (`docs/faces.md`: the groundwork for a People page, nothing visible yet) is **off**. To turn it on set `FACES_ENABLED=1` in
+`.env.prod` and redeploy; the models (38 MB, MIT and Apache 2.0, pinned in `models/faces.lock`) are already in the `worker` image, nothing else to
+install. Migration 0029 only creates two empty tables. The worker then scans every existing photo's preview in the background, after uploads, search
+indexing and text (about 3 to 5 hours for 50,000 photos on a small VPS at the default `WORKER_FACES_THREADS=1`); `GET /assets/processing` reports its
+progress (`faces`). The worker's memory limit already covers it (`docs/faces.md`, "Cost"). It stores a fingerprint of every face in your database, so read
+the privacy section of `docs/faces.md` first. `dc run --rm reindex faces delete` (dry run; add `--apply`) removes all of it again; unset `FACES_ENABLED`
+and restart the worker first.
+
 ## Search (nothing to install)
 
 Photo search runs on the server with no external service and **needs nothing from you on deploy**: the model files are baked

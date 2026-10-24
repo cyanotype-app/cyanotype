@@ -7,6 +7,7 @@ pub mod db;
 pub mod duplicates;
 pub mod edits;
 pub mod embeddings;
+pub mod faces;
 pub mod identity;
 pub mod jobs;
 pub mod keys;

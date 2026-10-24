@@ -324,6 +324,13 @@ async fn store(ctx: &Arc<Ctx>, model: Model, job: &jobs::Job, v: &[f32]) -> Resu
     if let Err(e) = cyanotype_core::ocr::enqueue_for_asset(&ctx.db, job.asset_id, cyanotype_core::ocr::VERSION).await {
         tracing::warn!(error = %format!("{e:#}"), "could not queue the text job");
     }
+    // ... and its faces, when the feature is on (it is off by default).
+    if cyanotype_core::faces::enabled()
+        && let Err(e) =
+            cyanotype_core::faces::enqueue_for_asset(&ctx.db, job.asset_id, cyanotype_core::faces::VERSION).await
+    {
+        tracing::warn!(error = %format!("{e:#}"), "could not queue the faces job");
+    }
     // The photo can be compared with its neighbours now: regroup its burst (a failure here is not the embedding's).
     if let Err(e) = bursts::requeue_after_embed(&ctx.db, job.asset_id).await {
         tracing::warn!(error = %format!("{e:#}"), "could not queue the burst regroup");

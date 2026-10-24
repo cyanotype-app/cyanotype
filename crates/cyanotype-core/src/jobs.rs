@@ -31,6 +31,9 @@ pub const KIND_TAKEOUT: &str = "takeout";
 /// Read the text (and QR codes) off a photo's preview (`ocr`, `cyanotype_core::ocr`). Queued by the worker after a photo's
 /// `embed` and by its sweep, at backfill priority; one row per model version.
 pub const KIND_OCR: &str = "ocr";
+/// Find the faces in a photo's preview and fingerprint each (`faces`, `cyanotype_core::faces`). Only when `FACES_ENABLED` is on:
+/// queued by the worker after a photo's `embed` and by its sweep, at backfill priority; one row per model version.
+pub const KIND_FACES: &str = "faces";
 
 /// Write the full-size JPEG of a photo's edited picture (`derived/{user}/{asset}/edited.jpg`, `cyanotype_core::recipe`).
 /// Queued when someone asks to download it or opens a share link that offers downloads of an edited photo, never for

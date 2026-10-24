@@ -56,7 +56,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
 COPY scripts/fetch-models.sh /usr/local/bin/fetch-models
-COPY models/clip.lock models/siglip2.lock models/ocr.lock /etc/models/
+COPY models/clip.lock models/siglip2.lock models/ocr.lock models/faces.lock /etc/models/
 
 # The SigLIP 2 text tower is 283 MB, 197 MB of it one embedding table of which a query reads a few rows. With the table
 # moved to a side file ONNX Runtime maps it instead of copying it onto the heap (524 MB resident against about 120 MB);
@@ -81,6 +81,11 @@ RUN LOCK=/etc/models/clip.lock fetch-models /models text_model_int8.onnx tokeniz
 # Text in photos (PP-OCRv6 small, 31 MB): detection, recognition and the recognition model's dictionary (its yml), for the worker only.
 FROM model-fetch AS ocr
 RUN LOCK=/etc/models/ocr.lock fetch-models /models det.onnx rec.onnx rec.yml
+
+# Faces in photos (YuNet detector 0.2 MB, SFace recognizer 37 MB, and their two licence texts), for the worker only. Carried by the
+# image whether or not FACES_ENABLED is on: the models are only read when it is (docs/faces.md).
+FROM model-fetch AS faces
+RUN LOCK=/etc/models/faces.lock fetch-models /models yunet.onnx sface.onnx LICENSE-yunet.txt LICENSE-sface.txt
 
 # ---- runtime base: slim, non-root, CA certs for S3/TLS ---------------------------------
 FROM debian:trixie-slim AS runtime
@@ -115,6 +120,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=siglip2-vision /models /opt/cyanotype/models/siglip2
 COPY --from=ocr /models /opt/cyanotype/models/ocr
+COPY --from=faces /models /opt/cyanotype/models/faces
 COPY --from=builder /out/cyanotype-worker /usr/local/bin/app
 RUN if ldd /usr/local/bin/app | grep "not found"; then echo "worker has unresolved shared libraries (see above): add their packages to this stage" >&2; exit 1; fi
 USER cyanotype

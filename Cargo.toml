@@ -4,6 +4,7 @@ members = [
     "crates/cyanotype-core",
     "crates/cyanotype-service",
     "crates/cyanotype-clip",
+    "crates/cyanotype-faces",
     "crates/cyanotype-takeout",
     "crates/cyanotype-ocr",
     "apps/auth",
@@ -22,6 +23,7 @@ rust-version = "1.89"
 [workspace.dependencies]
 cyanotype-core = { path = "crates/cyanotype-core" }
 cyanotype-clip = { path = "crates/cyanotype-clip" }
+cyanotype-faces = { path = "crates/cyanotype-faces" }
 cyanotype-takeout = { path = "crates/cyanotype-takeout" }
 cyanotype-ocr = { path = "crates/cyanotype-ocr" }
 cyanotype-service = { path = "crates/cyanotype-service" }

@@ -5,6 +5,7 @@ mod dup;
 mod embed;
 mod embedded;
 mod exif;
+mod faces;
 mod finish;
 mod formats;
 mod handlers;
@@ -64,7 +65,7 @@ fn handled_kinds() -> impl Iterator<Item = &'static str> {
 
 /// Every kind that has queue gauges.
 fn gauge_kinds() -> impl Iterator<Item = &'static str> {
-    handled_kinds().chain([jobs::KIND_EMBED, jobs::KIND_OCR])
+    handled_kinds().chain([jobs::KIND_EMBED, jobs::KIND_OCR, jobs::KIND_FACES])
 }
 
 fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
@@ -143,9 +144,35 @@ async fn main() -> Result<()> {
         }
         None
     };
+    // Faces (own loop, last; the same permit again). Off unless FACES_ENABLED says so (docs/faces.md): then no job is queued, no
+    // model is read and nothing is held. On, its models (about 70 MB resident while loaded) are outside the decode budget like the
+    // others; each job holds `faces::TRANSIENT_BYTES` of it. Without the model files the `faces` jobs stay queued.
+    let faces_on = cyanotype_core::faces::enabled();
+    let faces_task = if faces_on && faces::model_installed() {
+        let finder = Arc::new(faces::Finder::new(
+            env_parse("WORKER_FACES_THREADS", DEFAULT_EMBED_THREADS).max(1),
+        ));
+        let waker = jobs::JobWaker::spawn(&db_cfg.url);
+        Some(tokio::spawn(faces::run_loop(
+            ctx.clone(),
+            finder,
+            waker,
+            embed_busy.clone(),
+        )))
+    } else {
+        if faces_on {
+            tracing::warn!(
+                dir = %faces::model_dir().display(),
+                "face model files not found: faces in photos will not be found (run scripts/fetch-models.sh, or set FACES_MODEL_DIR)"
+            );
+        }
+        None
+    };
     let embedding = embed_task.is_some();
     let reading_text = ocr_task.is_some();
-    let background: Vec<tokio::task::JoinHandle<()>> = [embed_task, ocr_task].into_iter().flatten().collect();
+    let finding_faces = faces_task.is_some();
+    let background: Vec<tokio::task::JoinHandle<()>> =
+        [embed_task, ocr_task, faces_task].into_iter().flatten().collect();
     // Bounds in-flight jobs (each holds a whole original plus decoded pixels in memory).
     let heavy = Arc::new(Semaphore::new(concurrency));
 
@@ -156,6 +183,7 @@ async fn main() -> Result<()> {
         raw_develop = ctx.raw_develop,
         embedding,
         reading_text,
+        finding_faces,
         "worker started"
     );
     // Instant pickup: a dedicated LISTEN connection (not from the pool) wakes the loop below.
