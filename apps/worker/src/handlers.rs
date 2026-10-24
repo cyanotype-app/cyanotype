@@ -7,6 +7,7 @@ use cyanotype_core::{
     pairing::{self, Paired},
     places::{self, Geocoded},
     storage::Storage,
+    tags,
 };
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
@@ -292,6 +293,8 @@ struct Metadata {
     exif: exif::ExifInfo,
     /// The star rating the file carries (XMP before EXIF), 0 to 5.
     rating: Option<u8>,
+    /// IPTC Keywords and XMP `dc:subject`, as written.
+    keywords: Vec<String>,
 }
 
 fn compute_metadata(kind: Kind, bytes: &Arc<Vec<u8>>, expected_sha: &[u8], limits: media::Limits) -> Result<Metadata> {
@@ -310,6 +313,7 @@ fn compute_metadata(kind: Kind, bytes: &Arc<Vec<u8>>, expected_sha: &[u8], limit
         width: p.width,
         height: p.height,
         rating: crate::embedded::xmp_rating(bytes).or(p.exif.rating),
+        keywords: crate::embedded::keywords(bytes),
         exif: p.exif,
     })
 }
@@ -358,6 +362,10 @@ async fn metadata(ctx: &Arc<Ctx>, job: &jobs::Job, asset: &AssetRow, kind: Kind,
     .fetch_one(&ctx.db)
     .await
     .context("update asset metadata")?;
+    // The file's keywords become tags marked imported, once per photo (a tag the owner removed does not come back).
+    tags::import_keywords(&ctx.db, job.asset_id, &m.keywords)
+        .await
+        .context("import keywords as tags")?;
     // The coordinates may be new or changed (a re-run after an EXIF fix): look the place up again, or forget it.
     if effective_lat.is_some() && effective_lon.is_some() {
         places::requeue(&ctx.db, job.asset_id).await.context("queue geocode")?;
@@ -761,6 +769,104 @@ mod tests {
             Ok(Outcome::Done)
         ));
         assert_eq!(state(ids[1]).await, (0, None), "the file no longer rates it");
+
+        pool.close().await;
+        let mut admin = PgConnection::connect(&admin_url).await.unwrap();
+        admin
+            .execute(format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)").as_str())
+            .await
+            .unwrap();
+    }
+
+    /// The file's keywords become tags marked imported, once: a re-run of the metadata job does not bring back a tag the owner
+    /// removed. Needs Postgres and the S3 variables.
+    #[tokio::test]
+    async fn the_metadata_job_imports_keywords_as_tags_once() {
+        let Ok(admin_url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        if std::env::var("S3_ENDPOINT").ok().filter(|v| !v.is_empty()).is_none() {
+            return;
+        }
+        let name = format!("cyanotype_test_{}", Uuid::new_v4().simple());
+        let mut admin = PgConnection::connect(&admin_url).await.unwrap();
+        admin.execute(format!("CREATE DATABASE {name}").as_str()).await.unwrap();
+        let (base, _) = admin_url.rsplit_once('/').unwrap();
+        let pool = db::connect(&format!("{base}/{name}")).await.unwrap();
+        db::migrate(&pool).await.unwrap();
+        let (owner,): (Uuid,) =
+            sqlx::query_as("INSERT INTO users (email, password_hash) VALUES ('k@example.com','x') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let storage = Storage::new(&S3Config::from_env().expect("S3_* env"));
+        let ctx = Arc::new(Ctx {
+            db: pool.clone(),
+            storage: storage.clone(),
+            max_original_bytes: 1 << 24,
+            budget: MemoryBudget::new(512 << 20),
+            raw_develop: false,
+            search_model: cyanotype_clip::DEFAULT_MODEL,
+        });
+        let mut seg = b"http://ns.adobe.com/xap/1.0/\0".to_vec();
+        seg.extend_from_slice(
+            b"<x:xmpmeta><rdf:RDF><rdf:Description><dc:subject><rdf:Bag><rdf:li>Beach</rdf:li><rdf:li>sun &amp; sea</rdf:li></rdf:Bag></dc:subject></rdf:Description></rdf:RDF></x:xmpmeta>",
+        );
+        let mut app1 = vec![0xFF, 0xE1];
+        app1.extend_from_slice(&((seg.len() + 2) as u16).to_be_bytes());
+        app1.extend_from_slice(&seg);
+        let jpeg = crate::exif::testutil::with_app1(&crate::exif::tests_support_jpeg(), &app1);
+        let sha: [u8; 32] = Sha256::digest(&jpeg).into();
+        let key = keys::original(owner, &sha, "jpg");
+        ctx.storage.put_bytes(&key, jpeg.clone(), "image/jpeg").await.unwrap();
+        let (id,): (Uuid,) = sqlx::query_as(
+            "INSERT INTO assets (owner_id, sha256, original_key, original_name, content_type, size_bytes)
+             VALUES ($1, $2, $3, 'a.jpg', 'image/jpeg', $4) RETURNING id",
+        )
+        .bind(owner)
+        .bind(&sha[..])
+        .bind(&key)
+        .bind(jpeg.len() as i64)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let job = jobs::Job {
+            id: 1,
+            kind: jobs::KIND_METADATA.into(),
+            asset_id: id,
+            version: 1,
+            attempts: 1,
+        };
+        let tags_of = || {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_as::<_, (String, bool)>(
+                    "SELECT t.name, at.imported FROM asset_tags at JOIN tags t ON t.id = at.tag_id WHERE at.asset_id = $1 ORDER BY t.name",
+                )
+                .bind(id)
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        assert!(matches!(run(&ctx, &job, &JobInfo::default()).await, Ok(Outcome::Done)));
+        assert_eq!(
+            tags_of().await,
+            [("Beach".to_string(), true), ("sun & sea".to_string(), true)]
+        );
+        sqlx::query(
+            "DELETE FROM asset_tags WHERE asset_id = $1 AND tag_id = (SELECT id FROM tags WHERE name = 'Beach')",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(matches!(run(&ctx, &job, &JobInfo::default()).await, Ok(Outcome::Done)));
+        assert_eq!(
+            tags_of().await,
+            [("sun & sea".to_string(), true)],
+            "the removed tag stays removed"
+        );
 
         pool.close().await;
         let mut admin = PgConnection::connect(&admin_url).await.unwrap();

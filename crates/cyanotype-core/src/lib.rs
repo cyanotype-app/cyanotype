@@ -19,6 +19,7 @@ pub mod places;
 pub mod reindex;
 pub mod scan;
 pub mod storage;
+pub mod tags;
 pub mod takeout;
 pub mod telemetry;
 pub mod usage;

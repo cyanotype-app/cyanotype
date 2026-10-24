@@ -24,8 +24,8 @@ use uuid::Uuid;
 
 use crate::{identity, keys, storage::Storage};
 
-/// 2: adds `share` lines (readers of version 1 count them as lines they do not know and go on).
-pub const FORMAT_VERSION: u32 = 2;
+/// 2: adds `share` lines; 3: adds `tag` lines (readers of an older version count them as lines they do not know and go on).
+pub const FORMAT_VERSION: u32 = 3;
 pub const DEFAULT_KEEP: usize = 14;
 const MAX_MANIFEST_BYTES: u64 = 1 << 30;
 
@@ -36,6 +36,7 @@ pub enum Line {
     Asset(AssetLine),
     Album(AlbumLine),
     Share(ShareLine),
+    Tag(TagLine),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +138,22 @@ pub struct ShareLine {
     pub items: Vec<String>,
 }
 
+/// A tag (`tags`, migration 0025) with the photos that have it, by hash: the ones the owner tagged and the ones tagged from the
+/// photo's own metadata (`imported`). A tag with no photo is a line too, so an empty tag survives a rebuild.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TagLine {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub created_at: Option<OffsetDateTime>,
+    /// Photos the owner tagged, by hash.
+    #[serde(default)]
+    pub items: Vec<String>,
+    /// Photos tagged from their own metadata, by hash.
+    #[serde(default)]
+    pub imported: Vec<String>,
+}
+
 fn yes() -> bool {
     true
 }
@@ -148,6 +165,11 @@ pub struct UserManifest {
     pub albums: BTreeMap<Uuid, AlbumLine>,
     /// The share links of the NEWEST manifest only (a revoked link must not come back from an older file).
     pub shares: BTreeMap<Uuid, ShareLine>,
+    /// The tags of the NEWEST manifest only.
+    pub tags: BTreeMap<Uuid, TagLine>,
+    /// The newest manifest has tag lines (format 3 or later): a photo in it has exactly the tags it lists, so its keywords
+    /// are not read from the file again.
+    pub tags_known: bool,
     pub files: usize,
     pub bad_lines: usize,
 }
@@ -296,6 +318,42 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
         }));
     }
 
+    let mut tag_items: HashMap<Uuid, (Vec<String>, Vec<String>)> = HashMap::new();
+    for r in sqlx::query(
+        "SELECT at.tag_id, a.sha256, at.imported FROM asset_tags at
+         JOIN tags t ON t.id = at.tag_id JOIN assets a ON a.id = at.asset_id
+         WHERE t.owner_id = $1 AND a.purging_at IS NULL ORDER BY at.tag_id, a.created_at, a.id",
+    )
+    .bind(user)
+    .fetch_all(db)
+    .await
+    .context("read tag items")?
+    {
+        let sha: Vec<u8> = r.try_get("sha256")?;
+        let e = tag_items.entry(r.try_get("tag_id")?).or_default();
+        if r.try_get::<bool, _>("imported")? {
+            e.1.push(keys::hex(&sha));
+        } else {
+            e.0.push(keys::hex(&sha));
+        }
+    }
+    for r in sqlx::query("SELECT id, name, created_at FROM tags WHERE owner_id = $1 ORDER BY created_at, id")
+        .bind(user)
+        .fetch_all(db)
+        .await
+        .context("read tags")?
+    {
+        let id: Uuid = r.try_get("id")?;
+        let (items, imported) = tag_items.remove(&id).unwrap_or_default();
+        body.push(Line::Tag(TagLine {
+            id,
+            name: r.try_get("name")?,
+            created_at: r.try_get("created_at")?,
+            items,
+            imported,
+        }));
+    }
+
     let mut out = Vec::new();
     let header = Line::Meta(MetaLine {
         v: FORMAT_VERSION,
@@ -380,7 +438,12 @@ pub async fn load(storage: &Storage, user: Uuid, manifest_keys: &[String]) -> Re
                 Line::Share(sh) if n == 0 => {
                     m.shares.entry(sh.id).or_insert(sh);
                 }
-                Line::Share(_) | Line::Meta(_) => {}
+                // Like the links: only the newest file's tags, so a tag deleted or merged since an older file stays gone.
+                Line::Tag(t) if n == 0 => {
+                    m.tags.entry(t.id).or_insert(t);
+                }
+                Line::Meta(h) if n == 0 && h.v >= 3 => m.tags_known = true,
+                Line::Share(_) | Line::Tag(_) | Line::Meta(_) => {}
             }
         }
     }

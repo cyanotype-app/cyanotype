@@ -1,9 +1,14 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { api, type Album, type Facets, type SearchParams } from "../api";
+import { api, type Album, type Facets, type SearchParams, type Tag } from "../api";
 import { ratingFilterLabel } from "../ratingText";
+import { tagListOf } from "../tagText";
+import { TagInput } from "./TagInput";
 import { TYPE_LABEL, yearRange } from "../searchText";
 
 type Filters = Omit<SearchParams, "q">;
+
+/** Autocomplete for the tag filter: the library's tags containing what is typed. */
+const defaultTagLoad = (typed: string) => api.listTags({ q: typed || undefined, sort: "count", limit: 12 }).then((r) => r.items);
 
 interface Props {
   /** The filters in force now. */
@@ -13,6 +18,8 @@ interface Props {
   onClose: () => void;
   /** Where the options come from (the tests pass fakes). */
   load?: () => Promise<{ facets: Facets; albums: Album[] }>;
+  /** Where the tag names come from (the tests pass fakes). */
+  tagLoad?: (typed: string) => Promise<Tag[]>;
 }
 
 const defaultLoad = async () => {
@@ -28,7 +35,7 @@ const yearOf = (f: Filters) => (f.from && f.to && f.from === yearRange(f.from.sl
  * bottom sheet on a phone, a dialog on a wide screen; edits apply together with "Show photos", and the choices come from
  * what the library has (`GET /assets/search/facets`) with counts.
  */
-export function FilterSheet({ value, onApply, onClose, load = defaultLoad }: Props) {
+export function FilterSheet({ value, onApply, onClose, load = defaultLoad, tagLoad = defaultTagLoad }: Props) {
   const [draft, setDraft] = useState<Filters>(value);
   const [options, setOptions] = useState<{ facets: Facets; albums: Album[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -151,6 +158,26 @@ export function FilterSheet({ value, onApply, onClose, load = defaultLoad }: Pro
             <input type="checkbox" checked={draft.favorite === true} onChange={(e) => set({ favorite: e.target.checked || undefined })} />
             <span>Favorites only{facets ? ` (${n(facets.favorites)})` : ""}</span>
           </label>
+          <div className="sheet-field">
+            <TagInput
+              label="Tags"
+              placeholder="Any tag"
+              existingOnly
+              value={tagListOf(draft.tags)}
+              onChange={(names) => set({ tags: names.length ? names.join(",") : undefined, tag_mode: names.length > 1 ? draft.tag_mode : undefined })}
+              load={tagLoad}
+            />
+            {tagListOf(draft.tags).length > 1 && (
+              <div className="sheet-segments" role="group" aria-label="Match">
+                {(["all", "any"] as const).map((m) => (
+                  <label key={m} className="sheet-segment">
+                    <input type="radio" name={`${id}-tagmode`} checked={(draft.tag_mode ?? "all") === m} onChange={() => set({ tag_mode: m === "any" ? "any" : undefined })} />
+                    <span>{m === "all" ? "All of them" : "Any of them"}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="sheet-field">
             <label htmlFor={`${id}-rating`}>Rating</label>
             <select

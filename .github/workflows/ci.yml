@@ -87,7 +87,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Start SeaweedFS (S3 API with a versioned bucket, like production)
         run: |
-          docker run -d --name s3 -p 8333:8333 chrislusf/seaweedfs:4.48 server -s3 -dir=/data -volume.max=200 -master.volumeSizeLimitMB=64
+          # Every test bucket grows its own set of volumes (7 each), so the volume ceiling is a bucket ceiling: at 200 the 30th bucket's
+          # first put fails with InternalError. The ceiling is only a limit; volumes are sparse files.
+          docker run -d --name s3 -p 8333:8333 chrislusf/seaweedfs:4.48 server -s3 -dir=/data -volume.max=2000 -master.volumeSizeLimitMB=64
           until curl -fsS -o /dev/null http://localhost:8333/; do sleep 1; done
           curl -fsS -X PUT http://localhost:8333/cyanotype
           curl -fsS -X PUT "http://localhost:8333/cyanotype?versioning" \

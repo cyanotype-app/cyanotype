@@ -7,6 +7,8 @@ import { fileSize } from "../pairText";
 import type { EditKind } from "./EditDialog";
 import { useVerticalSwipe } from "../useInfoPanel";
 import { RatingStars } from "./Stars";
+import type { PhotoTag } from "../api";
+import { tagSearchHref } from "../tagText";
 
 // maplibre-gl is big: the small map loads only when a photo with a location is looked at.
 const PlaceMap = lazy(() => import("../map/PlaceMap"));
@@ -33,6 +35,10 @@ interface Props {
   /** The photo's stars, and how to change them (a row of stars shows when `onRate` is given). */
   rating?: number;
   onRate?: (rating: number) => void;
+  /** The photo's tags, and how to change them (the row shows when `onTag` is given). */
+  tags?: PhotoTag[];
+  onTag?: () => void;
+  onUntag?: (tag: PhotoTag) => void;
 }
 
 type Follow = (e: MouseEvent<HTMLAnchorElement>, to: string) => void;
@@ -60,7 +66,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
  * files, albums and burst. A row appears only when the photo has the information. The camera, lens, place and date
  * are links to the search or the timeline for the same thing.
  */
-export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, onEdit, rating, onRate }: Props) {
+export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, onEdit, rating, onRate, tags, onTag, onUntag }: Props) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const navigate = useNavigate();
   const follow: Follow = (e, to) => {
@@ -102,7 +108,9 @@ export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavi
             </button>
           </p>
         )}
-        {state.status === "ready" && <Body d={state.details} follow={follow} onEdit={onEdit} rating={rating} onRate={onRate} />}
+        {state.status === "ready" && (
+          <Body d={state.details} follow={follow} onEdit={onEdit} rating={rating} onRate={onRate} tags={tags} onTag={onTag} onUntag={onUntag} />
+        )}
       </div>
     </aside>
   );
@@ -122,12 +130,18 @@ function Body({
   onEdit,
   rating,
   onRate,
+  tags,
+  onTag,
+  onUntag,
 }: {
   d: PhotoDetails;
   follow: Follow;
   onEdit?: (kind: EditKind) => void;
   rating?: number;
   onRate?: (rating: number) => void;
+  tags?: PhotoTag[];
+  onTag?: () => void;
+  onUntag?: (tag: PhotoTag) => void;
 }) {
   const when = whenText(d.date);
   const loc = d.location;
@@ -155,6 +169,30 @@ function Body({
       {onRate && (
         <Row label="Rating">
           <RatingStars value={rating} onChange={onRate} label="Rating of this photo" />
+        </Row>
+      )}
+
+      {onTag && (
+        <Row label="Tags">
+          {tags && tags.length > 0 && (
+            <span className="details-tags">
+              {tags.map((t) => (
+                <span key={t.id} className={`tag-chip${t.imported ? " imported" : ""}`} title={t.imported ? "From the photo's own keywords" : undefined}>
+                  <PanelLink to={tagSearchHref(t.name)} follow={follow} className="tag-chip-name">
+                    {t.name}
+                  </PanelLink>
+                  {onUntag && (
+                    <button type="button" className="tag-chip-x" aria-label={`Remove tag ${t.name}`} onClick={() => onUntag(t)}>
+                      ×
+                    </button>
+                  )}
+                </span>
+              ))}
+            </span>
+          )}
+          <button type="button" className="btn btn-glass details-edit" onClick={onTag}>
+            Add tag
+          </button>
         </Row>
       )}
 

@@ -465,6 +465,10 @@ export interface SearchParams {
   from?: string;
   to?: string;
   favorite?: boolean;
+  /** Tag names, comma-separated (a tag name has no comma); photos with all of them, or any with `tag_mode: "any"`. */
+  tags?: string;
+  /** `any`: at least one of `tags`. The default (all of them) is not sent. */
+  tag_mode?: "any";
   /** At least this many stars (1 to 5). */
   rating?: number;
   /** `false` leaves archived photos out. The server's default is to include them. */
@@ -603,12 +607,28 @@ export interface AlbumPatch {
   cover_asset_id?: string | null;
 }
 
+/** A tag of the signed-in user, with how many photos have it (as this session may see them). */
+export interface Tag {
+  id: string;
+  name: string;
+  count: number;
+}
+
+/** A tag on one photo; `imported` came from the photo's own keywords, not from the owner. */
+export interface PhotoTag {
+  id: string;
+  name: string;
+  imported: boolean;
+}
+
 /** GET /assets/{id}. The URLs are presigned and short-lived. */
 export interface AssetDetail extends AssetSummary {
   /** The albums this photo is in. Absent on older servers. */
   albums?: AlbumRef[];
   /** The photo's caption, if it has one. */
   caption?: string | null;
+  /** The photo's tags, by name. Absent on older servers. */
+  tags?: PhotoTag[];
   /** The RAW stacked behind this photo. Absent on older servers. */
   paired?: PairedFile[];
   thumbhash: string | null;
@@ -962,8 +982,8 @@ export function searchQuery(
   // (`similar` is part of the path of "More like this", and that endpoint takes neither `q` nor `skip`.)
   const keys = (
     params.similar
-      ? ["from", "to", "favorite", "rating", "include_archived", "camera", "lens", "place", "type", "album", "has_location", "has_text"]
-      : ["q", "from", "to", "favorite", "rating", "include_archived", "camera", "lens", "place", "type", "album", "has_location", "has_text", "skip"]
+      ? ["from", "to", "favorite", "tags", "tag_mode", "rating", "include_archived", "camera", "lens", "place", "type", "album", "has_location", "has_text"]
+      : ["q", "from", "to", "favorite", "tags", "tag_mode", "rating", "include_archived", "camera", "lens", "place", "type", "album", "has_location", "has_text", "skip"]
   ) as readonly (keyof SearchParams)[];
   for (const k of keys) {
     const v = params[k];
@@ -1171,6 +1191,38 @@ export const api = {
   tiles: () => request<TilesInstalled>("/assets/tiles"),
   /** Favorite or unfavorite photos. `count` is how many changed. */
   favoriteAssets: (target: Target, favorite: boolean) => bulk("/assets/favorite", target, { favorite }),
+  /** The user's tags with counts: alphabetical (`name`) or most used first (`count`); `q` finds names containing it. */
+  listTags: (opts: { q?: string; sort?: "name" | "count"; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.q) q.set("q", opts.q);
+    if (opts.sort) q.set("sort", opts.sort);
+    if (opts.limit) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    return request<{ items: Tag[] }>(`/assets/tags${qs ? `?${qs}` : ""}`);
+  },
+  /** Make a tag (the existing one when the name is taken, whatever the case). */
+  createTag: (name: string) => request<{ id: string; name: string; created: boolean }>("/assets/tags", json({ name })),
+  /** Rename. A name another tag has is a 409 `tag_exists` whose `details.existing_id` is that tag. */
+  renameTag: (id: string, name: string) =>
+    request<{ id: string; name: string }>(`/assets/tags/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  /** Give every photo of the tag to `into`, then delete the tag. */
+  mergeTag: (id: string, into: string) =>
+    request<{ into: string; photos: number }>(`/assets/tags/${encodeURIComponent(id)}/merge`, json({ into })),
+  deleteTag: (id: string) => request<void>(`/assets/tags/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  /** Add and/or remove tags (by name) on photos; `added` and `removed` count (photo, tag) links that changed. */
+  applyTags: async (target: Target, change: { add?: readonly string[]; remove?: readonly string[] }) => {
+    const body = { add: change.add ?? [], remove: change.remove ?? [] };
+    if (isScope(target)) {
+      return request<{ added: number; removed: number }>("/assets/tags/apply", json({ scope: target.scope, except: target.except, ...body }));
+    }
+    const total = { added: 0, removed: 0 };
+    for (let i = 0; i < target.length; i += MAX_BULK_IDS) {
+      const r = await request<{ added: number; removed: number }>("/assets/tags/apply", json({ ids: target.slice(i, i + MAX_BULK_IDS), ...body }));
+      total.added += r.added;
+      total.removed += r.removed;
+    }
+    return total;
+  },
   /** Give photos 0 to 5 stars (0 clears). `count` is how many changed. */
   rateAssets: (target: Target, rating: number) => bulk("/assets/rating", target, { rating }),
   /** Move photos to the trash (reversible). `count` is how many actually moved. */

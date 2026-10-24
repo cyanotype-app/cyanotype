@@ -28,7 +28,7 @@ export function LibraryTabs() {
   );
 }
 
-/** "More": the views that do not fit as pills (Recently added, On this day, Archive and Hidden). */
+/** "More": the views that do not fit as pills (Recently added, On this day, Tags, Archive and Hidden). */
 function LibraryMore() {
   const ref = useRef<HTMLDetailsElement>(null);
   const [open, setOpen] = useState(false);
@@ -47,6 +47,7 @@ function LibraryMore() {
           [
             ["/recent", "Recently added"],
             ["/memories", "On this day"],
+            ["/tags", "Tags"],
             ["/archive", "Archive"],
             ["/hidden", "Hidden"],
           ] as const

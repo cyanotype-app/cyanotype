@@ -1,0 +1,34 @@
+import { useState } from "react";
+import type { Target } from "../api";
+import { TagDialog } from "./TagDialog";
+
+interface Props {
+  target: Target;
+  count: number;
+  disabled?: boolean;
+  /** The server applied the change; the page refreshes and shows `message`. */
+  onDone: (message: string) => void;
+}
+
+/** "Tag" for the selection bar: the add/remove dialog for the selected photos. */
+export function TagTools({ target, count, disabled, onDone }: Props) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button type="button" className="btn btn-quiet" disabled={disabled} onClick={() => setOpen(true)}>
+        Tag
+      </button>
+      {open && (
+        <TagDialog
+          target={target}
+          count={count}
+          onClose={() => setOpen(false)}
+          onDone={(r) => {
+            setOpen(false);
+            onDone(r.message);
+          }}
+        />
+      )}
+    </>
+  );
+}

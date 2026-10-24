@@ -131,6 +131,21 @@ async fn library(t: &TestDb) -> Library {
          caption = 'secret cat', rating = 5, rating_source = 'user', burst_id = (SELECT burst_id FROM assets WHERE id = (SELECT id FROM assets WHERE original_name = 'v2.jpg'))",
     )
     .await;
+    // A tag only the hidden photo has, and one the visible photo has.
+    for (photo, tag) in [(h, "secret-tag"), (v1, "Lisbon trip")] {
+        let tag_id: Uuid = sqlx::query_scalar("INSERT INTO tags (owner_id, name) VALUES ($1, $2) RETURNING id")
+            .bind(uid)
+            .bind(tag)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO asset_tags (asset_id, tag_id) VALUES ($1, $2)")
+            .bind(photo)
+            .bind(tag_id)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+    }
     // The hidden photo is v2's burst-mate and the album's cover.
     set(&t.pool, h, &format!("burst_id = '{v2}'")).await;
 
@@ -180,6 +195,7 @@ fn assert_clean(what: &str, l: &Library, body: &Value) {
         "Hiddenville",
         "Hidden Cam",
         "Hidden Lens",
+        "secret-tag",
     ] {
         assert!(!text.contains(needle), "{what} leaks {needle:?}: {text}");
     }
@@ -213,6 +229,13 @@ async fn a_hidden_photo_is_in_no_list_search_map_album_share_or_similar_result()
         "/assets/search?q=cat&favorite=true",
         "/assets/search?favorite=true",
         "/assets/search?rating=5",
+        "/assets/tags",
+        "/assets/tags?q=secret",
+        "/assets/tags?sort=count",
+        "/assets/search?tags=secret-tag",
+        "/assets/search?tags=secret-tag,lisbon%20trip&tag_mode=any",
+        "/assets/search?tags=lisbon%20trip",
+        "/assets/search?q=secret&cutoff=false",
         "/assets/search?rating=1",
         "/assets/search?q=cat&rating=1&cutoff=false",
         "/assets/search?place=Hiddenville",
@@ -291,6 +314,17 @@ async fn a_hidden_photo_is_in_no_list_search_map_album_share_or_similar_result()
         (facets["total"].as_i64(), facets["favorites"].as_i64()),
         (Some(2), Some(1))
     );
+    // The tag only the hidden photo has is not listed to a locked session; the ordinary one counts its visible photo.
+    let (_, tag_list) = get(app, c, "/assets/tags").await;
+    let names: Vec<(&str, i64)> = tag_list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| (x["name"].as_str().unwrap(), x["count"].as_i64().unwrap()))
+        .collect();
+    assert_eq!(names, [("Lisbon trip", 1)], "{tag_list}");
+    let (_, by_tag) = get(app, c, "/assets/search?tags=secret-tag").await;
+    assert!(item_ids(&by_tag).is_empty());
     // The hidden photo's five stars are in no rating filter or facet.
     assert_eq!(
         facets["ratings"],
@@ -378,6 +412,72 @@ async fn a_hidden_photo_is_rated_only_from_an_unlocked_session() {
     .await;
     assert_eq!(r["count"], 1);
     assert_eq!(stars().await, 3);
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn a_hidden_photo_is_tagged_only_from_an_unlocked_session_and_its_tags_are_listed_only_then() {
+    let Some(t) = TestDb::new().await else { return };
+    let l = library(&t).await;
+    let tags_of = |name: &'static str| {
+        let pool = t.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM asset_tags at JOIN tags t ON t.id = at.tag_id WHERE t.name = $1 AND at.asset_id IN (SELECT id FROM assets WHERE hidden)",
+            )
+            .bind(name)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    // Locked: adding by id quietly does nothing, by scope the Hidden view is refused; removing changes nothing either.
+    let (st, r) = post(
+        &l.app,
+        &l.cookie,
+        "/assets/tags/apply",
+        json!({"ids": [l.hidden], "add": ["new-one"]}),
+    )
+    .await;
+    assert_eq!((st, r["added"].as_i64()), (StatusCode::OK, Some(0)), "{r}");
+    let (st, _) = post(
+        &l.app,
+        &l.cookie,
+        "/assets/tags/apply",
+        json!({"scope": "hidden", "add": ["new-one"]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    let (_, r) = post(
+        &l.app,
+        &l.cookie,
+        "/assets/tags/apply",
+        json!({"ids": [l.hidden], "remove": ["secret-tag"]}),
+    )
+    .await;
+    assert_eq!(r["removed"], 0);
+    assert_eq!(tags_of("secret-tag").await, 1);
+    // Unlocked: the tag is listed with its hidden photo counted, and the hidden photo can be tagged and untagged.
+    unlock(&t.pool, &l.cookie, 10).await;
+    let (_, list) = get(&l.app, &l.cookie, "/assets/tags").await;
+    assert!(list.to_string().contains("secret-tag"), "{list}");
+    let (_, r) = post(
+        &l.app,
+        &l.cookie,
+        "/assets/tags/apply",
+        json!({"ids": [l.hidden], "add": ["new-one"]}),
+    )
+    .await;
+    assert_eq!(r["added"], 1);
+    assert_eq!(tags_of("new-one").await, 1);
+    let (_, r) = post(
+        &l.app,
+        &l.cookie,
+        "/assets/tags/apply",
+        json!({"scope": "hidden", "remove": ["new-one", "secret-tag"]}),
+    )
+    .await;
+    assert_eq!(r["removed"], 2);
     t.teardown().await;
 }
 

@@ -268,6 +268,20 @@ pub async fn pair_asset(pool: &PgPool, id: Uuid) -> Result<Paired> {
     .bind(primary)
     .execute(&mut *tx)
     .await?;
+    // Tags are the visible photo's too: the RAW's move onto it (a tag the owner set stays the owner's).
+    sqlx::query(
+        "INSERT INTO asset_tags (asset_id, tag_id, imported, added_at)
+         SELECT $2, tag_id, imported, added_at FROM asset_tags WHERE asset_id = $1
+         ON CONFLICT (asset_id, tag_id) DO UPDATE SET imported = asset_tags.imported AND EXCLUDED.imported",
+    )
+    .bind(raw)
+    .bind(primary)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM asset_tags WHERE asset_id = $1")
+        .bind(raw)
+        .execute(&mut *tx)
+        .await?;
     // Albums reference the visible photo: move the RAW's memberships and cover choice onto the primary.
     sqlx::query(
         "INSERT INTO album_assets (album_id, asset_id, added_at)

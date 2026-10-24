@@ -14,6 +14,7 @@ import { usePrefs } from "../usePrefs";
 import { archiveMessage, emptyView, viewTitle, type ViewKind } from "../viewText";
 import { SelectionBar } from "../components/SelectionBar";
 import { RateTools } from "../components/RateTools";
+import { TagTools } from "../components/TagTools";
 import { EditDialog, type EditKind } from "../components/EditDialog";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
 import { MAX_BULK_IDS } from "../api";
@@ -604,6 +605,16 @@ function LibraryView({
               show({ message });
             }}
             onError={(e) => failure(e, "Couldn’t rate.")}
+          />
+          <TagTools
+            target={sel.target(scope)}
+            count={sel.count}
+            disabled={sel.count === 0 || bulkBusy}
+            onDone={(message) => {
+              sel.setSelecting(false);
+              void refresh();
+              show({ message });
+            }}
           />
           {!hidden && (
             <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || bulkBusy} onClick={archiveSelected}>
