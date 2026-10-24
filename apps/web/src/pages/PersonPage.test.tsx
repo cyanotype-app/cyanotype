@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, type FaceSuggestion } from "../api";
 import { AuthProvider } from "../auth";
+import { fakeLibrary, type FakeLibrary } from "../test/fakeLibrary";
 import { detail, item, person } from "../test/fixtures";
 import { PeopleProvider } from "../usePeople";
 import { PersonPage } from "./PersonPage";
@@ -21,8 +22,10 @@ beforeEach(() => {
   vi.spyOn(api, "peopleStatus").mockResolvedValue({ enabled: true });
   vi.spyOn(api, "getAsset").mockImplementation(async (id) => detail(Number(id.split("-")[1])));
   vi.spyOn(api, "personSuggestions").mockResolvedValue({ items: [] });
-  vi.spyOn(api, "personPhotos").mockResolvedValue({ items: [item(1), item(2), item(3)], next_cursor: null, next_before: null });
+  // The person's page is the library's timeline over the person's own endpoints: the fake serves the same photos either way.
+  lib = fakeLibrary([item(1), item(2), item(3)]);
 });
+let lib: FakeLibrary;
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -53,7 +56,114 @@ describe("a person's page", () => {
     expect(screen.getByText("3 photos")).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Open photo-1.jpg" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "‹ People" })).toHaveAttribute("href", "/people");
-    expect(api.personPhotos).toHaveBeenCalledWith("p1", { cursor: null, limit: 60 });
+    expect(lib.timeline).toHaveBeenCalledWith(expect.objectContaining({ person: "p1" }));
+    expect(lib.listAssets).toHaveBeenCalledWith(expect.objectContaining({ person: "p1" }));
+  });
+
+  it("is a timeline: month and day headers, and the count of the photos", async () => {
+    lib.photos = [item(1, { sort_time: "2026-10-14T09:00:00Z" }), item(2, { sort_time: "2026-10-02T07:00:00Z" }), item(3, { sort_time: "2025-12-31T23:59:59Z" })];
+    vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 3));
+    renderAt();
+    await screen.findByAltText("photo-1.jpg");
+    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["October 2026", "December 2025"]);
+    expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual(["Wed, Oct 14", "Fri, Oct 2", "Wed, Dec 31"]);
+  });
+
+  it("has the library's scrubber when there is a lot to scroll", async () => {
+    lib.photos = Array.from({ length: 300 }, (_, i) => item(i + 1, { sort_time: new Date(Date.UTC(2026, 2, 30) - i * 20 * 3_600_000).toISOString() }));
+    vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 300));
+    renderAt();
+    await screen.findByAltText("photo-1.jpg");
+    expect(await screen.findByRole("slider", { name: /by date/i })).toBeInTheDocument();
+  });
+
+  it("reads the timeline again when the worker has grouped new photos", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const get = vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 3));
+      renderAt();
+      await screen.findByAltText("photo-1.jpg");
+      const before = lib.timeline.mock.calls.length;
+      // A new photo is grouped into the person meanwhile: the counts change, and the page follows.
+      lib.photos.push(item(4, { sort_time: "2026-01-02T00:00:00Z" }));
+      get.mockResolvedValue(person("p1", "Person A", 4));
+      await vi.advanceTimersByTimeAsync(15_500);
+      expect(await screen.findByAltText("photo-4.jpg")).toBeInTheDocument();
+      expect(lib.timeline.mock.calls.length).toBeGreaterThan(before);
+      expect(screen.getAllByText("4 photos")).toHaveLength(2); // the head and the foot of the page
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("selects every photo of the person without listing ids and works through the {person} scope", async () => {
+    lib.photos = Array.from({ length: 250 }, (_, i) => item(i + 1, { sort_time: `2026-03-${String(1 + Math.floor(i / 10)).padStart(2, "0")}T12:00:00Z` }));
+    vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 250));
+    const user = userEvent.setup();
+    renderAt();
+    await screen.findByAltText("photo-250.jpg");
+    await user.click(screen.getByRole("button", { name: "Select" }));
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    expect(screen.getByText("250 selected")).toBeInTheDocument();
+    // Taking photos out one by one needs ids, so it is off for the whole person.
+    expect(screen.getByRole("button", { name: "Not this person" })).toBeDisabled();
+    await user.click(open(250));
+    expect(screen.getByText("249 selected")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Favorite" }));
+    expect(await screen.findByText("249 added to favorites")).toBeInTheDocument();
+    expect(api.favoriteAssets).toHaveBeenCalledWith({ scope: { person: "p1" }, except: ["id-250"] }, true);
+
+    await user.click(screen.getByRole("button", { name: "Select" }));
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    await user.click(screen.getByRole("button", { name: "Move to trash" }));
+    expect(screen.getByRole("heading", { name: "Move 250 photos to trash?" })).toBeInTheDocument();
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Move to trash" }));
+    expect(await screen.findByText("250 moved to trash")).toBeInTheDocument();
+    expect(api.trashAssets).toHaveBeenCalledWith({ scope: { person: "p1" }, except: [] });
+  });
+
+  it("archives and hides through the scope", async () => {
+    vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 3));
+    const user = userEvent.setup();
+    renderAt();
+    await screen.findByAltText("photo-1.jpg");
+    await user.click(screen.getByRole("button", { name: "Select" }));
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    await user.click(screen.getByRole("button", { name: "Archive" }));
+    await waitFor(() => expect(api.archiveAssets).toHaveBeenCalledWith({ scope: { person: "p1" }, except: [] }, true));
+    await user.click(screen.getByRole("button", { name: "Select" }));
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    await user.click(screen.getByRole("button", { name: "Hide photos" }));
+    await waitFor(() => expect(api.hideAssets).toHaveBeenCalledWith({ scope: { person: "p1" }, except: [] }, true));
+    expect(await screen.findByText(/hidden\. Find them under More, Hidden/)).toBeInTheDocument();
+  });
+
+  it("saves the person's photos as a normal album from the scope, with a title that is not their name", async () => {
+    vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 3));
+    const create = vi.spyOn(api, "createAlbum").mockResolvedValue({ id: "al1", title: "Holiday", description: null, photo_count: 0, cover: null, first_at: null, last_at: null, created_at: "", updated_at: "" });
+    const add = vi.spyOn(api, "addToAlbum").mockResolvedValue({ count: 3 });
+    const list = vi.spyOn(api, "listAlbums").mockResolvedValue({ items: [] });
+    const user = userEvent.setup();
+    renderAt();
+    await user.click(await screen.findByRole("button", { name: "Save as album" }));
+    const dialog = screen.getByRole("dialog", { name: "Save 3 photos as an album" });
+    // It starts at the title (nothing to pick from), empty: the person's name is not offered as the album's title.
+    const title = within(dialog).getByLabelText("Album title");
+    expect(title).toHaveValue("");
+    expect(dialog).toHaveTextContent(/people you share it with can see/);
+    expect(list).not.toHaveBeenCalled();
+    await user.type(title, "Holiday");
+    await user.click(within(dialog).getByRole("button", { name: "Create album" }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith({ title: "Holiday" }));
+    expect(add).toHaveBeenCalledWith("al1", { scope: { person: "p1" }, except: [] });
+    expect(await screen.findByText("Created Holiday with 3 photos")).toBeInTheDocument();
+  });
+
+  it("links to the search with the person as a filter", async () => {
+    vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 3));
+    renderAt();
+    expect(await screen.findByRole("link", { name: "Search with filters" })).toHaveAttribute("href", "/search?people=p1");
   });
 
   it("says so for a person who is not there, and for the feature being off", async () => {
@@ -124,7 +234,7 @@ describe("a person's page", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Not this person" }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith("p1", { asset_ids: ["id-1", "id-3"] }));
     expect(await screen.findByText("Took 2 photos out of Person A")).toBeInTheDocument();
-    await waitFor(() => expect(api.personPhotos).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(lib.timeline).toHaveBeenCalledTimes(2));
   });
 
   it("makes one selected photo the cover through that photo's face of the person", async () => {
@@ -193,8 +303,8 @@ describe("'Is this X?'", () => {
     await userEvent.click(within(section).getByRole("button", { name: "Yes, this is Person A" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith("s1", { person_id: "p1" }));
     await waitFor(() => expect(screen.queryByRole("region", { name: "Suggestions" })).not.toBeInTheDocument());
-    // A yes changes the person's photos: they are loaded again.
-    await waitFor(() => expect(api.personPhotos).toHaveBeenCalledTimes(2));
+    // A yes changes the person's photos: the timeline is read again.
+    await waitFor(() => expect(lib.timeline).toHaveBeenCalledTimes(2));
   });
 
   it("asks 'the same person?' of someone with no name, and shows nothing when there is nothing to ask", async () => {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { api, ApiError, isScope, type Album, type Target } from "../api";
 import { useAuth } from "../auth";
 import { photoCount } from "../albumText";
+import { SAVE_ALBUM_NOTE } from "../peopleText";
 
 interface Props {
   /** The photos to add: explicit ids, or a whole view. */
@@ -11,20 +12,27 @@ interface Props {
   onClose: () => void;
   /** `count` is how many were new to the album; `created` when the album was made by this dialog. */
   onDone: (result: { album: Album; count: number; created: boolean }) => void;
+  /** `save`: only make a new album from the photos ("Save as album"), starting at its title. The default also adds to an existing one. */
+  mode?: "add" | "save";
 }
 
 /** Modal to pick an album (with search) or create one inline, then add `ids` to it. */
-export function AddToAlbumDialog({ ids, count, onClose, onDone }: Props) {
+export function AddToAlbumDialog({ ids, count, onClose, onDone, mode = "add" }: Props) {
+  const save = mode === "save";
   const { setAnonymous } = useAuth();
   const [albums, setAlbums] = useState<Album[] | null>(null);
   const [query, setQuery] = useState("");
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(save);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (save) {
+      setAlbums([]); // (nothing to pick from: the dialog only makes a new album)
+      return;
+    }
     let live = true;
     api
       .listAlbums()
@@ -39,7 +47,7 @@ export function AddToAlbumDialog({ ids, count, onClose, onDone }: Props) {
     return () => {
       live = false;
     };
-  }, [setAnonymous]);
+  }, [setAnonymous, save]);
 
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
@@ -112,7 +120,7 @@ export function AddToAlbumDialog({ ids, count, onClose, onDone }: Props) {
   return (
     <div className="modal-backdrop">
       <div className="modal card album-dialog" role="dialog" aria-modal="true" aria-labelledby="add-album-title" ref={ref}>
-        <h2 id="add-album-title">Add {photoCount(count)} to album</h2>
+        <h2 id="add-album-title">{save ? `Save ${photoCount(count)} as an album` : `Add ${photoCount(count)} to album`}</h2>
         {creating ? (
           <form onSubmit={create}>
             <label htmlFor="new-album-title" className="sr-only">
@@ -127,13 +135,14 @@ export function AddToAlbumDialog({ ids, count, onClose, onDone }: Props) {
               onChange={(e) => setTitle(e.target.value)}
               disabled={busy}
             />
+            {save && <p className="muted small">{SAVE_ALBUM_NOTE}</p>}
             {error && <p role="alert" className="form-error">{error}</p>}
             <div className="modal-actions">
-              <button type="button" className="btn btn-quiet" onClick={() => setCreating(false)} disabled={busy}>
-                Back
+              <button type="button" className="btn btn-quiet" onClick={() => (save ? onClose() : setCreating(false))} disabled={busy}>
+                {save ? "Cancel" : "Back"}
               </button>
               <button type="submit" className="btn btn-primary" disabled={busy || !title.trim()}>
-                Create and add
+                {save ? "Create album" : "Create and add"}
               </button>
             </div>
           </form>

@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, type Processing, type SearchItem, type SearchResult } from "../api";
 import { AuthProvider } from "../auth";
 import { UploadProvider } from "../upload/UploadProvider";
-import { detail, item } from "../test/fixtures";
+import { detail, item, person } from "../test/fixtures";
+import { PeopleProvider } from "../usePeople";
 import { SearchPage } from "./Search";
 
 const hit = (n: number, score: number | null = 0.3): SearchItem => ({ ...item(n), score });
@@ -327,5 +328,104 @@ describe("Search page", () => {
       await userEvent.click(screen.getByRole("button", { name: "Move to trash" }));
       await waitFor(() => expect(trash).toHaveBeenCalledWith(["id-1", "id-2", "id-3", "id-4"]));
     });
+  });
+});
+
+describe("Search page people", () => {
+  const A = "6f1c2b0e-0000-4000-8000-000000000001";
+  const B = "6f1c2b0e-0000-4000-8000-000000000002";
+  const people = [person(A, "Person A", 12), person(B, "Person B", 5)];
+  const withPeople = (on: boolean) => {
+    vi.spyOn(api, "peopleStatus").mockResolvedValue({ enabled: on });
+    vi.spyOn(api, "listPeople").mockResolvedValue({ items: people });
+  };
+  const renderWithPeople = (url: string) =>
+    render(
+      <MemoryRouter initialEntries={[url]}>
+        <AuthProvider>
+          <PeopleProvider>
+            <UploadProvider deps={{ api, hash: async () => "0".repeat(64) }}>
+              <Routes>
+                <Route path="/search" element={<SearchPage />} />
+              </Routes>
+              <Where />
+            </UploadProvider>
+          </PeopleProvider>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+
+  it("shows the people filter as a chip with their names, sends it, and clears it", async () => {
+    withPeople(true);
+    const search = vi.spyOn(api, "search").mockResolvedValue(result([hit(1), hit(2)], { ranked: false, total: 2 }));
+    renderWithPeople(`/search?people=${A},${B}&from=2023-01-01&to=2023-12-31`);
+    expect(await screen.findByText("2 photos")).toBeInTheDocument();
+    expect(search).toHaveBeenCalledWith({ people: `${A},${B}`, from: "2023-01-01", to: "2023-12-31" }, expect.anything());
+    const chips = screen.getByRole("list", { name: "Active filters" });
+    expect(await within(chips).findByText("Person A and Person B")).toBeInTheDocument();
+    await userEvent.click(within(chips).getByRole("button", { name: "Remove filter Person A and Person B" }));
+    expect(screen.getByTestId("where")).toHaveTextContent("/search?from=2023-01-01&to=2023-12-31");
+  });
+
+  it("chooses people in the filter sheet and puts them in the address", async () => {
+    withPeople(true);
+    vi.spyOn(api, "search").mockResolvedValue(result([hit(1)], { ranked: false, total: 1 }));
+    vi.spyOn(api, "searchFacets").mockResolvedValue({ total: 1, favorites: 0, with_location: 0, types: [], cameras: [], lenses: [], places: [], years: [] });
+    vi.spyOn(api, "listAlbums").mockResolvedValue({ items: [] });
+    renderWithPeople("/search?favorite=true");
+    await screen.findByText("1 photo");
+    await userEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    await userEvent.click(await screen.findByRole("checkbox", { name: "Person B (5 photos)" }));
+    await userEvent.click(screen.getByRole("button", { name: "Show photos" }));
+    expect(screen.getByTestId("where")).toHaveTextContent(`/search?favorite=true&people=${encodeURIComponent(B)}`);
+  });
+
+  it("shows what was read out of the query, and turning it off keeps the words", async () => {
+    withPeople(true);
+    const search = vi.spyOn(api, "search").mockResolvedValue(
+      result([hit(1)], {
+        ranked: false,
+        total: 1,
+        parsed: {
+          text: "",
+          chips: [{ kind: "people", label: "Person A and Person B", matched: "Person A and Person B", people: [{ id: A, name: "Person A" }, { id: B, name: "Person B" }] }],
+        },
+      }),
+    );
+    renderWithPeople("/search?q=Person%20A%20and%20Person%20B");
+    const chips = await screen.findByRole("list", { name: "Understood from your search" });
+    expect(within(chips).getByText("Person A and Person B")).toBeInTheDocument();
+    expect(search).toHaveBeenCalledWith({ q: "Person A and Person B" }, expect.anything());
+    await userEvent.click(within(chips).getByRole("button", { name: "Remove people Person A and Person B" }));
+    expect(screen.getByTestId("where")).toHaveTextContent("/search?q=Person+A+and+Person+B&skip=people");
+  });
+
+  it("offers to save the people's photos as an album, from the filters (not from ids)", async () => {
+    withPeople(true);
+    vi.spyOn(api, "search").mockResolvedValue(result([hit(1), hit(2)], { ranked: false, total: 2 }));
+    const create = vi.spyOn(api, "createAlbum").mockResolvedValue({ id: "al1", title: "Both", description: null, photo_count: 0, cover: null, first_at: null, last_at: null, created_at: "", updated_at: "" });
+    const add = vi.spyOn(api, "addToAlbum").mockResolvedValue({ count: 2 });
+    renderWithPeople(`/search?people=${A},${B}&from=2023-01-01&to=2023-12-31`);
+    await userEvent.click(await screen.findByRole("button", { name: "Save as album" }));
+    const dialog = screen.getByRole("dialog", { name: "Save 2 photos as an album" });
+    await userEvent.type(within(dialog).getByLabelText("Album title"), "Both");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create album" }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith({ title: "Both" }));
+    expect(add).toHaveBeenCalledWith("al1", { scope: { search: { people: `${A},${B}`, from: "2023-01-01", to: "2023-12-31" } }, except: [] });
+  });
+
+  it("ignores people in the address while People is off, and shows no people control", async () => {
+    withPeople(false);
+    const search = vi.spyOn(api, "search").mockResolvedValue(result([hit(1)], { ranked: false, total: 1 }));
+    vi.spyOn(api, "searchFacets").mockResolvedValue({ total: 1, favorites: 0, with_location: 0, types: [], cameras: [], lenses: [], places: [], years: [] });
+    vi.spyOn(api, "listAlbums").mockResolvedValue({ items: [] });
+    renderWithPeople(`/search?people=${A}&favorite=true`);
+    await screen.findByText("1 photo");
+    expect(search).toHaveBeenCalledWith({ favorite: true }, expect.anything());
+    expect(api.listPeople).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Save as album" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    await screen.findByRole("dialog", { name: "Filters" });
+    expect(screen.queryByRole("group", { name: "People" })).not.toBeInTheDocument();
   });
 });

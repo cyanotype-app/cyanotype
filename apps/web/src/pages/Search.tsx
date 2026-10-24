@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { api, ApiError, isScope, type AssetListItem, type ParsedChip, type SearchItem, type SearchParams, type SearchResult, type Target } from "../api";
+import { api, ApiError, isScope, type AssetListItem, type ParsedChip, type Person, type SearchItem, type SearchParams, type SearchResult, type Target } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -14,6 +14,8 @@ import { RateTools } from "../components/RateTools";
 import { TagTools } from "../components/TagTools";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
 import { useToast } from "../components/Toast";
+import { filterablePeople, peopleIdsOf } from "../peopleText";
+import { usePeopleEnabled } from "../usePeople";
 import {
   addSkip,
   chipsOf,
@@ -38,8 +40,22 @@ const EXAMPLES = ["dog on the beach", "birthday cake", "red car at night", "moun
 /** `/search?q=...&from=...`: natural-language search and filters over the whole library, in the library's own grid. */
 export function SearchPage() {
   const [sp] = useSearchParams();
-  const params = useMemo(() => paramsFromUrl(sp), [sp]);
+  const enabled = usePeopleEnabled();
+  const params = useMemo(() => {
+    const p = paramsFromUrl(sp);
+    // With People off a `people` in the address is not a filter: nothing about people is shown or sent.
+    if (enabled !== true) delete p.people;
+    return p;
+  }, [sp, enabled]);
   const key = urlFromParams(params);
+  // (A link with people waits for the answer, so the first search is the right one.)
+  if (enabled === null && sp.get("people")) {
+    return (
+      <p className="center muted" role="status">
+        Searching…
+      </p>
+    );
+  }
   // Everything below starts over when the search changes.
   return <SearchView key={key} params={params} />;
 }
@@ -61,6 +77,7 @@ function withParsed(filters: Omit<SearchParams, "q" | "skip" | "similar">, chips
       out.to = c.to;
     }
     if (c.kind === "place" && c.value) out.place = c.value;
+    if (c.kind === "people" && c.people?.length) out.people = c.people.map((p) => p.id).join(",");
   }
   return out;
 }
@@ -69,6 +86,9 @@ function SearchView({ params }: { params: SearchParams }) {
   const navigate = useNavigate();
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [albumTitle, setAlbumTitle] = useState<string | undefined>();
+  // The owner's people, for the filter sheet and the names on the chips (asked only while People is on).
+  const peopleOn = usePeopleEnabled() === true;
+  const [people, setPeople] = useState<Person[] | undefined>();
   const filters = withoutQuery(params);
   const q = params.q;
 
@@ -84,6 +104,18 @@ function SearchView({ params }: { params: SearchParams }) {
     };
   }, [params.album]);
 
+  useEffect(() => {
+    if (!peopleOn) return;
+    let live = true;
+    api.listPeople().then(
+      (r) => live && setPeople(r.items),
+      () => live && setPeople([]),
+    );
+    return () => {
+      live = false;
+    };
+  }, [peopleOn]);
+
   const apply = (next: Omit<SearchParams, "q">) => {
     setFiltersOpen(false);
     const qs = urlFromParams({ ...next, q, skip: params.skip, similar: params.similar });
@@ -95,7 +127,7 @@ function SearchView({ params }: { params: SearchParams }) {
     const qs = urlFromParams(next);
     navigate(qs ? `/search?${qs}` : "/search");
   };
-  const chips = chipsOf(filters, albumTitle);
+  const chips = chipsOf(filters, albumTitle, filterablePeople(people ?? []));
 
   return (
     <div className="library search-page">
@@ -133,7 +165,14 @@ function SearchView({ params }: { params: SearchParams }) {
         )}
       </div>
       {isEmptySearch(params) ? <Intro /> : <Results params={params} />}
-      {filtersOpen && <FilterSheet value={filters} onApply={apply} onClose={() => setFiltersOpen(false)} />}
+      {filtersOpen && (
+        <FilterSheet
+          value={filters}
+          onApply={apply}
+          onClose={() => setFiltersOpen(false)}
+          people={peopleOn ? filterablePeople(people ?? []) : undefined}
+        />
+      )}
     </div>
   );
 }
@@ -252,7 +291,7 @@ function Results({ params }: { params: SearchParams }) {
   // Bursts open inline (by their cover's id); a collapsed one is a single tile that selects all of its photos.
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [confirmed, setConfirmed] = useState(false);
-  const [addIds, setAddIds] = useState<{ target: Target; count: number } | null>(null);
+  const [addIds, setAddIds] = useState<{ target: Target; count: number; save?: boolean } | null>(null);
   const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const { toast, show } = useToast();
@@ -510,7 +549,7 @@ function Results({ params }: { params: SearchParams }) {
         <ul className="chips parsed-chips" aria-label="Understood from your search">
           {chips.map((c) => (
             <li key={c.kind}>
-              <span className="chip" title={`Read “${c.matched}” as a ${c.kind}`}>
+              <span className="chip" title={`Read “${c.matched}” as ${c.kind === "people" ? "people" : `a ${c.kind}`}`}>
                 <span className="chip-label">{c.label}</span>
                 <button type="button" className="chip-x" aria-label={`Remove ${c.kind} ${c.label}`} onClick={() => removeChip(c)}>
                   <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
@@ -578,6 +617,17 @@ function Results({ params }: { params: SearchParams }) {
             >
               Select
             </button>
+            {/* The photos of the people filter (a filter-only search: the server can name them all) as an album of their own. */}
+            {!meta.ranked && (peopleIdsOf(params.people).length > 0 || chips.some((c) => c.kind === "people")) && (meta.total ?? 0) > 0 && (
+              <button
+                type="button"
+                className="btn btn-quiet"
+                disabled={busy}
+                onClick={() => setAddIds({ target: { scope, except: [] }, count: meta.total ?? 0, save: true })}
+              >
+                Save as album
+              </button>
+            )}
           </div>
           {sel.selecting && (
             <SelectionBar
@@ -719,6 +769,7 @@ function Results({ params }: { params: SearchParams }) {
         <AddToAlbumDialog
           ids={addIds.target}
           count={addIds.count}
+          mode={addIds.save ? "save" : "add"}
           onClose={() => setAddIds(null)}
           onDone={(r) => {
             const requested = addIds.count;

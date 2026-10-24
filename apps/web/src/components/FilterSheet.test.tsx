@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { Facets } from "../api";
-import { album } from "../test/fixtures";
+import { album, person } from "../test/fixtures";
 import { FilterSheet } from "./FilterSheet";
 
 const facets: Facets = {
@@ -103,5 +103,45 @@ describe("FilterSheet", () => {
     );
     expect(await screen.findByRole("alert")).toHaveTextContent("boom");
     expect(screen.getByRole("button", { name: "Show photos" })).toBeEnabled();
+  });
+});
+
+describe("FilterSheet people", () => {
+  const A = "6f1c2b0e-0000-4000-8000-000000000001";
+  const B = "6f1c2b0e-0000-4000-8000-000000000002";
+  const people = [person(A, "Person A", 12), person(B, "Person B", 5)];
+
+  it("is not offered while People is off", async () => {
+    render(<FilterSheet value={{}} onApply={() => undefined} onClose={() => undefined} load={load} />);
+    await waitFor(() => expect(screen.getByRole("option", { name: "Canon EOS R5 (70)" })).toBeInTheDocument());
+    expect(screen.queryByRole("group", { name: "People" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Name a person/)).not.toBeInTheDocument();
+  });
+
+  it("chooses one or several people, who must all be in the photo, and applies them with the other filters", async () => {
+    const onApply = vi.fn();
+    render(<FilterSheet value={{ favorite: true }} onApply={onApply} onClose={() => undefined} load={load} people={people} />);
+    const group = screen.getByRole("group", { name: "People" });
+    expect(screen.getByText("Photos with all of the chosen people in them.")).toBeInTheDocument();
+    await userEvent.click(within(group).getByRole("checkbox", { name: "Person A (12 photos)" }));
+    await userEvent.click(within(group).getByRole("checkbox", { name: "Person B (5 photos)" }));
+    await userEvent.selectOptions(screen.getByLabelText("Rating"), "4");
+    await userEvent.click(screen.getByRole("button", { name: "Show photos" }));
+    expect(onApply).toHaveBeenCalledWith({ favorite: true, rating: 4, people: `${A},${B}` });
+  });
+
+  it("starts from the people in force and clears them", async () => {
+    const onApply = vi.fn();
+    render(<FilterSheet value={{ people: B }} onApply={onApply} onClose={() => undefined} load={load} people={people} />);
+    expect(screen.getByRole("checkbox", { name: "Person B (5 photos)" })).toBeChecked();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Person B (5 photos)" }));
+    await userEvent.click(screen.getByRole("button", { name: "Show photos" }));
+    expect(onApply).toHaveBeenCalledWith({});
+  });
+
+  it("says how to get people when none is named", () => {
+    render(<FilterSheet value={{}} onApply={() => undefined} onClose={() => undefined} load={load} people={[]} />);
+    expect(screen.getByText("Name a person on the People page to filter by them.")).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "People" })).not.toBeInTheDocument();
   });
 });

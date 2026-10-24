@@ -4,7 +4,8 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, type Facets, type SmartPreview, type SmartRules } from "../api";
 import { AuthProvider } from "../auth";
-import { album, item } from "../test/fixtures";
+import { album, item, person } from "../test/fixtures";
+import { PeopleProvider } from "../usePeople";
 import { AlbumPage } from "../pages/Album";
 import { Albums } from "../pages/Albums";
 import { Route, Routes } from "react-router-dom";
@@ -179,5 +180,73 @@ describe("a smart album's page", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(update).toHaveBeenCalledWith("album-1", { title: "Renamed", rules: smartAlbum.rules }));
     vi.unstubAllGlobals();
+  });
+});
+
+describe("SmartAlbumEditor people rule", () => {
+  const people = [person("pa", "Person A", 4), person("pb", "Person B", 2), person("ph", "Hidden One", 1, { hidden: true }), person("pn", null, 9)];
+
+  it("is offered with People on, chooses several people together, and saves their ids", async () => {
+    vi.spyOn(api, "peopleStatus").mockResolvedValue({ enabled: true });
+    const user = userEvent.setup();
+    const preview = vi.fn(async (rules: SmartRules) => previewOf(3, rules));
+    const onSubmit = vi.fn();
+    render(
+      <PeopleProvider>
+        <SmartAlbumEditor
+          title="New smart album"
+          submitLabel="Create smart album"
+          initialRules={{ match: "all", archived: "include", rules: [{ field: "favorite", value: true }] }}
+          onSubmit={onSubmit}
+          onCancel={() => {}}
+          preview={preview}
+          loadFacets={noFacets}
+          loadPeople={async () => people}
+        />
+      </PeopleProvider>,
+    );
+    await user.type(screen.getByLabelText("Title"), "Together");
+    await waitFor(() => expect(within(screen.getByLabelText("Kind of rule to add")).getByRole("option", { name: "People" })).toBeInTheDocument());
+    await user.selectOptions(screen.getByLabelText("Kind of rule to add"), "people");
+    await user.click(screen.getByRole("button", { name: "Add rule" }));
+    // The new rule has no one yet: said in place of the preview.
+    expect(screen.getByText(/at least one person/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create smart album" })).toBeDisabled();
+    const group = await screen.findByRole("group", { name: "People together (rule 2)" });
+    // Only named people who are not hidden.
+    expect(within(group).getAllByRole("checkbox")).toHaveLength(2);
+    await user.click(within(group).getByRole("checkbox", { name: "Person A (4 photos)" }));
+    await user.click(within(group).getByRole("checkbox", { name: "Person B (2 photos)" }));
+    await user.click(screen.getByRole("button", { name: "Create smart album" }));
+    expect(onSubmit).toHaveBeenCalledWith("Together", {
+      match: "all",
+      archived: "include",
+      rules: [
+        { field: "favorite", value: true },
+        { field: "people", ids: ["pa", "pb"] },
+      ],
+    });
+  });
+
+  it("does not offer the rule while People is off", async () => {
+    vi.spyOn(api, "peopleStatus").mockResolvedValue({ enabled: false });
+    const loadPeople = vi.fn(async () => people);
+    render(
+      <PeopleProvider>
+        <SmartAlbumEditor
+          title="New smart album"
+          submitLabel="Create smart album"
+          initialRules={{ match: "all", archived: "include", rules: [{ field: "favorite", value: true }] }}
+          onSubmit={() => {}}
+          onCancel={() => {}}
+          preview={async (rules) => previewOf(1, rules)}
+          loadFacets={noFacets}
+          loadPeople={loadPeople}
+        />
+      </PeopleProvider>,
+    );
+    await waitFor(() => expect(api.peopleStatus).toHaveBeenCalled());
+    expect(within(screen.getByLabelText("Kind of rule to add")).queryByRole("option", { name: "People" })).not.toBeInTheDocument();
+    expect(loadPeople).not.toHaveBeenCalled();
   });
 });

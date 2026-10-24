@@ -1,7 +1,9 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { api, type Album, type Facets, type SearchParams, type Tag } from "../api";
+import { api, type Album, type Facets, type Person, type SearchParams, type Tag } from "../api";
+import { MAX_FILTER_PEOPLE, NO_NAMED_PEOPLE, PEOPLE_FILTER_NOTE, peopleIdsOf } from "../peopleText";
 import { ratingFilterLabel } from "../ratingText";
 import { tagListOf } from "../tagText";
+import { PeoplePicker } from "./PeoplePicker";
 import { TagInput } from "./TagInput";
 import { TYPE_LABEL, yearRange } from "../searchText";
 
@@ -20,6 +22,8 @@ interface Props {
   load?: () => Promise<{ facets: Facets; albums: Album[] }>;
   /** Where the tag names come from (the tests pass fakes). */
   tagLoad?: (typed: string) => Promise<Tag[]>;
+  /** The people the filter can choose (named, not hidden). Undefined while People is off: the filter is not offered then. */
+  people?: readonly Person[];
 }
 
 const defaultLoad = async () => {
@@ -36,7 +40,7 @@ const yearOf = (f: Filters) => (f.from && f.to && f.from === yearRange(f.from.sl
  * bottom sheet on a phone, a dialog on a wide screen; edits apply together with "Show photos", and the choices come from
  * what the library has (`GET /assets/search/facets`) with counts.
  */
-export function FilterSheet({ value, onApply, onClose, load = defaultLoad, tagLoad = defaultTagLoad }: Props) {
+export function FilterSheet({ value, onApply, onClose, load = defaultLoad, tagLoad = defaultTagLoad, people }: Props) {
   const [draft, setDraft] = useState<Filters>(value);
   const [options, setOptions] = useState<{ facets: Facets; albums: Album[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -179,6 +183,24 @@ export function FilterSheet({ value, onApply, onClose, load = defaultLoad, tagLo
               </div>
             )}
           </div>
+          {people !== undefined &&
+            (people.length === 0 && !draft.people ? (
+              <div className="sheet-field">
+                <span className="sheet-label">People</span>
+                <p className="muted small">{NO_NAMED_PEOPLE}</p>
+              </div>
+            ) : (
+              <div className="sheet-field">
+                <PeoplePicker
+                  label="People"
+                  people={people}
+                  value={peopleIdsOf(draft.people)}
+                  max={MAX_FILTER_PEOPLE}
+                  onChange={(ids) => set({ people: ids.length ? ids.join(",") : undefined })}
+                />
+                <p className="muted small">{PEOPLE_FILTER_NOTE}</p>
+              </div>
+            ))}
           <div className="sheet-field">
             <label htmlFor={`${id}-rating`}>Rating</label>
             <select

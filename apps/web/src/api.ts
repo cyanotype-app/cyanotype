@@ -483,13 +483,15 @@ export interface SearchParams {
   lens?: string;
   /** A city, region or country name as `facets().places` lists it. */
   place?: string;
+  /** Person ids, comma-separated: photos where all of them are together (People only; the server ignores it while People is off). */
+  people?: string;
   type?: "jpeg" | "heic" | "raw" | "other";
   /** An album id. */
   album?: string;
   has_location?: boolean;
   /** Only photos with (true) or without (false) text read off them. */
   has_text?: boolean;
-  /** Dates and places the server should not read out of `q`: `date`, `place` or `date,place` (what a chip's "x" sets). */
+  /** Dates, places and people the server should not read out of `q`: `date`, `place`, `people`, or several (what a chip's "x" sets). */
   skip?: string;
   /** "More like this": list photos similar to this photo (`GET /assets/{id}/similar`) instead of searching for `q`. */
   similar?: string;
@@ -518,7 +520,7 @@ export interface BurstMember extends AssetListItem {
 /** What the server read out of the query besides the words to search for. */
 export interface ParsedChip {
   /** The `skip` value that turns it off. */
-  kind: "date" | "place";
+  kind: "date" | "place" | "people";
   label: string;
   /** The words of the query it replaced ("in June 2023"). */
   matched: string;
@@ -526,6 +528,8 @@ export interface ParsedChip {
   to?: string;
   value?: string;
   place_kind?: "city" | "region" | "country";
+  /** For `people`: who was read out of the query, in the order written. */
+  people?: { id: string; name: string }[];
 }
 
 /** GET /assets/search */
@@ -642,7 +646,9 @@ export type SmartRule =
   | { field: "rating"; min: number }
   | { field: "tags"; names: string[]; mode: "all" | "any" }
   | { field: "has_location" | "has_text"; value: boolean }
-  | { field: "caption"; text: string };
+  | { field: "caption"; text: string }
+  /** All of these people are in the photo (People only). */
+  | { field: "people"; ids: string[] };
 
 /** The saved definition of a smart album: its rules, how they are joined, and whether archived photos are in. */
 export interface SmartRules {
@@ -1076,6 +1082,8 @@ export type Scope =
   | "hidden"
   | "trash"
   | { album: string }
+  /** One of the owner's people (People only): the photos their page lists. */
+  | { person: string }
   | { trash_batch: string }
   | { archive_batch: string }
   /** Every photo a filter-only search lists (no text query: a ranked search selects what it loaded). */
@@ -1119,8 +1127,8 @@ export function searchQuery(
   // (`similar` is part of the path of "More like this", and that endpoint takes neither `q` nor `skip`.)
   const keys = (
     params.similar
-      ? ["from", "to", "favorite", "tags", "tag_mode", "rating", "include_archived", "camera", "lens", "place", "type", "album", "has_location", "has_text"]
-      : ["q", "from", "to", "favorite", "tags", "tag_mode", "rating", "include_archived", "camera", "lens", "place", "type", "album", "has_location", "has_text", "skip"]
+      ? ["from", "to", "favorite", "tags", "tag_mode", "rating", "include_archived", "camera", "lens", "place", "people", "type", "album", "has_location", "has_text"]
+      : ["q", "from", "to", "favorite", "tags", "tag_mode", "rating", "include_archived", "camera", "lens", "place", "people", "type", "album", "has_location", "has_text", "skip"]
   ) as readonly (keyof SearchParams)[];
   for (const k of keys) {
     const v = params[k];
@@ -1142,6 +1150,8 @@ export interface LibraryView {
   hidden?: boolean;
   /** `taken` (default) or `added` (upload time). */
   sort?: "taken" | "added";
+  /** One person's photos (People): the list and the day counts of `/assets/people/{id}`, nothing else of the view applies. */
+  person?: string;
 }
 
 function viewQuery(v: LibraryView, q: URLSearchParams) {
@@ -1312,14 +1322,16 @@ export const api = {
     if (opts.cursor) q.set("cursor", opts.cursor);
     else if (opts.before) q.set("before", opts.before);
     const qs = q.toString();
-    return request<AssetList>(`/assets${qs ? `?${qs}` : ""}`);
+    const base = opts.person ? `/assets/people/${encodeURIComponent(opts.person)}/photos` : "/assets";
+    return request<AssetList>(`${base}${qs ? `?${qs}` : ""}`);
   },
   /** Photos per day, newest first (the library's layout; `favorite` limits it to favorites). */
   timeline: (opts: LibraryView = {}) => {
     const q = new URLSearchParams();
     viewQuery(opts, q);
     const qs = q.toString();
-    return request<Timeline>(`/assets/timeline${qs ? `?${qs}` : ""}`);
+    const base = opts.person ? `/assets/people/${encodeURIComponent(opts.person)}/timeline` : "/assets/timeline";
+    return request<Timeline>(`${base}${qs ? `?${qs}` : ""}`);
   },
   /** The geotagged photos in `bbox` (`west,south,east,north`) as markers for a map at `zoom`. */
   mapClusters: (bbox: string, zoom: number, signal?: AbortSignal) =>

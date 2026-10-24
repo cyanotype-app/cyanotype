@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { Person } from "./api";
 import {
+  MAX_FILTER_PEOPLE,
   cropStyle,
+  filterablePeople,
+  matchingPeople,
   mergedMessage,
   nameProblem,
   openPersonLabel,
+  peopleFilterLabel,
+  peopleIdsOf,
+  peopleRuleLabel,
   peopleWord,
   personLabel,
   photosWord,
@@ -85,5 +91,40 @@ describe("cropping a face out of a preview", () => {
   it("never divides by zero", () => {
     const c = cropStyle([0.5, 0.5, 0, 0], 0, 0);
     expect(Number.isFinite(parse(c.width)) && Number.isFinite(parse(c.left))).toBe(true);
+  });
+});
+
+const ID = (n: number) => `6f1c2b0e-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
+describe("the people filter", () => {
+  it("reads ids from the URL: valid ones only, once each, lower case, at most ten", () => {
+    expect(peopleIdsOf(`${ID(1)},${ID(2)}`)).toEqual([ID(1), ID(2)]);
+    expect(peopleIdsOf(` ${ID(1).toUpperCase()} ,nope,${ID(1)},,${ID(2)}`)).toEqual([ID(1), ID(2)]);
+    expect(peopleIdsOf("")).toEqual([]);
+    expect(peopleIdsOf(null)).toEqual([]);
+    expect(peopleIdsOf(Array.from({ length: 15 }, (_, i) => ID(i + 1)).join(","))).toHaveLength(MAX_FILTER_PEOPLE);
+  });
+
+  it("offers named people who are not hidden", () => {
+    const list = [person("a", "Person A"), person("b", null), person("c", "  "), person("d", "Person D", 3, true), person("e", "Person E")];
+    expect(filterablePeople(list).map((p) => p.id)).toEqual(["a", "e"]);
+  });
+
+  it("narrows the picker by name, keeping the chosen people first", () => {
+    const list = [person("a", "Person A"), person("b", "Person B"), person("c", "Someone")];
+    expect(matchingPeople(list, "", []).map((p) => p.id)).toEqual(["a", "b", "c"]);
+    expect(matchingPeople(list, "PERSON", []).map((p) => p.id)).toEqual(["a", "b"]);
+    expect(matchingPeople(list, "some", ["b"]).map((p) => p.id)).toEqual(["b", "c"]);
+    expect(matchingPeople(list, "zzz", [])).toEqual([]);
+  });
+
+  it("labels the chip with the names, and says so for a person who is gone", () => {
+    const list = [person("a", "Person A"), person("b", "Person B"), person("c", "Person C")];
+    expect(peopleFilterLabel(["a"], list)).toBe("Person A");
+    expect(peopleFilterLabel(["a", "b"], list)).toBe("Person A and Person B");
+    expect(peopleFilterLabel(["a", "b", "c"], list)).toBe("Person A, Person B and Person C");
+    expect(peopleFilterLabel(["a", "x"], list)).toBe("Person A and Unknown person");
+    expect(peopleRuleLabel(["a"])).toBe("People: 1 person");
+    expect(peopleRuleLabel(["a", "b"])).toBe("People: 2 people together");
   });
 });
