@@ -1284,3 +1284,102 @@ async fn a_scope_shares_the_whole_view_minus_except_and_never_other_peoples_phot
         StatusCode::BAD_REQUEST
     );
 }
+
+#[tokio::test]
+async fn an_edited_photo_is_shared_as_its_edited_render_and_the_original_only_when_chosen() {
+    let Some(t) = TestDb::new().await else { return };
+    let (uid, key) = user(&t.pool, "a@example.com").await;
+    let app = app_with(&t.pool, default_state());
+    // A HEIC (which has no safe copy of its own) and a JPEG with a stripped copy, both rotated.
+    let heic = asset(&t.pool, uid, "IMG_7.heic").await;
+    sqlx::query("UPDATE assets SET content_type = 'image/heic', recipe = '{\"rotate\":90}' WHERE id = $1")
+        .bind(heic)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let jpeg = jpeg_asset(&t.pool, uid, "turned.jpg", true).await;
+    sqlx::query("UPDATE assets SET recipe = '{\"rotate\":180}', edited_copy_at = NULL WHERE id = $1")
+        .bind(jpeg)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let (_, token) = share_of(&app, &key, &[heic, jpeg], json!({})).await;
+    let item = |id: Uuid| {
+        let (app, token) = (app.clone(), token.clone());
+        async move { get(&app, &format!("{}/items/{id}", base(&token))).await.2 }
+    };
+    let dl = |id: Uuid| {
+        let (app, token) = (app.clone(), token.clone());
+        async move { get(&app, &format!("{}/items/{id}/download", base(&token))).await }
+    };
+
+    // Until the edited JPEG exists the download is pending, for the HEIC and for the JPEG whose stripped copy is ready.
+    for id in [heic, jpeg] {
+        let v = item(id).await;
+        assert_eq!(
+            (v["downloads"].clone(), v["download_pending"].clone()),
+            (json!([]), json!(true)),
+            "{id}"
+        );
+        assert_eq!(dl(id).await.0, StatusCode::CONFLICT, "{id}");
+    }
+    // prepare asks for the edited copy (not the stripped original), one job per photo.
+    for id in [heic, jpeg, heic] {
+        let (st, _, v) = visit(
+            &app,
+            "POST",
+            &format!("{}/items/{id}/prepare", base(&token)),
+            "203.0.113.1",
+            None,
+            None,
+        )
+        .await;
+        assert_eq!((st, v["pending"].clone()), (StatusCode::ACCEPTED, json!(true)));
+    }
+    let mut queued: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT asset_id, kind FROM jobs WHERE kind IN ('edited_copy', 'share_copy')")
+            .fetch_all(&t.pool)
+            .await
+            .unwrap();
+    queued.sort();
+    let mut want = vec![(heic, "edited_copy".to_string()), (jpeg, "edited_copy".to_string())];
+    want.sort();
+    assert_eq!(queued, want);
+
+    // Written: offered, and the redirect is the edited render under an "-edited" name; never the original.
+    sqlx::query("UPDATE assets SET edited_copy_at = now() WHERE id = ANY($1)")
+        .bind(vec![heic, jpeg])
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let v = item(heic).await;
+    assert_eq!(
+        (v["downloads"].clone(), v["download_pending"].clone()),
+        (json!([{"id": heic, "label": "JPEG", "size_bytes": null}]), json!(false))
+    );
+    let (st, h, _) = dl(heic).await;
+    assert_eq!(st, StatusCode::TEMPORARY_REDIRECT);
+    let loc = h[header::LOCATION].to_str().unwrap();
+    assert!(loc.contains(&format!("derived/{uid}/{heic}/edited.jpg")), "{loc}");
+    assert!(loc.contains("IMG_7-edited.jpg") && !loc.contains("originals/"), "{loc}");
+    let (_, h, _) = dl(jpeg).await;
+    assert!(
+        h[header::LOCATION].to_str().unwrap().contains("edited.jpg"),
+        "an edited JPEG is shared as its edit, not the stripped original"
+    );
+    // The file query cannot reach anything else.
+    assert_eq!(
+        get(&app, &format!("{}/items/{heic}/download?file={jpeg}", base(&token)))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+
+    // The owner chose originals: the file itself, byte for byte what was uploaded.
+    let (_, orig) = share_of(&app, &key, &[heic], json!({"include_originals": true})).await;
+    let (st, h, _) = get(&app, &format!("{}/items/{heic}/download", base(&orig))).await;
+    assert_eq!(st, StatusCode::TEMPORARY_REDIRECT);
+    let loc = h[header::LOCATION].to_str().unwrap();
+    assert!(loc.contains("originals/") && !loc.contains("edited"), "{loc}");
+    t.teardown().await;
+}

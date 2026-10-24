@@ -378,3 +378,33 @@ describe("timeline, favorites and downloads", () => {
     expect(downloadHref("a b", "raw/1")).toBe("/assets/a%20b/download?file=raw%2F1");
   });
 });
+
+describe("the edited download", () => {
+  it("points at the route and tells pending from ready without following the redirect", async () => {
+    const { editedHref } = await import("./api");
+    expect(editedHref("a b")).toBe("/assets/a%20b/download/edited");
+    const f = vi.fn().mockResolvedValueOnce(jsonRes(202, { pending: true }));
+    vi.stubGlobal("fetch", f);
+    await expect(api.editedStatus("p1")).resolves.toBe("pending");
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/assets/p1/download/edited");
+    expect(init.redirect).toBe("manual");
+    // The browser reports a redirect it was told not to follow as an opaque one.
+    f.mockResolvedValueOnce({ status: 0, type: "opaqueredirect" });
+    await expect(api.editedStatus("p1")).resolves.toBe("ready");
+  });
+
+  it("surfaces the server's reason when the photo has nothing to apply", async () => {
+    mockFetch(jsonRes(400, { error: "this photo has no rotate or crop to apply" }));
+    const err = await api.editedStatus("p1").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(400);
+    expect((err as ApiError).message).toContain("no rotate or crop");
+  });
+
+  it("sends a recipe, a relative turn or a revert with the other edits", async () => {
+    const f = mockFetch(jsonRes(200, { updated: 1, unchanged: 0, missing: 0, failed: [] }));
+    await api.editAssets(["a"], { recipe: { turn: 90 } });
+    expect((f.mock.calls[0] as unknown as [string, RequestInit])[1].body).toBe(JSON.stringify({ ids: ["a"], recipe: { turn: 90 } }));
+  });
+});

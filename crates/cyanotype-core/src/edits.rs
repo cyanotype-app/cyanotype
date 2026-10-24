@@ -20,7 +20,7 @@ use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{bursts, keys, places, storage::Storage};
+use crate::{bursts, jobs, keys, places, recipe::Recipe, storage::Storage};
 
 /// The layout version of the object in the bucket.
 pub const VERSION: u32 = 1;
@@ -53,6 +53,10 @@ pub struct Edits {
     pub longitude: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption: Option<String>,
+    /// Rotation, straighten angle and crop (`crate::recipe`). Additive to layout version 1: a server that predates it
+    /// ignores the field and shows the photo as the file is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipe: Option<Recipe>,
 }
 
 /// "Now" at the precision Postgres stores (microseconds), so a time written to the row and to the object compares equal.
@@ -72,12 +76,13 @@ impl Edits {
             latitude: None,
             longitude: None,
             caption: None,
+            recipe: None,
         }
     }
 
     /// Nothing is edited (every part is what the file says).
     pub fn is_empty(&self) -> bool {
-        self.taken_at.is_none() && self.latitude.is_none() && self.caption.is_none()
+        self.taken_at.is_none() && self.latitude.is_none() && self.caption.is_none() && self.recipe.is_none()
     }
 
     /// Normalise what a client sent (a caption is trimmed, and an empty one is none) and refuse what makes no sense: a
@@ -118,6 +123,10 @@ impl Edits {
         if self.taken_at.is_none() {
             self.taken_offset = None;
         }
+        self.recipe = match self.recipe {
+            None => None,
+            Some(r) => r.normalized()?,
+        };
         Ok(self)
     }
 }
@@ -136,10 +145,11 @@ pub async fn current(db: &PgPool, asset_id: Uuid) -> Result<Option<(Uuid, [u8; 3
         longitude: Option<f64>,
         caption: Option<String>,
         edited_at: Option<OffsetDateTime>,
+        recipe: Option<sqlx::types::Json<Recipe>>,
     }
     let Some(r) = sqlx::query_as::<_, Row>(
         "SELECT owner_id, sha256, date_edited, taken_at, taken_offset_edit, location_edited, latitude, longitude, caption,
-                edited_at
+                edited_at, recipe
          FROM assets WHERE id = $1",
     )
     .bind(asset_id)
@@ -159,6 +169,7 @@ pub async fn current(db: &PgPool, asset_id: Uuid) -> Result<Option<(Uuid, [u8; 3
         e.longitude = r.longitude;
     }
     e.caption = r.caption;
+    e.recipe = r.recipe.map(|j| j.0);
     Ok(Some((r.owner_id, sha, e)))
 }
 
@@ -178,6 +189,30 @@ pub fn parse(bytes: &[u8]) -> Result<Edits> {
     e.validated().map_err(anyhow::Error::msg)
 }
 
+/// After the metadata job has stored the file's own size: put the edited picture's size back in `width` / `height` for a photo
+/// that has a recipe (the file's stays in `width_orig` / `height_orig`). Nothing for a photo without one.
+pub async fn refresh_dims(db: &PgPool, asset_id: Uuid) -> Result<()> {
+    let row: Option<(sqlx::types::Json<Recipe>, Option<i32>, Option<i32>)> =
+        sqlx::query_as("SELECT recipe, width_orig, height_orig FROM assets WHERE id = $1 AND recipe IS NOT NULL")
+            .bind(asset_id)
+            .fetch_optional(db)
+            .await?;
+    let Some((recipe, Some(w), Some(h))) = row else {
+        return Ok(());
+    };
+    if w <= 0 || h <= 0 {
+        return Ok(());
+    }
+    let (ow, oh) = recipe.0.output_dims(w as u32, h as u32);
+    sqlx::query("UPDATE assets SET width = $2, height = $3 WHERE id = $1 AND recipe IS NOT NULL")
+        .bind(asset_id)
+        .bind(ow as i32)
+        .bind(oh as i32)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 /// What [`apply`] did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Applied {
@@ -186,6 +221,8 @@ pub struct Applied {
     pub date_changed: bool,
     pub location_changed: bool,
     pub caption_changed: bool,
+    /// The recipe changed: the thumbnail and preview are rendered again and the embedding with them.
+    pub recipe_changed: bool,
 }
 
 /// Make the row say what `edits` says: edited parts are written over the effective columns (the file's own values are kept
@@ -203,11 +240,16 @@ pub async fn apply(db: &PgPool, owner: Uuid, asset_id: Uuid, edits: &Edits) -> R
         longitude_exif: Option<f64>,
         caption: Option<String>,
         burst_id: Option<Uuid>,
+        recipe: Option<sqlx::types::Json<Recipe>>,
+        width: Option<i32>,
+        height: Option<i32>,
+        width_orig: Option<i32>,
+        height_orig: Option<i32>,
     }
     let mut tx = db.begin().await?;
     let Some(r) = sqlx::query_as::<_, Row>(
         "SELECT date_edited, taken_at, taken_at_exif, location_edited, latitude, longitude, latitude_exif, longitude_exif,
-                caption, burst_id
+                caption, burst_id, recipe, width, height, width_orig, height_orig
          FROM assets WHERE id = $1 AND owner_id = $2 AND purging_at IS NULL FOR UPDATE",
     )
     .bind(asset_id)
@@ -248,6 +290,23 @@ pub async fn apply(db: &PgPool, owner: Uuid, asset_id: Uuid, edits: &Edits) -> R
     let location_changed = (lat, lon) != (r.latitude, r.longitude);
     let caption_changed = edits.caption != r.caption;
 
+    // Recipe: the size the grid draws is the edited picture's, the file's own is kept for "Revert to original".
+    let old_recipe = r.recipe.map(|j| j.0);
+    let recipe_changed = edits.recipe != old_recipe;
+    let (file_w, file_h) = if old_recipe.is_some() {
+        (r.width_orig, r.height_orig)
+    } else {
+        (r.width, r.height)
+    };
+    let (width, height, width_orig, height_orig) = match (edits.recipe, file_w, file_h) {
+        (Some(rc), Some(w), Some(h)) if w > 0 && h > 0 => {
+            let (ow, oh) = rc.output_dims(w as u32, h as u32);
+            (Some(ow as i32), Some(oh as i32), Some(w), Some(h))
+        }
+        (Some(_), w, h) => (w, h, w, h),
+        (None, w, h) => (w, h, None, None),
+    };
+
     sqlx::query(
         "UPDATE assets SET date_edited = $2, taken_at = $3, taken_at_exif = $4, taken_offset_edit = $5,
                 location_edited = $6, latitude = $7, longitude = $8, latitude_exif = $9, longitude_exif = $10,
@@ -256,7 +315,10 @@ pub async fn apply(db: &PgPool, owner: Uuid, asset_id: Uuid, edits: &Edits) -> R
                 place_city = CASE WHEN $13 THEN NULL ELSE place_city END,
                 place_region = CASE WHEN $13 THEN NULL ELSE place_region END,
                 place_country = CASE WHEN $13 THEN NULL ELSE place_country END,
-                place_country_code = CASE WHEN $13 THEN NULL ELSE place_country_code END
+                place_country_code = CASE WHEN $13 THEN NULL ELSE place_country_code END,
+                recipe = $14, width = $15, height = $16, width_orig = $17, height_orig = $18,
+                edited_copy_at = CASE WHEN $19 THEN NULL ELSE edited_copy_at END,
+                edited_copy_bytes = CASE WHEN $19 THEN NULL ELSE edited_copy_bytes END
          WHERE id = $1",
     )
     .bind(asset_id)
@@ -272,10 +334,20 @@ pub async fn apply(db: &PgPool, owner: Uuid, asset_id: Uuid, edits: &Edits) -> R
     .bind(&edits.caption)
     .bind(edits.updated_at)
     .bind(location_changed)
+    .bind(edits.recipe.map(sqlx::types::Json))
+    .bind(width)
+    .bind(height)
+    .bind(width_orig)
+    .bind(height_orig)
+    .bind(recipe_changed)
     .execute(&mut *tx)
     .await?;
     if location_changed {
         places::requeue(&mut *tx, asset_id).await?;
+    }
+    if recipe_changed {
+        // The pictures the grid, the viewer and the search model see are rendered again from the original.
+        jobs::requeue(&mut *tx, jobs::KIND_THUMBNAIL, asset_id, jobs::RERENDER_VERSION).await?;
     }
     tx.commit().await?;
     if date_changed {
@@ -286,6 +358,7 @@ pub async fn apply(db: &PgPool, owner: Uuid, asset_id: Uuid, edits: &Edits) -> R
         date_changed,
         location_changed,
         caption_changed,
+        recipe_changed,
     })
 }
 
@@ -349,6 +422,44 @@ mod tests {
         let mut e = base();
         e.taken_offset = Some(3600);
         assert_eq!(e.validated().unwrap().taken_offset, None);
+    }
+
+    #[test]
+    fn a_recipe_travels_with_the_other_edits() {
+        use crate::recipe::Crop;
+        let mut e = base();
+        e.recipe = Some(Recipe {
+            rotate: 90,
+            straighten: 1.5,
+            crop: Some(Crop {
+                x: 0.1,
+                y: 0.2,
+                w: 0.5,
+                h: 0.4,
+            }),
+        });
+        assert!(!e.is_empty(), "a recipe is an edit: the object is not a tombstone");
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(
+            json.contains(r#""recipe":{"rotate":90,"straighten":1.5,"crop":{"x":0.1,"y":0.2,"w":0.5,"h":0.4}}"#),
+            "{json}"
+        );
+        assert_eq!(parse(json.as_bytes()).unwrap(), e);
+        // An object written before recipes existed has none; one with a recipe that changes nothing is a tombstone.
+        assert!(
+            parse(br#"{"v":1,"updated_at":"2024-05-05T10:00:00Z","caption":"x"}"#)
+                .unwrap()
+                .recipe
+                .is_none()
+        );
+        let none = parse(br#"{"v":1,"updated_at":"2024-05-05T10:00:00Z","recipe":{"rotate":360}}"#).unwrap();
+        assert!(none.recipe.is_none() && none.is_empty());
+        // A recipe the layout allows but nobody can render is refused like any other bad object.
+        assert!(parse(br#"{"v":1,"updated_at":"2024-05-05T10:00:00Z","recipe":{"rotate":45}}"#).is_err());
+        assert!(
+            parse(br#"{"v":1,"updated_at":"2024-05-05T10:00:00Z","recipe":{"crop":{"x":0,"y":0,"w":2,"h":1}}}"#)
+                .is_err()
+        );
     }
 
     #[test]

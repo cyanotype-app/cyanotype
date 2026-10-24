@@ -142,6 +142,29 @@ pub fn share_copy(user: Uuid, asset: Uuid) -> String {
     format!("derived/{user}/{asset}/share.jpg")
 }
 
+/// The full-size JPEG of a photo with its recipe applied (rotation, straighten, crop), without any metadata. Written on
+/// demand by the `edited_copy` job; "Download edited" and share links of an edited photo serve it.
+pub fn edited_copy(user: Uuid, asset: Uuid) -> String {
+    format!("derived/{user}/{asset}/edited.jpg")
+}
+
+/// The whole picture of a photo that has a recipe, upright and at preview size (WebP): what the rotate/crop editor shows to
+/// work on, since `preview.webp` is already cropped. Written by the same render as the thumbnail; absent without a recipe.
+pub fn edit_base(user: Uuid, asset: Uuid) -> String {
+    format!("derived/{user}/{asset}/uncropped.webp")
+}
+
+/// The name "Download edited" saves under: the original's name without its extension, plus `-edited.jpg`
+/// (`IMG_0042.HEIC` becomes `IMG_0042-edited.jpg`).
+pub fn edited_file_name(original_name: &str) -> String {
+    let stem = match original_name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && ext.len() <= 8 && !ext.contains(['/', '\\']) => stem,
+        _ => original_name,
+    };
+    let stem = if stem.is_empty() { "photo" } else { stem };
+    format!("{stem}-edited.jpg")
+}
+
 /// Prefix of everything derived from one asset (thumbnail, preview, and whatever later stages add).
 /// Purging an asset deletes all versions of every key under it.
 pub fn derived_prefix(user: Uuid, asset: Uuid) -> String {

@@ -127,12 +127,12 @@ pub(super) async fn list(
     }
     let candidates: Vec<Candidate> = sqlx::query_as(
         "SELECT a.id, a.original_name, a.content_type, a.size_bytes, a.width, a.height, a.sort_time, a.favorite, a.rating, a.archived,
-                a.hidden, a.thumbhash, a.burst_id, a.taken_at, a.file_modified_at, a.created_at, a.exif, a.date_edited,
+                a.hidden, a.edited, a.thumbhash, a.burst_id, a.taken_at, a.file_modified_at, a.created_at, a.exif, a.date_edited,
                 a.taken_offset_edit
          FROM unnest($2::timestamptz[], $3::timestamptz[]) AS w(lo, hi)
          CROSS JOIN LATERAL (
              SELECT id, original_name, content_type, size_bytes, width, height,
-                    coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite, rating, archived, hidden, thumbhash,
+                    coalesce(taken_at, file_modified_at, created_at) AS sort_time, favorite, rating, archived, hidden, (recipe IS NOT NULL) AS edited, thumbhash,
                     burst_id, taken_at, file_modified_at, created_at, exif, date_edited, taken_offset_edit
              FROM assets
              WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL AND NOT hidden AND NOT archived

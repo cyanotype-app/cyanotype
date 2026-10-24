@@ -1305,3 +1305,94 @@ async fn memories_belong_to_their_owner() {
     assert_eq!(st, StatusCode::UNAUTHORIZED);
     t.teardown().await;
 }
+
+#[tokio::test]
+async fn a_hidden_photo_is_rotated_cropped_and_downloaded_edited_only_from_an_unlocked_session() {
+    let Some(t) = TestDb::new().await else { return };
+    let l = library(&t).await;
+    sqlx::query("UPDATE assets SET width = 400, height = 300 WHERE id = $1")
+        .bind(l.hidden)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let recipe = || async {
+        sqlx::query_scalar::<_, Option<Value>>("SELECT recipe FROM assets WHERE id = $1")
+            .bind(l.hidden)
+            .fetch_one(&t.pool)
+            .await
+            .unwrap()
+    };
+    // Locked: by id the request quietly finds nothing, by scope the Hidden view is refused, and nothing is written.
+    let (st, r) = post(
+        &l.app,
+        &l.cookie,
+        "/assets/edits",
+        json!({"ids": [l.hidden], "recipe": {"turn": 90}}),
+    )
+    .await;
+    assert_eq!(
+        (st, r["updated"].as_i64(), r["missing"].as_i64()),
+        (StatusCode::OK, Some(0), Some(1)),
+        "{r}"
+    );
+    let (st, _) = post(
+        &l.app,
+        &l.cookie,
+        "/assets/edits",
+        json!({"scope": "hidden", "recipe": {"turn": 90}}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert_eq!(recipe().await, None);
+
+    // The edited download and the details of a hidden photo: 404 while locked, whatever it has.
+    sqlx::query(
+        "UPDATE assets SET recipe = '{\"rotate\":90}', edited_copy_at = now(), edited_copy_bytes = 1 WHERE id = $1",
+    )
+    .bind(l.hidden)
+    .execute(&t.pool)
+    .await
+    .unwrap();
+    for p in [
+        format!("/assets/{}/download/edited", l.hidden),
+        format!("/assets/{}/details", l.hidden),
+    ] {
+        let (st, _) = get(&l.app, &l.cookie, &p).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{p}");
+    }
+    // The recipe flag is not in any list a locked session can read, and the visible photos are unaffected.
+    let (_, list) = get(&l.app, &l.cookie, "/assets").await;
+    assert!(
+        item_ids(&list).iter().all(|id| *id != l.hidden),
+        "the hidden photo is not listed"
+    );
+    sqlx::query("UPDATE assets SET recipe = NULL, edited_copy_at = NULL, edited_copy_bytes = NULL WHERE id = $1")
+        .bind(l.hidden)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+
+    // Unlocked: it can be rotated, and its edited copy is asked for and served.
+    unlock(&t.pool, &l.cookie, 10).await;
+    if let Some((app, _)) = crate::testutil::app_with_s3(&t.pool) {
+        let (st, r) = post(
+            &app,
+            &l.cookie,
+            "/assets/edits",
+            json!({"ids": [l.hidden], "recipe": {"turn": 90}}),
+        )
+        .await;
+        assert_eq!((st, r["updated"].as_i64()), (StatusCode::OK, Some(1)), "{r}");
+        assert_eq!(recipe().await, Some(json!({"rotate": 90})));
+        let (st, v) = get(&app, &l.cookie, &format!("/assets/{}/download/edited", l.hidden)).await;
+        assert_eq!((st, v["pending"].clone()), (StatusCode::ACCEPTED, json!(true)));
+        // Locking again hides it again.
+        sqlx::query("UPDATE sessions SET hidden_unlocked_until = now() - interval '1 second'")
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        let (st, _) = get(&app, &l.cookie, &format!("/assets/{}/download/edited", l.hidden)).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+    }
+    t.teardown().await;
+}

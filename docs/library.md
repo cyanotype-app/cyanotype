@@ -1636,3 +1636,118 @@ offered for review: side by side, the best one preselected, the others to the tr
 - `cyanotype-clip` `duplicate_bakeoff` (ignored, `just bakeoff`-style): the calibration.
 - Web: `dupText` and `Duplicates.test.tsx` (the page, keep and Undo, dismiss, a check with polling, the admin button, paging); `e2e/duplicates-layout.spec.ts`
   (Playwright).
+
+# Rotate and crop
+
+Turn a photo, straighten it and crop it **without touching the file**: the original stays byte for byte what was uploaded, and
+the thumbnail, the preview, the search embedding and the "edited" JPEG are made from the original plus a small *recipe*
+(migration 0028). It is one more kind of edit (`docs/library.md`, "Editing a photo"): it lives in the same `edits/` object, is
+restored by `reindex`, and "Revert to original" puts the picture back.
+
+## What the user sees
+
+- **In the viewer**: the **Crop** icon next to the heart (or the key `e`; `r` opens it already turned a quarter, `c` opens it with
+  the crop frame), and a **Picture** row in the Info panel that describes the recipe ("Rotated 90° right, cropped to 1800 × 2000")
+  with the same button.
+- **The editor** is a full-screen dialog showing the whole upright picture, turned and zoomed the way the worker will render it:
+  - **Left / Right** (`r`, Shift+`R`) turn a quarter; the crop turns with the picture.
+  - **Straighten**: a slider from -45 to 45 degrees in tenths. The picture is magnified just enough that no empty corner shows.
+  - **Crop** (`c`) shows the frame with eight handles (44 px touch targets, `touch-action: none` so a finger drags the frame instead of
+    scrolling) and a thirds grid. Drag a handle or the inside, or use the arrow keys on a focused handle (Shift: five times the step).
+    The shape chips (Free, Original, 1:1, 4:3, 3:4, 3:2, 2:3, 16:9, 9:16) lock the ratio in pixels, and a locked ratio turns with the picture.
+  - **Save** (Enter, when no button has the focus), **Cancel** (Esc), **Reset** (back to what was saved), **Revert to original**
+    (shown while the photo has a recipe; saves at once).
+- After a save the viewer keeps the old picture under *Updating the picture…* until the worker has rendered the new one (the page
+  asks every 1.5 s, at most 40 times), then shows it and tells the page so its tile is refreshed.
+- A photo with a recipe says *edited* beside its size, and its tile and the grid use the edited picture's shape.
+- **Download**: with a recipe the button opens a small menu, **Download original** (the file, byte for byte) and **Download edited
+  (JPEG)**. The edited JPEG is made on demand, so the button says *Preparing the edited photo…* until the worker has written it.
+- **Share links** that offer downloads (and not the originals) give the visitor the edited JPEG for an edited photo, whatever the
+  original's format (a rotated HEIC is downloadable that way); a link that includes the originals still serves the original files.
+
+## How it works
+
+- **The recipe** (`cyanotype_core::recipe`): `rotate` (0, 90, 180, 270 clockwise), `straighten` (degrees, positive turns the picture
+  clockwise) and `crop` (`x`, `y`, `w`, `h` as fractions of the frame, from the top left). The steps, in this order, on the picture
+  *as displayed* (the EXIF orientation already applied, which is what `width` / `height` always meant): **turn**, **straighten**
+  (same frame size, magnified by `cos a + sin a * max(w/h, h/w)`, the least that covers every corner), **crop** (to the frame those two
+  made). A recipe is normalised (a multiple of 90 reduced, the angle to a tenth, a crop clamped and rounded to 4 decimals, a crop
+  smaller than 2 % of a side refused) and one that changes nothing is none. A quarter turn and a small tilt commute, so a *relative*
+  turn (`{"turn": 90}`, the bulk way) only adds 90 degrees and turns the crop rectangle: `(x, y, w, h)` becomes `(1 - y - h, x, h, w)`.
+- **Storage.** `assets.recipe` (jsonb) holds the effective recipe; the bucket's `edits/{user}/{xx}/{hash}.json` gets it first
+  (`"recipe": {...}`, an additive field of layout 1: a server that predates it ignores it). `edits::apply` writes the column and the
+  sizes, clears the edited copy, and queues the re-render, in one transaction. `reindex` applies it like any other edit, so the restored
+  photo is rendered again. A photo whose recipe was reverted keeps an object with no recipe (the tombstone), as before.
+- **Sizes.** `width` / `height` become the edited picture's size, so the grid's tile shapes, the viewer's "400 x 300" and the
+  review of duplicates follow what the photo looks like; the file's own size is kept in `width_orig` / `height_orig` (the details'
+  `file` block and the editor use it). The metadata job writes the file's size to `width_orig` while a recipe exists and fixes
+  `width` / `height` up afterwards (`edits::refresh_dims`).
+- **The render** (`apps/worker`, `imaging::apply_recipe`, `media::decode_upright`): the thumbnail job reads the recipe, decodes the
+  original **at the size the crop needs** (a crop of a quarter of the width is decoded at four times the preview's size, up to 8,192 px;
+  JPEG through the DCT-scaled decoder, HEIF and PNG at their reduced decoders, RAW from its preview or development), applies the
+  recipe, and makes the thumbnail, the 1,440 px preview and the ThumbHash from that. The memory budget decides the size: the job tries
+  the wanted edge, then half of it, down to the plain preview edge, and takes the first whose estimate (the decode plus 8 bytes a
+  pixel for the copies the turn, the straighten and the crop make) fits `WORKER_MEMORY_BUDGET_MB`. It also writes
+  `derived/{user}/{asset}/uncropped.webp`: the whole upright picture at preview size, because `preview.webp` is already cropped and the
+  editor needs the rest (deleted when the recipe is reverted; counted in `derived_bytes`).
+- **A re-render is its own job.** The upload's `thumbnail` job is version 1; a recipe change queues version 2 (`jobs::requeue`
+  puts a finished job back in the queue). Only version 2 queues the **embedding** again (so search and "similar photos" describe the
+  crop), forgets the **text** read off the old picture and reads it again (`ocr::forget_and_requeue`: the boxes were in the old
+  picture's coordinates), and removes `uncropped.webp` when there is no recipe any more. A render whose recipe is no longer the one
+  on the row (an edit landed meanwhile) is not published; the job fails and runs again against the new recipe, so the newer edit
+  is never lost and the older one never shown.
+- **The edited copy** (`KIND_EDITED_COPY`, `derived/{user}/{asset}/edited.jpg`): a JPEG at most 4,096 px on the long edge, quality
+  90, **no metadata** (no EXIF, no GPS, no camera serial, no embedded thumbnail; the colour profile is not carried either, like
+  the thumbnails, so it is the picture as the viewer shows it). It is written on demand: `GET /assets/{id}/download/edited` queues it
+  and answers `202 {"pending": true}` until it exists, then `307` to a presigned URL (60 s, saved as `IMG_0042-edited.jpg`); a share
+  link's `prepare` queues it too. Every new recipe clears `edited_copy_at`, so a stale copy is never served, and the bytes are in the
+  usage counters (`derived_bytes`).
+- **Originals** are never read for writing. `GET /assets/{id}/download` is unchanged (the 307 to the file under `originals/`), and
+  so is a share link that includes originals.
+- **Hidden photos.** Setting or reverting a recipe, the edited download and the details of a hidden photo need the unlocked Hidden
+  view, like everything else about it: by id a locked session finds nothing (`missing`), by scope it is refused. (This also closes a
+  gap in the older edits: a locked session could change the date or caption of a hidden photo by its id; the edit endpoint now has
+  the `NOT hidden OR unlocked` rule for every kind of edit.) API keys never have the unlock.
+- **What a copy-and-merge does not do.** "Keep selected" in the duplicate review merges albums, ratings, tags, captions, place and time
+  onto the kept photo but **not a recipe**: the copies differ in size and framing, and applying one photo's crop to another is
+  more often wrong than right. The kept photo keeps its own recipe; a trashed copy keeps its own and comes back with it.
+- **Limits, stated.** A crop of a RAW is rendered from the embedded preview (or the developed image), not at full sensor size; a
+  crop of an interlaced PNG or a very large HEIC is limited by the memory budget (the edge is halved until it fits, and the
+  result is a smaller render, never a failure unless even the preview does not fit). The edited JPEG has at most 4,096 px on the
+  long edge even when the original is larger (the full-resolution edited file is not offered). The straighten is bilinear.
+  Videos and Live Photo clips are not touched (the video part of a motion photo stays as uploaded).
+
+## API (assets service, owner-scoped)
+
+| Request | Effect |
+|---|---|
+| `POST /assets/edits {ids \| scope, recipe}` | `recipe` is `{"rotate": 90, "straighten": -1.5, "crop": {"x","y","w","h"}}` (every part optional; one that changes nothing reverts), `{"turn": 90}` (relative, any multiple of 90) or `{"revert": true}`. Same result shape and rules as the other edits (`updated`, `unchanged`, `missing`, `failed`); a bad recipe is a `400` before anything is written (`422` where the body does not have the shape). |
+| `GET /assets/{id}` | adds `recipe`, `rendering` (a thumbnail job is queued or running), `edit_base_url` (the whole upright picture, once rendered) and `file_width` / `file_height`. |
+| `GET /assets/{id}/details` | `edits.recipe`, `edits.edited_copy_ready`; `file.width` / `height` are the file's own. |
+| `GET /assets/{id}/download/edited` | `202 {"pending": true}` and the job queued, or `307` to the edited JPEG; `400` for a photo with no recipe, `404` for anything that is not the caller's visible, live photo. |
+| list items | `edited: true` for a photo with a recipe; `width` / `height` are the edited picture's. |
+
+## Tests
+
+- `recipe.rs` (unit): normalisation and refusals, the output size, the straighten zoom (checked against the corner condition), the
+  crop fraction. `edits.rs`: the object with a recipe round-trips, an old object has none, a no-op recipe is a tombstone.
+- `imaging.rs` (unit): quarter turns are clockwise (pixels), the crop is cut from the turned frame, a straightened picture shows no
+  edge of the original (a black 1 px frame never reaches the corners from -12.5 to 45 degrees) and really leans the right way,
+  edited renders have the edited size and carry the whole upright picture for the editor, the export is a bare JPEG within 4,096
+  px (transparency goes onto white), a larger decode edge costs more.
+- `handlers.rs` (Postgres + S3): metadata keeps the file's size next to the edited one; the thumbnail job renders the crop
+  (320 x 240 thumbnail, 1,440 x 1,080 preview from a 3,000 x 2,000 file), writes the editor's picture, queues the embedding and the
+  text again; the edited-copy job writes a bare JPEG of the right size; a render of a stale recipe is refused; reverting renders
+  the plain picture and removes the editor's picture; an edited copy of an unedited photo is skipped.
+- `rotate_tests.rs` (Postgres + S3): the stored recipe, the effective and the file's size, the queued render, the object in
+  the bucket, relative turns (and four are the identity, with the crop back where it was), refusals, bulk with other accounts' and
+  trashed photos counted missing, `reindex` restoring a recipe and queueing the render, the details and record, and the edited
+  download (400, 202 once however often asked, 307 with the right name, the original download untouched, 404s).
+  `share_tests.rs`: an edited HEIC and JPEG are pending until the edited copy exists, `prepare` queues it (not the stripped
+  original) once, the download is the edited render, originals stay originals. `visibility_tests.rs`: a hidden photo's recipe,
+  edited download and details for a locked and an unlocked session; `key_scope_tests.rs`: the route.
+- Web: `recipeText` (the geometry shared with the server, dragging with and without a ratio, turning a crop), `RotateCrop`
+  (keys, handles by pointer and keyboard, straighten, ratios, save, failure, reset, revert, focus), `LightboxPicture` (opening, the
+  keys, saving and waiting for the render, an edited photo's own picture, the edited download), `api` (the redirect that is not
+  followed, the request bodies); Playwright `e2e/rotate-layout.spec.ts` (320 to 414, 1280, dark 360: no overflow, handles are 44 px
+  touch targets with `touch-action: none`, a touch-pointer drag and a mouse drag move the crop).

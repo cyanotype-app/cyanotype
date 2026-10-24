@@ -505,7 +505,7 @@ pub(super) async fn assets(
         (None, None) => None,
     };
     let select = format!(
-        "SELECT x.id, x.original_name, x.content_type, x.size_bytes, x.width, x.height, {SORT} AS sort_time, x.favorite, x.rating, x.archived, x.hidden, x.thumbhash
+        "SELECT x.id, x.original_name, x.content_type, x.size_bytes, x.width, x.height, {SORT} AS sort_time, x.favorite, x.rating, x.archived, x.hidden, (x.recipe IS NOT NULL) AS edited, x.thumbhash
          FROM album_assets aa JOIN assets x ON x.id = aa.asset_id
          WHERE aa.album_id = $1 AND x.owner_id = $2 AND x.deleted_at IS NULL AND x.primary_id IS NULL AND NOT x.hidden"
     );

@@ -6,6 +6,7 @@ use cyanotype_core::{
     jobs, keys, metrics,
     pairing::{self, Paired},
     places::{self, Geocoded},
+    recipe::Recipe,
     storage::Storage,
     tags,
 };
@@ -17,7 +18,7 @@ use crate::{
     budget::{MemoryBudget, Reservation},
     exif,
     formats::{self, Kind},
-    media,
+    imaging, media,
 };
 
 /// Errors that retrying cannot fix; the job is failed immediately.
@@ -185,6 +186,7 @@ pub async fn run(ctx: &Arc<Ctx>, job: &jobs::Job, info: &JobInfo) -> Result<Outc
         jobs::KIND_METADATA => metadata(ctx, job, &asset, kind, bytes).await?,
         jobs::KIND_THUMBNAIL => return thumbnail(ctx, job, info, &asset, kind, bytes, held, base).await,
         jobs::KIND_SHARE_COPY => return share_copy(ctx, job, &asset, kind, bytes).await,
+        jobs::KIND_EDITED_COPY => return edited_copy(ctx, job, info, &asset, kind, bytes, held, base).await,
         other => anyhow::bail!("no handler for job kind {other}"),
     }
     Ok(Outcome::Done)
@@ -335,6 +337,7 @@ async fn metadata(ctx: &Arc<Ctx>, job: &jobs::Job, asset: &AssetRow, kind: Kind,
     // next to the edit (`*_exif`) instead of over it, so a re-run of this job never undoes a correction.
     let (effective_lat, effective_lon): (Option<f64>, Option<f64>) = sqlx::query_as(
         "UPDATE assets SET width = $2, height = $3,
+             width_orig = CASE WHEN recipe IS NOT NULL THEN $2 END, height_orig = CASE WHEN recipe IS NOT NULL THEN $3 END,
              taken_at = CASE WHEN date_edited THEN taken_at ELSE $4 END,
              taken_at_exif = CASE WHEN date_edited THEN $4 ELSE NULL END,
              latitude = CASE WHEN location_edited THEN latitude ELSE $5 END,
@@ -362,6 +365,10 @@ async fn metadata(ctx: &Arc<Ctx>, job: &jobs::Job, asset: &AssetRow, kind: Kind,
     .fetch_one(&ctx.db)
     .await
     .context("update asset metadata")?;
+    // While the photo is cropped or rotated the grid draws the edited picture's size, not the file's.
+    cyanotype_core::edits::refresh_dims(&ctx.db, job.asset_id)
+        .await
+        .context("edited size")?;
     // The file's keywords become tags marked imported, once per photo (a tag the owner removed does not come back).
     tags::import_keywords(&ctx.db, job.asset_id, &m.keywords)
         .await
@@ -397,6 +404,17 @@ async fn thumbnail(
     held: Reservation,
     base: u64,
 ) -> Result<Outcome> {
+    // A photo with an edit recipe is rendered from the original plus the recipe (rotation, straighten, crop).
+    if let Some(recipe) = load_recipe(ctx, job.asset_id).await? {
+        let (img, _held) =
+            decode_for_recipe(ctx, info, kind, &bytes, base, held, &recipe, imaging::PREVIEW_EDGE).await?;
+        let ((derived, base), recipe) =
+            tokio::task::spawn_blocking(move || imaging::derive_edited(img, &recipe).map(|d| (d, recipe)))
+                .await
+                .context("edited render task panicked")?
+                .map_err(|e| anyhow::Error::from(Permanent(format!("{e:#}"))))?;
+        return store_render(ctx, job, asset, derived, Some((recipe, base))).await;
+    }
     let total = ctx.budget.total_bytes();
     // Header pass: sizes, EXIF and the decode estimate, with no pixel decoding.
     let limits = ctx.limits(total.saturating_sub(base));
@@ -453,9 +471,145 @@ async fn thumbnail(
         },
     };
     tracing::debug!(width = d.width, height = d.height, "derived images ready");
+    store_render(ctx, job, asset, d, None).await
+}
 
+/// The recipe the photo has now, if any.
+async fn load_recipe(ctx: &Arc<Ctx>, asset_id: Uuid) -> Result<Option<Recipe>> {
+    let r: Option<Option<sqlx::types::Json<Recipe>>> = sqlx::query_scalar("SELECT recipe FROM assets WHERE id = $1")
+        .bind(asset_id)
+        .fetch_optional(&ctx.db)
+        .await
+        .context("load recipe")?;
+    Ok(r.flatten().map(|j| j.0))
+}
+
+/// The longest edge a crop is rendered from: enough for a 4096 px export of a one-in-two crop.
+const MAX_RECIPE_EDGE: u32 = 8192;
+
+/// Decode the original for a recipe: upright, at an edge large enough that the crop still fills `target` pixels on its long
+/// edge (at most [`MAX_RECIPE_EDGE`], and less when the memory budget says so). The reservation is returned with the
+/// picture; the recipe's copies (turn, straighten, crop) are budgeted for in it.
+#[allow(clippy::too_many_arguments)]
+async fn decode_for_recipe(
+    ctx: &Arc<Ctx>,
+    info: &JobInfo,
+    kind: Kind,
+    bytes: &Arc<Vec<u8>>,
+    base: u64,
+    held: Reservation,
+    recipe: &Recipe,
+    target: u32,
+) -> Result<(image::DynamicImage, Reservation)> {
+    let total = ctx.budget.total_bytes();
+    let limits = ctx.limits(total.saturating_sub(base));
+    let first = {
+        let bytes = bytes.clone();
+        tokio::task::spawn_blocking(move || media::prepare(kind, &bytes, limits))
+            .await
+            .context("prepare task panicked")?
+            .map_err(|e| Permanent(format!("{e:#}")))?
+    };
+    if let Some(reason) = &first.refusal {
+        refused("decode_refused", info);
+        return Err(Permanent(reason.clone()).into());
+    }
+    let (width, height) = (first.width, first.height);
+    let (fw, fh) = recipe.frame_dims(width, height);
+    let frac = recipe.crop_fraction(fw, fh).max(0.01);
+    let want = ((f64::from(target) / frac).ceil() as u32)
+        .min(width.max(height))
+        .clamp(imaging::PREVIEW_EDGE, MAX_RECIPE_EDGE);
+    let mut edges = vec![want];
+    let mut e = want;
+    while e / 2 > imaging::PREVIEW_EDGE {
+        e /= 2;
+        edges.push(e);
+    }
+    if edges.last() != Some(&imaging::PREVIEW_EDGE) {
+        edges.push(imaging::PREVIEW_EDGE);
+    }
+    let (mut chosen, mut chosen_extra) = (first, 0u64);
+    for edge in edges {
+        // Room for the quarter turn, the straighten and the crop, which each copy the picture.
+        let (cw, ch) = imaging::fit_within(width, height, edge);
+        let extra = 8 * u64::from(cw) * u64::from(ch);
+        let limits = ctx.limits(total.saturating_sub(base + extra));
+        let b = bytes.clone();
+        let p = tokio::task::spawn_blocking(move || media::prepare_for(kind, &b, limits, edge))
+            .await
+            .context("prepare task panicked")?
+            .map_err(|e| Permanent(format!("{e:#}")))?;
+        if p.refusal.is_none() {
+            (chosen, chosen_extra) = (p, extra);
+            break;
+        }
+    }
+    drop(held);
+    let mut held = ctx
+        .budget
+        .reserve((base + chosen.cost_bytes + chosen_extra).min(total))
+        .await?;
+    let chosen = Arc::new(chosen);
+    let decoded = {
+        let (p, b) = (chosen.clone(), bytes.clone());
+        tokio::task::spawn_blocking(move || media::decode_upright(&p, &b))
+            .await
+            .context("decode task panicked")?
+    };
+    let img = match decoded {
+        Ok(img) => img,
+        Err(e) => match chosen.full_decode_fallback(bytes, limits) {
+            Some(full) => {
+                tracing::warn!(error = %format!("{e:#}"), "reduced-size decode failed; trying a full decode");
+                drop(held);
+                held = ctx
+                    .budget
+                    .reserve((base + full.cost_bytes + chosen_extra).min(total))
+                    .await?;
+                let b = bytes.clone();
+                tokio::task::spawn_blocking(move || media::decode_upright(&full, &b))
+                    .await
+                    .context("decode task panicked")?
+                    .map_err(|e| anyhow::Error::from(Permanent(format!("{e:#}"))))?
+            }
+            None => return Err(Permanent(format!("{e:#}")).into()),
+        },
+    };
+    Ok((img, held))
+}
+
+/// Put a render's thumbnail and preview in the bucket and publish them on the row, if the photo still exists and its
+/// recipe is still the one that was rendered (`edit`: the recipe and the editor's uncropped picture; none = the photo had
+/// no recipe).
+async fn store_render(
+    ctx: &Arc<Ctx>,
+    job: &jobs::Job,
+    asset: &AssetRow,
+    d: imaging::Derived,
+    edit: Option<(Recipe, Vec<u8>)>,
+) -> Result<Outcome> {
+    let (recipe, base) = match edit {
+        Some((r, b)) => (Some(r), Some(b)),
+        None => (None, None),
+    };
     // Their sizes are recorded with the thumbhash below (the usage counters, docs/admin.md).
-    let derived_bytes = (d.thumb_webp.len() + d.preview_webp.len()) as i64;
+    let derived_bytes = (d.thumb_webp.len() + d.preview_webp.len() + base.as_ref().map_or(0, Vec::len)) as i64;
+    match base {
+        Some(b) => {
+            ctx.storage
+                .put_bytes(&keys::edit_base(asset.owner_id, job.asset_id), b, "image/webp")
+                .await?;
+        }
+        // A render after a recipe was reverted: the editor's picture is no longer wanted.
+        None if job.version == jobs::RERENDER_VERSION => {
+            ctx.storage
+                .delete_all_versions(&[keys::edit_base(asset.owner_id, job.asset_id)])
+                .await
+                .context("remove the editor's picture")?;
+        }
+        None => {}
+    }
     ctx.storage
         .put_bytes(&keys::thumb(asset.owner_id, job.asset_id), d.thumb_webp, "image/webp")
         .await?;
@@ -470,27 +624,97 @@ async fn thumbnail(
     // rendering has already removed (or is about to remove) the derived objects; whatever we just wrote would be
     // orphaned, so take it back out. (`purging_at` is set before the purge deletes anything, so either this
     // check sees it, or the purge's listing sees our objects.)
-    let published =
-        sqlx::query("UPDATE assets SET thumbhash = $2, derived_bytes = $3 WHERE id = $1 AND purging_at IS NULL")
-            .bind(job.asset_id)
-            .bind(&d.thumbhash)
-            .bind(derived_bytes)
-            .execute(&ctx.db)
-            .await
-            .context("update thumbhash")?
-            .rows_affected();
+    // The recipe must also be the one that was rendered: an edit that landed meanwhile has queued its own render (or is
+    // waiting on this job), so this one is thrown away and retried rather than showing the old picture.
+    let published = sqlx::query(
+        "UPDATE assets SET thumbhash = $2, derived_bytes = $3
+         WHERE id = $1 AND purging_at IS NULL AND recipe IS NOT DISTINCT FROM $4",
+    )
+    .bind(job.asset_id)
+    .bind(&d.thumbhash)
+    .bind(derived_bytes)
+    .bind(recipe.map(sqlx::types::Json))
+    .execute(&ctx.db)
+    .await
+    .context("update thumbhash")?
+    .rows_affected();
     if published == 0 {
+        return recipe_moved_on(ctx, job, asset, "rendering").await;
+    }
+    // The preview exists now: queue the embedding for search (background priority work, see `embed`). The pipeline
+    // version is the model version, so a model swap re-embeds through the same job. After a change of the recipe the
+    // picture the embedding describes is a different one: queue it again even if it was embedded before.
+    if job.version == jobs::RERENDER_VERSION {
+        // (The text read off the old picture, and where it was, is wrong for the new one: it is read again.)
+        cyanotype_core::ocr::forget_and_requeue(&ctx.db, job.asset_id, cyanotype_core::ocr::VERSION)
+            .await
+            .context("read the text again")?;
+        jobs::requeue(&ctx.db, jobs::KIND_EMBED, job.asset_id, ctx.search_model.version()).await
+    } else {
+        jobs::enqueue(&ctx.db, jobs::KIND_EMBED, job.asset_id, ctx.search_model.version()).await
+    }
+    .context("queue embedding")?;
+    Ok(Outcome::Done)
+}
+
+/// An UPDATE that guards on the photo and its recipe changed nothing: the photo is gone (take the derived objects back out)
+/// or its recipe changed under the job (fail it, so it is retried against the new recipe).
+async fn recipe_moved_on(ctx: &Arc<Ctx>, job: &jobs::Job, asset: &AssetRow, doing: &str) -> Result<Outcome> {
+    let purging: Option<bool> = sqlx::query_scalar("SELECT purging_at IS NOT NULL FROM assets WHERE id = $1")
+        .bind(job.asset_id)
+        .fetch_optional(&ctx.db)
+        .await
+        .context("recheck asset")?;
+    if purging.unwrap_or(true) {
         ctx.storage
             .delete_prefix_all_versions(&keys::derived_prefix(asset.owner_id, job.asset_id))
             .await
             .context("remove derived objects of a deleted asset")?;
         return Ok(Outcome::Skipped("asset deleted while rendering"));
     }
-    // The preview exists now: queue the embedding for search (background priority work, see `embed`). The pipeline
-    // version is the model version, so a model swap re-embeds through the same job.
-    jobs::enqueue(&ctx.db, jobs::KIND_EMBED, job.asset_id, ctx.search_model.version())
+    anyhow::bail!("the photo's recipe changed while {doing}; running again")
+}
+
+/// Write `derived/{owner}/{asset}/edited.jpg`: the original with the photo's recipe applied, as a JPEG of at most 4096 px on
+/// the long edge and no metadata. What "Download edited" and share links of an edited photo serve.
+#[allow(clippy::too_many_arguments)]
+async fn edited_copy(
+    ctx: &Arc<Ctx>,
+    job: &jobs::Job,
+    info: &JobInfo,
+    asset: &AssetRow,
+    kind: Kind,
+    bytes: Arc<Vec<u8>>,
+    held: Reservation,
+    base: u64,
+) -> Result<Outcome> {
+    let Some(recipe) = load_recipe(ctx, job.asset_id).await? else {
+        return Ok(Outcome::Skipped("the photo has no edit recipe"));
+    };
+    let (img, _held) = decode_for_recipe(ctx, info, kind, &bytes, base, held, &recipe, imaging::EXPORT_EDGE).await?;
+    let jpeg = tokio::task::spawn_blocking(move || imaging::export_jpeg(img, &recipe).map(|j| (j, recipe)))
         .await
-        .context("queue embedding")?;
+        .context("export task panicked")?
+        .map_err(|e| anyhow::Error::from(Permanent(format!("{e:#}"))))?;
+    let (jpeg, recipe) = jpeg;
+    let size = jpeg.len() as i64;
+    ctx.storage
+        .put_bytes(&keys::edited_copy(asset.owner_id, job.asset_id), jpeg, "image/jpeg")
+        .await?;
+    let published = sqlx::query(
+        "UPDATE assets SET edited_copy_at = now(), edited_copy_bytes = $2
+         WHERE id = $1 AND purging_at IS NULL AND recipe IS NOT DISTINCT FROM $3",
+    )
+    .bind(job.asset_id)
+    .bind(size)
+    .bind(sqlx::types::Json(recipe))
+    .execute(&ctx.db)
+    .await
+    .context("mark edited copy")?
+    .rows_affected();
+    if published == 0 {
+        return recipe_moved_on(ctx, job, asset, "writing the edited copy").await;
+    }
     Ok(Outcome::Done)
 }
 
@@ -942,6 +1166,222 @@ mod tests {
         assert!(matches!(
             run(&ctx, &job(ids[0]), &JobInfo::default()).await,
             Ok(Outcome::Skipped("unsupported content type"))
+        ));
+
+        pool.close().await;
+        let mut admin = PgConnection::connect(&admin_url).await.unwrap();
+        admin
+            .execute(format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)").as_str())
+            .await
+            .unwrap();
+    }
+
+    /// A photo with an edit recipe: the metadata job keeps the file's size next to the edited one, the thumbnail job renders
+    /// the edited picture and queues the embedding again, the edited-copy job writes the JPEG, and a render of a recipe that
+    /// has changed since is thrown away. Needs Postgres and the S3 variables.
+    #[tokio::test]
+    async fn a_recipe_is_rendered_by_the_thumbnail_and_edited_copy_jobs() {
+        let Ok(admin_url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        if std::env::var("S3_ENDPOINT").ok().filter(|v| !v.is_empty()).is_none() {
+            return;
+        }
+        let name = format!("cyanotype_test_{}", Uuid::new_v4().simple());
+        let mut admin = PgConnection::connect(&admin_url).await.unwrap();
+        admin.execute(format!("CREATE DATABASE {name}").as_str()).await.unwrap();
+        let (base, _) = admin_url.rsplit_once('/').unwrap();
+        let pool = db::connect(&format!("{base}/{name}")).await.unwrap();
+        db::migrate(&pool).await.unwrap();
+        let (owner,): (Uuid,) =
+            sqlx::query_as("INSERT INTO users (email, password_hash) VALUES ('rc@example.com','x') RETURNING id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let storage = Storage::new(&S3Config::from_env().expect("S3_* env"));
+        let ctx = Arc::new(Ctx {
+            db: pool.clone(),
+            storage: storage.clone(),
+            max_original_bytes: 1 << 26,
+            budget: MemoryBudget::new(1 << 30),
+            raw_develop: false,
+            search_model: cyanotype_clip::DEFAULT_MODEL,
+        });
+        // 3000 x 2000, so the thumbnail and the preview of a crop come from a larger decode than the plain preview.
+        let jpeg = crate::testgen::jpeg(crate::testgen::JpegSpec::new(3000, 2000));
+        let sha: [u8; 32] = Sha256::digest(&jpeg).into();
+        let key = keys::original(owner, &sha, "jpg");
+        ctx.storage.put_bytes(&key, jpeg.clone(), "image/jpeg").await.unwrap();
+        let (id,): (Uuid,) = sqlx::query_as(
+            "INSERT INTO assets (owner_id, sha256, original_key, original_name, content_type, size_bytes,
+                                 recipe)
+             VALUES ($1, $2, $3, 'p.jpg', 'image/jpeg', $4,
+                     '{\"rotate\":90,\"crop\":{\"x\":0.0,\"y\":0.0,\"w\":1.0,\"h\":0.5}}') RETURNING id",
+        )
+        .bind(owner)
+        .bind(&sha[..])
+        .bind(&key)
+        .bind(jpeg.len() as i64)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let job = |kind: &str, version| jobs::Job {
+            id: 1,
+            kind: kind.into(),
+            asset_id: id,
+            version,
+            attempts: 1,
+        };
+        // Text was read off the old picture.
+        sqlx::query(
+            "INSERT INTO asset_text (asset_id, model, version, text) VALUES ($1, 'ppocr-v6-small', 1, 'old words')",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO jobs (kind, asset_id, version, state) VALUES ('ocr', $1, 1, 'done')")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // The embedding exists from before the edit.
+        sqlx::query("INSERT INTO jobs (kind, asset_id, version, state) VALUES ('embed', $1, $2, 'done')")
+            .bind(id)
+            .bind(cyanotype_clip::DEFAULT_MODEL.version())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // The file is 3000 x 2000; turned a quarter it is 2000 x 3000, and the top half of that is 2000 x 1500.
+        assert!(matches!(
+            run(&ctx, &job(jobs::KIND_METADATA, 1), &JobInfo::default()).await,
+            Ok(Outcome::Done)
+        ));
+        let dims: (i32, i32, Option<i32>, Option<i32>) =
+            sqlx::query_as("SELECT width, height, width_orig, height_orig FROM assets WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(dims, (2000, 1500, Some(3000), Some(2000)));
+
+        // The thumbnail: of the edited picture, and the embedding of it is queued again.
+        assert!(matches!(
+            run(
+                &ctx,
+                &job(jobs::KIND_THUMBNAIL, jobs::RERENDER_VERSION),
+                &JobInfo::default()
+            )
+            .await,
+            Ok(Outcome::Done)
+        ));
+        let webp_dims = |b: Vec<u8>| {
+            let d = webp::Decoder::new(&b).decode().expect("valid webp");
+            (d.width(), d.height())
+        };
+        let thumb = ctx.storage.get_bytes(&keys::thumb(owner, id)).await.unwrap();
+        let preview = ctx.storage.get_bytes(&keys::preview(owner, id)).await.unwrap();
+        assert_eq!(webp_dims(thumb), (320, 240));
+        assert_eq!(webp_dims(preview), (1440, 1080));
+        // The editor works on the whole upright picture (before the recipe), not the crop.
+        let base = ctx.storage.get_bytes(&keys::edit_base(owner, id)).await.unwrap();
+        assert_eq!(webp_dims(base), (1440, 960), "upright, before the recipe turns it");
+        let embed: String = sqlx::query_scalar("SELECT state FROM jobs WHERE asset_id = $1 AND kind = 'embed'")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(embed, "queued", "a render after a recipe change is embedded again");
+        let text: i64 = sqlx::query_scalar("SELECT count(*) FROM asset_text WHERE asset_id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let ocr: String = sqlx::query_scalar("SELECT state FROM jobs WHERE asset_id = $1 AND kind = 'ocr'")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            (text, ocr.as_str()),
+            (0, "queued"),
+            "the text of the old picture is forgotten and read again"
+        );
+
+        // The edited copy: a JPEG of the edited picture, without metadata.
+        assert!(matches!(
+            run(&ctx, &job(jobs::KIND_EDITED_COPY, 1), &JobInfo::default()).await,
+            Ok(Outcome::Done)
+        ));
+        let copy = ctx.storage.get_bytes(&keys::edited_copy(owner, id)).await.unwrap();
+        let img = imaging::decode(&copy).unwrap();
+        assert_eq!((img.width(), img.height()), (2000, 1500));
+        assert!(!copy.windows(4).any(|w| w == b"Exif"));
+        let (at, bytes): (Option<time::OffsetDateTime>, Option<i64>) =
+            sqlx::query_as("SELECT edited_copy_at, edited_copy_bytes FROM assets WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(at.is_some() && bytes == Some(copy.len() as i64));
+
+        // A recipe that changed while a render was running: that render is not published (the job fails and is retried).
+        let stale = Recipe {
+            rotate: 90,
+            ..Recipe::default()
+        };
+        let asset = AssetRow {
+            owner_id: owner,
+            sha256: sha.to_vec(),
+            original_key: key.clone(),
+            original_name: "p.jpg".into(),
+            content_type: "image/jpeg".into(),
+            size_bytes: jpeg.len() as i64,
+            purging: false,
+        };
+        let (d, base) = imaging::derive_edited(imaging::decode(&jpeg).unwrap(), &stale).unwrap();
+        let err = store_render(
+            &ctx,
+            &job(jobs::KIND_THUMBNAIL, jobs::RERENDER_VERSION),
+            &asset,
+            d,
+            Some((stale, base)),
+        )
+        .await
+        .err()
+        .expect("the recipe on the row is another one");
+        assert!(err.to_string().contains("recipe changed"), "{err:#}");
+
+        // Reverting: the next render is of the plain picture and the dimensions come back.
+        sqlx::query("UPDATE assets SET recipe = NULL, width = 3000, height = 2000, width_orig = NULL, height_orig = NULL WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            run(
+                &ctx,
+                &job(jobs::KIND_THUMBNAIL, jobs::RERENDER_VERSION),
+                &JobInfo::default()
+            )
+            .await,
+            Ok(Outcome::Done)
+        ));
+        let thumb = ctx.storage.get_bytes(&keys::thumb(owner, id)).await.unwrap();
+        assert_eq!(webp_dims(thumb), (320, 213));
+        assert!(
+            ctx.storage
+                .head_size(&keys::edit_base(owner, id))
+                .await
+                .unwrap()
+                .is_none(),
+            "the editor's picture goes with the recipe"
+        );
+        // An edited copy for a photo with no recipe is skipped, not written.
+        assert!(matches!(
+            run(&ctx, &job(jobs::KIND_EDITED_COPY, 1), &JobInfo::default()).await,
+            Ok(Outcome::Skipped(_))
         ));
 
         pool.close().await;

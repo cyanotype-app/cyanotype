@@ -57,6 +57,7 @@ const ROUTES: &[(&str, &str, Who)] = &[
     ("GET", "/assets/{id}/details", Read),
     ("GET", "/assets/{id}/text", Read),
     ("GET", "/assets/{id}/download", Read),
+    ("GET", "/assets/{id}/download/edited", Read),
     ("POST", "/assets/favorite", Write),
     ("POST", "/assets/rating", Write),
     ("POST", "/assets/duplicates/scan", Write),

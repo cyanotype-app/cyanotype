@@ -44,6 +44,8 @@ pub struct Prepared {
     pub exif: ExifInfo,
     /// Estimated peak memory of [`render`], in bytes.
     pub cost_bytes: u64,
+    /// The long edge the reduced decoders aim for (at least): [`imaging::PREVIEW_EDGE`], more for the render of a crop.
+    pub edge: u32,
     /// Set when rendering must be refused (too big for the memory budget, no preview, ...).
     pub refusal: Option<String>,
     work: Work,
@@ -51,6 +53,12 @@ pub struct Prepared {
 
 /// Read headers and metadata without decoding pixels.
 pub fn prepare(kind: Kind, bytes: &Arc<Vec<u8>>, limits: Limits) -> Result<Prepared> {
+    prepare_for(kind, bytes, limits, imaging::PREVIEW_EDGE)
+}
+
+/// [`prepare`] for a render that needs the original at `edge` on the long edge (a crop). Formats that decode at a
+/// fraction of their size are budgeted for that fraction; the rest decode whole anyway.
+pub fn prepare_for(kind: Kind, bytes: &Arc<Vec<u8>>, limits: Limits, edge: u32) -> Result<Prepared> {
     match kind {
         Kind::Jpeg | Kind::Png | Kind::Webp => {
             let exif = exif::parse(bytes);
@@ -61,7 +69,7 @@ pub fn prepare(kind: Kind, bytes: &Arc<Vec<u8>>, limits: Limits) -> Result<Prepa
             let orientation = exif.orientation;
             // Formats that can be decoded at a fraction of their size are budgeted for that, not for the full image.
             let full_cost = pixels * bpp;
-            let (cost, work) = match reduced_decode(kind, bytes, orientation, (w, h)) {
+            let (cost, work) = match reduced_decode(kind, bytes, orientation, (w, h), edge) {
                 // Only when it is actually cheaper: just over the reduction threshold the fixed overhead can exceed
                 // what a plain decode of a small image costs.
                 Some((cost, work)) if cost < full_cost => (cost, work),
@@ -74,6 +82,7 @@ pub fn prepare(kind: Kind, bytes: &Arc<Vec<u8>>, limits: Limits) -> Result<Prepa
                 width,
                 height,
                 cost_bytes: cost,
+                edge,
                 refusal,
                 work,
                 exif,
@@ -81,11 +90,12 @@ pub fn prepare(kind: Kind, bytes: &Arc<Vec<u8>>, limits: Limits) -> Result<Prepa
         }
         Kind::Heif => {
             let h = heif::inspect(bytes)?;
-            let cost = h.cost_bytes();
+            let cost = h.cost_bytes_for(edge);
             Ok(Prepared {
                 width: h.width,
                 height: h.height,
                 cost_bytes: cost,
+                edge,
                 refusal: over_budget(cost, limits, h.width, h.height),
                 exif: h.exif.clone(),
                 work: Work::Heif(Box::new(h)),
@@ -103,6 +113,7 @@ pub fn prepare(kind: Kind, bytes: &Arc<Vec<u8>>, limits: Limits) -> Result<Prepa
                 width: hdr.width,
                 height: hdr.height,
                 cost_bytes: hdr.cost_bytes(),
+                edge,
                 refusal: hdr.plan.as_ref().err().cloned(),
                 exif: hdr.exif.clone(),
                 work: Work::Raw(Box::new(hdr)),
@@ -112,19 +123,19 @@ pub fn prepare(kind: Kind, bytes: &Arc<Vec<u8>>, limits: Limits) -> Result<Prepa
 }
 
 /// The reduced-size decode for this file, if it has one that helps: its estimated peak and the work to do.
-fn reduced_decode(kind: Kind, bytes: &[u8], orientation: u8, full: (u32, u32)) -> Option<(u64, Work)> {
+fn reduced_decode(kind: Kind, bytes: &[u8], orientation: u8, full: (u32, u32), edge: u32) -> Option<(u64, Work)> {
     match kind {
         Kind::Jpeg => {
             let info = imaging::jpeg_info(bytes)?;
             // Same size as the header the generic reader found; no reduction means the normal path is as good.
-            if !info.scalable() || (info.width, info.height) != full || info.scale_eighths() >= 8 {
+            if !info.scalable() || (info.width, info.height) != full || info.scale_eighths_for(edge) >= 8 {
                 return None;
             }
-            Some((info.scaled_cost_bytes(), Work::JpegScaled { orientation, full }))
+            Some((info.scaled_cost_bytes_for(edge), Work::JpegScaled { orientation, full }))
         }
         Kind::Png => {
             let alpha = imaging::png_streamable(bytes)?;
-            let cost = crate::stream::Accum::bytes_for(full.0, full.1, imaging::PREVIEW_EDGE, alpha)
+            let cost = crate::stream::Accum::bytes_for(full.0, full.1, edge, alpha)
                 + u64::from(full.0) * 8 // the source row and the converted row
                 + PNG_STREAM_OVERHEAD;
             Some((cost, Work::PngStreamed { orientation, full }))
@@ -173,6 +184,7 @@ impl Prepared {
             height: self.height,
             exif: self.exif.clone(),
             cost_bytes: cost,
+            edge: self.edge,
             refusal: None,
             work: Work::Raster { orientation },
         })
@@ -187,19 +199,50 @@ pub fn render(p: &Prepared, bytes: &Arc<Vec<u8>>) -> Result<imaging::Derived> {
     }
     match &p.work {
         Work::Raster { orientation } => imaging::derive(bytes, *orientation),
-        Work::JpegScaled { orientation, full } => {
-            imaging::derive_scaled(imaging::decode_jpeg_scaled(bytes)?, *orientation, full.0, full.1)
-        }
-        Work::PngStreamed { orientation, full } => {
-            imaging::derive_scaled(imaging::decode_png_streamed(bytes)?, *orientation, full.0, full.1)
-        }
+        Work::JpegScaled { orientation, full } => imaging::derive_scaled(
+            imaging::decode_jpeg_scaled_to(bytes, p.edge)?,
+            *orientation,
+            full.0,
+            full.1,
+        ),
+        Work::PngStreamed { orientation, full } => imaging::derive_scaled(
+            imaging::decode_png_streamed_to(bytes, p.edge)?,
+            *orientation,
+            full.0,
+            full.1,
+        ),
         Work::Heif(h) => {
             // libheif already applied irot/imir; EXIF orientation is not applied on top.
-            let img = heif::decode_reduced(bytes, h, imaging::PREVIEW_EDGE).context("decode HEIF")?;
+            let img = heif::decode_reduced(bytes, h, p.edge).context("decode HEIF")?;
             imaging::derive_scaled(img, 1, h.width, h.height)
         }
         Work::Raw(h) => raw::render(bytes, h),
     }
+}
+
+/// Decode for an edit recipe: the picture as it is displayed (EXIF orientation applied), reduced so that its long edge is
+/// about `p.edge`. The caller has reserved `p.cost_bytes` and room for the copies the recipe makes.
+pub fn decode_upright(p: &Prepared, bytes: &Arc<Vec<u8>>) -> Result<image::DynamicImage> {
+    if let Some(r) = &p.refusal {
+        bail!("{r}");
+    }
+    let (img, orientation) = match &p.work {
+        Work::Raster { orientation } => (imaging::decode(bytes)?, *orientation),
+        Work::JpegScaled { orientation, .. } => (imaging::decode_jpeg_scaled_to(bytes, p.edge)?, *orientation),
+        Work::PngStreamed { orientation, .. } => (imaging::decode_png_streamed_to(bytes, p.edge)?, *orientation),
+        // libheif already applied irot/imir.
+        Work::Heif(h) => (heif::decode_reduced(bytes, h, p.edge).context("decode HEIF")?, 1),
+        Work::Raw(h) => raw::render_image(bytes, h)?,
+    };
+    // Whole-image decodes and the coarse steps of the reduced ones can be larger than asked for: bring them down before
+    // the quarter turns and the straighten copy them.
+    let (w, h) = imaging::fit_within(img.width(), img.height(), p.edge);
+    let img = if (w, h) == (img.width(), img.height()) {
+        img
+    } else {
+        imaging::resize(&img, w, h)?
+    };
+    Ok(imaging::apply_orientation(img, orientation))
 }
 
 #[cfg(test)]

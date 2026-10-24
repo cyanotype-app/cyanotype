@@ -8,6 +8,7 @@ use axum::{
     Json,
     extract::{Path, State},
 };
+use cyanotype_core::recipe::Recipe;
 use serde::Serialize;
 use sqlx::FromRow;
 use time::OffsetDateTime;
@@ -50,6 +51,10 @@ struct Row {
     location_edited: bool,
     latitude_exif: Option<f64>,
     longitude_exif: Option<f64>,
+    recipe: Option<sqlx::types::Json<Recipe>>,
+    width_orig: Option<i32>,
+    height_orig: Option<i32>,
+    edited_copy_at: Option<OffsetDateTime>,
 }
 
 #[derive(Serialize)]
@@ -79,6 +84,10 @@ struct EditState {
     original_date: Option<DateInfo>,
     /// The coordinates the file says (when the location was edited); null when it had none.
     original_location: Option<Coordinates>,
+    /// The rotate / straighten / crop recipe (`cyanotype_core::recipe`), null when the picture is shown as the file is.
+    recipe: Option<Recipe>,
+    /// The edited JPEG exists ("Download edited" answers at once instead of asking the worker).
+    edited_copy_ready: bool,
 }
 
 #[derive(Serialize)]
@@ -157,7 +166,8 @@ pub(super) async fn get(
         "SELECT original_name, content_type, size_bytes, width, height, taken_at, file_modified_at, created_at,
                 latitude, longitude, camera_make, camera_model, camera_label, lens_model, exif, file_ext,
                 place_city, place_region, place_country, place_country_code, burst_id,
-                caption, date_edited, taken_at_exif, taken_offset_edit, location_edited, latitude_exif, longitude_exif
+                caption, date_edited, taken_at_exif, taken_offset_edit, location_edited, latitude_exif, longitude_exif,
+                recipe, width_orig, height_orig, edited_copy_at
          FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL AND (NOT hidden OR $3)",
     )
     .bind(id)
@@ -256,6 +266,8 @@ pub(super) async fn get(
                 .then_some(r.latitude_exif.zip(r.longitude_exif))
                 .flatten()
                 .map(|(latitude, longitude)| Coordinates { latitude, longitude }),
+            recipe: r.recipe.as_ref().map(|j| j.0),
+            edited_copy_ready: r.edited_copy_at.is_some(),
         },
         location,
         camera,
@@ -266,9 +278,14 @@ pub(super) async fn get(
             raw,
             content_type: r.content_type,
             size_bytes: r.size_bytes,
-            width: r.width,
-            height: r.height,
-            megapixels: r.width.zip(r.height).and_then(|(w, h)| details::megapixels(w, h)),
+            // The file's own size, not the cropped picture's.
+            width: r.width_orig.or(r.width),
+            height: r.height_orig.or(r.height),
+            megapixels: r
+                .width_orig
+                .or(r.width)
+                .zip(r.height_orig.or(r.height))
+                .and_then(|(w, h)| details::megapixels(w, h)),
             color_space: extra.file.color_space,
             software: extra.file.software,
         },

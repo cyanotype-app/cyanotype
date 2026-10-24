@@ -7,11 +7,17 @@
 //!            | {"shift_seconds": -3600}                              // move every photo by this much
 //!            | {"revert": true},                                     // back to what the file says
 //!  "location": {"latitude": 38.72, "longitude": -9.14} | {"revert": true},
-//!  "caption":  {"text": "Dinner by the river"} | {"revert": true}}
+//!  "caption":  {"text": "Dinner by the river"} | {"revert": true},
+//!  "recipe":   {"rotate": 90, "straighten": -1.5, "crop": {"x": 0.1, "y": 0.1, "w": 0.8, "h": 0.6}}   // set (rotate/straighten/crop all optional)
+//!            | {"turn": 90}                                      // turn what is shown another quarter turn (-90, 180, ...), crop follows
+//!            | {"revert": true}}                                 // back to the original picture
 //! ```
 //!
-//! Only the caller's own photos that are not in the trash (and not the hidden half of a RAW + JPEG pair) are edited; any
-//! other id is counted as `missing`. Each photo's edits are written to the bucket first and then to its row, so a failure
+//! A recipe is rotate / straighten / crop of the *picture*; the file is never touched, and the worker renders the thumbnail,
+//! preview and "edited" JPEG again (`cyanotype_core::recipe`).
+//!
+//! Only the caller's own photos that are not in the trash (and not the hidden half of a RAW + JPEG pair) are edited, and a
+//! Hidden photo only from a session that has unlocked the Hidden view; any other id is counted as `missing`. Each photo's edits are written to the bucket first and then to its row, so a failure
 //! leaves the bucket (the source of truth) at least as new as the database; `failed` lists the ids that could not be
 //! written, so a retry can be limited to them (a shift would otherwise move the others twice). The photo's original is
 //! never touched.
@@ -19,7 +25,10 @@ use axum::{
     Json,
     extract::{Query, State},
 };
-use cyanotype_core::edits::{self, Edits};
+use cyanotype_core::{
+    edits::{self, Edits},
+    recipe::{Crop, Recipe},
+};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use time::{OffsetDateTime, PrimitiveDateTime, UtcOffset};
@@ -55,6 +64,26 @@ pub(super) enum CaptionEdit {
     Set { text: String },
 }
 
+/// A recipe as a client sends it. `deny_unknown_fields` so a misspelt key is a 400, not a silently different recipe.
+#[derive(Deserialize, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RecipeSet {
+    #[serde(default)]
+    rotate: u16,
+    #[serde(default)]
+    straighten: f32,
+    #[serde(default)]
+    crop: Option<Crop>,
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+#[serde(untagged)]
+pub(super) enum RecipeEdit {
+    Revert { revert: bool },
+    Turn { turn: i32 },
+    Set(RecipeSet),
+}
+
 #[derive(Deserialize)]
 pub(super) struct EditRequest {
     #[serde(flatten)]
@@ -62,6 +91,7 @@ pub(super) struct EditRequest {
     date: Option<DateEdit>,
     location: Option<LocationEdit>,
     caption: Option<CaptionEdit>,
+    recipe: Option<RecipeEdit>,
 }
 
 #[derive(Serialize, Debug, Default, PartialEq, Eq)]
@@ -125,8 +155,8 @@ enum Outcome {
     Failed(Uuid),
 }
 
-async fn edit_one(s: AppState, owner: Uuid, id: Uuid, req: std::sync::Arc<Plan>) -> Outcome {
-    match try_edit_one(&s, owner, id, &req).await {
+async fn edit_one(s: AppState, owner: Uuid, id: Uuid, unlocked: bool, req: std::sync::Arc<Plan>) -> Outcome {
+    match try_edit_one(&s, owner, id, unlocked, &req).await {
         Ok(o) => o,
         Err(e) => {
             tracing::warn!(asset_id = %id, error = ?e, "could not edit a photo");
@@ -135,14 +165,16 @@ async fn edit_one(s: AppState, owner: Uuid, id: Uuid, req: std::sync::Arc<Plan>)
     }
 }
 
-async fn try_edit_one(s: &AppState, owner: Uuid, id: Uuid, plan: &Plan) -> anyhow::Result<Outcome> {
+async fn try_edit_one(s: &AppState, owner: Uuid, id: Uuid, unlocked: bool, plan: &Plan) -> anyhow::Result<Outcome> {
     let t: Option<Target> = sqlx::query_as(
         "SELECT sha256, coalesce(taken_at, file_modified_at, created_at) AS sort_time, taken_at, date_edited,
                 taken_offset_edit, exif
-         FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL AND primary_id IS NULL AND purging_at IS NULL",
+         FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL AND primary_id IS NULL AND purging_at IS NULL
+           AND (NOT hidden OR $3)",
     )
     .bind(id)
     .bind(owner)
+    .bind(unlocked)
     .fetch_optional(&s.db)
     .await?;
     let Some(t) = t else { return Ok(Outcome::Missing) };
@@ -185,17 +217,29 @@ async fn try_edit_one(s: &AppState, owner: Uuid, id: Uuid, plan: &Plan) -> anyho
         None => {}
         Some(c) => e.caption.clone_from(c),
     }
+    match &plan.recipe {
+        None => {}
+        Some(PlanRecipe::Revert) => e.recipe = None,
+        Some(PlanRecipe::Set(r)) => e.recipe = Some(*r),
+        Some(PlanRecipe::Turn(quarters)) => e.recipe = Some(turned(e.recipe.unwrap_or_default(), *quarters)),
+    }
     let e = e.validated().map_err(anyhow::Error::msg)?;
     // Same content as now: nothing to write (and no new `updated_at` to disagree about).
-    if (e.taken_at, e.taken_offset, e.latitude, e.longitude, &e.caption)
-        == (
-            before.taken_at,
-            before.taken_offset,
-            before.latitude,
-            before.longitude,
-            &before.caption,
-        )
-    {
+    if (
+        e.taken_at,
+        e.taken_offset,
+        e.latitude,
+        e.longitude,
+        &e.caption,
+        e.recipe,
+    ) == (
+        before.taken_at,
+        before.taken_offset,
+        before.latitude,
+        before.longitude,
+        &before.caption,
+        before.recipe,
+    ) {
         return Ok(Outcome::Unchanged);
     }
     let e = Edits {
@@ -218,6 +262,32 @@ pub(super) struct Plan {
     /// Some(None) reverts, Some(Some(..)) sets.
     location: Option<Option<(f64, f64)>>,
     caption: Option<Option<String>>,
+    recipe: Option<PlanRecipe>,
+}
+
+enum PlanRecipe {
+    Revert,
+    Set(Recipe),
+    /// Quarter turns clockwise (negative = counterclockwise).
+    Turn(i32),
+}
+
+/// `r` turned `quarters` more quarter turns clockwise: the picture turns, and the crop rectangle turns with it
+/// (a frame turned a quarter clockwise maps the rectangle `(x, y, w, h)` to `(1 - y - h, x, h, w)`). The straighten angle
+/// stays: a quarter turn and a small tilt commute.
+fn turned(mut r: Recipe, quarters: i32) -> Recipe {
+    for _ in 0..quarters.rem_euclid(4) {
+        r.rotate = (r.rotate + 90) % 360;
+        if let Some(c) = r.crop {
+            r.crop = Some(Crop {
+                x: 1.0 - c.y - c.h,
+                y: c.x,
+                w: c.h,
+                h: c.w,
+            });
+        }
+    }
+    r
 }
 
 enum PlanDate {
@@ -267,8 +337,33 @@ impl Plan {
             // An empty caption is no caption.
             Some(CaptionEdit::Set { text }) => Some(Some(text.clone())),
         };
-        if date.is_none() && location.is_none() && caption.is_none() {
-            return Err(bad("nothing to change: send date, location or caption"));
+        let recipe = match &req.recipe {
+            None => None,
+            Some(RecipeEdit::Revert { revert }) => {
+                revert_only(revert)?;
+                Some(PlanRecipe::Revert)
+            }
+            Some(RecipeEdit::Turn { turn }) => {
+                if turn % 90 != 0 || turn.unsigned_abs() > 3600 {
+                    return Err(bad("turn must be a multiple of 90 degrees"));
+                }
+                Some(PlanRecipe::Turn(turn / 90))
+            }
+            Some(RecipeEdit::Set(r)) => {
+                let set = Recipe {
+                    rotate: r.rotate,
+                    straighten: r.straighten,
+                    crop: r.crop,
+                };
+                // None = nothing to do: the same as a revert.
+                Some(match set.normalized().map_err(ApiError::BadRequest)? {
+                    Some(n) => PlanRecipe::Set(n),
+                    None => PlanRecipe::Revert,
+                })
+            }
+        };
+        if date.is_none() && location.is_none() && caption.is_none() && recipe.is_none() {
+            return Err(bad("nothing to change: send date, location, caption or recipe"));
         }
         // What is the same for every photo is checked once, so a bad coordinate or caption is one 400, not a failure per photo.
         let probe = Edits {
@@ -286,6 +381,7 @@ impl Plan {
             date,
             location,
             caption: caption.map(|c| c.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())),
+            recipe,
         })
     }
 }
@@ -310,7 +406,7 @@ pub(super) async fn edit(
     for chunk in ids.chunks(CONCURRENCY) {
         let mut set = JoinSet::new();
         for id in chunk {
-            set.spawn(edit_one(s.clone(), user.id, *id, plan.clone()));
+            set.spawn(edit_one(s.clone(), user.id, *id, unlock.0, plan.clone()));
         }
         while let Some(done) = set.join_next().await {
             match done.map_err(|e| ApiError::Internal(e.into()))? {

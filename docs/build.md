@@ -163,6 +163,15 @@ deadlock two jobs each waiting for the other). While it waits, its downloaded or
 unaccounted. That is bounded by `WORKER_HEAVY_CONCURRENCY` originals, and the 384 MB between the budget
 and the container limit absorbs it.
 
+**Photos with a rotate/crop recipe** (`docs/library.md`, "Rotate and crop") are decoded for the recipe, not for the plain preview: the
+render asks for the original at the size the crop needs (the preview edge divided by the crop's share of the long edge, at most 8,192 px;
+4,096 px divided by that share for the edited JPEG), plus 8 bytes per output pixel for the copies the turn, the straighten and the
+crop make. The job tries that edge, then half of it, and so on down to the plain preview edge, and takes the first whose estimate fits
+the budget, so a tight budget makes a crop of a very large file *softer*, never a failed job (only an original that does not fit even the
+plain preview is refused, as before). The JPEG path uses the DCT-scaled decoder at the larger factor (a 6,000 px JPEG at an edge of 4,096 px
+decodes whole, about 3 bytes a pixel plus the copies), HEIF and streamed PNG their reduced decoders with the larger target, and a
+RAW is rendered from the same embedded preview as before.
+
 Photos refused before this change ("decoding a ... image needs about N MB, over the worker memory budget") are requeued
 by migration `0010_requeue_memory_refusals.sql` the first time it runs, so a deploy reprocesses them. Anything the
 migration does not match (originals larger than the budget itself, RAW without a preview) stays failed and is retried by

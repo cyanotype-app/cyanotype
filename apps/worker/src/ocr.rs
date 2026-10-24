@@ -130,6 +130,7 @@ fn foreground_kinds() -> impl Iterator<Item = &'static str> {
         jobs::KIND_PAIR,
         jobs::KIND_GEOCODE,
         jobs::KIND_SHARE_COPY,
+        jobs::KIND_EDITED_COPY,
         jobs::KIND_TAKEOUT,
     ])
 }

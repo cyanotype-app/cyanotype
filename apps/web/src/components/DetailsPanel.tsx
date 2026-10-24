@@ -9,6 +9,7 @@ import { useVerticalSwipe } from "../useInfoPanel";
 import { RatingStars } from "./Stars";
 import type { PhotoTag } from "../api";
 import { tagSearchHref } from "../tagText";
+import { fromServer, recipeText } from "../recipeText";
 
 // maplibre-gl is big: the small map loads only when a photo with a location is looked at.
 const PlaceMap = lazy(() => import("../map/PlaceMap"));
@@ -39,6 +40,8 @@ interface Props {
   tags?: PhotoTag[];
   onTag?: () => void;
   onUntag?: (tag: PhotoTag) => void;
+  /** Open the rotate/crop editor. The panel then has a Picture row describing the recipe, with the button. */
+  onEditPicture?: () => void;
 }
 
 type Follow = (e: MouseEvent<HTMLAnchorElement>, to: string) => void;
@@ -66,7 +69,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
  * files, albums and burst. A row appears only when the photo has the information. The camera, lens, place and date
  * are links to the search or the timeline for the same thing.
  */
-export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, onEdit, rating, onRate, tags, onTag, onUntag }: Props) {
+export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, onEdit, rating, onRate, tags, onTag, onUntag, onEditPicture }: Props) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const navigate = useNavigate();
   const follow: Follow = (e, to) => {
@@ -109,7 +112,7 @@ export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavi
           </p>
         )}
         {state.status === "ready" && (
-          <Body d={state.details} follow={follow} onEdit={onEdit} rating={rating} onRate={onRate} tags={tags} onTag={onTag} onUntag={onUntag} />
+          <Body d={state.details} follow={follow} onEdit={onEdit} rating={rating} onRate={onRate} tags={tags} onTag={onTag} onUntag={onUntag} onEditPicture={onEditPicture} />
         )}
       </div>
     </aside>
@@ -133,6 +136,7 @@ function Body({
   tags,
   onTag,
   onUntag,
+  onEditPicture,
 }: {
   d: PhotoDetails;
   follow: Follow;
@@ -142,6 +146,7 @@ function Body({
   tags?: PhotoTag[];
   onTag?: () => void;
   onUntag?: (tag: PhotoTag) => void;
+  onEditPicture?: () => void;
 }) {
   const when = whenText(d.date);
   const loc = d.location;
@@ -192,6 +197,16 @@ function Body({
           )}
           <button type="button" className="btn btn-glass details-edit" onClick={onTag}>
             Add tag
+          </button>
+        </Row>
+      )}
+
+      {onEditPicture && (
+        <Row label="Picture">
+          <span className="details-sub">{recipeText(fromServer(d.edits?.recipe), d.file.width, d.file.height)}</span>
+          {d.edits?.recipe && <span className="details-sub details-edited">Edited</span>}
+          <button type="button" className="btn btn-glass details-edit" aria-label="Rotate and crop the picture" onClick={onEditPicture}>
+            Crop
           </button>
         </Row>
       )}

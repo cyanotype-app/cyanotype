@@ -80,7 +80,7 @@ const MAX_SCAN_TUPLES: i32 = 20_000;
 
 const SORT_TIME: &str = "coalesce(a.taken_at, a.file_modified_at, a.created_at)";
 const LIST_COLS: &str = "a.id, a.original_name, a.content_type, a.size_bytes, a.width, a.height,
-        coalesce(a.taken_at, a.file_modified_at, a.created_at) AS sort_time, a.favorite, a.rating, a.archived, a.hidden, a.thumbhash, a.burst_id";
+        coalesce(a.taken_at, a.file_modified_at, a.created_at) AS sort_time, a.favorite, a.rating, a.archived, a.hidden, (a.recipe IS NOT NULL) AS edited, a.thumbhash, a.burst_id";
 /// The camera as the facets list it ("Canon EOS R5", "Apple iPhone 15"): a stored generated column (migration 0011).
 const CAMERA_LABEL: &str = "a.camera_label";
 /// Lowercase extension of the original's file name (a stored generated column, migration 0011).
