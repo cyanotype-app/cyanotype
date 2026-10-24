@@ -22,6 +22,7 @@ fn app() -> impl Fn(&PgPool) -> Router {
                 purge_wake: Default::default(),
                 text: std::sync::Arc::new(crate::testutil::FakeText::default()),
                 search: crate::testutil::default_search(),
+                faces_enabled: false,
             })
     }
 }
