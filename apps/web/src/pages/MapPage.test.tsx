@@ -35,17 +35,23 @@ vi.mock("../map/MapCanvas", () => ({
   },
 }));
 
-let observers: { cb: (e: { isIntersecting: boolean }[]) => void }[] = [];
+let observers: { cb: (e: { isIntersecting: boolean }[]) => void; off: boolean }[] = [];
+// The newest observer that is still connected: the list re-creates it a render after new photos arrive.
+const live = () => observers.filter((o) => !o.off).at(-1);
 beforeEach(() => {
   observers = [];
   vi.stubGlobal(
     "IntersectionObserver",
     class {
+      o: (typeof observers)[number];
       constructor(cb: (e: { isIntersecting: boolean }[]) => void) {
-        observers.push({ cb });
+        this.o = { cb, off: false };
+        observers.push(this.o);
       }
       observe() {}
-      disconnect() {}
+      disconnect() {
+        this.o.off = true;
+      }
       unobserve() {}
     },
   );
@@ -151,7 +157,8 @@ describe("MapPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: "move to Europe" }));
     await tile(3);
     // The end of the list comes into view: the next page is requested with the cursor, and appended.
-    act(() => observers.at(-1)!.cb([{ isIntersecting: true }]));
+    await waitFor(() => expect(live()).toBeDefined());
+    act(() => live()!.cb([{ isIntersecting: true }]));
     expect(await tile(5)).toBeInTheDocument();
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ bbox: "-10,40,10,50", cursor: "c1" }));
     expect(screen.getAllByRole("listitem")).toHaveLength(5);

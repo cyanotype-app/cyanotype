@@ -357,13 +357,24 @@ main {
   color: #9db4c6;
 }
 .lightbox-stage {
+  /* The photo's area: what is left between the bar and the stars/caption. Its size comes from the flex column alone
+     (container-type: size makes its content unable to push it), so the photo is fitted to a definite box. */
   position: relative;
   flex: 1;
   min-height: 0;
-  display: grid;
-  place-items: center;
+  overflow: hidden;
+  container-type: size;
   background-size: cover;
   background-position: center;
+  /* The photo area owns every touch gesture: pinch and double tap zoom the photo, one finger pans it (zoomed) or swipes
+     up for the details (at fit). The page outside it zooms as usual: this is not set anywhere else. */
+  touch-action: none;
+}
+.lightbox-stage.zoomed {
+  cursor: grab;
+}
+.lightbox-stage.zoomed:active {
+  cursor: grabbing;
 }
 .lightbox-stage::before {
   /* the blurred ThumbHash placeholder sits under a dark veil so it never competes with the photo */
@@ -372,15 +383,82 @@ main {
   inset: 0;
   background: rgb(0 10 17 / 0.8);
 }
-.lightbox-stage img {
-  position: relative;
+.lightbox-photo {
+  /* The zoomable layer: as big as the area (less the notch at the sides), the photo centred in it. */
+  --fit-w: calc(100cqw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  position: absolute;
+  inset: 0 env(safe-area-inset-right, 0px) 0 env(safe-area-inset-left, 0px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform-origin: 50% 50%;
+}
+.lightbox-photo.easing {
+  transition: transform 0.18s ease-out;
+}
+.lightbox-photo.gesturing {
+  will-change: transform;
+}
+.lightbox-photo img {
+  flex: none;
+  /* The photo's own size, never past the layer (which has a definite size of its own). */
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
   transition: opacity 0.2s;
 }
-.lightbox-stage img.loading {
+@supports (width: 1cqw) {
+  .lightbox-photo img.sized {
+    /* Once the picture's shape is known (--ar is width / height): as large as the area allows, up to twice its own pixels. */
+    width: min(var(--fit-w), calc(100cqh * var(--ar)), var(--cap));
+    height: auto;
+    aspect-ratio: var(--ar);
+    max-width: none;
+    max-height: none;
+  }
+}
+.lightbox-photo img.loading {
   opacity: 0;
+}
+/* The zoom buttons: the photo area's bottom corner. Touch screens show them only while zoomed (pinch is how it is done). */
+.zoom-controls {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border-radius: 0.8rem;
+  background: rgb(0 10 17 / 0.6);
+}
+.zoom-btn {
+  min-width: 2.5rem;
+  padding: 0 0.6rem;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+.zoom-fit {
+  font-size: 0.9rem;
+}
+.zoom-level {
+  min-width: 3.4rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9rem;
+  color: #e6eef5;
+}
+@media (pointer: coarse) {
+  .zoom-controls:not(.on) {
+    display: none;
+  }
+  .zoom-btn {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
 }
 .lightbox-msg {
   position: absolute;
@@ -1229,7 +1307,7 @@ textarea.text-input {
     padding-inline: max(1rem, env(safe-area-inset-left));
   }
   .lightbox-albums {
-    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    padding-bottom: 1rem;
   }
 
   /* Dialogs and the toast */
@@ -2498,9 +2576,9 @@ body:has(.selection-bar) .scrubber {
   display: flex;
   flex-direction: column;
 }
-.lightbox-stage {
-  /* One finger moving vertically is the swipe that opens the details; pinch stays the browser's. */
-  touch-action: pinch-zoom;
+/* The stars and caption under the photo stay clear of a phone's home indicator (the open panel does its own). */
+.lightbox-body:not(.with-info) .lightbox-main {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 .lightbox-info {
   gap: 0.4rem;
@@ -4587,9 +4665,10 @@ a.tag-chip-name:hover {
   background: rgb(255 255 255 / 0.16);
 }
 
-/* Lightbox on a phone, in one place: Close, the counter and the icon buttons (Info, Text, Similar photos, heart, crop,
-   whichever show) share row 1 down to 320 px, and the actions (Download, Share, More) span row 2. */
-@media (max-width: 600px) {
+/* Lightbox on a phone or a small tablet (up to 900 px, where the inline actions no longer fit): Close, the counter and the
+   icon buttons (Info, Text, Similar photos, heart, crop, whichever show) share row 1 down to 320 px, and the actions
+   (Download, Share, More) span row 2. */
+@media (max-width: 900px) {
   .lightbox-bar {
     display: flex;
     flex-wrap: wrap;
@@ -4636,6 +4715,13 @@ a.tag-chip-name:hover {
   }
   .lightbox-more {
     display: block;
+  }
+}
+@media (min-width: 601px) and (max-width: 900px) {
+  /* Wider than a phone: the actions keep a phone-sized row instead of stretching across the bar. */
+  .lightbox-actions {
+    flex: 0 1 28rem;
+    margin-inline: auto;
   }
 }
 
