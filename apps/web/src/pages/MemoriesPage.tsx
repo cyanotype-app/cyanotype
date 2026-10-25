@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { SlideshowButton } from "../slideshow/SlideshowHost";
+import { itemsSource } from "../slideshow/sources";
 import { api, ApiError, type AssetListItem, type Memories } from "../api";
 import { useAuth } from "../auth";
 import { Grid } from "../components/Grid";
@@ -94,9 +96,12 @@ export function MemoriesPage() {
           <p className="muted small">Photos taken on this date in earlier years.</p>
         </div>
         {flat.length > 0 && (
-          <button type="button" className="btn btn-quiet" aria-pressed={selecting} onClick={() => setSelecting(!selecting)}>
-            Select
-          </button>
+          <div className="album-head-actions">
+            <SlideshowButton source={() => itemsSource(flat, "On this day")} />
+            <button type="button" className="btn btn-quiet" aria-pressed={selecting} onClick={() => setSelecting(!selecting)}>
+              Select
+            </button>
+          </div>
         )}
       </div>
       <label className="sheet-check memories-switch">

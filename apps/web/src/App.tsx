@@ -14,6 +14,7 @@ import { AuditPage } from "./pages/admin/AuditPage";
 import { HealthPage } from "./pages/admin/HealthPage";
 import { Invites } from "./pages/admin/Invites";
 import { Duplicates } from "./pages/Duplicates";
+import { Frame } from "./pages/Frame";
 import { HiddenPage } from "./pages/HiddenPage";
 import { Library } from "./pages/Library";
 import { MemoriesPage } from "./pages/MemoriesPage";
@@ -33,6 +34,7 @@ import { TagsPage } from "./pages/Tags";
 import { SharedLinks } from "./pages/SharedLinks";
 import { Storage } from "./pages/Storage";
 import { Trash } from "./pages/Trash";
+import { SlideshowProvider } from "./slideshow/SlideshowHost";
 import { PeopleProvider } from "./usePeople";
 import { UploadProvider } from "./upload/UploadProvider";
 import { UploadTray } from "./upload/UploadTray";
@@ -47,6 +49,8 @@ export function App() {
       <Route path="/reset-password" element={<ResetPassword />} />
       {/* Public share links: no login, outside the signed-in shell. */}
       <Route path="/s/:token" element={<ShareView />} />
+      {/* The photo frame: a wall tablet's view. Signed in, but outside the shell (no bar, nothing to click). */}
+      <Route path="/frame" element={<Frame />} />
       <Route element={<RequireAuth />}>
         <Route path="/library" element={<Library key="all" />} />
         <Route path="/favorites" element={<Library key="favorites" favorites />} />
@@ -101,6 +105,7 @@ function RequireAuth() {
   return (
     <UploadProvider>
     <PeopleProvider>
+    <SlideshowProvider>
     <div className="shell">
       <header className="topbar">
         <Link to="/library" className="brand">
@@ -133,6 +138,7 @@ function RequireAuth() {
       </main>
       <UploadTray />
     </div>
+    </SlideshowProvider>
     </PeopleProvider>
     </UploadProvider>
   );

@@ -71,7 +71,8 @@ for (const width of [320, 360, 390, 600]) {
       const menu = viewer.getByRole("menu");
       await expect(menu).toBeVisible();
       const items = menu.getByRole("menuitem");
-      await expect(items).toHaveCount(4);
+      // Add to album, Play from here, Archive, Hide, Move to trash.
+      await expect(items).toHaveCount(5);
       const vp = page.viewportSize()!;
       for (const it of await items.all()) {
         const b = (await it.boundingBox())!;
@@ -99,7 +100,7 @@ test.describe("viewer bar 1024px", () => {
     const viewer = await openViewer(page);
     const actions = viewer.locator(".lightbox-actions");
     await expect(actions.getByRole("button", { name: "More" })).toBeHidden();
-    for (const name of ["Add to album", "Share", "Archive", "Hide", "Move to trash"]) {
+    for (const name of ["Add to album", "Play from here", "Share", "Archive", "Hide", "Move to trash"]) {
       await expect(actions.getByRole("button", { name })).toBeVisible();
     }
     await expect(actions.getByText("Download", { exact: true })).toBeVisible();

@@ -24,6 +24,8 @@ import { fitStyle } from "../photoFit";
 import { usePhotoZoom } from "../usePhotoZoom";
 import { sharperUrl } from "../zoomMath";
 import { ZoomControls } from "./ZoomControls";
+import { itemsSource } from "../slideshow/sources";
+import { useSlideshow } from "../slideshow/SlideshowHost";
 
 /** The keys that zoom the photo: + and = in, - and _ out, z between fit and zoomed. */
 const ZOOM_KEYS = ["+", "=", "-", "_", "z"];
@@ -357,6 +359,11 @@ export function Lightbox({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one polling run per save
   }, [waitingFor]);
 
+  const slideshow = useSlideshow();
+  const playFromHere = useCallback(() => {
+    const cur = items[index];
+    if (slideshow && cur) slideshow.start(itemsSource(items, "Photos", cur.id));
+  }, [slideshow, items, index]);
   const go = useCallback(
     (delta: number) => {
       const next = index + delta;
@@ -429,6 +436,17 @@ export function Lightbox({
         e.preventDefault();
         info.toggle();
       } else if (
+        e.key === "s" &&
+        slideshow &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !e.repeat &&
+        [null, dialogRef.current].includes((e.target as HTMLElement | null)?.closest('[role="dialog"]') ?? null)
+      ) {
+        e.preventDefault();
+        playFromHere();
+      } else if (
         e.key === "t" &&
         text.enabled &&
         !e.ctrlKey &&
@@ -477,7 +495,7 @@ export function Lightbox({
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [go, close, onTrash, onRate, items, index, info, closeInfo, loadDetails, text, closeText, pictureOpen, canEditPicture, moreOpen, zoom]);
+  }, [go, close, onTrash, onRate, items, index, info, closeInfo, loadDetails, text, closeText, pictureOpen, canEditPicture, moreOpen, zoom, slideshow, playFromHere]);
 
   // The More menu: focus its first item when it opens, and close it on a tap or click anywhere else.
   useEffect(() => {
@@ -573,6 +591,7 @@ export function Lightbox({
   // both places run the same handler.
   const overflow = [
     onAddToAlbum && { key: "album", label: "Add to album", run: onAddToAlbum },
+    slideshow && { key: "slideshow", label: "Play from here", run: playFromHere },
     onArchive && { key: "archive", label: item.archived === true ? "Restore" : "Archive", run: onArchive },
     onHide && { key: "hide", label: item.hidden === true ? "Unhide" : "Hide", run: onHide },
     onTrash && { key: "trash", label: "Move to trash", run: onTrash },

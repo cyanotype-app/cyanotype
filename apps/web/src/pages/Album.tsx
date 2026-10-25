@@ -17,6 +17,8 @@ import { similarUrl } from "../searchText";
 import { dateRange, hiddenNote, photoCount } from "../albumText";
 import { useSelection } from "../selection";
 import { useAssetPages } from "../useAssetPages";
+import { SlideshowButton } from "../slideshow/SlideshowHost";
+import { scopeSource } from "../slideshow/sources";
 
 const PAGE = 60;
 
@@ -298,6 +300,7 @@ function AlbumView({ id }: { id: string }) {
                 </button>
               </>
             )}
+            {album.photo_count > 0 && <SlideshowButton source={() => scopeSource({ album: id }, album.title)} />}
             <button
               type="button"
               className="btn btn-quiet"

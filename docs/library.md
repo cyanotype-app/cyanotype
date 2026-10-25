@@ -1874,3 +1874,98 @@ restored by `reindex`, and "Revert to original" puts the picture back.
   the bar or stars, at 320x568 to 1920x1080, light and dark, with the Info panel, and on the share page) and
   `e2e/viewer-zoom-layout.spec.ts` (ctrl + wheel, double click, keys, buttons, pan clamping, reset, a two-finger pinch and double tap by
   CDP touch events, swipe up off while zoomed, page zoom untouched, and the original requested only past the preview's resolution).
+
+# Slideshow and photo frame
+
+## What the user sees
+
+- **Slideshow.** A **Slideshow** button in the header of an album (smart ones too), the library, Favorites and the Archive, a search
+  (filters or words), a person, a tag, "On this day" and a share link's page starts a full-screen slideshow of what that page lists.
+  The viewer has **Play from here** (an action of its bar, in the More menu on a phone, or the **S** key): the slideshow starts at the photo on
+  show and goes on through the photos the viewer has loaded around it (as listed, oldest first, or shuffled with that photo first); Esc comes
+  back to the viewer.
+- **Settings** (the gear): time per photo (3, 5, 10 or 20 s), order (as listed = the page's order, newest first; oldest first; shuffle),
+  transition (crossfade or none) and whether to start again at the end. They are remembered per browser (`localStorage`, key
+  `cyanotype.slideshow`; a browser without storage uses the defaults). A device that asks for reduced motion
+  (`prefers-reduced-motion`) always gets a cut, and the transition setting says so.
+- **Controls** hide after 3 s without a mouse move, key or tap (a tap on the picture brings them back; they stay while paused, with the
+  settings open, or with the keyboard focus on a button). Swipe left and right on a touch screen for next and previous.
+- **Keys** (in the slideshow; it keeps every key from the page underneath, so the viewer's shortcuts do not act behind it):
+
+  | key | action |
+  |---|---|
+  | Space | play / pause |
+  | ← → | previous / next photo (also while paused) |
+  | F | full screen on / off (where the browser has it) |
+  | Esc | close the settings, else the slideshow (a browser in full screen takes the first Esc to leave full screen) |
+  | S | in the viewer: play slideshow from here (does not collide with the viewer's I, T, E, R, C, 0 to 5, + - Z, Delete) |
+
+- **Full screen** is requested from the click or key that starts the slideshow. Safari on an iPhone has no full screen for pages: the
+  button is not shown and the slideshow fills the window (`position: fixed; inset: 0`). The Screen Wake Lock keeps the screen on while it
+  runs (feature-detected; taken again when the tab comes back).
+- **Screen readers** hear "Slideshow playing / paused", "Photo 4 of 120" after a manual move, "End of the slideshow" and "Cannot reach the
+  server. Trying again."; a photo that changed by itself is not announced.
+- A video is never in a slideshow: Cyanotype does not import video, and a photo whose derived images are not ready is skipped.
+
+## The frame (`/frame`)
+
+A wall tablet's view: random photos, each fitted inside the screen over a blurred, darkened copy of itself, changing by themselves.
+Sign in on the tablet once (the session lasts 30 days from sign-in, not sliding), open `/frame`, and choose on the setup screen, or give the
+choice in the address and bookmark it:
+
+| parameter | meaning |
+|---|---|
+| `source=library` / `source=favorites` / `album=<id>` | what to show (default of the setup screen: the whole library) |
+| `interval=<seconds>` | time per photo, 5 to 3600, default 30 |
+| `clock=1` | the time and date, lower left |
+| `caption=1` | the photo's caption (if it has one), lower right |
+| `setup` | open the setup screen with the current choice |
+
+With no parameters the frame uses what this browser last started with (`localStorage`, `cyanotype.frame`), else shows the setup screen. A tap
+opens a small menu (change what is shown, full screen, exit, close; it closes by itself after 10 s; Esc opens and closes it).
+
+- **Which photos**: never hidden ones (the Hidden view is not a source), never trashed ones, a RAW + JPEG pair once; **archived photos are
+  left out** (the library and Favorites scopes skip them on the server, an album lists them, so the frame skips them on the client): the
+  archive is where a photo is put away on purpose. Shuffle is fair over the whole set: each pass is a fresh server-side shuffle, so every
+  photo comes once per pass, and a photo never follows itself.
+- **Running for days**: at most two photos (and their two blurred copies) are in the page; the page holds a window of about 60 past and
+  a chunk of 40 upcoming list entries; the decoded picture of every photo that has been shown is released; no object URLs are made at all
+  (the CSP has no `blob:` in `img-src`, the pictures are plain `<img>` addresses). The preview address is asked for just before a photo is
+  due (`GET /assets/previews`, valid for minutes), never kept from a list page, so an address cannot expire on screen. A request that
+  never answers is abandoned after 45 s.
+- **No network**: the photo on screen stays, a small "Offline. Trying again..." appears, and the retries wait 2, 5, 15, 30, 60 s and then
+  5 minutes; the browser's `online` event and the tab coming back retry at once. Photos that fail one by one (an expired link, a deleted
+  object) are skipped; three in a row, or any failure while the browser knows it is offline, count as trouble and are not skipped.
+- **Session ended** (401 from any call): a "Sign in again" screen with a Sign in button that returns to the frame. A tablet that boots
+  before its Wi-Fi shows "Waiting for the network" (it asks `GET /auth/me` every 10 s) instead of claiming to be signed out.
+
+## API (assets service, owner-scoped)
+
+| call | answer |
+|---|---|
+| `GET /assets/slideshow?scope=<json>&order=listed\|oldest\|shuffle&seed=&limit=&cursor=` | `{items, next_cursor, total}`. `scope` is the JSON of a bulk action's scope (`"library"`, `"favorites"`, `"archive"`, `{"album": id}`, `{"person": id}`, `{"search": {filters}}`, `"hidden"` while unlocked); trash and undo-batch scopes are `400`. Items are the library's list entries. `limit` 1 to 100 (default 40); `cursor` is an offset into the ordered view. `listed` is newest first (the page's order), `oldest` its reverse, `shuffle` orders by `md5(id \|\| seed)` (`seed`: up to 64 letters, digits, `-` or `_`), so one seed gives one order whatever the page size and no photo repeats within a pass. The view is resolved like "Select all" (a smart album by its rules), then ordered and cut in SQL: a page costs one pass over the view (tens of ms for 50,000 photos), and the browser only ever holds the pages it has asked for. `read` and `full` keys. |
+| `GET /assets/previews?ids=a,b,c` | `{items: [{id, preview_url, width, height, caption}]}` for up to 24 of the caller's own, live photos that have derived images (hidden ones only while the Hidden view is unlocked); anything else is left out. `preview_url` is the same presigned address `GET /assets/{id}` gives. |
+
+A text search is ranked and cannot be named as a scope, so the slideshow of one reads the search's own pages (as listed: lazily; oldest first or
+shuffle: up to 5,000 results read and ordered in the browser). A share link's slideshow does the same through the public items, and asks for each
+photo's preview address (`GET .../items/{id}`) just before showing it.
+
+## How it works
+
+- `slideshow/deck.ts`: seeded shuffle (xmur3 + mulberry32 + Fisher-Yates), and `SlideDeck`, the window over a show's passes (peek / commit, so a
+  photo that could not be loaded is asked for again, chunks fetched one at a time, no repeats within a pass, a new pass on loop, a bounded
+  history). `sources.ts`: scope, paged, items and search sources. `previews.ts`: batched, short-lived preview addresses.
+- `slideshow/controller.ts`: the state machine (timing, pause, next/previous, preloading and decoding the next photo before it is shown so there
+  is no flash, crossfade or cut, announcements, retry with backoff, request timeout, 401). Plain TypeScript with injected timers and loader.
+  `Slideshow.tsx` and `pages/Frame.tsx` only draw its state.
+- No new dependency.
+
+## Tests
+
+- Rust (`routes/slideshow_tests.rs`): listed, oldest and shuffle pages join up; a seeded shuffle is stable across page sizes, has no repeats,
+  covers the view and differs per seed; other accounts', trashed, archived (library scope), hidden and paired-RAW photos never appear; Hidden only
+  when unlocked; album and favorites scopes; bad input; previews for the caller's own rendered photos only. `key_scope_tests` lists both routes.
+- Web (vitest): the deck, seeded shuffle fairness, sources, preview cache, settings, the controller with fake timers (timing, pause, next/previous,
+  loop, shuffle cycles, reduced motion, announcements, memory, backoff, timeouts, 401), the slideshow component (keys, settings, full screen,
+  states), "Play from here", the frame (setup, session, offline, archived, small page, no object URLs, menu).
+- Playwright: `e2e/slideshow-layout.spec.ts` and `e2e/frame-layout.spec.ts`, under the gateway's real CSP.
