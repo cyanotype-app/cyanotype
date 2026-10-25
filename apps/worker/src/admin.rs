@@ -59,6 +59,10 @@ async fn publish_loop(ctx: Arc<Ctx>) {
         if let Err(e) = publish(&ctx).await {
             tracing::warn!(error = %format!("{e:#}"), "could not publish worker stats");
         }
+        // The integrity monitors' gauges ride along: a few cheap counts, only when metrics are on.
+        if let Err(e) = cyanotype_core::integrity::emit_gauges(&ctx.db).await {
+            tracing::warn!(error = %format!("{e:#}"), "could not sample the integrity gauges");
+        }
         tokio::time::sleep(PUBLISH_EVERY).await;
     }
 }
@@ -315,6 +319,40 @@ mod tests {
         let r = t.result.unwrap();
         assert!(r["finished_at"].is_string() && r["versioned"].is_boolean());
         assert!(!run_one(&ctx).await.unwrap(), "done tasks are not run again");
+        drop_db(ctx, admin_url, name).await;
+    }
+
+    #[tokio::test]
+    async fn a_queued_integrity_check_is_run_recorded_and_not_run_twice() {
+        let Some((ctx, admin_url, name, real)) = ctx().await else {
+            return;
+        };
+        if !real {
+            drop_db(ctx, admin_url, name).await;
+            return;
+        }
+        assert!(!crate::integrity::run_one(&ctx).await.unwrap(), "nothing queued");
+        admin_tasks::enqueue(
+            &ctx.db,
+            admin_tasks::KIND_INTEGRITY_CHECK,
+            None,
+            serde_json::json!({"trigger": "manual"}),
+        )
+        .await
+        .unwrap();
+        assert!(crate::integrity::run_one(&ctx).await.unwrap());
+        let t = admin_tasks::latest(&ctx.db, admin_tasks::KIND_INTEGRITY_CHECK)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(t.state, "done", "{:?}", t.error);
+        assert!(t.result.unwrap()["run_id"].is_i64());
+        let run = cyanotype_core::integrity::last_run(&ctx.db).await.unwrap().unwrap();
+        assert_eq!((run.state.as_str(), run.trigger.as_str()), ("done", "manual"));
+        assert!(
+            !crate::integrity::run_one(&ctx).await.unwrap(),
+            "done tasks are not run again"
+        );
         drop_db(ctx, admin_url, name).await;
     }
 

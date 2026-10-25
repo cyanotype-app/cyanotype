@@ -6,6 +6,9 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 pub const KIND_BUCKET_CHECK: &str = "bucket_check";
+/// The storage integrity check (`integrity`): the nightly schedule queues it, Admin > Health queues it on demand; `params` are
+/// `{"trigger": "schedule"}` or `{"trigger": "manual"}`.
+pub const KIND_INTEGRITY_CHECK: &str = "integrity_check";
 /// Deleting an account for good (`accounts::delete_account`); `params` are `{"user_id", "email"}`.
 pub const KIND_DELETE_ACCOUNT: &str = "delete_account";
 

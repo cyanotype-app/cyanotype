@@ -437,6 +437,26 @@ in an environment variable of the runner (GitHub masks it), never on a command l
 So no PAT lives on the server; a read-only PAT is needed only for manual deploys that do not pass `GHCR_TOKEN` (step 6). For the token to be
 allowed to read the packages, grant this repository access under each package's settings (Manage Actions access).
 
+## Storage integrity check
+
+The worker compares the database with the bucket every night and Admin > Health shows the result (`docs/admin.md`, "Storage
+integrity"). Migration 0032 adds `assets.verified_at` (nullable, nothing rewritten, one index built over `assets`) and three small
+tables (`integrity_runs`, `integrity_findings`, and a unique index for `admin_tasks`); no job is queued. The first nights read the
+oldest never-verified originals, 2 GB a night by default. All of these are optional environment variables of the **worker**:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `INTEGRITY_CHECK_ENABLED` | `1` | `0` turns the nightly schedule off. **Run check now** on Admin > Health still works. |
+| `INTEGRITY_CHECK_HOUR` | `3` | UTC hour (0 to 23) after which tonight's run is queued. A worker that was down at the hour runs it when it is back. |
+| `INTEGRITY_VERIFY_MB` | `2048` | Megabytes of originals re-read per run for the checksum sample; `0` turns the sample off. |
+| `INTEGRITY_MAX_MINUTES` | `60` | The sample stops starting new files after this long. |
+| `INTEGRITY_MIN_AGE_MINUTES` | `10` | Objects younger than this are not judged (an upload may be registering). |
+
+A run lists the whole of `originals/` and `derived/` (a request per thousand objects, so a few dozen for 2,000 photos) and one HEAD
+for each row the listing did not show. It keeps a 16-byte digest per key in memory (about 2 MB for 50,000 photos), streams every
+file it hashes, and pauses the sample while uploads are being processed, so it fits the 4 GB host next to the app. If the worker
+stops in the middle the next run starts over; the sample's progress is kept in `verified_at`.
+
 ## Backups
 
 The `backup` service runs `pg_dump -Fc` nightly (default 03:17 UTC, `BACKUP_AT`), checks that `pg_restore`

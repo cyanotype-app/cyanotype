@@ -142,6 +142,11 @@ services:
       WORKER_FACES_THREADS: ${WORKER_FACES_THREADS:-1}
       # Must be the same as the assets service's.
       SEARCH_MODEL: ${SEARCH_MODEL:-siglip2-b16}
+      # The nightly storage integrity check (docs/deploy.md): UTC hour, megabytes of originals re-read per run (0 = none),
+      # INTEGRITY_CHECK_ENABLED=0 turns the schedule off.
+      INTEGRITY_CHECK_ENABLED: ${INTEGRITY_CHECK_ENABLED:-1}
+      INTEGRITY_CHECK_HOUR: ${INTEGRITY_CHECK_HOUR:-3}
+      INTEGRITY_VERIFY_MB: ${INTEGRITY_VERIFY_MB:-2048}
     depends_on: !override
       migrate: { condition: service_completed_successfully }
 

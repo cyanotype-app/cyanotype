@@ -266,3 +266,36 @@ Datadog:
 - **Sizes**: the database (`pg_database_size`), what the accounts store, thumbnails and, from the latest bucket check, the bucket.
 - **Version**: the label the services run under (`DD_VERSION`, which production sets to the image tag, `sha-<commit>`) for the
   assets service and each worker.
+- **Storage integrity**: the report of the nightly check below.
+
+## Storage integrity
+
+The bucket is the source of truth, so the worker compares it with the database every night (`INTEGRITY_CHECK_HOUR`, UTC, default
+03:00; `docs/deploy.md` lists the settings) and Admin > Health shows the result. **Run check now** queues the same check at any time
+(`POST /assets/admin/integrity/run`, audited; one at a time). A check lists `originals/` and `derived/` page by page (a request per
+thousand objects), asks the store about the few rows it did not see, and reads a rolling sample of originals back. It runs behind
+uploads: the reading pauses while thumbnails or metadata are queued, uses one stream at a time and never holds a file in memory.
+
+| Finding | What it means | Actions |
+|---|---|---|
+| **Missing original** | A photo's row exists but its object is gone (or hidden behind a delete marker). Photos in the trash and photos being deleted for good are not checked. | **Restore from a previous version** (offered unless the bucket holds none; it reads the earlier versions, picks the one whose sha256 is the stored one and makes it current again), **Move to trash**, **Mark lost** |
+| **Untracked object** | An object under `originals/` that no photo points at: no row, an extra copy of indexed content under another key, or a key that is not an original's. Objects younger than 10 minutes, uploads in flight, accounts being deleted and everything outside `originals/` (manifests, `edits/`, `derived/`) are ignored. | **Restore as photo** (the same import `cyanotype reindex --apply` does for one object: name and times from the object's metadata and the owner's newest manifest, the metadata and thumbnail jobs, the photo's `edits/` object; not offered when the owner has no account or the content is already indexed), **Delete object** (every version, for good: type `delete` to confirm), **Leave it** |
+| **Checksum mismatch** | The object's size differs from the row's (seen for free in the listing), or its bytes no longer hash to the stored sha256. Both hashes are shown. | **Restore from a previous version** (as above, only a version that matches), **Leave it** |
+
+Missing thumbnails and previews are not findings: the existing `thumbnail` job is queued again by itself and the run counts it
+("thumbnails queued to be made again"). A photo whose thumbnail job failed is left to the failed-jobs list above.
+
+**The checksum sample.** Reading every original every night is out of the question on a small server (25 GB would be hours of
+traffic), so each run re-reads the photos verified longest ago, never-verified first, until it has read `INTEGRITY_VERIFY_MB`
+(default 2048) or `INTEGRITY_MAX_MINUTES` has passed. Each photo that was read gets `assets.verified_at`; the card says how much of the
+library has been read at least once. At about 2 GB a night a 25 GB library is covered in about two weeks. A file larger than the
+budget is still read when it is the first of a run, so it cannot be skipped for good. `INTEGRITY_VERIFY_MB=0` turns the sample off
+(the listing checks stay). A mismatch is re-read on every later run until the file hashes right again, and then closes itself.
+
+Every action is admin-only (a login session, never an API key), idempotent (doing it again changes nothing and says "Already done")
+and written to the audit log with the finding's kind and key (the key holds the owner and the content hash, never a file name). A
+finding a later run no longer sees closes itself; **Mark lost** and **Leave it** keep a finding true but quiet: it is not counted
+and not raised again. Deleting an object also needs `"confirm": "delete"` in the API call.
+
+The worker reports `cyanotype.integrity.findings_open` (per kind) and `cyanotype.integrity.last_run_age_seconds`; two monitors
+in `infra/datadog/monitors/` watch them (`docs/observability.md`).

@@ -354,7 +354,11 @@ struct RowInfo {
 }
 
 /// HEAD many keys with bounded parallelism.
-async fn head_many(storage: &Storage, keys: Vec<String>, concurrency: usize) -> Vec<(String, Result<Option<Head>>)> {
+pub(crate) async fn head_many(
+    storage: &Storage,
+    keys: Vec<String>,
+    concurrency: usize,
+) -> Vec<(String, Result<Option<Head>>)> {
     let mut out = Vec::with_capacity(keys.len());
     for chunk in keys.chunks(concurrency.max(1)) {
         let mut set = JoinSet::new();
@@ -392,26 +396,27 @@ struct Ctx<'a> {
     report: Report,
 }
 
+/// Which of the optional `assets` columns this schema has: `(favorite, hidden + archived, rating + rating_source)`.
+async fn schema_flags(db: &PgPool) -> Result<(bool, bool, bool)> {
+    let has = |column: &'static str| async move {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = current_schema() AND table_name = 'assets' AND column_name = $1)",
+        )
+        .bind(column)
+        .fetch_one(db)
+        .await
+    };
+    Ok((
+        has("favorite").await?,
+        has("hidden").await?,
+        has("rating_source").await?,
+    ))
+}
+
 pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Report> {
     anyhow::ensure!(opts.concurrency >= 1, "concurrency must be at least 1");
-    let has_favorite: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = current_schema() AND table_name = 'assets' AND column_name = 'favorite')",
-    )
-    .fetch_one(db)
-    .await?;
-    let has_state: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = current_schema() AND table_name = 'assets' AND column_name = 'hidden')",
-    )
-    .fetch_one(db)
-    .await?;
-    let has_rating: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = current_schema() AND table_name = 'assets' AND column_name = 'rating_source')",
-    )
-    .fetch_one(db)
-    .await?;
+    let (has_favorite, has_state, has_rating) = schema_flags(db).await?;
     if let Some(u) = opts.assign_to {
         let ok: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)")
             .bind(u)
@@ -463,6 +468,125 @@ pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Repor
         "reindex finished"
     );
     Ok(cx.report)
+}
+
+/// The outcome of [`import_object`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Imported {
+    /// A row was made for the object (with its metadata and thumbnail jobs queued); its id.
+    Restored(Uuid),
+    /// The owner already has a row for this content (so nothing was made); its id.
+    AlreadyIndexed(Uuid),
+    /// The key is not an original's, or its owner has no account here, or the photo is being deleted for good.
+    Refused(&'static str),
+    /// The object is not in the bucket (any more).
+    Gone,
+}
+
+/// Make a photo of one object under `originals/` that has no row, the way `run --apply` does for an orphan: the same row (name,
+/// time and content type from the object's own metadata and the owner's newest manifest, with its trash, favourite, hidden,
+/// archived and rating state), the same `metadata` + `thumbnail` jobs, and the photo's `edits/` object applied when there is one.
+/// Albums, pairs, tags and share links are not restored here (they belong to a whole-library `reindex`). Idempotent: an owner who
+/// already has the content gets that row's id back.
+pub async fn import_object(db: &PgPool, storage: &Storage, key: &str) -> Result<Imported> {
+    let Some(p) = keys::parse_original(key) else {
+        return Ok(Imported::Refused("the key is not the key of an original"));
+    };
+    let owner_exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)")
+        .bind(p.user)
+        .fetch_one(db)
+        .await?;
+    if !owner_exists {
+        return Ok(Imported::Refused("the owner of the object has no account here"));
+    }
+    let existing: Option<(Uuid, bool)> =
+        sqlx::query_as("SELECT id, purging_at IS NOT NULL FROM assets WHERE owner_id = $1 AND sha256 = $2")
+            .bind(p.user)
+            .bind(&p.sha256[..])
+            .fetch_optional(db)
+            .await?;
+    match existing {
+        Some((_, true)) => return Ok(Imported::Refused("the photo is being deleted for good")),
+        Some((id, false)) => return Ok(Imported::AlreadyIndexed(id)),
+        None => {}
+    }
+    if storage.head(key).await?.is_none() {
+        return Ok(Imported::Gone);
+    }
+    let opts = Options {
+        apply: true,
+        min_age: Duration::ZERO,
+        concurrency: 1,
+        ..Options::default()
+    };
+    let (has_favorite, has_state, has_rating) = schema_flags(db).await?;
+    // Only this owner's manifests.
+    let mut found = Vec::new();
+    let mut token = None;
+    loop {
+        let page = storage.list_page(&keys::manifest_prefix(p.user), token).await?;
+        found.extend(
+            page.objects
+                .into_iter()
+                .map(|o| o.key)
+                .filter(|k| manifest::key_date(k).is_some()),
+        );
+        match page.next {
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+    found.sort_by(|a, b| b.cmp(a)); // YYYYMMDD sorts lexically, newest first
+    let mut manifest_keys = BTreeMap::new();
+    if !found.is_empty() {
+        manifest_keys.insert(p.user, found);
+    }
+    let mut cx = Ctx {
+        db,
+        storage,
+        opts: &opts,
+        has_favorite,
+        has_state,
+        has_rating,
+        known_users: HashMap::from([(p.user, true)]),
+        manifests: HashMap::new(),
+        manifest_keys,
+        recreated: Vec::new(),
+        report: Report {
+            mode: "apply",
+            ..Default::default()
+        },
+    };
+    let listed = Listed {
+        key: key.to_string(),
+        size: 0,
+        last_modified: None,
+    };
+    process_orphans(&mut cx, vec![(listed, p.clone())]).await?;
+    anyhow::ensure!(cx.report.errors == 0, "could not make a photo of the object");
+    let id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM assets WHERE owner_id = $1 AND sha256 = $2")
+        .bind(p.user)
+        .bind(&p.sha256[..])
+        .fetch_optional(db)
+        .await?;
+    let Some(id) = id else {
+        return Ok(if cx.report.orphans_vanished > 0 {
+            Imported::Gone
+        } else {
+            Imported::Refused("the object could not be made a photo")
+        });
+    };
+    let edits_key = keys::edits(p.user, &p.sha256);
+    if storage.head(&edits_key).await?.is_some()
+        && let Err(e) = restore_edit(&mut cx, &edits_key).await
+    {
+        tracing::warn!(error = ?e, "could not restore the edits of an imported photo");
+    }
+    Ok(if cx.report.orphans_recreated > 0 {
+        Imported::Restored(id)
+    } else {
+        Imported::AlreadyIndexed(id)
+    })
 }
 
 /// Users and server settings from the newest account manifest (`identity`): recreate the accounts the database lacks (with a
@@ -1080,7 +1204,7 @@ async fn check_rows(cx: &mut Ctx<'_>, seen: &HashSet<u64>, derived: &HashSet<u64
 
 /// Move a row whose original is gone to the trash. A RAW stacked behind it goes along (a pair shares its trash
 /// state); a RAW that is itself the missing file is detached first so the JPEG it hid behind stays visible.
-async fn trash_missing(db: &PgPool, id: Uuid, primary_id: Option<Uuid>) -> Result<()> {
+pub(crate) async fn trash_missing(db: &PgPool, id: Uuid, primary_id: Option<Uuid>) -> Result<()> {
     let mut tx = db.begin().await?;
     if primary_id.is_some() {
         sqlx::query("UPDATE assets SET primary_id = NULL WHERE id = $1")

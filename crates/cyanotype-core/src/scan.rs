@@ -1,8 +1,10 @@
-//! Read-only bucket scanning helpers for `reindex`, plus the one write it can opt into (`copy_onto_self`).
+//! Read-only bucket scanning helpers for `reindex` and the integrity check, plus the two writes they can make
+//! (`copy_onto_self`, `restore_version`).
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use aws_sdk_s3::types::MetadataDirective;
+use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::storage::Storage;
@@ -28,6 +30,25 @@ pub struct Head {
     pub content_type: Option<String>,
     pub metadata: HashMap<String, String>,
     pub last_modified: Option<OffsetDateTime>,
+}
+
+/// One stored version of one key (or its delete marker), newest first in [`Storage::key_versions`].
+#[derive(Debug, Clone)]
+pub struct KeyVersion {
+    pub version_id: Option<String>,
+    pub size: i64,
+    pub is_latest: bool,
+    pub delete_marker: bool,
+    pub last_modified: Option<OffsetDateTime>,
+}
+
+/// The outcome of [`Storage::hash_object`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hashed {
+    pub sha256: [u8; 32],
+    /// Bytes read; at most `limit + 1` (reading stops one past the limit, so a longer object is seen as longer without
+    /// being read to its end).
+    pub bytes: u64,
 }
 
 fn to_time(t: &aws_sdk_s3::primitives::DateTime) -> Option<OffsetDateTime> {
@@ -103,6 +124,135 @@ impl Storage {
             .send()
             .await
             .context("copy_object")?;
+        Ok(())
+    }
+
+    /// Every version and delete marker of exactly `key`, newest first. A store that cannot list versions answers with
+    /// the current object alone (no version id).
+    pub async fn key_versions(&self, key: &str) -> Result<Vec<KeyVersion>> {
+        let mut out = Vec::new();
+        let mut key_marker: Option<String> = None;
+        let mut version_marker: Option<String> = None;
+        loop {
+            let res = self
+                .client
+                .list_object_versions()
+                .bucket(&self.bucket)
+                .prefix(key)
+                .set_key_marker(key_marker.clone())
+                .set_version_id_marker(version_marker.clone())
+                .send()
+                .await;
+            let page = match res {
+                Ok(p) => p,
+                Err(e) => {
+                    let status = e.raw_response().map(|r| r.status().as_u16());
+                    if out.is_empty() && status == Some(501) {
+                        return Ok(match self.head(key).await? {
+                            Some(h) => vec![KeyVersion {
+                                version_id: None,
+                                size: h.size,
+                                is_latest: true,
+                                delete_marker: false,
+                                last_modified: h.last_modified,
+                            }],
+                            None => Vec::new(),
+                        });
+                    }
+                    return Err(e).context("list_object_versions");
+                }
+            };
+            for v in page.versions().iter().filter(|v| v.key() == Some(key)) {
+                out.push(KeyVersion {
+                    version_id: v.version_id().map(str::to_string),
+                    size: v.size().unwrap_or(0),
+                    is_latest: v.is_latest().unwrap_or(false),
+                    delete_marker: false,
+                    last_modified: v.last_modified().and_then(to_time),
+                });
+            }
+            for m in page.delete_markers().iter().filter(|m| m.key() == Some(key)) {
+                out.push(KeyVersion {
+                    version_id: m.version_id().map(str::to_string),
+                    size: 0,
+                    is_latest: m.is_latest().unwrap_or(false),
+                    delete_marker: true,
+                    last_modified: m.last_modified().and_then(to_time),
+                });
+            }
+            if page.is_truncated == Some(true)
+                && (page.next_key_marker.is_some() || page.next_version_id_marker.is_some())
+            {
+                key_marker = page.next_key_marker;
+                version_marker = page.next_version_id_marker;
+            } else {
+                break;
+            }
+        }
+        // Newest first, whatever order the store listed them in.
+        out.sort_by_key(|a| std::cmp::Reverse(a.last_modified));
+        Ok(out)
+    }
+
+    /// SHA-256 of an object (the latest version, or `version_id`), streamed: one chunk in memory at a time, never the file.
+    /// Stops after `limit + 1` bytes. None if the object (or version) does not exist.
+    pub async fn hash_object(&self, key: &str, version_id: Option<&str>, limit: u64) -> Result<Option<Hashed>> {
+        let res = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .set_version_id(version_id.map(str::to_string))
+            .send()
+            .await;
+        let mut out = match res {
+            Ok(o) => o,
+            Err(e)
+                if e.as_service_error().is_some_and(|s| s.is_no_such_key())
+                    || matches!(e.raw_response().map(|r| r.status().as_u16()), Some(404)) =>
+            {
+                return Ok(None);
+            }
+            Err(e) => return Err(e).context("get_object"),
+        };
+        let mut hasher = Sha256::new();
+        let mut bytes = 0u64;
+        while let Some(chunk) = out.body.try_next().await.context("read object body")? {
+            bytes += chunk.len() as u64;
+            hasher.update(&chunk);
+            if bytes > limit {
+                break;
+            }
+        }
+        Ok(Some(Hashed {
+            sha256: hasher.finalize().into(),
+            bytes,
+        }))
+    }
+
+    /// Make an older version the current one again: copy it onto the key (a new version, the old one stays). Keeps its
+    /// content type and user metadata. `CopyObject` cannot copy sources above 5 GiB. Keys are ASCII path characters.
+    pub async fn restore_version(&self, key: &str, version_id: &str) -> Result<()> {
+        anyhow::ensure!(
+            key.bytes().all(|b| b.is_ascii_alphanumeric() || b"/-._".contains(&b)),
+            "refusing to copy unexpected key {key:?}"
+        );
+        let mut encoded = String::new();
+        for b in version_id.bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                encoded.push(b as char);
+            } else {
+                encoded.push_str(&format!("%{b:02X}"));
+            }
+        }
+        self.client
+            .copy_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .copy_source(format!("{}/{key}?versionId={encoded}", self.bucket))
+            .send()
+            .await
+            .context("copy_object (restore a version)")?;
         Ok(())
     }
 }

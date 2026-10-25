@@ -3341,6 +3341,35 @@ body:has(.selection-bar) .scrubber {
 .health-bad {
   color: var(--danger);
 }
+.integrity-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.5rem 0;
+}
+.integrity-counts .btn {
+  white-space: normal;
+  min-width: 0;
+}
+.integrity-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+.integrity-list li {
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.integrity-key {
+  display: block;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+.integrity-confirm input {
+  width: 100%;
+  box-sizing: border-box;
+}
 .audit-filters {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));

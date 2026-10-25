@@ -2,7 +2,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, type AdminAccount, type AuditPage as AuditPageData, type Health } from "./api";
 import { AccountActions } from "./components/AccountActions";
 import { AuditPage } from "./pages/admin/AuditPage";
@@ -168,6 +168,17 @@ describe("AccountActions", () => {
 });
 
 describe("HealthPage", () => {
+  // The integrity card has its own tests (integrity.test.tsx); here it just has nothing to show.
+  beforeEach(() => {
+    vi.spyOn(api, "integrity").mockResolvedValue({
+      last_run: null,
+      open: { missing_original: 0, untracked_object: 0, checksum_mismatch: 0 },
+      acknowledged: 0,
+      coverage: { assets: 0, verified: 0, oldest_verified_at: null },
+      task: null,
+    });
+    vi.spyOn(api, "integrityFindings").mockResolvedValue({ items: [], next_before: null });
+  });
   const health = (over: Partial<Health> = {}): Health => ({
     version: { assets: "sha-abc1234", workers: [{ host: "w1", version: "sha-abc1234", reporting: true }] },
     queue: [
