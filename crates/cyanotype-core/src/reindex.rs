@@ -150,6 +150,12 @@ pub struct Report {
     pub archived_restored: u64,
     /// Photos put back with their star rating (or that would be).
     pub ratings_restored: u64,
+    /// Photos put back into a manual stack / as taken out of their burst / as a stack's cover (or that would be).
+    pub stacked_restored: u64,
+    pub unlinked_restored: u64,
+    pub covers_restored: u64,
+    /// Users whose switches (`user_prefs`) were put back (they had no row).
+    pub prefs_restored: u64,
     /// Tags recreated (the owner had none by that name) and photo-tag links put back (or that would be).
     pub tags_restored: u64,
     pub tag_links_restored: u64,
@@ -290,6 +296,12 @@ impl Report {
         let _ = writeln!(s, "    star ratings                     {}", self.ratings_restored);
         let _ = writeln!(
             s,
+            "    stacked / unlinked / covers      {} / {} / {}",
+            self.stacked_restored, self.unlinked_restored, self.covers_restored
+        );
+        let _ = writeln!(s, "    user preferences                 {}", self.prefs_restored);
+        let _ = writeln!(
+            s,
             "    tags / photo-tag links           {} / {}",
             self.tags_restored, self.tag_links_restored
         );
@@ -388,6 +400,8 @@ struct Ctx<'a> {
     has_state: bool,
     /// The schema has `rating` and `rating_source` (migration 0024).
     has_rating: bool,
+    /// The schema has `stack_id`, `stack_unlinked` and `stack_cover` (migration 0033).
+    has_stacks: bool,
     known_users: HashMap<Uuid, bool>,
     manifests: HashMap<Uuid, Arc<UserManifest>>,
     manifest_keys: BTreeMap<Uuid, Vec<String>>,
@@ -396,8 +410,8 @@ struct Ctx<'a> {
     report: Report,
 }
 
-/// Which of the optional `assets` columns this schema has: `(favorite, hidden + archived, rating + rating_source)`.
-async fn schema_flags(db: &PgPool) -> Result<(bool, bool, bool)> {
+/// Which of the optional `assets` columns this schema has: `(favorite, hidden + archived, rating + rating_source, stacks)`.
+async fn schema_flags(db: &PgPool) -> Result<(bool, bool, bool, bool)> {
     let has = |column: &'static str| async move {
         sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS (SELECT 1 FROM information_schema.columns
@@ -411,12 +425,13 @@ async fn schema_flags(db: &PgPool) -> Result<(bool, bool, bool)> {
         has("favorite").await?,
         has("hidden").await?,
         has("rating_source").await?,
+        has("stack_cover").await?,
     ))
 }
 
 pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Report> {
     anyhow::ensure!(opts.concurrency >= 1, "concurrency must be at least 1");
-    let (has_favorite, has_state, has_rating) = schema_flags(db).await?;
+    let (has_favorite, has_state, has_rating, has_stacks) = schema_flags(db).await?;
     if let Some(u) = opts.assign_to {
         let ok: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)")
             .bind(u)
@@ -431,6 +446,7 @@ pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Repor
         has_favorite,
         has_state,
         has_rating,
+        has_stacks,
         known_users: HashMap::new(),
         manifests: HashMap::new(),
         manifest_keys: if opts.use_manifests {
@@ -519,7 +535,7 @@ pub async fn import_object(db: &PgPool, storage: &Storage, key: &str) -> Result<
         concurrency: 1,
         ..Options::default()
     };
-    let (has_favorite, has_state, has_rating) = schema_flags(db).await?;
+    let (has_favorite, has_state, has_rating, has_stacks) = schema_flags(db).await?;
     // Only this owner's manifests.
     let mut found = Vec::new();
     let mut token = None;
@@ -548,6 +564,7 @@ pub async fn import_object(db: &PgPool, storage: &Storage, key: &str) -> Result<
         has_favorite,
         has_state,
         has_rating,
+        has_stacks,
         known_users: HashMap::from([(p.user, true)]),
         manifests: HashMap::new(),
         manifest_keys,
@@ -915,6 +932,10 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
                 ))
             })
             .filter(|_| cx.has_rating);
+        // The owner's stack decisions. The id is kept: the members of a stack share it, and nothing else in a library names it.
+        let stack = entry.and_then(|e| e.stack).filter(|_| cx.has_stacks);
+        let stack_unlinked = cx.has_stacks && entry.and_then(|e| e.stack_unlinked).unwrap_or(false);
+        let stack_cover = cx.has_stacks && entry.and_then(|e| e.stack_cover).unwrap_or(false);
         let wanted_id = entry.map(|e| e.id);
 
         if !cx.opts.apply {
@@ -931,6 +952,9 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
                 cx.report.archived_restored += u64::from(archived);
             }
             cx.report.ratings_restored += u64::from(rating.is_some());
+            cx.report.stacked_restored += u64::from(stack.is_some());
+            cx.report.unlinked_restored += u64::from(stack_unlinked);
+            cx.report.covers_restored += u64::from(stack_cover);
             continue;
         }
         let r = insert_orphan(
@@ -951,6 +975,9 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
                 archived,
                 rating: rating.clone(),
                 tags_known,
+                stack,
+                stack_unlinked,
+                stack_cover,
             },
         )
         .await;
@@ -969,6 +996,9 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
                     cx.report.archived_restored += u64::from(archived);
                 }
                 cx.report.ratings_restored += u64::from(rating.is_some());
+                cx.report.stacked_restored += u64::from(stack.is_some());
+                cx.report.unlinked_restored += u64::from(stack_unlinked);
+                cx.report.covers_restored += u64::from(stack_cover);
             }
             Ok(false) => {
                 cx.report.alias_objects += 1;
@@ -1002,6 +1032,10 @@ struct Insert<'a> {
     rating: Option<(u8, String)>,
     /// The photo's tags come from the manifest: mark its keywords as read.
     tags_known: bool,
+    /// The manual stack, and whether the owner took the photo out of its burst or chose it as a cover (all from the manifest).
+    stack: Option<Uuid>,
+    stack_unlinked: bool,
+    stack_cover: bool,
 }
 
 /// Insert one row and queue its jobs, atomically. False if the owner already has this content (a race or an alias).
@@ -1081,6 +1115,17 @@ async fn insert_orphan(cx: &Ctx<'_>, i: Insert<'_>) -> Result<bool> {
             .bind(id)
             .bind(i16::from(*stars))
             .bind(source)
+            .execute(&mut *tx)
+            .await?;
+    }
+    // Owner columns the worker never writes (it only sets `burst_id` and `burst_version`), so the regroup the new row is about
+    // to get cannot undo them.
+    if cx.has_stacks && (i.stack.is_some() || i.stack_unlinked || i.stack_cover) {
+        sqlx::query("UPDATE assets SET stack_id = $2, stack_unlinked = $3, stack_cover = $4 WHERE id = $1")
+            .bind(id)
+            .bind(i.stack)
+            .bind(i.stack_unlinked)
+            .bind(i.stack_cover)
             .execute(&mut *tx)
             .await?;
     }
@@ -1352,6 +1397,36 @@ async fn asset_ids(db: &PgPool, user: Uuid, shas: &[Vec<u8>]) -> Result<HashMap<
             .fetch_all(db)
             .await?;
     Ok(rows.into_iter().collect())
+}
+
+/// The user's switches from the newest manifest, for a user who has no row (one the owner changed since is never overwritten).
+async fn restore_prefs(cx: &mut Ctx<'_>, user: Uuid, m: &UserManifest) -> Result<()> {
+    let Some(p) = &m.prefs else { return Ok(()) };
+    // A user who is only in the account manifest of this (dry) run has no row in the database yet; the row is theirs to get.
+    let have: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM user_prefs WHERE user_id = $1)")
+        .bind(user)
+        .fetch_one(cx.db)
+        .await?;
+    if have {
+        return Ok(());
+    }
+    cx.report.prefs_restored += 1;
+    if !cx.opts.apply {
+        return Ok(());
+    }
+    let sort = p.library_sort.as_deref().filter(|s| matches!(*s, "taken" | "added"));
+    sqlx::query(
+        "INSERT INTO user_prefs (user_id, memories_enabled, library_sort, stacks_collapsed)
+         SELECT id, coalesce($2, true), coalesce($3, 'taken'), coalesce($4, true) FROM users WHERE id = $1
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(user)
+    .bind(p.memories_enabled)
+    .bind(sort)
+    .bind(p.stacks_collapsed)
+    .execute(cx.db)
+    .await?;
+    Ok(())
 }
 
 /// Tags from the user's newest manifest: a tag the owner has no tag of that name for is recreated with all its photos that exist
@@ -1628,6 +1703,7 @@ async fn restore_user(
         tx.commit().await?;
     }
 
+    restore_prefs(cx, user, m).await?;
     restore_shares(cx, user, m).await?;
     restore_tags(cx, user, m, recreated).await?;
 

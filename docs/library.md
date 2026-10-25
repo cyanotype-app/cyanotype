@@ -1330,7 +1330,7 @@ the server, in every query that can return a photo; the web app only decides wha
   transaction that recreates the photo's row**, so there is no moment at which a restored photo is visible. A manifest only knows
   what was true when it was written, and hiding is a privacy promise, so a hide, unhide or archive also writes the owner's manifest
   about 30 seconds later (one write for a burst of changes; best effort, the daily pass still runs). Memory dismissals, the strip
-  and sort settings are not in the bucket (they come back as defaults after a bucket-only rebuild). See `docs/recovery.md`.
+  settings are in the manifest's `prefs` line (the strip and sort settings come back; memory dismissals do not, they are not in the bucket). See `docs/recovery.md`.
 - **Indexes** (50,000 photos, one owner, `EXPLAIN ANALYZE`): the timeline's first page and a page at 2012 are an index scan of
   `assets_timeline_idx` (0.3 ms), the same for Recently added (`assets_added_idx`, 0.1 ms), Archive and Hidden (small partial
   indexes, 0.2 to 0.3 ms), Favorites (0.2 ms), memories (20 windows, 0.9 ms). `assets_timeline_idx` is now partial on `NOT hidden`
@@ -2020,9 +2020,12 @@ the stack, else its earliest photo, among the photos the view lists. Details:
 - **At most 100 photos** in a stack made by hand; **at least two**. A manual stack that drops to one photo dissolves.
 - A trashed photo keeps its stack columns (restoring it puts it back); a hidden photo cannot be stacked and is not in a stack's count
   in the timeline. A RAW that is the hidden half of a pair is never a stack member (its JPEG is).
-- **Recovery.** The columns are in the database, so a dump keeps them. A rebuild from the bucket alone (`reindex`) does not: bursts are
-  found again by the worker, **stacks made by hand, taken-out photos and chosen covers are lost** (the recovery manifest does not carry
-  them yet).
+- **Recovery.** The columns are in the database, so a dump keeps them. A rebuild from the bucket alone (`reindex`) restores them too:
+  the recovery manifest (format 4) carries them on the photo's line, only where set (`stack`: the id the members share, `stack_unlinked`,
+  `stack_cover`), and the **Stacked / Every photo** switch as a `prefs` line. `reindex` writes them in the transaction that recreates the
+  photo's row, so the worker's regroup (which writes only `burst_id`) and the sweep cannot undo them (test:
+  `stacks_and_the_stacks_switch_come_back_with_a_rebuilt_database`); bursts are found again by the worker. Like every manifest field, they
+  are as new as the newest manifest, which a change rewrites within about 30 seconds.
 - Search groups by the same rule (`burst_id` in its results is the stack), so a manual stack is one search result and a photo taken out
   of a burst is its own. A search result's cover is still its best-ranked favorite, then its best-ranked photo; the owner's cover
   choice is the timeline's.

@@ -264,6 +264,8 @@ pub(super) async fn create(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    // The stack is in the recovery manifest (as are the cover, a photo taken out and the dissolved stack below).
+    super::visibility::manifest_soon(&s, user.id);
     Ok(Json(Stacked {
         size: live,
         cover_id: cover,
@@ -294,6 +296,7 @@ pub(super) async fn set_cover(
             "restore the photo before making it the cover".into(),
         ));
     }
+    super::visibility::manifest_soon(&s, user.id);
     Ok(Json(serde_json::json!({"cover_id": id})))
 }
 
@@ -325,6 +328,7 @@ pub(super) async fn remove(
         .await?;
     }
     tx.commit().await?;
+    super::visibility::manifest_soon(&s, user.id);
     Ok(Json(serde_json::json!({"removed": id})))
 }
 
@@ -344,5 +348,6 @@ pub(super) async fn dissolve(
     .bind(key)
     .execute(&s.db)
     .await?;
+    super::visibility::manifest_soon(&s, user.id);
     Ok(Json(serde_json::json!({"count": done.rows_affected()})))
 }

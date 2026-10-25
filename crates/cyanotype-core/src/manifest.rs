@@ -4,7 +4,8 @@
 //! cannot say that a photo was later trashed, favorited or put in an album, and objects uploaded before it existed
 //! have none. The manifest carries that state. Once a day the assets service writes, per user, one JSON object per
 //! line: a `meta` header, every `asset` (not mid-purge) with its id, hash, name, timestamps, trash state, favorite,
-//! hidden and archived flags and RAW/JPEG partner, and every `album` with its photos by hash. `reindex` reads them to restore what object
+//! hidden and archived flags, star rating, manual stack, unlinked and cover flags and RAW/JPEG partner, and every `album` with
+//! its photos by hash (then the shares, the tags and the user's `prefs`). `reindex` reads them to restore what object
 //! keys and metadata alone cannot.
 //!
 //! Dated files, not one rolling file, on purpose: if the database is restored from an old dump and the assets
@@ -24,8 +25,9 @@ use uuid::Uuid;
 
 use crate::{identity, keys, storage::Storage};
 
-/// 2: adds `share` lines; 3: adds `tag` lines (readers of an older version count them as lines they do not know and go on).
-pub const FORMAT_VERSION: u32 = 3;
+/// 2: adds `share` lines; 3: adds `tag` lines; 4: adds `prefs` lines and the stack fields of `asset` lines (readers of an older
+/// version count lines they do not know and go on, and ignore fields they do not know).
+pub const FORMAT_VERSION: u32 = 4;
 pub const DEFAULT_KEEP: usize = 14;
 const MAX_MANIFEST_BYTES: u64 = 1 << 30;
 
@@ -37,6 +39,7 @@ pub enum Line {
     Album(AlbumLine),
     Share(ShareLine),
     Tag(TagLine),
+    Prefs(PrefsLine),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +89,30 @@ pub struct AssetLine {
     /// rebuilt library, a `user` rating is the owner's and is kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rating_source: Option<String>,
+    /// The manual stack the photo is in (`assets.stack_id`, migration 0033): its members share the id. Absent: in no manual stack
+    /// (an automatic burst is computed again by the worker). Older readers ignore the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<Uuid>,
+    /// The owner took the photo out of its stack (`assets.stack_unlinked`); written only when true. A rebuild that lost this
+    /// would put the photo back into its automatic burst.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_unlinked: Option<bool>,
+    /// The owner chose this photo as its stack's cover (`assets.stack_cover`); written only when true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack_cover: Option<bool>,
+}
+
+/// A user's switches (`user_prefs`, migrations 0020 and 0033). One line per user that has a row; a user who never changed one
+/// has none and gets the defaults. A field the line lacks keeps the default.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrefsLine {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memories_enabled: Option<bool>,
+    /// `taken` or `added`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_sort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stacks_collapsed: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -175,6 +202,8 @@ pub struct UserManifest {
     /// The newest manifest has tag lines (format 3 or later): a photo in it has exactly the tags it lists, so its keywords
     /// are not read from the file again.
     pub tags_known: bool,
+    /// The user's switches from the NEWEST manifest only (a switch is one current value, not a history).
+    pub prefs: Option<PrefsLine>,
     pub files: usize,
     pub bad_lines: usize,
 }
@@ -213,7 +242,9 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
                 a.file_modified_at, a.taken_at, a.deleted_at,
                 (to_jsonb(a) ->> 'favorite')::boolean AS favorite, p.sha256 AS pair_primary,
                 (to_jsonb(a) ->> 'hidden')::boolean AS hidden, (to_jsonb(a) ->> 'archived')::boolean AS archived,
-                (to_jsonb(a) ->> 'rating')::smallint AS rating, to_jsonb(a) ->> 'rating_source' AS rating_source
+                (to_jsonb(a) ->> 'rating')::smallint AS rating, to_jsonb(a) ->> 'rating_source' AS rating_source,
+                (to_jsonb(a) ->> 'stack_id')::uuid AS stack, (to_jsonb(a) ->> 'stack_unlinked')::boolean AS stack_unlinked,
+                (to_jsonb(a) ->> 'stack_cover')::boolean AS stack_cover
          FROM assets a LEFT JOIN assets p ON p.id = a.primary_id
          WHERE a.owner_id = $1 AND a.purging_at IS NULL ORDER BY a.created_at, a.id",
     )
@@ -250,6 +281,10 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
             rating_source: r
                 .try_get::<Option<String>, _>("rating_source")?
                 .filter(|s| s == "user" || s == "file"),
+            stack: r.try_get("stack")?,
+            // Only what carries information: the flags are written when set.
+            stack_unlinked: r.try_get::<Option<bool>, _>("stack_unlinked")?.filter(|b| *b),
+            stack_cover: r.try_get::<Option<bool>, _>("stack_cover")?.filter(|b| *b),
         }));
     }
     let n_assets = rows.len() as u64;
@@ -374,6 +409,23 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
         }));
     }
 
+    if let Some(p) = sqlx::query(
+        "SELECT (to_jsonb(p) ->> 'memories_enabled')::boolean AS memories_enabled, to_jsonb(p) ->> 'library_sort' AS library_sort,
+                (to_jsonb(p) ->> 'stacks_collapsed')::boolean AS stacks_collapsed
+         FROM user_prefs p WHERE p.user_id = $1",
+    )
+    .bind(user)
+    .fetch_optional(db)
+    .await
+    .context("read user prefs")?
+    {
+        body.push(Line::Prefs(PrefsLine {
+            memories_enabled: p.try_get("memories_enabled")?,
+            library_sort: p.try_get("library_sort")?,
+            stacks_collapsed: p.try_get("stacks_collapsed")?,
+        }));
+    }
+
     let mut out = Vec::new();
     let header = Line::Meta(MetaLine {
         v: FORMAT_VERSION,
@@ -463,7 +515,9 @@ pub async fn load(storage: &Storage, user: Uuid, manifest_keys: &[String]) -> Re
                     m.tags.entry(t.id).or_insert(t);
                 }
                 Line::Meta(h) if n == 0 && h.v >= 3 => m.tags_known = true,
-                Line::Share(_) | Line::Tag(_) | Line::Meta(_) => {}
+                // Like the links: the newest file's value.
+                Line::Prefs(p) if n == 0 => m.prefs = Some(p),
+                Line::Share(_) | Line::Tag(_) | Line::Prefs(_) | Line::Meta(_) => {}
             }
         }
     }
@@ -601,6 +655,9 @@ mod tests {
             archived: None,
             rating: Some(4),
             rating_source: Some("user".into()),
+            stack: Some(Uuid::new_v4()),
+            stack_unlinked: None,
+            stack_cover: Some(true),
         };
         let mut buf = serde_json::to_vec(&Line::Asset(a.clone())).unwrap();
         buf.extend_from_slice(b"\n\nnot json\n{\"t\":\"from_the_future\"}\n");
