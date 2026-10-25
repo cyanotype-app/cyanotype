@@ -39,6 +39,11 @@ export interface ZoomOptions {
   /** The long edge of the preview on show (0 until known), and of the best picture there is to zoom into. */
   previewLong: number;
   naturalLong: number;
+  /**
+   * A single tap (or click) that is not part of a gesture landed on something marked `data-tap` (a face on the photo): called with it
+   * once the double-tap window has passed without a second tap. Presses that pan, pinch or are the first of a double tap never get here.
+   */
+  onTap?: (target: HTMLElement) => void;
 }
 
 /**
@@ -57,7 +62,7 @@ export function usePhotoZoom(opts: ZoomOptions) {
   const [zoomed, setZoomed] = useState(false);
   const [wantSharp, setWantSharp] = useState(false);
   const sharp = useRef(false);
-  const timers = useRef<{ announce?: number; settle?: number }>({});
+  const timers = useRef<{ announce?: number; settle?: number; tap?: number }>({});
 
   /** The stage's and the fitted photo's sizes (layout pixels, not scaled), and what the zoom limits depend on. */
   const geometry = useCallback(() => {
@@ -79,6 +84,8 @@ export function usePhotoZoom(opts: ZoomOptions) {
       if (mode === "gesture") layer.classList.add("gesturing");
       layer.style.transform = v.scale === 1 && v.x === 0 && v.y === 0 ? "" : `translate(${v.x}px, ${v.y}px) scale(${v.scale})`;
       layer.dataset.zoom = String(Math.round(v.scale * 1000) / 1000);
+      // What is drawn on the photo and must not grow with it (the face outlines' lines and buttons) divides by this.
+      layer.style.setProperty("--zoom", String(v.scale));
     }
     const label = percentLabel(v.scale);
     const level = o.current.level.current;
@@ -198,6 +205,7 @@ export function usePhotoZoom(opts: ZoomOptions) {
     () => () => {
       window.clearTimeout(timers.current.announce);
       window.clearTimeout(timers.current.settle);
+      window.clearTimeout(timers.current.tap);
     },
     [],
   );
@@ -228,6 +236,8 @@ export function usePhotoZoom(opts: ZoomOptions) {
       /* the pointer is already gone */
     }
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    // Anything that follows a tap inside the double-tap window (a second tap, a pan, a pinch) means the tap was part of a gesture.
+    window.clearTimeout(timers.current.tap);
     if (pointers.current.size === 1) {
       tap.current = { id: e.pointerId, x: e.clientX, y: e.clientY, t: e.timeStamp, moved: false };
       startPan(e.pointerId);
@@ -277,6 +287,12 @@ export function usePhotoZoom(opts: ZoomOptions) {
         toggle(centre(e.clientX, e.clientY));
       } else {
         lastTap.current = { x: e.clientX, y: e.clientY, t: e.timeStamp };
+        // A tap on a face on the photo opens it, once it is clear that no second tap is coming.
+        const hit = o.current.onTap && typeof document.elementFromPoint === "function" ? document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-tap]") : null;
+        if (hit) {
+          window.clearTimeout(timers.current.tap);
+          timers.current.tap = window.setTimeout(() => o.current.onTap?.(hit), TAP_MS);
+        }
       }
     }
   };

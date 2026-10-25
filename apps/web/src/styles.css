@@ -5017,6 +5017,144 @@ button.person-card {
     min-height: 2.25rem;
   }
 }
+/* "Who is this?" and "Is this X?": the whole photo with the face in question outlined and the rest dimmed. The frame shrinks to the picture, so the
+   box (fractions of the preview) sits on the face at any size; the picture is a glance, never taller than a short screen can hold. */
+.face-context {
+  display: flex;
+  justify-content: center;
+  margin: 0 0 0.75rem;
+}
+.face-context-frame {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 0.5rem;
+  line-height: 0;
+  background: var(--surface-2);
+}
+.face-context-frame img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: min(45vh, 20rem);
+}
+.face-context-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid #fff;
+  border-radius: 4px;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.55),
+    0 0 0 100vmax rgb(0 0 0 / 0.4);
+}
+.modal-actions .modal-actions-start {
+  margin-right: auto;
+}
+.suggestion-look {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0.5rem;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+.suggestion-look:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.details-check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2rem;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+/* The faces on the photo in the viewer: regions in the zoomable layer, so they follow every zoom and pan. Lines and the button are divided
+   by the zoom (--zoom, set by the zoom hook) to keep their size. Outlined on hover and focus, or all the time with "Show face boxes". */
+.face-regions {
+  position: absolute;
+  pointer-events: none;
+}
+.face-spot {
+  position: absolute;
+}
+.face-region {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  border: 0 solid transparent;
+  border-radius: 4px;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.face-regions.all .face-region,
+.face-region:hover {
+  border: calc(2px / var(--zoom, 1)) solid rgb(255 255 255 / 0.95);
+  background: rgb(255 255 255 / 0.1);
+  box-shadow: 0 0 0 calc(1px / var(--zoom, 1)) rgb(0 0 0 / 0.55);
+}
+.face-region:focus-visible {
+  outline: calc(3px / var(--zoom, 1)) solid #fff;
+  outline-offset: calc(2px / var(--zoom, 1));
+  background: rgb(255 255 255 / 0.1);
+  box-shadow: 0 0 0 calc(6px / var(--zoom, 1)) rgb(0 0 0 / 0.65);
+}
+.face-not {
+  position: absolute;
+  left: 0;
+  top: 100%;
+  min-height: 2rem;
+  padding: 0 0.6rem;
+  border: 0;
+  border-top: 4px solid transparent;
+  border-radius: 0.5rem;
+  background: rgb(0 10 17 / 0.85);
+  background-clip: padding-box;
+  color: #e6eef5;
+  font: inherit;
+  font-size: 0.8125rem;
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(calc(1 / var(--zoom, 1)));
+  transform-origin: 0 0;
+}
+/* The button opens towards the middle of the photo, so a face at an edge does not push it out of the picture. */
+.face-spot.right .face-not {
+  left: auto;
+  right: 0;
+  transform-origin: 100% 0;
+}
+.face-spot.low .face-not {
+  top: auto;
+  bottom: 100%;
+  border-top: 0;
+  border-bottom: 4px solid transparent;
+  transform-origin: 0 100%;
+}
+.face-spot.low.right .face-not {
+  transform-origin: 100% 100%;
+}
+.face-spot:hover .face-not,
+.face-spot:focus-within .face-not {
+  opacity: 1;
+  pointer-events: auto;
+}
+.face-not:focus-visible {
+  outline: 2px solid #fff;
+}
+@media (hover: none) {
+  /* No hover on a touch screen: a tap opens the face's dialog, which offers "Not a face" for a face nobody named. */
+  .face-spot:not(:focus-within) .face-not {
+    display: none;
+  }
+}
 /* The people filter of the search sheet and of a smart album's rule: a box to narrow, then a short list of checkboxes. */
 .sheet-label {
   font-size: 0.8125rem;

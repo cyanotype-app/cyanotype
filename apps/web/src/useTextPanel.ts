@@ -64,9 +64,23 @@ export function useImageRect(stage: RefObject<HTMLElement | null>, img: RefObjec
     }
     const measure = () => {
       // Layout position inside the zoomable layer the boxes are drawn in (so zooming moves both together, and is not measured).
-      const next = i.offsetWidth > 0 ? { left: i.offsetLeft, top: i.offsetTop, width: i.offsetWidth, height: i.offsetHeight } : null;
+      let next = i.offsetWidth > 0 ? { left: i.offsetLeft, top: i.offsetTop, width: i.offsetWidth, height: i.offsetHeight } : null;
+      // The offsets are whole pixels, and a zoomed photo multiplies their rounding: the layer centres the picture, so its exact
+      // (layout, never transformed) size gives the exact place too.
+      const layer = i.offsetParent;
+      if (next && layer) {
+        const w = Number.parseFloat(getComputedStyle(i).width);
+        const h = Number.parseFloat(getComputedStyle(i).height);
+        const lw = Number.parseFloat(getComputedStyle(layer).width);
+        const lh = Number.parseFloat(getComputedStyle(layer).height);
+        if ([w, h, lw, lh].every(Number.isFinite) && Math.abs(w - next.width) < 1 && Math.abs(h - next.height) < 1) {
+          const left = (lw - w) / 2;
+          const top = (lh - h) / 2;
+          if (Math.abs(left - next.left) < 1 && Math.abs(top - next.top) < 1) next = { left, top, width: w, height: h };
+        }
+      }
       setRect((prev) =>
-        prev && next && Math.abs(prev.left - next.left) < 0.5 && Math.abs(prev.top - next.top) < 0.5 && Math.abs(prev.width - next.width) < 0.5 && Math.abs(prev.height - next.height) < 0.5
+        prev && next && Math.abs(prev.left - next.left) < 0.05 && Math.abs(prev.top - next.top) < 0.05 && Math.abs(prev.width - next.width) < 0.05 && Math.abs(prev.height - next.height) < 0.05
           ? prev
           : next,
       );

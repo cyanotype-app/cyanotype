@@ -50,7 +50,7 @@ pub struct NewFace {
 /// for a photo that is gone or being deleted. Returns whether anything was stored.
 ///
 /// What the owner decided about the photo's earlier faces is carried over to the new ones ([`people_math::match_faces`]): the person
-/// a face was put in and who put it there, the people it was rejected from, and being a person's chosen cover. The earlier faces
+/// a face was put in and who put it there, the people it was rejected from, being a person's chosen cover, and being marked "not a face". The earlier faces
 /// are those of every model, so a new scan after a rotate or crop, a new version of the model and a new model all keep their people.
 /// Faces of another model stay (the sweep removes them once the library is covered) but give up what moved to the new ones.
 pub async fn store(db: &PgPool, asset_id: Uuid, model: &str, version: i32, faces: &[NewFace]) -> Result<bool> {
@@ -128,12 +128,13 @@ struct EarlierFace {
     embedding: Option<String>,
     person_id: Option<Uuid>,
     assigned_by: String,
+    not_face: bool,
 }
 
 impl Earlier {
     async fn load(db: &mut sqlx::PgConnection, asset_id: Uuid) -> Result<Self> {
         let rows: Vec<EarlierFace> = sqlx::query_as(
-            "SELECT id, model, box_x, box_y, box_w, box_h, embedding::text AS embedding, person_id, assigned_by
+            "SELECT id, model, box_x, box_y, box_w, box_h, embedding::text AS embedding, person_id, assigned_by, not_face
              FROM faces WHERE asset_id = $1 ORDER BY model, idx",
         )
         .bind(asset_id)
@@ -157,7 +158,9 @@ impl Earlier {
 
     /// Is there anything the owner decided?
     fn carries(&self) -> bool {
-        !self.rejections.is_empty() || !self.covers.is_empty() || self.rows.iter().any(|r| r.person_id.is_some())
+        !self.rejections.is_empty()
+            || !self.covers.is_empty()
+            || self.rows.iter().any(|r| r.person_id.is_some() || r.not_face)
     }
 
     /// Hand the decisions on to the new faces `ids` (stored from `new`, in order).
@@ -198,6 +201,12 @@ impl Earlier {
                     .execute(&mut *db)
                     .await?;
             }
+            if was.not_face {
+                sqlx::query("UPDATE faces SET not_face = true WHERE id = $1")
+                    .bind(to)
+                    .execute(&mut *db)
+                    .await?;
+            }
             for (_, person) in self.rejections.iter().filter(|(f, _)| *f == was.id) {
                 sqlx::query("INSERT INTO face_rejections (face_id, person_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
                     .bind(to)
@@ -218,7 +227,7 @@ impl Earlier {
                     .bind(was.id)
                     .execute(&mut *db)
                     .await?;
-                sqlx::query("UPDATE faces SET person_id = NULL, assigned_by = 'auto' WHERE id = $1")
+                sqlx::query("UPDATE faces SET person_id = NULL, assigned_by = 'auto', not_face = false WHERE id = $1")
                     .bind(was.id)
                     .execute(&mut *db)
                     .await?;
@@ -256,7 +265,7 @@ pub async fn enqueue_for_asset(db: impl PgExecutor<'_>, asset_id: Uuid, version:
 }
 
 /// A photo's picture changed (a rotate or crop): the faces found in the old one, and where they were, are wrong now. Forget
-/// the scan and the faces nobody decided anything about; the faces the owner put in a person, took out of one or chose as a
+/// the scan and the faces nobody decided anything about; the faces the owner put in a person, took out of one, marked "not a face" or chose as a
 /// cover stay, unread (every reader asks for a photo with a scan) until the new scan hands what was decided over to its faces
 /// ([`store`]). With `requeue` (the feature is on), scan the new preview again (queued again even if the photo was scanned
 /// before). Nothing is queued for a photo that was never scanned (the ordinary sweep will, if the feature is on). Returns whether
@@ -264,7 +273,7 @@ pub async fn enqueue_for_asset(db: impl PgExecutor<'_>, asset_id: Uuid, version:
 pub async fn forget_and_requeue(db: &PgPool, asset_id: Uuid, version: i32, requeue: bool) -> Result<bool> {
     let mut tx = db.begin().await?;
     sqlx::query(
-        "DELETE FROM faces f WHERE f.asset_id = $1 AND f.person_id IS NULL
+        "DELETE FROM faces f WHERE f.asset_id = $1 AND f.person_id IS NULL AND NOT f.not_face
            AND NOT EXISTS (SELECT 1 FROM face_rejections r WHERE r.face_id = f.id)
            AND NOT EXISTS (SELECT 1 FROM people p WHERE p.cover_face_id = f.id)",
     )

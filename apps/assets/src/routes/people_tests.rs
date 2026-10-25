@@ -194,6 +194,8 @@ async fn while_the_feature_is_off_nothing_about_people_exists_but_its_status() {
         ),
         ("POST", format!("/assets/faces/{f}/assign"), json!({"new": true})),
         ("POST", format!("/assets/faces/{f}/reject"), json!({"person_id": p})),
+        ("POST", format!("/assets/faces/{f}/not-a-face"), Value::Null),
+        ("DELETE", format!("/assets/faces/{f}/not-a-face"), Value::Null),
     ] {
         let body = (!body.is_null()).then_some(body);
         assert_eq!(
@@ -979,6 +981,200 @@ async fn a_photos_faces_name_their_people_and_leave_out_hidden_people_and_other_
         StatusCode::NOT_FOUND
     );
     t.teardown().await;
+}
+
+// ---- not a face -----------------------------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_detection_marked_not_a_face_leaves_its_person_the_counts_the_chips_and_the_suggestions_and_can_be_brought_back()
+ {
+    let Some(t) = TestDb::new().await else { return };
+    let (uid, key) = user(&t.pool, "a@example.com").await;
+    let (other, ko) = user(&t.pool, "b@example.com").await;
+    let app = app_with_people(&t.pool);
+    let alpha = identity(31);
+    let p = person(&t.pool, uid, Some("Person A")).await;
+    let unnamed = person(&t.pool, uid, None).await;
+    let mut mine = Vec::new();
+    for i in 0..3 {
+        let a = photo(&t.pool, uid, &format!("p{i}.jpg")).await;
+        let f = face(&t.pool, a, Some(shot(&alpha, 10 + i)), [0.1, 0.1, 0.2, 0.2]).await;
+        put(&t.pool, f, p).await;
+        mine.push((a, f));
+    }
+    // A lone face in an unnamed person, chosen as its cover.
+    let lone_a = photo(&t.pool, uid, "lone.jpg").await;
+    let lone = face(&t.pool, lone_a, Some(identity(40)), [0.2, 0.2, 0.2, 0.2]).await;
+    put(&t.pool, lone, unnamed).await;
+    sqlx::query("UPDATE people SET cover_face_id = $2 WHERE id = $1")
+        .bind(unnamed)
+        .bind(lone)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    // An unclaimed face that looks like Person A, to be suggested until it is marked.
+    let near_a = photo(&t.pool, uid, "near.jpg").await;
+    let near = face(&t.pool, near_a, Some(shot(&alpha, 99)), [0.3, 0.3, 0.2, 0.2]).await;
+    let theirs_a = photo(&t.pool, other, "theirs.jpg").await;
+    let theirs = face(&t.pool, theirs_a, Some(identity(41)), [0.1, 0.1, 0.2, 0.2]).await;
+
+    let counts = |v: &Value| -> Vec<(String, i64, i64)> { listed(v) };
+    let (_, v) = get(&app, &key, "/assets/people").await;
+    assert_eq!(counts(&v), vec![("Person A".into(), 3, 3), ("".into(), 1, 1)]);
+    let (_, s) = get(&app, &key, &format!("/assets/people/{p}/suggestions")).await;
+    assert_eq!(item_ids_of(&s, "face_id"), vec![near]);
+    assert_eq!(pending_of(&v, p), 1, "the badge counts the suggestion");
+
+    // Marking a face of Person A: it leaves the person without a rejection, and every count follows.
+    let (st, v) = post(
+        &app,
+        &key,
+        &format!("/assets/faces/{}/not-a-face", mine[0].1),
+        Value::Null,
+    )
+    .await;
+    assert_eq!((st, v["person_id"].clone()), (StatusCode::OK, json!(p)));
+    assert_eq!(count(&t.pool, "SELECT count(*) FROM face_rejections").await, 0);
+    let (_, v) = get(&app, &key, "/assets/people").await;
+    assert_eq!(counts(&v), vec![("Person A".into(), 2, 2), ("".into(), 1, 1)]);
+    let (_, ph) = get(&app, &key, &format!("/assets/people/{p}/photos")).await;
+    assert_eq!(ph["items"].as_array().unwrap().len(), 2);
+    let (_, faces_of) = get(&app, &key, &format!("/assets/{}/faces", mine[0].0)).await;
+    assert_eq!(faces_of["items"], json!([]), "not a chip, not a region");
+    assert_eq!(item_ids_of(&faces_of, "id"), Vec::<Uuid>::new());
+    assert_eq!(faces_of["dismissed"].as_array().unwrap().len(), 1);
+    assert_eq!(faces_of["dismissed"][0]["id"], mine[0].1.to_string());
+    assert_box(&faces_of["dismissed"][0]["box"], [0.1, 0.1, 0.2, 0.2]);
+
+    // An unclaimed face: marked, no longer suggested, and the owner's People list has nothing new.
+    let (st, v) = post(&app, &key, &format!("/assets/faces/{near}/not-a-face"), Value::Null).await;
+    assert_eq!((st, v["person_id"].clone()), (StatusCode::OK, Value::Null));
+    let (_, s) = get(&app, &key, &format!("/assets/people/{p}/suggestions")).await;
+    assert!(item_ids_of(&s, "face_id").is_empty());
+    assert_eq!(
+        pending_of(&get(&app, &key, "/assets/people").await.1, p),
+        0,
+        "and a marked detection is not pending"
+    );
+
+    // The cover of an unnamed person, marked: the unnamed person goes with its last face.
+    post(&app, &key, &format!("/assets/faces/{lone}/not-a-face"), Value::Null).await;
+    assert_eq!(
+        count(&t.pool, "SELECT count(*) FROM people WHERE name IS NULL").await,
+        0
+    );
+
+    // Marking again is harmless; an assigned-by-the-worker run never gives a marked face a person.
+    assert_eq!(
+        post(&app, &key, &format!("/assets/faces/{near}/not-a-face"), Value::Null)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    cyanotype_core::people::run(&t.pool, uid).await.unwrap();
+    assert_eq!(
+        count(
+            &t.pool,
+            &format!("SELECT count(*) FROM faces WHERE id = '{near}' AND person_id IS NULL AND not_face")
+        )
+        .await,
+        1
+    );
+
+    // Someone else's face, and a face that does not exist, are not found; nothing of theirs changed.
+    for f in [theirs, Uuid::new_v4()] {
+        assert_eq!(
+            post(&app, &key, &format!("/assets/faces/{f}/not-a-face"), Value::Null)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            send(&app, "DELETE", &format!("/assets/faces/{f}/not-a-face"), &key, None)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        post(&app, &ko, &format!("/assets/faces/{near}/not-a-face"), Value::Null)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        count(
+            &t.pool,
+            &format!("SELECT count(*) FROM faces WHERE id = '{theirs}' AND NOT not_face")
+        )
+        .await,
+        1
+    );
+
+    // Undo: brought back, it is an ordinary unassigned face (suggested again), and can be put in its person with assign.
+    assert_eq!(
+        send(
+            &app,
+            "DELETE",
+            &format!("/assets/faces/{}/not-a-face", mine[0].1),
+            &key,
+            None
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let (_, faces_of) = get(&app, &key, &format!("/assets/{}/faces", mine[0].0)).await;
+    assert_eq!(item_ids_of(&faces_of, "id"), vec![mine[0].1]);
+    assert!(faces_of["items"][0]["person"].is_null());
+    assert_eq!(faces_of["dismissed"], json!([]));
+    let (st, _) = post(
+        &app,
+        &key,
+        &format!("/assets/faces/{}/assign", mine[0].1),
+        json!({"person_id": p}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let (_, v) = get(&app, &key, "/assets/people").await;
+    assert_eq!(counts(&v), vec![("Person A".into(), 3, 3)]);
+
+    // Assigning a marked face is a decision too: the mark goes (no constraint error).
+    let (st, _) = post(
+        &app,
+        &key,
+        &format!("/assets/faces/{near}/assign"),
+        json!({"person_id": p}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        count(
+            &t.pool,
+            &format!("SELECT count(*) FROM faces WHERE not_face AND id <> '{lone}'")
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        count(
+            &t.pool,
+            &format!("SELECT count(*) FROM faces WHERE id = '{near}' AND person_id = '{p}'")
+        )
+        .await,
+        1
+    );
+    t.teardown().await;
+}
+
+/// The `key` of each item, as uuids.
+fn item_ids_of(v: &Value, key: &str) -> Vec<Uuid> {
+    v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i[key].as_str().unwrap().parse().unwrap())
+        .collect()
 }
 
 // ---- never shared ---------------------------------------------------------------------------------------------------------------

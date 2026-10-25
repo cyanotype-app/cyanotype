@@ -172,6 +172,10 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/people/{id}/suggestions", get(people::suggestions))
         .route("/assets/faces/{id}/assign", post(people::assign))
         .route("/assets/faces/{id}/reject", post(people::reject))
+        .route(
+            "/assets/faces/{id}/not-a-face",
+            post(people::not_a_face).delete(people::is_a_face),
+        )
         .route("/assets/duplicates", get(duplicates::list))
         .route("/assets/duplicates/scan", post(duplicates::scan))
         .route("/assets/duplicates/{id}/keep", post(duplicates::keep))

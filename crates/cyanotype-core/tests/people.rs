@@ -623,6 +623,169 @@ async fn suggestions_are_the_unassigned_faces_near_a_person_never_the_ones_rejec
     t.teardown().await;
 }
 
+async fn not_a_face(pool: &PgPool, face: Uuid) {
+    sqlx::query("UPDATE faces SET person_id = NULL, not_face = true WHERE id = $1")
+        .bind(face)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_detection_marked_not_a_face_is_never_grouped_joined_or_suggested() {
+    let Some(t) = TestDb::new().await else { return };
+    let owner = user(&t.pool).await;
+    let (alpha, bravo) = (identity(90), identity(91));
+    // Alpha has four photos, one of them a false detection: three real faces still make a person, and the false one stays out of it.
+    let a = photos_of(&t.pool, owner, &alpha, 4, 1).await;
+    not_a_face(&t.pool, a[0]).await;
+    // Bravo has three, one false: two real faces are too few for a person.
+    let b = photos_of(&t.pool, owner, &bravo, 3, 2).await;
+    not_a_face(&t.pool, b[0]).await;
+
+    let r = people::run(&t.pool, owner).await.unwrap();
+    assert_eq!((r.looked_at, r.created, r.grouped), (5, 1, 3));
+    assert_eq!(who(&t.pool, a[0]).await.0, None);
+    let pa = who(&t.pool, a[1]).await.0;
+    assert!(pa.is_some());
+    for f in &a[1..] {
+        assert_eq!(who(&t.pool, *f).await.0, pa);
+    }
+    for f in &b {
+        assert_eq!(who(&t.pool, *f).await.0, None);
+    }
+    assert_eq!(
+        r.left, 2,
+        "Bravo's two real faces are left; the false detections are not counted"
+    );
+
+    // A new face of Alpha joins; a marked one of Alpha does not, and is not suggested either.
+    let joined = photo_with(&t.pool, owner, shot(&alpha, 700)).await.1;
+    let (_, marked) = photo_with(&t.pool, owner, shot(&alpha, 701)).await;
+    not_a_face(&t.pool, marked).await;
+    let (_, open) = photo_with(&t.pool, owner, shot(&alpha, 702)).await;
+    let suggested = people::suggestions(&t.pool, owner, pa.unwrap(), false, 10)
+        .await
+        .unwrap();
+    let mut got: Vec<Uuid> = suggested.iter().map(|s| s.face_id).collect();
+    got.sort();
+    let mut want = vec![joined, open];
+    want.sort();
+    assert_eq!(got, want, "the marked face is not suggested");
+    assert!(
+        suggested
+            .iter()
+            .all(|s| s.face_id != marked && s.face_id != a[0] && s.face_id != b[0])
+    );
+    let r = people::run(&t.pool, owner).await.unwrap();
+    assert_eq!(r.assigned, 2);
+    assert_eq!(who(&t.pool, joined).await.0, pa);
+    assert_eq!(who(&t.pool, open).await.0, pa);
+    assert_eq!(who(&t.pool, marked).await.0, None);
+    assert_eq!(
+        count(
+            &t.pool,
+            "SELECT count(*) FROM faces WHERE person_id IS NULL AND NOT not_face AND embedding IS NOT NULL"
+        )
+        .await,
+        2,
+        "only Bravo's two real faces are ungrouped"
+    );
+    // The worker's guarded write cannot give a marked face a person, and the table does not allow it.
+    assert!(
+        sqlx::query("UPDATE faces SET person_id = $2 WHERE id = $1")
+            .bind(marked)
+            .bind(pa)
+            .execute(&t.pool)
+            .await
+            .is_err()
+    );
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn not_a_face_is_undone_by_clearing_it_and_survives_a_rescan_and_an_edit() {
+    let Some(t) = TestDb::new().await else { return };
+    let owner = user(&t.pool).await;
+    let (alpha, bravo) = (identity(95), identity(96));
+    let a = asset(&t.pool, owner).await;
+    store(
+        &t.pool,
+        a,
+        &[nf(B1, Some(shot(&alpha, 1))), nf(B2, Some(shot(&bravo, 2)))],
+    )
+    .await;
+    let (f0, f1) = (face_of(&t.pool, a, 0).await, face_of(&t.pool, a, 1).await);
+    not_a_face(&t.pool, f1).await;
+
+    // A rotate forgets what nobody decided about but keeps the mark (and the scan waits for the new one).
+    assert!(faces::forget_and_requeue(&t.pool, a, VERSION, true).await.unwrap());
+    assert_eq!(count(&t.pool, "SELECT count(*) FROM faces").await, 1);
+    store(
+        &t.pool,
+        a,
+        &[
+            nf([0.3, 0.6, 0.2, 0.2], Some(shot(&bravo, 12))),
+            nf([0.7, 0.7, 0.2, 0.2], Some(shot(&alpha, 11))),
+        ],
+    )
+    .await;
+    let (n0, n1) = (face_of(&t.pool, a, 0).await, face_of(&t.pool, a, 1).await);
+    assert!(![f0, f1].contains(&n0));
+    let marks: Vec<(Uuid, bool)> = sqlx::query_as("SELECT id, not_face FROM faces WHERE asset_id = $1 ORDER BY idx")
+        .bind(a)
+        .fetch_all(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        marks,
+        vec![(n0, true), (n1, false)],
+        "Bravo's face moved to index 0 and is still marked"
+    );
+
+    // A scan without fingerprints finds it again by its box.
+    store(
+        &t.pool,
+        a,
+        &[nf([0.3, 0.6, 0.2, 0.2], None), nf([0.7, 0.7, 0.2, 0.2], None)],
+    )
+    .await;
+    assert_eq!(
+        count(
+            &t.pool,
+            &format!("SELECT count(*) FROM faces WHERE asset_id = '{a}' AND not_face")
+        )
+        .await,
+        1
+    );
+
+    // Undo: the face is an ordinary unassigned one again.
+    sqlx::query("UPDATE faces SET not_face = false WHERE asset_id = $1")
+        .bind(a)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(count(&t.pool, "SELECT count(*) FROM faces WHERE not_face").await, 0);
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn another_owners_faces_are_never_touched_by_a_mark_and_only_real_people_are_counted() {
+    let Some(t) = TestDb::new().await else { return };
+    let (owner, other) = (user(&t.pool).await, user(&t.pool).await);
+    let alpha = identity(97);
+    let mine = photos_of(&t.pool, owner, &alpha, 3, 1).await;
+    let theirs = photos_of(&t.pool, other, &alpha, 3, 2).await;
+    not_a_face(&t.pool, mine[0]).await;
+    people::run(&t.pool, owner).await.unwrap();
+    people::run(&t.pool, other).await.unwrap();
+    // Mine: two real faces, no person. Theirs: three, one person.
+    assert_eq!(count(&t.pool, "SELECT count(*) FROM people").await, 1);
+    assert!(who(&t.pool, theirs[0]).await.0.is_some());
+    assert_eq!(who(&t.pool, mine[1]).await.0, None);
+    t.teardown().await;
+}
+
 #[tokio::test]
 async fn the_nearest_neighbour_queries_use_the_models_index() {
     let Some(t) = TestDb::new().await else { return };

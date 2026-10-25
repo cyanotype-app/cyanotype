@@ -1,6 +1,6 @@
 // Pure helpers of People: the words (names, counts, toasts), the rules for a name (the server's), which people are shown where, and
 // the arithmetic of cropping a face out of a photo's preview with CSS. Unit tested.
-import type { FaceBox, Person } from "./api";
+import type { FaceBox, Person, PhotoFace } from "./api";
 
 export const MAX_NAME_CHARS = 100;
 export const UNNAMED = "Unnamed person";
@@ -129,3 +129,20 @@ export const SAVE_ALBUM_NOTE =
 
 /** "People: 2 people together" for a smart-album rule (names are not kept in the rule). */
 export const peopleRuleLabel = (ids: readonly string[]) => (ids.length === 1 ? "People: 1 person" : `People: ${ids.length} people together`);
+
+/**
+ * The people the Info panel lists for a photo: named (an unnamed person is not listed) and each once however many of their faces are
+ * in it, in the order of the faces. People the owner hid are not in the photo's faces at all (the server leaves them out), and neither
+ * are detections marked "Not a face".
+ */
+export function peopleNamed(faces: readonly PhotoFace[] | undefined): { id: string; name: string }[] {
+  const out: { id: string; name: string }[] = [];
+  for (const f of faces ?? []) {
+    const name = f.person?.name?.trim();
+    if (f.person && name && !out.some((p) => p.id === f.person!.id)) out.push({ id: f.person.id, name });
+  }
+  return out;
+}
+
+/** The toast after "Not a face". */
+export const NOT_A_FACE_MESSAGE = "Marked as not a face";
