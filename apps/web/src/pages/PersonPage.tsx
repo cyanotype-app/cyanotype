@@ -5,6 +5,7 @@ import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { CoverPicker } from "../components/CoverPicker";
+import { ConfirmFaceDialog } from "../components/FaceChips";
 import { FaceCrop } from "../components/FaceCrop";
 import { Lightbox } from "../components/Lightbox";
 import { RateTools } from "../components/RateTools";
@@ -329,9 +330,11 @@ function Suggestions({
   person: Person;
   onAnswered: (yes: boolean) => void;
   failure: (e: unknown, what: string) => void;
-  show: (t: { message: string; tone?: "error" }) => void;
+  show: (t: { message: string; tone?: "error"; action?: { label: string; onClick: () => void } }) => void;
 }) {
   const [items, setItems] = useState<FaceSuggestion[]>([]);
+  const [looking, setLooking] = useState<FaceSuggestion | null>(null);
+  const [again, setAgain] = useState(0);
   useEffect(() => {
     let live = true;
     api.personSuggestions(person.id).then(
@@ -341,7 +344,7 @@ function Suggestions({
     return () => {
       live = false;
     };
-  }, [person.id]);
+  }, [person.id, again]);
   async function answer(s: FaceSuggestion, yes: boolean) {
     try {
       if (yes) await api.assignFace(s.face_id, { person_id: person.id });
@@ -353,6 +356,27 @@ function Suggestions({
       failure(e, "Couldn’t save your answer.");
     }
   }
+  /** "Not a face": the detection is dropped from the list (and every count), with a way back. */
+  async function notAFace(s: FaceSuggestion) {
+    try {
+      await api.markNotAFace(s.face_id);
+      setItems((cur) => cur.filter((x) => x.face_id !== s.face_id));
+      show({
+        message: "Marked as not a face",
+        action: {
+          label: "Undo",
+          onClick: () => {
+            api.unmarkNotAFace(s.face_id).then(
+              () => setAgain((n) => n + 1),
+              (e: unknown) => failure(e, "Couldn’t undo that."),
+            );
+          },
+        },
+      });
+    } catch (e) {
+      failure(e, "Couldn’t save your answer.");
+    }
+  }
   if (items.length === 0) return null;
   return (
     <section className="person-suggestions" aria-label="Suggestions">
@@ -360,7 +384,9 @@ function Suggestions({
       <ul className="suggestion-list">
         {items.map((s) => (
           <li key={s.face_id} className="suggestion">
-            <FaceCrop url={s.preview_url} box={s.box} round={false} className="suggestion-face" />
+            <button type="button" className="suggestion-look" aria-label="See the whole photo" onClick={() => setLooking(s)}>
+              <FaceCrop url={s.preview_url} box={s.box} round={false} className="suggestion-face" />
+            </button>
             <span className="suggestion-actions">
               <button type="button" className="btn btn-primary" aria-label={`Yes, this is ${personLabel(person)}`} onClick={() => void answer(s, true)}>
                 Yes
@@ -372,6 +398,26 @@ function Suggestions({
           </li>
         ))}
       </ul>
+      {looking && (
+        <ConfirmFaceDialog
+          person={person}
+          previewUrl={looking.preview_url}
+          box={looking.box}
+          onCancel={() => setLooking(null)}
+          onYes={async () => {
+            await answer(looking, true);
+            setLooking(null);
+          }}
+          onNo={async () => {
+            await answer(looking, false);
+            setLooking(null);
+          }}
+          onNotAFace={async () => {
+            await notAFace(looking);
+            setLooking(null);
+          }}
+        />
+      )}
     </section>
   );
 }

@@ -1,9 +1,29 @@
 // People at phone and desktop widths: the way in (More menu), the People page with long and missing names and a hidden section, a
 // person's page (a timeline, with suggestions), the inline rename, selection of the whole person and its dialogs, "Save as album", and the
-// viewer's People chips and "Who is this?" dialog. Set SHOT_DIR to save the screenshots.
-import { expect, test } from "@playwright/test";
+// viewer's People chips, the faces on the photo and the "Who is this?" and "Is this X?" dialogs (the whole photo with the face outlined).
+// Set SHOT_DIR to save the screenshots.
+import { expect, test, type Locator } from "@playwright/test";
 import { pageOf, timelineOf, type FakeAsset } from "./fakeLibrary";
 import { json, makeCheck, RUNS, setupApp, shotPrefix, viewportOf, type Handler } from "./kit";
+
+/** The outlined box of a decision dialog sits on the face: its place in the picture is the face's fractions of it, and all of it is on screen. */
+async function expectBoxOnFace(dialog: Locator, box: [number, number, number, number]) {
+  const img = dialog.locator(".face-context-frame img");
+  await expect.poll(async () => (await img.boundingBox())?.width ?? 0).toBeGreaterThan(20);
+  const i = (await img.boundingBox())!;
+  const b = (await dialog.getByTestId("face-context-box").boundingBox())!;
+  const tol = 1.5;
+  expect(Math.abs(b.x - (i.x + box[0] * i.width)), "box left").toBeLessThan(tol);
+  expect(Math.abs(b.y - (i.y + box[1] * i.height)), "box top").toBeLessThan(tol);
+  expect(Math.abs(b.width - box[2] * i.width), "box width").toBeLessThan(tol);
+  expect(Math.abs(b.height - box[3] * i.height), "box height").toBeLessThan(tol);
+  const vp = dialog.page().viewportSize()!;
+  const d = (await dialog.boundingBox())!;
+  expect(d.x, "dialog left").toBeGreaterThanOrEqual(-0.5);
+  expect(d.x + d.width, "dialog right").toBeLessThanOrEqual(vp.width + 0.5);
+  // Every answer can be reached without leaving the screen (the dialog scrolls if the screen is short).
+  for (const name of ["Not a face"]) await expect(dialog.getByRole("button", { name })).toBeVisible();
+}
 
 const LONG = "A really quite long name with_an_unbroken_run_of_characters_that_could_overflow_" + "x".repeat(10);
 const cover = (n: number) => ({ face_id: `f${n}`, asset_id: `a${n}`, box: [0.35, 0.3, 0.3, 0.3], preview_url: `/fixture-thumbs/${n}.svg` });
@@ -96,6 +116,7 @@ for (const { width, scheme } of RUNS) {
                   { id: "f-b", box: [0.5, 0.1, 0.2, 0.2], person: { id: "p3", name: null } },
                   { id: "f-c", box: [0.1, 0.5, 0.2, 0.2], person: null },
                 ],
+                dismissed: [],
               }),
             );
             return true;
@@ -143,6 +164,17 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("heading", { name: "Person One", level: 1 }).waitFor();
       expect(calls.at(-1)?.body).toEqual({ name: "Person One" });
 
+      // "Is this X?": the whole photo with the face outlined, answers from there.
+      await page.getByRole("button", { name: "See the whole photo" }).first().click();
+      const isThis = page.getByRole("dialog", { name: "Is this Person One?" });
+      await isThis.waitFor();
+      await expectBoxOnFace(isThis, [0.3, 0.3, 0.4, 0.4]);
+      await expect(isThis.getByRole("button", { name: "Yes, this is Person One" })).toBeVisible();
+      await expect(isThis.getByRole("button", { name: "No, this is not Person One" })).toBeVisible();
+      await check("person-is-this");
+      await page.keyboard.press("Escape");
+      await isThis.waitFor({ state: "detached" });
+
       // Selecting photos and the "Not this person" question.
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_00000/ }).click();
@@ -183,19 +215,28 @@ for (const { width, scheme } of RUNS) {
       await check("person-delete");
       await page.keyboard.press("Escape");
 
-      // The viewer: the people in the photo, and naming a face nobody has claimed.
+      // The viewer: the faces on the photo (a click on one nobody named asks "Who is this?"), and the named people in Info.
       await page.goto("/library");
       await page.getByRole("button", { name: /Open IMG_00002/ }).first().click();
       await page.getByRole("dialog", { name: "IMG_00002.jpg" }).waitFor();
-      await page.keyboard.press("i");
-      const panel = page.getByRole("complementary", { name: "Photo details" });
-      await panel.getByRole("button", { name: "Name this face" }).waitFor();
-      await check("viewer-people");
-      await panel.getByRole("button", { name: "Name this face" }).click();
-      await page.getByRole("dialog", { name: "Who is this?" }).waitFor();
+      const unclaimed = page.getByRole("button", { name: "Unknown face: who is this?" });
+      await expect(unclaimed).toHaveCount(2);
+      await expect(page.getByRole("link", { name: `${LONG}: open their page` })).toHaveCount(1);
+      await check("viewer-faces");
+      await unclaimed.last().click();
+      const who = page.getByRole("dialog", { name: "Who is this?" });
+      await who.waitFor();
+      await expectBoxOnFace(who, [0.1, 0.5, 0.2, 0.2]);
       await page.getByLabel("Person", { exact: true }).selectOption("p2");
       await check("viewer-who-is-this");
       await page.keyboard.press("Escape");
+      await who.waitFor({ state: "detached" });
+      await page.keyboard.press("i");
+      const panel = page.getByRole("complementary", { name: "Photo details" });
+      await panel.getByRole("link", { name: LONG }).waitFor();
+      await expect(panel.getByText("Unknown face")).toHaveCount(0);
+      await expect(panel.getByRole("link", { name: "Unnamed person" })).toHaveCount(0);
+      await check("viewer-people");
 
       expect(problems, problems.join("\n")).toEqual([]);
     });

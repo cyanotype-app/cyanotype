@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Person } from "./api";
+import type { Person, PhotoFace } from "./api";
 import {
   MAX_FILTER_PEOPLE,
   badgeText,
@@ -14,6 +14,7 @@ import {
   openPersonLabel,
   peopleFilterLabel,
   peopleIdsOf,
+  peopleNamed,
   peopleRuleLabel,
   peopleWord,
   personLabel,
@@ -151,5 +152,21 @@ describe("the people filter", () => {
     expect(peopleFilterLabel(["a", "x"], list)).toBe("Person A and Unknown person");
     expect(peopleRuleLabel(["a"])).toBe("People: 1 person");
     expect(peopleRuleLabel(["a", "b"])).toBe("People: 2 people together");
+  });
+});
+
+describe("the people of a photo's Info panel", () => {
+  const face = (id: string, p: PhotoFace["person"]): PhotoFace => ({ id, box: [0, 0, 0.1, 0.1], person: p });
+  it("lists the named people once each, in the order of the faces", () => {
+    expect(
+      peopleNamed([face("1", { id: "b", name: " Person B " }), face("2", { id: "a", name: "Person A" }), face("3", { id: "b", name: "Person B" })]),
+    ).toEqual([
+      { id: "b", name: "Person B" },
+      { id: "a", name: "Person A" },
+    ]);
+  });
+  it("leaves out unnamed people, blank names and faces nobody claimed", () => {
+    expect(peopleNamed([face("1", { id: "a", name: null }), face("2", { id: "b", name: "  " }), face("3", null)])).toEqual([]);
+    expect(peopleNamed(undefined)).toEqual([]);
   });
 });

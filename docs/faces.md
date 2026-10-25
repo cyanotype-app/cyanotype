@@ -2,7 +2,7 @@
 
 The worker can find the faces in every photo and keep a fingerprint (an *embedding*, 128 numbers) of each, and group the fingerprints into
 people that the owner names and corrects: a People page, a page for each person, the people in a photo's Info panel, "Is this X?" suggestions and
-"Not this person". It finds groups to propose; it never claims to know who anyone is.
+"Not this person" and "Not a face". It finds groups to propose; it never claims to know who anyone is.
 
 **It is off by default.** `FACES_ENABLED=1` turns it on (worker and assets service); leave it unset and no job is queued, no model is read, nothing
 is stored, the People routes of the API answer `404` as if they did not exist and the web app shows no People entry anywhere. A face fingerprint is biometric data about the people in a library, some of whom never agreed to anything: read
@@ -86,7 +86,7 @@ is not overwritten. Faces without a fingerprint (under 32 px) are never grouped.
 same-person threshold, only when both come from the same model: a rotate, a crop or a new version of the model), then by box overlap (IoU at least 0.5: a face
 without a fingerprint, or another model). The new face takes over the person and who decided, the rejections and being a cover. After a rotate or crop
 the photo's scan is forgotten, and the faces the owner decided about wait, unread (every reader asks for a photo with a scan), until the new scan finds
-them again. Faces of another model keep their rows until the sweep prunes them, but give up what moved on, so a person is counted once. Tests:
+them again. A face marked "Not a face" (below) is carried over the same way. Faces of another model keep their rows until the sweep prunes them, but give up what moved on, so a person is counted once. Tests:
 `crates/cyanotype-core/tests/people.rs` and the faces job test in `apps/worker/src/faces.rs`.
 
 ### How the thresholds were chosen
@@ -146,7 +146,8 @@ All of it is the owner's own session (or API key) and nothing else:
 | `POST /assets/people/{id}/faces/remove {asset_ids?, face_ids?}` | "Not this person": the faces become unassigned and a rejection is written. |
 | `GET /assets/people/{id}/suggestions` | "Is this X?": unassigned faces at least 0.45 like the person's centre, best first, none rejected. |
 | `POST /assets/faces/{id}/assign {person_id}` or `{new: true, name?}`, `POST /assets/faces/{id}/reject {person_id}` | Accept a suggestion or name a face; refuse one. Moving a face from a person rejects it from them. |
-| `GET /assets/{id}/faces` | The faces in one photo and their people (the viewer's chips); faces of hidden people are left out. |
+| `POST /assets/faces/{id}/not-a-face`, `DELETE` the same | "Not a face" and its undo, see below. `POST` answers `{person_id}`, the person the detection was in (or null). |
+| `GET /assets/{id}/faces` | `{items, dismissed}`: the faces in one photo and their people (the faces drawn on the photo in the viewer, and the named people of its Info panel). Faces of hidden people are left out of `items`, and so are detections marked not a face, which are in `dismissed` (`[{id, box}]`) so they can be brought back. |
 
 Every change asks for a new run. Key scopes: reads need a read key, changes a write key (`key_scope_tests`). The web app: **People** in the library's More menu (only when the
 feature is on) opens a grid of round faces with name and counts in three sections that are never mixed: the named people, then **Unnamed** (open one to name it), then **Hidden people**, collapsed. A named
@@ -154,10 +155,44 @@ person with "Is this X?" suggestions waiting wears a count in the corner of the 
 when the page opens, so answering on the person's page updates it. **Select** on the page picks several people for **Merge** (choose who stays and optionally type the name they end
 up with, then confirm), **Hide** / **Show** and **Delete** (after asking: the person and the name go, the photos stay). A person's page has the photos in the usual grid and
 selection, inline rename, **Change cover** (a paged picker of the person's faces, usable with the keyboard and a screen reader), Hide, Merge into, Delete person, selected photos to **Not this person** or **Use as cover**, and "Is this X?" with Yes and No; the Info panel of a
-photo shows its people as chips (a face nobody claimed offers "Who is this?"). **Only named, shown people are ever a choice in a menu or picker**: the merge picker, "Who is this?", the
+photo lists its named people (see "Faces on the photo"). **Only named, shown people are ever a choice in a menu or picker**: the merge picker, "Who is this?", the
 search filter, the names read out of a typed query and the smart-album rule (the server's `named_people` for the query parser and `filterablePeople` in the web app); the People page itself is the one
 place unnamed and hidden people are listed. Metrics (`docs/observability.md`): `cyanotype.people.run_ms`, `.assigned`, `.created`,
 `.ungrouped_faces`.
+
+### Not a face
+
+A detector finds the odd pattern, reflection or poster that is no face at all. **Not a face** marks such a detection (migration 0031: `faces.not_face`, with a
+check that a marked face has no person). It is not "Not this person": that one says whose face it is not and the face goes on being grouped and suggested to
+others, this one says there is no face, so the detection is out of everything:
+
+- the grouping run neither groups it nor joins it to a person (`load_ungrouped`, the guarded writes and the first-run request all skip it), and "Is this X?"
+  never suggests it;
+- every count leaves it out: a person's faces and photos (marking takes the face out of its person, without writing a rejection), the ungrouped faces of the run
+  report and the `people.ungrouped_faces` metric, and the suggestions of a person. The scan's own `face_scans.faces` ("faces found") is the detector's count and
+  stays as it was;
+- a new scan of the photo (a rotate or crop, a new model version) hands the mark to the face that takes the old one's place, like a rejection, and a rotate or
+  crop keeps the marked rows while it waits for that scan;
+- it is undone by `DELETE /assets/faces/{id}/not-a-face` (the face is an ordinary unclaimed one again, and may be grouped), by **Undo** in the toast that follows the
+  mark (which also puts a face that was in a person back in them), and by **Bring back** in the photo's Info panel (all of the photo's marked detections at once). An
+  unnamed person left without faces by a mark is removed, like when a face is moved; a named one stays.
+
+It is offered in "Who is this?", in "Is this X?" and, for a named face, as a small button that shows with the face's outline in the viewer. Owner-only and off with
+the feature like the rest: nothing about it is in a share, a public response or a recovery manifest.
+
+### Faces on the photo
+
+In the viewer (the owner's own session, People on) the faces of the photo are regions over the picture, drawn in the zoomable layer like the Text panel's boxes, so
+they sit on the faces at fit and follow every zoom and pan. A region is a link for a face that has a named person, which opens that person's page, and a button for
+any other face, which opens "Who is this?"; both are reached with Tab, outlined on hover and when focused, labelled for a screen reader ("Person A: open their page",
+"Unknown face: who is this?"), and open with Enter or Space. Faces of hidden people and detections marked not a face are not drawn. A tap or click is heard by the
+viewer's own zoom handler, not by the region (the photo area owns every pointer): a press that pans or pinches never opens anything, and a tap on a face waits out the
+double-tap window (about a third of a second) so that a double tap or double click zooms instead of opening it. The Info panel's **People** row lists only the people
+who have a name, once each, and has the switch **Show face boxes on the photo** (outline every face all the time) and, when there are any, **Bring back** for the
+detections marked not a face.
+
+"Who is this?" and "Is this X?" show the whole photo (its preview) with the face in question outlined and the rest dimmed, so it is clear which face of a group photo is
+meant. "Is this X?" is on a person's page: the face's crop opens it ("See the whole photo") and it has Yes, No and Not a face next to the crop's own Yes and No.
 
 ## People in search, albums and bulk actions
 
@@ -233,7 +268,7 @@ has too. The parser's one extra query per text search reads the owner's named pe
 
 - **Off by default** (`FACES_ENABLED`, in `.env.prod`). Switch it on deliberately.
 - **Data stays in your database.** `faces` and `face_scans` (migration 0029): box and landmarks as fractions of the preview, a score, the fingerprint
-  (`halfvec(128)`); `people`, `face_rejections` and `people_runs` (migration 0030). **A name you give a person is personal data too**, about the person and
+  (`halfvec(128)`); `people`, `face_rejections` and `people_runs` (migration 0030); `faces.not_face` (migration 0031). **A name you give a person is personal data too**, about the person and
   about you: it is stored in `people.name`, shown only in your own session, and never written to the bucket, the audit trail or a log. No model is called
   over the network: the models are baked into the worker image and run in the worker process.
 - **Deleted with the photo.** A permanent delete (`apps/assets/src/purge.rs`) removes the photo's face rows in the same transaction as
@@ -448,3 +483,9 @@ Metrics (`docs/observability.md`): `cyanotype.faces.model_loaded` (gauge), `cyan
   `manifest.rs` (a people rule stays out). Web: `peopleText.test.ts`, `searchText.test.ts`, `smartText.test.ts`, `PeoplePicker.test.tsx`, `FilterSheet.test.tsx`,
   `SmartAlbumEditor.test.tsx`, `Search.test.tsx`, `PersonPage.test.tsx` (the timeline, live refresh, select all through the scope) and
   `e2e/people-search-layout.spec.ts`.
+- Not a face and faces on the photo: `crates/cyanotype-core/tests/people.rs` (a marked detection is never grouped, joined or suggested and is left out of the run's
+  numbers; the mark survives a rotate, an edit and a rescan, also by box; undo; another owner's faces), `routes/people_tests.rs` (marking and undoing over the API: the
+  person's counts and photos, the cover, an unnamed person's removal, suggestions, `dismissed` in a photo's faces, `404` for someone else's face and while off, assigning
+  a marked face). Web: `FaceChips.test.tsx` (both dialogs with the box, Not a face, the regions, the Info row), `PersonPage.test.tsx` ("Is this X?" dialog, Not a face and its
+  undo), `e2e/viewer-faces-layout.spec.ts` (regions on the faces at fit, zoom and pan with the mouse and CDP touch, hover, focus and keyboard, a click opening a face but a
+  double tap, pinch or pan never doing so, hidden and marked faces absent, the dialog at 320, 375, 414 and 1280 px light and dark) and `e2e/people-layout.spec.ts`.

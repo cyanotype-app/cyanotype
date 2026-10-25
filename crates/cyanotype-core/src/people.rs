@@ -5,7 +5,7 @@
 //! claims an owner whose faces have stopped arriving, and a request that comes in while it runs stays wanted. The decisions of the owner
 //! always win: a face the owner put in a person (`assigned_by = 'user'`) is never moved, a face is never put in a person it was
 //! rejected from (`face_rejections`), and a named person is never deleted or merged. Every write of a run is guarded in SQL
-//! (`person_id IS NULL AND NOT EXISTS (rejection)`), so a decision the owner makes while a run is in flight is not overwritten.
+//! (`person_id IS NULL AND NOT not_face AND NOT EXISTS (rejection)`), so a decision the owner makes while a run is in flight is not overwritten.
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
@@ -124,7 +124,7 @@ struct Ungrouped {
 async fn load_ungrouped(db: &PgPool, owner: Uuid) -> Result<Vec<Ungrouped>> {
     let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
         "SELECT f.id, f.asset_id, f.embedding::text FROM faces f JOIN assets a ON a.id = f.asset_id
-         WHERE f.owner_id = $1 AND f.model = $2 AND f.person_id IS NULL AND f.embedding IS NOT NULL
+         WHERE f.owner_id = $1 AND f.model = $2 AND f.person_id IS NULL AND NOT f.not_face AND f.embedding IS NOT NULL
            AND a.deleted_at IS NULL AND a.purging_at IS NULL AND a.primary_id IS NULL
            AND EXISTS (SELECT 1 FROM face_scans s WHERE s.asset_id = f.asset_id AND s.model = f.model)
          ORDER BY f.id",
@@ -201,7 +201,7 @@ async fn rejections(db: &PgPool, faces: &[Uuid]) -> Result<HashMap<Uuid, HashSet
 async fn assign_guarded(db: &mut PgConnection, owner: Uuid, person: Uuid, faces: &[Uuid]) -> Result<u64> {
     Ok(sqlx::query(
         "UPDATE faces SET person_id = $3, assigned_by = 'auto'
-         WHERE id = ANY($2) AND owner_id = $1 AND person_id IS NULL
+         WHERE id = ANY($2) AND owner_id = $1 AND person_id IS NULL AND NOT not_face
            AND NOT EXISTS (SELECT 1 FROM face_rejections r WHERE r.face_id = faces.id AND r.person_id = $3)",
     )
     .bind(owner)
@@ -298,7 +298,7 @@ async fn group_rest(db: &PgPool, owner: Uuid, rest: &[&Ungrouped]) -> Result<(us
         "SELECT u.id, n.id, n.sim FROM faces u
          CROSS JOIN LATERAL (
              SELECT f.id, 1 - (f.embedding::halfvec(128) <=> u.embedding::halfvec(128)) AS sim FROM faces f
-             WHERE f.model = '{MODEL}' AND f.owner_id = $1 AND f.person_id IS NULL AND f.embedding IS NOT NULL
+             WHERE f.model = '{MODEL}' AND f.owner_id = $1 AND f.person_id IS NULL AND NOT f.not_face AND f.embedding IS NOT NULL
              ORDER BY f.embedding::halfvec(128) <=> u.embedding::halfvec(128) LIMIT {}
          ) n
          WHERE u.id = ANY($2)",
@@ -406,7 +406,7 @@ pub async fn run(db: &PgPool, owner: Uuid) -> Result<Report> {
 pub async fn request_missing(db: impl PgExecutor<'_>) -> Result<u64> {
     Ok(sqlx::query(
         "INSERT INTO people_runs (owner_id, requested_at)
-         SELECT DISTINCT owner_id, now() FROM faces WHERE person_id IS NULL AND embedding IS NOT NULL
+         SELECT DISTINCT owner_id, now() FROM faces WHERE person_id IS NULL AND NOT not_face AND embedding IS NOT NULL
          ON CONFLICT (owner_id) DO NOTHING",
     )
     .execute(db)
@@ -439,7 +439,7 @@ pub async fn suggestions(
     let sql = format!(
         "WITH nn AS MATERIALIZED (
              SELECT f.id, 1 - (f.embedding::halfvec(128) <=> $1::text::halfvec(128)) AS sim FROM faces f
-             WHERE f.model = '{MODEL}' AND f.owner_id = $2 AND f.person_id IS NULL AND f.embedding IS NOT NULL
+             WHERE f.model = '{MODEL}' AND f.owner_id = $2 AND f.person_id IS NULL AND NOT f.not_face AND f.embedding IS NOT NULL
              ORDER BY f.embedding::halfvec(128) <=> $1::text::halfvec(128) LIMIT 300)
          SELECT f.id, f.asset_id, f.box_x, f.box_y, f.box_w, f.box_h, nn.sim FROM nn
          JOIN faces f ON f.id = nn.id JOIN assets a ON a.id = f.asset_id
@@ -494,7 +494,7 @@ pub async fn pending_counts(
          CROSS JOIN LATERAL (
              SELECT n.id, n.asset_id FROM (
                  SELECT f.id, f.asset_id, 1 - (f.embedding::halfvec(128) <=> c.c::halfvec(128)) AS sim FROM faces f
-                 WHERE f.model = '{MODEL}' AND f.owner_id = $1 AND f.person_id IS NULL AND f.embedding IS NOT NULL
+                 WHERE f.model = '{MODEL}' AND f.owner_id = $1 AND f.person_id IS NULL AND NOT f.not_face AND f.embedding IS NOT NULL
                  ORDER BY f.embedding::halfvec(128) <=> c.c::halfvec(128) LIMIT 300) n
              WHERE n.sim >= $2) nn
          JOIN assets a ON a.id = nn.asset_id

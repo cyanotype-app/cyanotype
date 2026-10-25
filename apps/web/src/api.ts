@@ -740,6 +740,12 @@ export interface PhotoFace {
   person: { id: string; name: string | null } | null;
 }
 
+/** A detection the owner marked "Not a face" (GET /assets/{id}/faces `dismissed`): kept so it can be brought back. */
+export interface DismissedFace {
+  id: string;
+  box: FaceBox;
+}
+
 /** An unassigned face that looks like a person ("Is this X?"). */
 export interface FaceSuggestion {
   face_id: string;
@@ -1396,7 +1402,11 @@ export const api = {
   /** "No, not them": the face is not suggested for the person again. */
   rejectFace: (face: string, personId: string) =>
     request<void>(`/assets/faces/${encodeURIComponent(face)}/reject`, json({ person_id: personId })),
-  photoFaces: (asset: string) => request<{ items: PhotoFace[] }>(`/assets/${encodeURIComponent(asset)}/faces`),
+  photoFaces: (asset: string) => request<{ items: PhotoFace[]; dismissed?: DismissedFace[] }>(`/assets/${encodeURIComponent(asset)}/faces`),
+  /** "Not a face": the detection is no face at all. It leaves its person; `person_id` is the one it was in (to put it back on undo). */
+  markNotAFace: (face: string) => request<{ person_id: string | null }>(`/assets/faces/${encodeURIComponent(face)}/not-a-face`, json({})),
+  /** Undo "Not a face": the detection is an ordinary unclaimed face again. */
+  unmarkNotAFace: (face: string) => request<void>(`/assets/faces/${encodeURIComponent(face)}/not-a-face`, { method: "DELETE" }),
   /** The user's tags with counts: alphabetical (`name`) or most used first (`count`); `q` finds names containing it. */
   listTags: (opts: { q?: string; sort?: "name" | "count"; limit?: number } = {}) => {
     const q = new URLSearchParams();

@@ -1,8 +1,11 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { api, downloadHref, editedHref, type AssetDetail, type AssetListItem, type PhotoDetails, type PhotoFace, type PhotoTag, type PhotoText } from "../api";
+import { api, downloadHref, editedHref, type AssetDetail, type AssetListItem, type DismissedFace, type PhotoDetails, type PhotoFace, type PhotoTag, type PhotoText } from "../api";
 import { usePeopleEnabled } from "../usePeople";
 import { AssignFaceDialog } from "./FaceChips";
+import { FaceRegions, namedFace } from "./FaceRegions";
+import { useToast } from "./Toast";
+import { NOT_A_FACE_MESSAGE } from "../peopleText";
 import { useInfoHistory, useVerticalSwipe } from "../useInfoPanel";
 import { useImageRect, useTextPanel } from "../useTextPanel";
 import { TextBoxes, TextPanel } from "./TextPanel";
@@ -127,23 +130,70 @@ export function Lightbox({
         setInfoFailed((m) => ({ ...m, [id]: true }));
       });
   }, [info.open, loadDetails, currentId, infoRetry]);
-  // The people in the photo (when People is on), for the Info panel's chips; a face nobody has claimed can be named from there.
+  // The faces in the photo (when People is on): regions over the picture (a named one opens the person, any other asks "Who is this?"),
+  // and the named people in the Info panel. The owner's own session only: nothing here is loaded without People, or in a share.
   const peopleOn = usePeopleEnabled() === true;
+  // (The router is only needed once People is on, and is reached through a child: the viewer is also drawn without one.)
+  const navigateRef = useRef<((to: string) => void) | null>(null);
+  const { toast, show: showToast } = useToast();
   const [facesById, setFacesById] = useState<Record<string, PhotoFace[]>>({});
+  const [dismissedById, setDismissedById] = useState<Record<string, DismissedFace[]>>({});
   const [namingFace, setNamingFace] = useState<PhotoFace | null>(null);
   const [facesVersion, setFacesVersion] = useState(0);
+  const [faceBoxes, setFaceBoxes] = useState(false);
   useEffect(() => {
-    if (!peopleOn || !info.open || !loadDetails || !currentId) return;
+    if (!peopleOn || !loadDetails || !currentId) return;
     let live = true;
     const id = currentId;
     api.photoFaces(id).then(
-      (r) => live && setFacesById((m) => ({ ...m, [id]: r.items })),
+      (r) => {
+        if (!live) return;
+        setFacesById((m) => ({ ...m, [id]: r.items }));
+        setDismissedById((m) => ({ ...m, [id]: r.dismissed ?? [] }));
+      },
       () => undefined,
     );
     return () => {
       live = false;
     };
-  }, [peopleOn, info.open, loadDetails, currentId, facesVersion]);
+  }, [peopleOn, loadDetails, currentId, facesVersion]);
+  const faceHere = currentId ? facesById[currentId] : undefined;
+  const openFace = (face: PhotoFace) => {
+    if (namedFace(face)) void info.leave().then(() => {
+      onClose();
+      navigateRef.current?.(`/people/${face.person!.id}`);
+    });
+    else setNamingFace(face);
+  };
+  const undoNotAFace = async (face: string, was: string | null) => {
+    try {
+      await api.unmarkNotAFace(face);
+      if (was) await api.assignFace(face, { person_id: was });
+    } catch {
+      showToast({ tone: "error", message: "Couldn’t undo that." });
+    }
+    setFacesVersion((v) => v + 1);
+  };
+  const markedNotAFace = (face: PhotoFace, was: string | null) => {
+    setNamingFace(null);
+    setFacesVersion((v) => v + 1);
+    showToast({ message: NOT_A_FACE_MESSAGE, action: { label: "Undo", onClick: () => void undoNotAFace(face.id, was) } });
+  };
+  const notAFace = async (face: PhotoFace) => {
+    try {
+      markedNotAFace(face, (await api.markNotAFace(face.id)).person_id);
+    } catch (e) {
+      showToast({ tone: "error", message: `Couldn’t save that. ${e instanceof Error ? e.message : ""}`.trim() });
+    }
+  };
+  const bringBack = async (faces: DismissedFace[]) => {
+    try {
+      await Promise.all(faces.map((f) => api.unmarkNotAFace(f.id)));
+    } catch {
+      showToast({ tone: "error", message: "Couldn’t bring them back." });
+    }
+    setFacesVersion((v) => v + 1);
+  };
   const closeInfo = info.hide;
   // The Text panel: the Text button or `t`. It takes the Info panel's place (one panel at a time) and, like it, stays open while paging.
   const text = useTextPanel(loadDetails ? loadText : undefined, currentId);
@@ -191,6 +241,11 @@ export function Lightbox({
     active: !!here0,
     previewLong,
     naturalLong: sharpUrl ? Math.max(detail0?.file_width ?? here0?.width ?? 0, detail0?.file_height ?? here0?.height ?? 0) : previewLong,
+    // A tap on a face on the photo (heard here so that gestures never open it): the face the region stands for.
+    onTap: (el) => {
+      const face = faceHere?.find((f) => f.id === el.dataset.faceId);
+      if (face) openFace(face);
+    },
   });
   const [sharpReady, setSharpReady] = useState<string | null>(null);
   const wantSharp = zoom.wantSharp;
@@ -755,6 +810,9 @@ export function Lightbox({
             />
           )}
           {text.open && text.boxes && text.current && imageRect && <TextBoxes text={text.current} style={imageRect} />}
+          {peopleOn && imgLoaded === item.id && faceHere && faceHere.length > 0 && imageRect && (
+            <FaceRegions faces={faceHere} rect={imageRect} showAll={faceBoxes} onOpen={openFace} onNotAFace={(f) => void notAFace(f)} />
+          )}
         </div>
         {failed[item.id] && <p className="lightbox-msg">Could not load this photo.</p>}
         {rendering && (
@@ -851,7 +909,10 @@ export function Lightbox({
           onNavigate={onClose}
           onEditPicture={canEditPicture ? () => setPicture({ cropping: false, turned: false }) : undefined}
           faces={peopleOn ? facesById[item.id] : undefined}
-          onNameFace={setNamingFace}
+          dismissed={peopleOn ? dismissedById[item.id]?.length : undefined}
+          onBringBack={peopleOn && dismissedById[item.id]?.length ? () => void bringBack(dismissedById[item.id]!) : undefined}
+          faceBoxes={faceBoxes}
+          onFaceBoxes={peopleOn ? setFaceBoxes : undefined}
         />
       )}
       </div>
@@ -877,6 +938,8 @@ export function Lightbox({
       {namingFace && (
         <AssignFaceDialog
           face={namingFace}
+          previewUrl={src}
+          onNotAFace={markedNotAFace}
           onCancel={() => setNamingFace(null)}
           onDone={() => {
             setNamingFace(null);
@@ -884,6 +947,8 @@ export function Lightbox({
           }}
         />
       )}
+      {peopleOn && <NavBridge navRef={navigateRef} />}
+      {peopleOn && toast}
       {tagging && (
         <TagDialog
           target={[item.id]}
@@ -920,6 +985,18 @@ export function Lightbox({
       )}
     </div>
   );
+}
+
+/** Hands the router's `navigate` to the viewer (which may be drawn outside a router) once People is on. */
+function NavBridge({ navRef }: { navRef: { current: ((path: string) => void) | null } }) {
+  const navigate = useNavigate();
+  useEffect(() => {
+    navRef.current = (path) => void navigate(path);
+    return () => {
+      navRef.current = null;
+    };
+  }, [navigate, navRef]);
+  return null;
 }
 
 /** A circled "i". */

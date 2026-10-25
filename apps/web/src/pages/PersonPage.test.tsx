@@ -325,6 +325,41 @@ describe("'Is this X?'", () => {
     await waitFor(() => expect(lib.timeline).toHaveBeenCalledTimes(2));
   });
 
+  it("opens a face to the whole photo with the face outlined, and answers from there", async () => {
+    vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 3));
+    vi.spyOn(api, "personSuggestions").mockResolvedValueOnce({ items: [suggestion(1), suggestion(2)] }).mockResolvedValue({ items: [] });
+    const assign = vi.spyOn(api, "assignFace").mockResolvedValue({ person: null });
+    renderAt();
+    const section = await screen.findByRole("region", { name: "Suggestions" });
+    await userEvent.click(within(section).getAllByRole("button", { name: "See the whole photo" })[0]!);
+    const dialog = await screen.findByRole("dialog", { name: "Is this Person A?" });
+    expect(within(dialog).getByRole("img")).toHaveAttribute("src", "https://s3.test/p1");
+    expect(within(dialog).getByTestId("face-context-box").style.left).toBe("10%");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Yes, this is Person A" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("s1", { person_id: "p1" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Is this Person A?" })).not.toBeInTheDocument());
+  });
+
+  it("marks a suggested detection as not a face, drops it from the list, and undoes that", async () => {
+    vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 3));
+    const suggestions = vi.spyOn(api, "personSuggestions").mockResolvedValue({ items: [suggestion(1)] });
+    const mark = vi.spyOn(api, "markNotAFace").mockResolvedValue({ person_id: null });
+    const unmark = vi.spyOn(api, "unmarkNotAFace").mockResolvedValue(undefined);
+    renderAt();
+    await userEvent.click(await screen.findByRole("button", { name: "See the whole photo" }));
+    const dialog = await screen.findByRole("dialog", { name: "Is this Person A?" });
+    suggestions.mockResolvedValue({ items: [] });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Not a face" }));
+    await waitFor(() => expect(mark).toHaveBeenCalledWith("s1"));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Is this Person A?" })).not.toBeInTheDocument());
+    expect(screen.queryByRole("region", { name: "Suggestions" })).not.toBeInTheDocument();
+    expect(screen.getByText("Marked as not a face")).toBeInTheDocument();
+    suggestions.mockResolvedValue({ items: [suggestion(1)] });
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(unmark).toHaveBeenCalledWith("s1"));
+    expect(await screen.findByRole("region", { name: "Suggestions" })).toBeInTheDocument();
+  });
+
   it("asks 'the same person?' of someone with no name, and shows nothing when there is nothing to ask", async () => {
     vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", null, 3));
     vi.spyOn(api, "personSuggestions").mockResolvedValue({ items: [suggestion(1)] });

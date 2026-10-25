@@ -27,7 +27,11 @@
 //! - `POST /assets/faces/{id}/assign {person_id}` or `{new: true, name?}`: the owner says this face is that person (or a new one). The
 //!   worker never moves such a face. Moving it from another person also rejects it from that one. `POST /assets/faces/{id}/reject
 //!   {person_id}`: "no, not them" (a refused suggestion).
-//! - `GET /assets/{id}/faces`: the faces in one photo, `[{id, box, person: {id, name} | null}]`; faces of hidden people are left out.
+//! - `POST /assets/faces/{id}/not-a-face`: the detection is no face at all. It leaves its person (if any; no rejection is written), is never
+//!   grouped, suggested or counted, and a new scan of the photo keeps the mark. `{person_id}` is the person it was in. `DELETE` on the same
+//!   path undoes it (the face is unassigned again; the caller may put it back in its person with `assign`).
+//! - `GET /assets/{id}/faces`: the faces in one photo, `{items: [{id, box, person: {id, name} | null}], dismissed: [{id, box}]}`; faces of
+//!   hidden people are left out of `items`, and the ones marked not a face are only in `dismissed` (so the viewer can bring them back).
 //!
 //! Ids of someone else's people, faces and photos are `404`. Changing a person asks the worker to group again (`people_runs`), which
 //! it does once the owner's faces have been quiet for a while.
@@ -833,7 +837,7 @@ pub(super) async fn assign(
         }
     };
     if was != Some(target) {
-        sqlx::query("UPDATE faces SET person_id = $2, assigned_by = 'user' WHERE id = $1")
+        sqlx::query("UPDATE faces SET person_id = $2, assigned_by = 'user', not_face = false WHERE id = $1")
             .bind(face)
             .bind(target)
             .execute(&mut *tx)
@@ -900,6 +904,59 @@ pub(super) async fn reject(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// "Not a face": a detection that is no face (a pattern, a reflection). The face leaves its person without a rejection, and every count and
+/// proposal leaves it out until it is brought back.
+pub(super) async fn not_a_face(
+    State(s): State<AppState>,
+    user: AuthUser,
+    unlock: Unlock,
+    Path(face): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    on(&s)?;
+    let mut tx = s.db.begin().await?;
+    let was = lock_face(&mut tx, user.id, unlock.0, face).await?;
+    sqlx::query("UPDATE faces SET person_id = NULL, assigned_by = 'auto', not_face = true WHERE id = $1")
+        .bind(face)
+        .execute(&mut *tx)
+        .await?;
+    if let Some(from) = was {
+        sqlx::query("UPDATE people SET cover_face_id = NULL WHERE id = $1 AND cover_face_id = $2")
+            .bind(from)
+            .bind(face)
+            .execute(&mut *tx)
+            .await?;
+        // An unnamed person left without faces is not kept.
+        sqlx::query(
+            "DELETE FROM people p WHERE p.id = $1 AND p.name IS NULL AND NOT EXISTS (SELECT 1 FROM faces f WHERE f.person_id = p.id)",
+        )
+        .bind(from)
+        .execute(&mut *tx)
+        .await?;
+    }
+    people::request(&mut *tx, user.id).await?;
+    tx.commit().await?;
+    Ok(Json(json!({"person_id": was})))
+}
+
+/// Undo "not a face": the detection is an ordinary unassigned face again.
+pub(super) async fn is_a_face(
+    State(s): State<AppState>,
+    user: AuthUser,
+    unlock: Unlock,
+    Path(face): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    on(&s)?;
+    let mut tx = s.db.begin().await?;
+    lock_face(&mut tx, user.id, unlock.0, face).await?;
+    sqlx::query("UPDATE faces SET not_face = false WHERE id = $1")
+        .bind(face)
+        .execute(&mut *tx)
+        .await?;
+    people::request(&mut *tx, user.id).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(FromRow)]
 struct PhotoFace {
     id: Uuid,
@@ -910,6 +967,7 @@ struct PhotoFace {
     person_id: Option<Uuid>,
     name: Option<String>,
     hidden: Option<bool>,
+    not_face: bool,
 }
 
 pub(super) async fn of_photo(
@@ -931,7 +989,7 @@ pub(super) async fn of_photo(
     live.ok_or(ApiError::NotFound)?;
     // The faces of the model that read the photo last (the current one once it has; an older one's meanwhile).
     let rows: Vec<PhotoFace> = sqlx::query_as(
-        "SELECT f.id, f.box_x, f.box_y, f.box_w, f.box_h, f.person_id, p.name, p.hidden
+        "SELECT f.id, f.box_x, f.box_y, f.box_w, f.box_h, f.person_id, p.name, p.hidden, f.not_face
          FROM faces f LEFT JOIN people p ON p.id = f.person_id
          WHERE f.asset_id = $1 AND f.owner_id = $2
            AND f.model = (SELECT s.model FROM face_scans s WHERE s.asset_id = $1 ORDER BY (s.model = $3) DESC, s.scanned_at DESC LIMIT 1)
@@ -942,9 +1000,14 @@ pub(super) async fn of_photo(
     .bind(faces::MODEL)
     .fetch_all(&s.db)
     .await?;
+    let dismissed: Vec<Value> = rows
+        .iter()
+        .filter(|r| r.not_face)
+        .map(|r| json!({"id": r.id, "box": [r.box_x, r.box_y, r.box_w, r.box_h]}))
+        .collect();
     let items: Vec<Value> = rows
         .into_iter()
-        .filter(|r| r.hidden != Some(true))
+        .filter(|r| r.hidden != Some(true) && !r.not_face)
         .map(|r| {
             json!({
                 "id": r.id,
@@ -953,5 +1016,5 @@ pub(super) async fn of_photo(
             })
         })
         .collect();
-    Ok(Json(json!({"items": items})))
+    Ok(Json(json!({"items": items, "dismissed": dismissed})))
 }
