@@ -50,15 +50,21 @@ variable "CACHE" {
   default = ""
 }
 
-# One shared cache scope: every target contains the same builder stage, so they share cache entries.
-function "cache_from" {
-  params = []
-  result = CACHE == "gha" ? ["type=gha,scope=cyanotype"] : CACHE == "local" ? ["type=local,src=.buildcache"] : []
+# Whether this run may write the cache. CI sets it to "false" for pull requests: they read what the last build of main stored and
+# add nothing, so the 10 GB repository cache budget is not spent on per-PR copies of a multi-GB dependency layer (which evict
+# main's entries) and the PR run does not wait for an export. Publish (main) writes.
+variable "CACHE_WRITE" {
+  default = "true"
 }
 
-function "cache_to" {
-  params = []
-  result = CACHE == "gha" ? ["type=gha,scope=cyanotype,mode=max"] : CACHE == "local" ? ["type=local,dest=.buildcache,mode=max"] : []
+function "cache_from_scope" {
+  params = [scope, dir]
+  result = CACHE == "gha" ? ["type=gha,scope=${scope}"] : CACHE == "local" ? ["type=local,src=${dir}"] : []
+}
+
+function "cache_to_scope" {
+  params = [scope, dir]
+  result = CACHE_WRITE != "true" ? [] : CACHE == "gha" ? ["type=gha,scope=${scope},mode=max"] : CACHE == "local" ? ["type=local,dest=${dir},mode=max"] : []
 }
 
 group "default" {
@@ -68,8 +74,8 @@ group "default" {
 target "_common" {
   context    = "."
   dockerfile = "Dockerfile"
-  cache-from = cache_from()
-  cache-to   = cache_to()
+  # Each image has its own scope (set per target below): an export replaces its scope's manifest, so images sharing one
+  # replaced each other's model layers. Layers are stored once by digest, so the shared builder layers are not duplicated.
   labels = {
     "org.opencontainers.image.source"   = "https://github.com/cyanotype-app/cyanotype"
     "org.opencontainers.image.licenses" = "AGPL-3.0-or-later"
@@ -81,24 +87,32 @@ target "auth" {
   inherits = ["_common"]
   target   = "auth"
   tags     = tags("auth")
+  cache-from = cache_from_scope("cyanotype-auth", ".buildcache-auth")
+  cache-to   = cache_to_scope("cyanotype-auth", ".buildcache-auth")
 }
 
 target "assets" {
   inherits = ["_common"]
   target   = "assets"
   tags     = tags("assets")
+  cache-from = cache_from_scope("cyanotype-assets", ".buildcache-assets")
+  cache-to   = cache_to_scope("cyanotype-assets", ".buildcache-assets")
 }
 
 target "worker" {
   inherits = ["_common"]
   target   = "worker"
   tags     = tags("worker")
+  cache-from = cache_from_scope("cyanotype-worker", ".buildcache-worker")
+  cache-to   = cache_to_scope("cyanotype-worker", ".buildcache-worker")
 }
 
 target "cli" {
   inherits = ["_common"]
   target   = "cli"
   tags     = tags("cli")
+  cache-from = cache_from_scope("cyanotype-cli", ".buildcache-cli")
+  cache-to   = cache_to_scope("cyanotype-cli", ".buildcache-cli")
 }
 
 # Nightly Postgres backup job (pg_dump + rclone); its own tiny Dockerfile, no Rust.
@@ -107,6 +121,9 @@ target "backup" {
   context    = "infra/backup"
   dockerfile = "Dockerfile"
   tags       = tags("backup")
+  # Its own scope: in the shared one its (tiny) export could replace the Rust layers.
+  cache-from = cache_from_scope("cyanotype-backup", ".buildcache-backup")
+  cache-to   = cache_to_scope("cyanotype-backup", ".buildcache-backup")
 }
 
 # Static web UI: Vite build (node + pnpm) served by Caddy; its own Dockerfile, no Rust.
@@ -116,9 +133,9 @@ target "web" {
   dockerfile = "Dockerfile"
   target     = "web"
   tags       = tags("web")
-  # The shared Rust cache scope is not useful here (and would be clobbered by mode=max).
-  cache-from = CACHE == "gha" ? ["type=gha,scope=cyanotype-web"] : CACHE == "local" ? ["type=local,src=.buildcache-web"] : []
-  cache-to   = CACHE == "gha" ? ["type=gha,scope=cyanotype-web,mode=max"] : CACHE == "local" ? ["type=local,dest=.buildcache-web,mode=max"] : []
+  # The shared Rust cache scope is not useful here.
+  cache-from = cache_from_scope("cyanotype-web", ".buildcache-web")
+  cache-to   = cache_to_scope("cyanotype-web", ".buildcache-web")
   # The CLI downloads the server hands out (/cli/*) are built by the cli-dist target and copied in.
   contexts = { "cli-dist-ctx" = "target:cli-dist" }
   args     = { CLI_DIST = "cli-dist-ctx" }
@@ -134,6 +151,6 @@ target "cli-dist" {
   target     = "cli-dist"
   output     = ["type=local,dest=cli-dist-out"]
   args       = { CYANOTYPE_CLI_VERSION = CLI_VERSION, CYANOTYPE_GIT_SHA = REVISION, CARGO_BUILD_JOBS = CARGO_BUILD_JOBS }
-  cache-from = CACHE == "gha" ? ["type=gha,scope=cyanotype-cli-dist"] : CACHE == "local" ? ["type=local,src=.buildcache-cli"] : []
-  cache-to   = CACHE == "gha" ? ["type=gha,scope=cyanotype-cli-dist,mode=max"] : CACHE == "local" ? ["type=local,dest=.buildcache-cli,mode=max"] : []
+  cache-from = cache_from_scope("cyanotype-cli-dist", ".buildcache-cli")
+  cache-to   = cache_to_scope("cyanotype-cli-dist", ".buildcache-cli")
 }

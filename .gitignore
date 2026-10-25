@@ -2,7 +2,7 @@
 .env
 *.swp
 node_modules/
-.buildcache/
+.buildcache*/
 .env.*
 !.env.example
 !.env.prod.example
