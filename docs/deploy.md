@@ -95,6 +95,7 @@ VM-level snapshots on top of the Postgres dumps. Note the IPv4 address.
 Use `S3_ENDPOINT=https://us-ord-10.linodeobjects.com`, `S3_REGION=us-ord-10` and `S3_FORCE_PATH_STYLE=true`.
 The region is the cluster ID (`us-ord-10`), not `us-east-1`. These values were verified against us-ord-10
 (head-bucket, versioning status and listing all work with them). The backup job uses the same variables.
+To move the library to another store later (for example Cloudflare R2), see [`bucket-move.md`](bucket-move.md).
 
 ## 2. Cloud Firewall
 
