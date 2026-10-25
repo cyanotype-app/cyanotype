@@ -27,6 +27,8 @@ import { inOrder, runAround } from "../timeline";
 import { PAGE, useTimeline } from "../useTimeline";
 import { ACCEPT, filesFromDrop, filterFiles } from "../upload/files";
 import { useUploads } from "../upload/UploadProvider";
+import { SlideshowButton } from "../slideshow/SlideshowHost";
+import { scopeSource } from "../slideshow/sources";
 
 const REFRESH_EVERY_MS = 3000;
 const THUMB_POLL_MS = 3000;
@@ -582,6 +584,9 @@ function LibraryView({
         >
           Select
         </button>
+        {(kind === "library" || kind === "favorites" || kind === "archive") && index.total > 0 && (
+          <SlideshowButton source={() => scopeSource(scope, title ?? (favorites ? "Favorites" : "Library"))} />
+        )}
         {onSort && <SortToggle value={sort} onChange={onSort} />}
         {notice && <span className="muted small" role="status">{notice}</span>}
       </div>

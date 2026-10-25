@@ -23,6 +23,8 @@ import { PAGE, useTimeline } from "../useTimeline";
 import { usePeopleEnabled } from "../usePeople";
 import { archiveMessage } from "../viewText";
 import { NotFound } from "./NotFound";
+import { SlideshowButton } from "../slideshow/SlideshowHost";
+import { scopeSource } from "../slideshow/sources";
 
 /** How often the person's counts are read again, to notice photos the worker has grouped meanwhile. */
 const LIVE_EVERY_MS = 15000;
@@ -760,6 +762,7 @@ function PersonPhotos({
           <button type="button" className="btn btn-quiet" aria-pressed={sel.selecting} onClick={() => sel.setSelecting(!sel.selecting)}>
             Select
           </button>
+          <SlideshowButton source={() => scopeSource(scope, personLabel(person))} />
         </div>
       )}
       {sel.selecting && (

@@ -11,6 +11,8 @@ import { publicDownloadHref, publicZipHref, shareApi, type PublicInfo, type Publ
 import { expiryText } from "../shareText";
 import { placeholderUrl } from "../thumbhash";
 import { followLink, planShareZip, sharePlanMessage } from "../zipDownload";
+import { SlideshowButton, SlideshowProvider } from "../slideshow/SlideshowHost";
+import { pagedSource } from "../slideshow/sources";
 
 type Phase =
   | { kind: "loading" }
@@ -66,6 +68,7 @@ export function ShareView() {
   }, [load]);
 
   return (
+    <SlideshowProvider>
     <div className="share-page">
       <header className="share-top">
         <Logo size={22} />
@@ -90,6 +93,7 @@ export function ShareView() {
       {phase.kind === "locked" && <PasswordForm token={token} onUnlocked={() => void load()} />}
       {phase.kind === "open" && <Photos token={token} info={phase.info} onLocked={load} />}
     </div>
+    </SlideshowProvider>
   );
 }
 
@@ -220,6 +224,7 @@ function Photos({ token, info, onLocked }: { token: string; info: PublicInfo; on
           {[photoCount(info.item_count), info.expires_at ? expiryText(info.expires_at) : null].filter(Boolean).join(" · ")}
         </p>
         {info.allow_download && info.item_count > 0 && <DownloadAll token={token} onLocked={onLocked} />}
+        {items.length > 0 && <SlideshowButton source={() => shareSource(token, info.title ?? "Shared photos")} />}
       </div>
       {loaded && items.length === 0 && !error && (
         <div className="empty">
@@ -332,6 +337,29 @@ function DownloadAll({ token, onLocked }: { token: string; onLocked: () => void 
       )}
     </div>
   );
+}
+
+/**
+ * The photos of a share link for a slideshow. Each one's preview address is asked for just before it is shown (they last ten
+ * minutes), and a link whose password session ended says so instead of offering a sign-in.
+ */
+function shareSource(token: string, title: string) {
+  return {
+    ...pagedSource(
+      async (cursor) => {
+        const page = await shareApi.publicItems(token, cursor);
+        return { items: page.items, next_cursor: page.next_cursor };
+      },
+      title,
+      {
+        resolve: async (item) => {
+          const fresh = await shareApi.publicItem(token, item.id);
+          return fresh.preview_url ? { url: fresh.preview_url } : null;
+        },
+      },
+    ),
+    expired: { title: "This link is locked", text: "Open the link again and enter its password." },
+  };
 }
 
 /** How often and how long to ask whether the download copy of a JPEG is ready. */

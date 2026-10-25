@@ -15,6 +15,8 @@ import { useSelection } from "../selection";
 import { similarUrl } from "../searchText";
 import { tagPhotos, tagSearchHref } from "../tagText";
 import { useAssetPages } from "../useAssetPages";
+import { SlideshowButton } from "../slideshow/SlideshowHost";
+import { scopeSource } from "../slideshow/sources";
 
 const PAGE = 60;
 
@@ -258,6 +260,7 @@ function TagPhotos({
           <button type="button" className="btn btn-quiet" aria-pressed={sel.selecting} onClick={() => sel.setSelecting(!sel.selecting)}>
             Select
           </button>
+          <SlideshowButton source={() => scopeSource({ search: { tags: tag.name } }, tag.name)} />
         </div>
       )}
       {sel.selecting && (

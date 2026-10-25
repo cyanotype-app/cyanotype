@@ -77,6 +77,9 @@ mod shares;
 mod similar;
 #[cfg(test)]
 mod similar_tests;
+mod slideshow;
+#[cfg(test)]
+mod slideshow_tests;
 mod smart;
 #[cfg(test)]
 mod smart_tests;
@@ -149,6 +152,8 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/timeline", get(timeline::days))
         .route("/assets/search", get(search::search))
         .route("/assets/search/facets", get(search::facets))
+        .route("/assets/slideshow", get(slideshow::slideshow))
+        .route("/assets/previews", get(slideshow::previews))
         .route("/assets/map", get(map::clusters))
         .route("/assets/tiles", get(tiles::installed))
         .route("/assets/tiles/{name}", get(tiles::tile_range))

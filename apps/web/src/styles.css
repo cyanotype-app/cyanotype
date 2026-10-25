@@ -5231,3 +5231,377 @@ button.person-card {
 .people-picker .sheet-check input {
   flex: none;
 }
+
+/* Slideshow: a dark layer over the app (dark in either colour scheme, like the viewer). */
+.slideshow {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  overflow: hidden;
+  background: #000;
+  color: #e6eef5;
+  outline: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.slideshow.idle {
+  cursor: none;
+}
+.slideshow-stage {
+  position: absolute;
+  inset: 0;
+  /* a horizontal swipe is next/previous; a vertical one is left to the browser */
+  touch-action: pan-y;
+}
+.slide-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.slide-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.slide-photo {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  -webkit-user-drag: none;
+}
+.slide-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* scaled up so the blur's soft edge falls outside the screen */
+  transform: scale(1.2);
+  filter: blur(28px) brightness(0.42) saturate(1.1);
+}
+.slide-layer.in {
+  animation: slide-in 0.8s ease-out;
+}
+@keyframes slide-in {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .slide-layer.in {
+    animation: none;
+  }
+}
+.slideshow-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem max(1rem, env(safe-area-inset-right)) 0.75rem max(1rem, env(safe-area-inset-left));
+  transition: opacity 0.25s;
+}
+.slideshow-top {
+  top: 0;
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+  background: linear-gradient(rgb(0 10 17 / 0.7), transparent);
+}
+.slideshow-bottom {
+  bottom: 0;
+  justify-content: center;
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  background: linear-gradient(transparent, rgb(0 10 17 / 0.7));
+}
+.slideshow.idle .slideshow-bar {
+  opacity: 0;
+  pointer-events: none;
+}
+.slideshow .btn {
+  min-height: 2.75rem;
+  min-width: 2.75rem;
+  padding: 0 0.9rem;
+}
+.slideshow-count {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font-variant-numeric: tabular-nums;
+  color: #9db4c6;
+  white-space: nowrap;
+}
+.slideshow-transport {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.slideshow-gear {
+  position: absolute;
+  right: max(1rem, env(safe-area-inset-right));
+}
+.slideshow-gear.on {
+  background: rgb(255 255 255 / 0.3);
+}
+.slideshow-settings {
+  position: absolute;
+  z-index: 3;
+  right: max(1rem, env(safe-area-inset-right));
+  bottom: calc(4.5rem + env(safe-area-inset-bottom));
+  width: min(18rem, calc(100% - 2rem));
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 0.9rem;
+  background: rgb(8 18 26 / 0.95);
+}
+.slideshow-settings label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+.slideshow-settings select {
+  min-height: 2.5rem;
+  padding: 0 0.5rem;
+  border: 1px solid rgb(255 255 255 / 0.28);
+  border-radius: 0.6rem;
+  background: #0f1d28;
+  color: #fff;
+  font: inherit;
+  font-weight: 400;
+}
+.slideshow-settings .slideshow-check {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-weight: 400;
+}
+.slideshow-settings p {
+  margin: 0;
+  color: #9db4c6;
+}
+.slideshow-note {
+  position: absolute;
+  z-index: 2;
+  top: calc(4.25rem + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  max-width: calc(100% - 2rem);
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  background: rgb(0 10 17 / 0.8);
+  font-size: 0.9rem;
+  text-align: center;
+}
+.slideshow-note.slideshow-centered {
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+.slideshow-card {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(22rem, calc(100% - 2rem));
+  padding: 1.5rem;
+  text-align: center;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 1rem;
+  background: rgb(8 18 26 / 0.95);
+}
+.slideshow-card h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.25rem;
+}
+.slideshow-card p {
+  margin: 0 0 1rem;
+}
+.slideshow-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+}
+.slideshow-start svg {
+  flex: none;
+}
+
+/* Photo frame (/frame): a wall tablet's view. Dark and quiet; the pointer is hidden, a tap opens a small menu. */
+.frame {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+  cursor: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.frame-info {
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.5rem 1.5rem;
+  padding: 3rem max(1.5rem, env(safe-area-inset-right)) max(1.25rem, env(safe-area-inset-bottom)) max(1.5rem, env(safe-area-inset-left));
+  background: linear-gradient(transparent, rgb(0 0 0 / 0.55));
+  text-shadow: 0 1px 10px rgb(0 0 0 / 0.7);
+  pointer-events: none;
+}
+.frame-clock {
+  display: grid;
+  line-height: 1.1;
+}
+.frame-time {
+  font-size: clamp(2rem, 7vmin, 5rem);
+  font-weight: 300;
+  font-variant-numeric: tabular-nums;
+}
+.frame-date {
+  font-size: clamp(0.9rem, 2.4vmin, 1.5rem);
+  opacity: 0.88;
+}
+.frame-caption {
+  margin: 0 0 0 auto;
+  max-width: 100%;
+  font-size: clamp(1rem, 2.6vmin, 1.6rem);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.frame-offline {
+  position: absolute;
+  z-index: 2;
+  top: max(0.75rem, env(safe-area-inset-top));
+  right: max(0.75rem, env(safe-area-inset-right));
+  margin: 0;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 0.6);
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+.frame-centered {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  width: min(30rem, calc(100% - 2rem));
+  text-align: center;
+}
+.frame-centered h1 {
+  margin-bottom: 0.5rem;
+}
+.frame-menu {
+  position: absolute;
+  z-index: 5;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: grid;
+  gap: 0.6rem;
+  width: min(20rem, calc(100% - 2rem));
+  padding: 1rem;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 1rem;
+  background: rgb(8 18 26 / 0.95);
+  cursor: auto;
+}
+.frame-menu .btn {
+  min-height: 3rem;
+}
+.frame-message {
+  min-height: 100dvh;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 0.75rem;
+  padding: 2rem 1rem;
+  text-align: center;
+}
+.frame-message p {
+  max-width: 28rem;
+  margin: 0;
+}
+.frame-setup {
+  width: min(34rem, 100%);
+  margin: 0 auto;
+  padding: 1.5rem 1rem 3rem;
+}
+.frame-setup header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.frame-setup fieldset {
+  display: grid;
+  gap: 0.25rem;
+  margin: 1.25rem 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.frame-setup legend {
+  padding: 0;
+  margin-bottom: 0.25rem;
+  font-weight: 600;
+}
+.frame-choice,
+.frame-check {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 2.5rem;
+}
+.frame-choice input,
+.frame-check input {
+  flex: none;
+  width: 1.15rem;
+  height: 1.15rem;
+}
+.frame-field {
+  display: grid;
+  gap: 0.35rem;
+  margin: 1rem 0;
+  font-weight: 600;
+}
+.frame-setup select {
+  width: 100%;
+  min-height: 2.6rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 400;
+}
+.frame-album {
+  padding-left: 1.75rem;
+}
+.frame-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+.frame-address code {
+  overflow-wrap: anywhere;
+}

@@ -1275,6 +1275,26 @@ export interface HiddenState {
   expires_at: string | null;
 }
 
+/** The order a slideshow runs through a view in: as the page lists it (newest first), oldest first, or shuffled. */
+export type SlideOrder = "listed" | "oldest" | "shuffle";
+
+/** GET /assets/slideshow: a page of a view in one order. `next_cursor` is null on the last page. */
+export interface SlidePage {
+  items: AssetListItem[];
+  next_cursor: string | null;
+  /** Photos in the whole view. */
+  total: number;
+}
+
+/** GET /assets/previews: a fresh (short-lived) preview address of a photo about to be shown. */
+export interface PreviewInfo {
+  id: string;
+  preview_url: string;
+  width: number | null;
+  height: number | null;
+  caption: string | null;
+}
+
 /** Today's date in the user's own zone, `YYYY-MM-DD` (the day "On this day" looks up). */
 export function localToday(now: Date = new Date()): string {
   const p = (n: number) => String(n).padStart(2, "0");
@@ -1282,6 +1302,16 @@ export function localToday(now: Date = new Date()): string {
 }
 
 export const api = {
+  /** The photos of a bulk-action scope in an order (`seed` fixes a shuffle), `limit` at a time from `cursor`. */
+  slideshowPage: (scope: Scope, opts: { order: SlideOrder; seed: string; cursor?: string | null; limit?: number }) => {
+    const q = new URLSearchParams({ scope: JSON.stringify(scope), order: opts.order });
+    if (opts.seed) q.set("seed", opts.seed);
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts.cursor) q.set("cursor", opts.cursor);
+    return request<SlidePage>(`/assets/slideshow?${q}`);
+  },
+  /** Preview addresses for up to 24 photos; one that is gone, hidden or not rendered yet is left out. */
+  previews: (ids: readonly string[]) => request<{ items: PreviewInfo[] }>(`/assets/previews?ids=${ids.join(",")}`),
   /** Open the Hidden view for ten minutes with the account password: 403 `wrong_password` otherwise. */
   unlockHidden: (password: string) => request<HiddenState>("/auth/hidden/unlock", json({ password })),
   hiddenState: () => request<HiddenState>("/auth/hidden"),

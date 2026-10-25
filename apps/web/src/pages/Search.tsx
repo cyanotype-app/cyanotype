@@ -33,6 +33,8 @@ import {
 import { allPhotos, collapsedStats, indexResults, patchPhoto, removePhotos, selectionIds, visiblePhotos } from "../burst";
 import { useSelection } from "../selection";
 import { useAssetPages } from "../useAssetPages";
+import { SlideshowButton } from "../slideshow/SlideshowHost";
+import { searchSource } from "../slideshow/sources";
 
 const PAGE = 60;
 const photos = (n: number) => `${n.toLocaleString("en-US")} photo${n === 1 ? "" : "s"}`;
@@ -618,6 +620,7 @@ function Results({ params }: { params: SearchParams }) {
             >
               Select
             </button>
+            <SlideshowButton source={() => searchSource(params, "Search results")} />
             {/* The photos of the people filter (a filter-only search: the server can name them all) as an album of their own. */}
             {!meta.ranked && (peopleIdsOf(params.people).length > 0 || chips.some((c) => c.kind === "people")) && (meta.total ?? 0) > 0 && (
               <button
