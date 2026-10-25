@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError } from "../api";
+import { api, ApiError, zipApi } from "../api";
 import { AuthProvider } from "../auth";
 import { album, detail, item, withRaw } from "../test/fixtures";
 import { AlbumPage } from "./Album";
@@ -119,6 +119,48 @@ describe("Album page", () => {
     await waitFor(() => expect(screen.queryByAltText("photo-1.jpg")).not.toBeInTheDocument());
     expect(screen.getByAltText("photo-2.jpg")).toBeInTheDocument();
     expect(screen.getByText("Removed 2 from the album")).toBeInTheDocument();
+  });
+
+  it("downloads the whole album as a ZIP from the header, with no ids", async () => {
+    setup();
+    const plan = vi.spyOn(zipApi, "plan").mockResolvedValue({ files: 3, bytes: 3000, name: "Trip.zip" });
+    const posted: string[] = [];
+    vi.spyOn(HTMLFormElement.prototype, "submit").mockImplementation(function (this: HTMLFormElement) {
+      posted.push((this.elements.namedItem("selection") as HTMLInputElement).value);
+    });
+    const user = userEvent.setup();
+    await screen.findByAltText("photo-1.jpg");
+    await user.click(screen.getByRole("button", { name: "Download" }));
+    const body = { scope: { album: "album-3" }, except: [], name: "Trip" };
+    await waitFor(() => expect(posted).toEqual([JSON.stringify(body)]));
+    expect(plan).toHaveBeenCalledWith(body);
+    expect(await screen.findByText(/Downloading 3 files/)).toBeInTheDocument();
+  });
+
+  it("downloads the selected photos from the selection bar, and not with nothing selected", async () => {
+    setup();
+    const plan = vi.spyOn(zipApi, "plan").mockResolvedValue({ files: 2, bytes: 2000, name: "Trip.zip" });
+    vi.spyOn(HTMLFormElement.prototype, "submit").mockImplementation(() => undefined);
+    const user = userEvent.setup();
+    await screen.findByAltText("photo-1.jpg");
+    await user.click(screen.getByRole("button", { name: "Select" }));
+    const bar = within(screen.getByRole("toolbar", { name: "Selection" }));
+    expect(bar.getByRole("button", { name: "Download" })).toBeDisabled();
+    await user.click(tile(1));
+    await user.click(tile(3));
+    await user.click(bar.getByRole("button", { name: "Download" }));
+    await waitFor(() => expect(plan).toHaveBeenCalledWith({ ids: ["id-1", "id-3"], name: "Trip" }));
+  });
+
+  it("tells the owner when there is nothing to download", async () => {
+    setup();
+    vi.spyOn(zipApi, "plan").mockRejectedValue(new ApiError(404, "not found"));
+    const submit = vi.spyOn(HTMLFormElement.prototype, "submit").mockImplementation(() => undefined);
+    const user = userEvent.setup();
+    await screen.findByAltText("photo-1.jpg");
+    await user.click(screen.getByRole("button", { name: "Download" }));
+    expect(await screen.findByText(/Couldn’t download\. not found/)).toBeInTheDocument();
+    expect(submit).not.toHaveBeenCalled();
   });
 
   it("Select all removes the whole album, not only the loaded photos", async () => {

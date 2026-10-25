@@ -7,6 +7,7 @@ import { Grid } from "../components/Grid";
 import { Lightbox } from "../components/Lightbox";
 import { NameDialog } from "../components/NameDialog";
 import { RateTools } from "../components/RateTools";
+import { ZipButton } from "../components/ZipButton";
 import { SelectionBar } from "../components/SelectionBar";
 import { TagTools } from "../components/TagTools";
 import { useToast } from "../components/Toast";
@@ -261,6 +262,12 @@ function TagPhotos({
       )}
       {sel.selecting && (
         <SelectionBar count={sel.count} total={items.length} onSelectAll={sel.selectAll} onClear={sel.clear} onDone={() => sel.setSelecting(false)}>
+          <ZipButton
+            target={sel.ids}
+            disabled={sel.count === 0}
+            onStarted={(message) => show({ message })}
+            onError={(e) => failure(e, "Couldn’t download.")}
+          />
           <RateTools
             target={sel.ids}
             count={sel.count}

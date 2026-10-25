@@ -61,6 +61,20 @@ pub enum RangeRead {
     PreconditionFailed,
 }
 
+/// An object being read chunk by chunk (never buffered whole): see [`Storage::get_stream`].
+pub struct ObjectStream {
+    body: aws_sdk_s3::primitives::ByteStream,
+    /// The store's `Content-Length`.
+    pub len: Option<u64>,
+}
+
+impl ObjectStream {
+    /// The next piece of the object (as the connection delivers it), or `None` at the end.
+    pub async fn next_chunk(&mut self) -> Result<Option<bytes::Bytes>> {
+        self.body.try_next().await.context("read object body")
+    }
+}
+
 /// One stored version of a key, or a delete marker. `version_id` is None on stores without versioning
 /// support (see [`Storage::list_versions`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -305,6 +319,24 @@ impl Storage {
                 (Some(416), _) => Ok(RangeRead::Unsatisfiable),
                 (Some(412), _) => Ok(RangeRead::PreconditionFailed),
                 _ => Err(e).context("get_object (range)"),
+            },
+        }
+    }
+
+    /// Start reading an object without buffering it: the ZIP download relays originals of any size at constant memory.
+    /// `None` when the key does not exist.
+    pub async fn get_stream(&self, key: &str) -> Result<Option<ObjectStream>> {
+        match self.client.get_object().bucket(&self.bucket).key(key).send().await {
+            Ok(o) => Ok(Some(ObjectStream {
+                len: o.content_length.and_then(|l| u64::try_from(l).ok()),
+                body: o.body,
+            })),
+            Err(e) => match (
+                e.raw_response().map(|r| r.status().as_u16()),
+                e.as_service_error().is_some_and(|s| s.is_no_such_key()),
+            ) {
+                (_, true) | (Some(404), _) => Ok(None),
+                _ => Err(e).context("get_object (stream)"),
             },
         }
     }

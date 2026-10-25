@@ -138,6 +138,8 @@ export const shareApi = {
   publicItems: (token: string, cursor?: string | null) =>
     request<PublicItems>(`${pub(token)}/items?limit=100${cursor ? `&cursor=${enc(cursor)}` : ""}`),
   publicItem: (token: string, id: string) => request<PublicItem>(`${pub(token)}/items/${enc(id)}`),
+  /** What "Download all" would hold; `pending` photos still have their download copy being made (it asks for them). */
+  publicZipPlan: (token: string) => request<PublicZipPlan>(`${pub(token)}/zip/plan`),
   /** Ask for the download copy of a JPEG to be made now. */
   publicPrepare: (token: string, id: string) =>
     request<{ pending: boolean }>(`${pub(token)}/items/${enc(id)}/prepare`, { method: "POST" }),
@@ -149,5 +151,19 @@ export const shareApi = {
  */
 export const publicDownloadHref = (token: string, id: string, file?: string) =>
   `${pub(token)}/items/${enc(id)}/download${file && file !== id ? `?file=${enc(file)}` : ""}`;
+
+/** All the link's downloadable photos as one ZIP: a plain link, so the browser streams the archive to disk. */
+export const publicZipHref = (token: string) => `${pub(token)}/zip`;
+
+export interface PublicZipPlan {
+  files: number;
+  bytes: number;
+  pending: number;
+  /** Photos the link does not offer (not JPEG, and the owner did not include originals). */
+  skipped: number;
+  name: string;
+  max_files: number;
+  max_bytes: number;
+}
 
 export type ShareApi = typeof shareApi;

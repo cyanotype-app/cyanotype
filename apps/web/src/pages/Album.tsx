@@ -7,6 +7,7 @@ import { Grid } from "../components/Grid";
 import { Lightbox } from "../components/Lightbox";
 import { SelectionBar } from "../components/SelectionBar";
 import { RateTools } from "../components/RateTools";
+import { ZipButton } from "../components/ZipButton";
 import { TagTools } from "../components/TagTools";
 import { SmartAlbumEditor } from "../components/SmartAlbumEditor";
 import { describeRules, smartCount } from "../smartText";
@@ -305,6 +306,14 @@ function AlbumView({ id }: { id: string }) {
               Share
             </button>
             {items.length > 0 && (
+              <ZipButton
+                target={{ scope: { album: id }, except: [] }}
+                name={album.title}
+                onStarted={(message) => show({ message })}
+                onError={(e) => failure(e, "Couldn’t download.")}
+              />
+            )}
+            {items.length > 0 && (
               <button
                 type="button"
                 className="btn btn-quiet"
@@ -338,6 +347,12 @@ function AlbumView({ id }: { id: string }) {
               Set as cover
             </button>
           )}
+          <ZipButton
+            target={sel.target({ album: id })} name={album.title}
+            disabled={sel.count === 0}
+            onStarted={(message) => show({ message })}
+            onError={(e) => failure(e, "Couldn’t download.")}
+          />
           <RateTools
             target={sel.target({ album: id })}
             count={sel.count}

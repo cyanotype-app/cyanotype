@@ -330,6 +330,75 @@ had on its own moves to the primary. Trashing keeps the flag (restoring brings t
   CORS headers). `e2e/mobile-overflow.spec.ts` also covers the headers, scrubber (resting and dragged), selection bar
   with the new button, favorites view and the pair download chooser at 320 to 414px and 1280px with no sideways scroll.
 
+# Downloading as a ZIP
+
+## What the user sees
+
+- **An album** has **Download** in its header (smart albums too: what the rules match now). **Selecting** photos (in the
+  library, an album, search, a person's page, a tag) adds **Download** to the selection bar. **Select all** downloads
+  every photo of the view (minus any you un-ticked) without the page ever listing them.
+- The button asks the server what the archive will hold, says "Downloading 12 files (48 MB) as a ZIP" and starts an
+  ordinary browser download. The browser shows its own progress (the response announces its exact size) and saves the
+  file; the page stays where it is. If there is nothing to download, or the selection is too big, a message appears
+  instead of a failed download.
+- A **share page** shows **Download all** when the owner allows downloads for the link (see "Share links" below).
+
+## What is in the archive
+
+- The **originals** of your live photos, byte for byte, under their **original file names** (folders and `..` are
+  stripped; characters Windows cannot unpack become `_`). Names that repeat, ignoring case, become `IMG_0001 (2).jpg`,
+  `IMG_0001 (3).jpg`. Edits (rotate, crop) are not applied: for those the viewer's "Download edited" stays.
+- A **RAW + JPEG pair is both files** (`IMG_0007.JPG` and `IMG_0007.CR3`): the single-photo download offers the pair as
+  a choice, an archive of your library should hold everything. Each entry's time is the photo's capture time, else the
+  file's own modification time.
+- The same rules as listing: only your own photos; never trashed or being-purged ones (the Trash scope is for restoring,
+  not downloading); hidden photos never through an album or a scope, and by explicit ids only while the Hidden view is
+  unlocked in that session (an API key never unlocks it). The file is named after the album (`Alpha trip.zip`), after the
+  page's `name` for a selection, or `cyanotype-photos.zip`.
+
+## How it works
+
+The assets service reads each original from the bucket and relays it chunk by chunk into a **store-only** ZIP (JPEG, HEIC
+and RAW do not compress), so memory stays at one chunk whatever the album's size and the response starts at once (the first
+entry's header is sent before its bytes are fetched). Entries are written the streaming way (a data descriptor after each
+file), so the archive's exact length is known up front and sent as `Content-Length`. **ZIP64** is used for any file of
+4 GiB or more and for archives past 4 GiB or 65,534 files. If an original cannot be read half way (it is missing from the
+bucket, or its size is not what the database says) the connection is aborted rather than ended, so a broken archive is
+never mistaken for a whole one; the cause is in the service log.
+
+The browser receives the response itself: the page submits a hidden form (`POST /assets/zip`, session cookie, same origin;
+the gateway's `form-action 'self'` allows it) and the `attachment` response goes to disk. Nothing is built in the page's memory.
+
+## API (assets service, owner-scoped)
+
+| Request | Answer |
+|---|---|
+| `POST /assets/zip/plan` | `{files, bytes, name}`: what the archive would hold. `404` when nothing qualifies, `413` over the file limit. |
+| `POST /assets/zip` | The archive (`application/zip`, attachment, `Content-Length`). |
+| `GET /assets/albums/{id}/zip` | The archive of one album: a plain link, and the call for API keys with the `read` scope. |
+
+The POST body is a bulk selector (see "Bulk actions on a whole view": `ids` up to 1000, or a `scope` with `except`) and an
+optional `name`; it is JSON, or a form with that JSON in a `selection` field. A request with a `read` key can use the
+`GET`; the `POST` needs the `full` scope like any other write route.
+
+Limits: at most **50,000 files** per archive (`413`: download it in parts), **16 archives streaming at once** per assets
+process (`429` with `Retry-After`). An archive of your own photos has no size limit.
+
+Metrics: `cyanotype.assets.zip_downloads` (tag `source`: `album`, `scope`, `ids`); the service logs each archive's file count
+and size (never names or ids of photos).
+
+## Tests
+
+`cargo test` (the route tests need `DATABASE_URL` and the `S3_*` variables, a real bucket): the writer (reads back, ZIP64
+end record, exact predicted length, DOS time clamping, safe unique names), the archive of an album (valid ZIP, `unzip -t`,
+bytes equal to the originals, deduplicated names, path-like names, capture times, file name), pairs, form and JSON bodies,
+scopes with `except`, the plan, smart albums, owner isolation, trashed, purging and hidden photos (locked and unlocked),
+the file limit, that the body is streamed in small pieces (3 x 8 MiB: first frame is a header, no frame above 1 MiB) and
+that a missing original aborts it. `cargo test -p cyanotype-assets zip64_over_4_gib -- --ignored` writes a real 4 GiB+ entry
+and has `unzip -t` read it (about a minute; needs 4 GiB of disk). Web (vitest): the request body, the form post, the button
+and its refusals, the share page's wait-and-follow. Browser: `e2e/zip-layout.spec.ts` (album header, selection bar, share
+page at 320 to 414 px and 1280 px, light and dark; the plan and the post are really requested).
+
 # Processing indicator (after a big import)
 
 ## What the user sees
@@ -486,6 +555,7 @@ page and on every API answer) and sends no `Referer`.
 - **Downloads** (when the owner allows them) are plain links that redirect to a presigned attachment URL valid for one
   minute; the bucket has no CORS policy, so these are navigations, never `fetch()`. For a RAW + JPEG pair both files
   are offered only when the owner chose to include originals.
+- **Download all** (when the owner allows downloads) is one streamed ZIP of the link's downloadable photos (below).
 
 ## Privacy: no location leaves with a share
 
@@ -545,7 +615,16 @@ Public (no login; the gateway sends `/assets/*` to the assets service, `/s/*` to
 | `GET .../items?limit&cursor` | `{items, next_cursor}`: `id`, `width`, `height`, `sort_time`, `thumbhash`, `thumb_url`, `preview_url` (presigned, 10 minutes), `downloads: [{id, label, size_bytes}]`, `download_pending`. Same order and keyset paging as the library. |
 | `GET .../items/{id}` | One item, same shape. |
 | `POST .../items/{id}/prepare` | `202 {pending}`: queue the download copy if it is needed. |
+| `GET .../zip/plan` | `{files, bytes, pending, skipped, name, max_files, max_bytes}`: what "Download all" would hold. Queues the download copies that are missing (`pending` of them); the page asks again until it is `0`. |
+| `GET .../zip` | One streamed ZIP of the photos the link offers for download (the same ones as the per-photo downloads, nothing else): the location-free JPEG copies under their original names (an edited photo: its edited render), or, with "include originals", the untouched files, a RAW + JPEG pair as both. Photos not offered (HEIC, RAW, ... by default) are left out and counted in `skipped`. `403` when downloads are off, `409` while copies are still being made, `413` over the limits, `429` over the rate limit. Hidden and trashed photos are never in it. |
 | `GET .../items/{id}/download?file=` | `307` to a presigned attachment URL (one minute). `403` when downloads are off, `409` while the copy is being made, `404` for anything that is not offered (a RAW without "include originals", HEIC by default, another photo). |
+
+**Download all limits** (a link has no account to charge, so one request is bounded): at most **1,000 files and 4 GiB**
+per archive (`413`, "download them one by one"), **6 archive requests a minute per visitor address** (the plan and the archive
+each count once, so about 3 downloads a minute; `429` with `Retry-After`), and **4 archives streaming at once** per
+assets process, apart from the owner's own 16 (`429`). The token authorises exactly the photos the link shows: its album
+(or selection) as listed right now, minus hidden and trashed ones. The same `no-store`, no-referrer and robots headers apply.
+The metrics are `cyanotype.shares.downloads` and `cyanotype.shares.zip_downloads`.
 
 Migration `0009_shares.sql` (`shares`, `share_assets`, `share_unlocks`, `assets.share_copy_at`).
 

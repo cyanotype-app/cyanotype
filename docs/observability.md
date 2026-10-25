@@ -128,7 +128,9 @@ configuration in Datadog (distributions would need percentile aggregation enable
 | `cyanotype.uploads.part_latency_ms` | histogram | | Time to receive a part from the browser and relay it to the bucket (successful parts). |
 | `cyanotype.uploads.part_bytes` | count | | Bytes relayed. |
 | `cyanotype.shares.views` | count | `kind` (`album`, `selection`) | Share link opened (the public page's info request, once a password link is unlocked). Logs carry `share_id`, never the token. |
-| `cyanotype.shares.downloads` | count | `kind` | Download redirects issued by a share link. |
+| `cyanotype.shares.downloads` | count | `kind` | Download redirects issued by a share link, and "Download all" archives. |
+| `cyanotype.shares.zip_downloads` | count | `kind` | "Download all" archives started by a share link. |
+| `cyanotype.assets.zip_downloads` | count | `source` (`album`, `scope`, `ids`) | ZIP archives of an album or a selection started by their owner. |
 
 Embedding photos for search is background work and reads as such: the `embed` kind has queue gauges and job metrics like any
 other (`kind:embed`), its backlog is hours long after a first deploy or a model swap, and the "oldest queued job" monitor

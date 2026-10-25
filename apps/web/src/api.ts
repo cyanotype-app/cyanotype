@@ -1574,4 +1574,27 @@ export const downloadHref = (id: string, file?: string) =>
 /** The edited JPEG of a photo (rotated, straightened, cropped; no metadata). A redirect once the worker has made it. */
 export const editedHref = (id: string) => `/assets/${encodeURIComponent(id)}/download/edited`;
 
+/** What `POST /assets/zip/plan` says an archive would hold. */
+export interface ZipPlan {
+  /** Files, a RAW + JPEG pair counting as two. */
+  files: number;
+  bytes: number;
+  /** The download's file name (`<album>.zip`). */
+  name: string;
+}
+
+/** Most ids one ZIP request takes; a bigger hand-picked selection is refused client-side (Select all sends none). */
+export const MAX_ZIP_IDS = 1000;
+
+/** The request body of the ZIP endpoints for a selection (`name` titles the file, e.g. the album's title). */
+export const zipBody = (target: Target, name?: string): Record<string, unknown> => ({
+  ...(isScope(target) ? { scope: target.scope, except: target.except } : { ids: target }),
+  ...(name ? { name } : {}),
+});
+
+export const zipApi = {
+  /** Ask what the archive would hold: it fails here (nothing to download, too many files) instead of in a download. */
+  plan: (body: Record<string, unknown>) => request<ZipPlan>("/assets/zip/plan", json(body)),
+};
+
 export type Api = typeof api;

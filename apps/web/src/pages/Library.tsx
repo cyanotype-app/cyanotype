@@ -14,6 +14,7 @@ import { usePrefs } from "../usePrefs";
 import { archiveMessage, emptyView, viewTitle, type ViewKind } from "../viewText";
 import { SelectionBar } from "../components/SelectionBar";
 import { RateTools } from "../components/RateTools";
+import { ZipButton } from "../components/ZipButton";
 import { TagTools } from "../components/TagTools";
 import { EditDialog, type EditKind } from "../components/EditDialog";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
@@ -595,6 +596,12 @@ function LibraryView({
           <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || bulkBusy} onClick={favoriteSelected}>
             {allSelectedFavorite ? "Unfavorite" : "Favorite"}
           </button>
+          <ZipButton
+            target={sel.target(scope)}
+            disabled={sel.count === 0}
+            onStarted={(message) => show({ message })}
+            onError={(e) => failure(e, "Couldn’t download.")}
+          />
           <RateTools
             target={sel.target(scope)}
             count={sel.count}

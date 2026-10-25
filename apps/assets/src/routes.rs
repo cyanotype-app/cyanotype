@@ -101,6 +101,9 @@ mod usage_tests;
 mod visibility;
 #[cfg(test)]
 mod visibility_tests;
+mod zip;
+#[cfg(test)]
+mod zip_tests;
 
 use crate::AppState;
 use cyanotype_service::{ApiError, ApiResult, AuthUser, ImportUser, Unlock};
@@ -212,6 +215,9 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         )
         .route("/assets/albums/{id}/assets", get(albums::assets).post(albums::add))
         .route("/assets/albums/{id}/assets/remove", post(albums::remove_assets))
+        .route("/assets/albums/{id}/zip", get(zip::album))
+        .route("/assets/zip", post(zip::selection))
+        .route("/assets/zip/plan", post(zip::plan_selection))
         .route("/assets/{id}/unpair", post(unpair))
         .route("/assets/{id}/similar", get(similar::similar))
         .route("/assets/{id}/details", get(details::get))

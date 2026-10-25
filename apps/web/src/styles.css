@@ -2062,6 +2062,16 @@ body:has(.selection-bar) .scrubber {
 .share-head p {
   margin: 0.25rem 0 0;
 }
+.share-download-all {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  margin-top: 0.5rem;
+}
+.share-download-all p {
+  margin: 0;
+}
 .share-password {
   display: flex;
   flex-direction: column;

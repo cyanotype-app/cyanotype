@@ -7,6 +7,7 @@ mod routes;
 mod search;
 #[cfg(test)]
 mod testutil;
+mod zip;
 
 use anyhow::Result;
 use axum::{Router, extract::FromRef, routing::get};
