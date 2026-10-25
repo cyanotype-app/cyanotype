@@ -261,18 +261,36 @@ describe("a person's page", () => {
 
   it("merges into another person chosen from the list, never into themselves", async () => {
     vi.spyOn(api, "getPerson").mockImplementation(async (id) => person(id, id === "p1" ? "Person A" : null, 3));
-    vi.spyOn(api, "listPeople").mockResolvedValue({ items: [person("p1", "Person A", 3), person("p2", "Person B", 5), person("p3", null, 1)] });
-    const merge = vi.spyOn(api, "mergePerson").mockResolvedValue({ into: "p3", faces: 3 });
+    vi.spyOn(api, "listPeople").mockResolvedValue({
+      items: [person("p1", "Person A", 3), person("p2", "Person B", 5), person("p3", "Person C", 2, { hidden: true }), person("p4", null, 1)],
+    });
+    const merge = vi.spyOn(api, "mergePerson").mockResolvedValue({ into: "p2", faces: 3 });
     renderAt();
     await userEvent.click(await screen.findByRole("button", { name: "Merge into…" }));
     const select = await screen.findByLabelText("Merge into");
     expect(within(select).queryByRole("option", { name: /Person A/ })).not.toBeInTheDocument();
-    await waitFor(() => expect(within(select).getAllByRole("option")).toHaveLength(2));
-    await userEvent.selectOptions(select, "p3");
+    // Only a named, shown person is a choice: not the hidden one, not the unnamed one.
+    await waitFor(() => expect(within(select).getAllByRole("option")).toHaveLength(1));
+    expect(within(select).queryByRole("option", { name: /Person C|Unnamed/ })).not.toBeInTheDocument();
+    await userEvent.selectOptions(select, "p2");
     await userEvent.click(screen.getByRole("button", { name: "Merge" }));
-    await waitFor(() => expect(merge).toHaveBeenCalledWith("p1", "p3"));
+    await waitFor(() => expect(merge).toHaveBeenCalledWith("p1", "p2"));
     // The page for the person merged into opens (the old page's toast goes with it).
-    await waitFor(() => expect(api.getPerson).toHaveBeenCalledWith("p3"));
+    await waitFor(() => expect(api.getPerson).toHaveBeenCalledWith("p2"));
+  });
+
+  it("changes the cover to one of the person's faces, chosen from their face crops", async () => {
+    vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 3));
+    const faces = [1, 2, 3].map((n) => ({ face_id: `cf${n}`, asset_id: `a${n}`, box: [0.1, 0.1, 0.2, 0.2] as [number, number, number, number], preview_url: `https://s3.test/c${n}` }));
+    vi.spyOn(api, "personCoverFaces").mockResolvedValue({ items: faces, next_cursor: null });
+    const update = vi.spyOn(api, "updatePerson").mockResolvedValue({ ...person("p1", "Person A", 3), cover: { face_id: "cf2", asset_id: "a2", box: [0.1, 0.1, 0.2, 0.2], preview_url: "https://s3.test/c2" } });
+    renderAt();
+    await userEvent.click(await screen.findByRole("button", { name: "Change cover" }));
+    const dialog = await screen.findByRole("dialog", { name: "Change cover of Person A" });
+    await userEvent.click(await within(dialog).findByRole("button", { name: "Face 2" }));
+    await waitFor(() => expect(update).toHaveBeenCalledWith("p1", { cover_face_id: "cf2" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByText("Cover changed")).toBeInTheDocument();
   });
 
   it("deletes the person after asking, and goes back to People", async () => {

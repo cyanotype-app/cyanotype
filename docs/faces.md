@@ -136,10 +136,12 @@ All of it is the owner's own session (or API key) and nothing else:
 | | |
 | --- | --- |
 | `GET /assets/people/status` | `{enabled}`: the only People route that answers while the feature is off. |
-| `GET /assets/people`, `GET /assets/people/{id}` | `{id, name, hidden, faces, photos, cover}`; `cover` is `{face_id, asset_id, box, preview_url}` (the box is fractions of the preview; the web app crops it with CSS, no new file). Counts and covers are of the photos this session may see (not trashed, not hidden unless the Hidden view is unlocked); a person only hidden photos have is not listed to a locked session. |
+| `GET /assets/people`, `GET /assets/people/{id}` | `{id, name, hidden, faces, photos, pending, cover}`; `cover` is `{face_id, asset_id, box, preview_url}` (the box is fractions of the preview; the web app crops it with CSS, no new file). Counts and covers are of the photos this session may see (not trashed, not hidden unless the Hidden view is unlocked); a person only hidden photos have is not listed to a locked session. `pending` is how many "Is this X?" suggestions wait for a named, shown person (0 for the others): counted for all the people in **one** query (the centre of each person's faces is an `avg`, each asked the index through a lateral join, same rules and the same 300 nearest faces as the suggestions), so the list does not cost a query per person. |
 | `PATCH /assets/people/{id}` | `{name?, hidden?, cover_face_id?}`: rename (null or blank clears), hide, cover. |
 | `DELETE /assets/people/{id}` | The person goes, its faces are free (they may be grouped again; to keep someone out of sight, hide them). |
 | `POST /assets/people/{id}/merge {into}` | All faces to the other person, which keeps its name unless it has none; "not the first" becomes "not the second". Audited as a count only. |
+| `POST /assets/people/bulk {action, ids, into?, name?}` | Several people at once, in one transaction and owner-checked (an id that is not the caller's is a `404` and nothing changes): `action` is `hide`, `show`, `delete` (the same as the single ones; the photos stay) or `merge` (folds `ids` into `into`, one of them, with the single merge's rules; the first name found is taken over if `into` has none; `name`, if sent, is what the person ends up called). Audited as counts only, one entry per merged or deleted person. |
+| `GET /assets/people/{id}/faces?limit&cursor` | The faces a cover can be chosen from (`{face_id, asset_id, box, preview_url}`, largest and most confident first, in photos this session may see), `next_cursor` while there are more: the picker of **Change cover**. |
 | `GET /assets/people/{id}/photos?limit&cursor` | The person's photos, same items and keyset paging as `GET /assets`. |
 | `POST /assets/people/{id}/faces/remove {asset_ids?, face_ids?}` | "Not this person": the faces become unassigned and a rejection is written. |
 | `GET /assets/people/{id}/suggestions` | "Is this X?": unassigned faces at least 0.45 like the person's centre, best first, none rejected. |
@@ -147,9 +149,14 @@ All of it is the owner's own session (or API key) and nothing else:
 | `GET /assets/{id}/faces` | The faces in one photo and their people (the viewer's chips); faces of hidden people are left out. |
 
 Every change asks for a new run. Key scopes: reads need a read key, changes a write key (`key_scope_tests`). The web app: **People** in the library's More menu (only when the
-feature is on) opens a grid of round faces with name or "Add a name" and counts, hidden people in a collapsed section; a person's page has the photos in the usual grid and
-selection, inline rename, Hide, Merge into, Delete person, selected photos to **Not this person** or **Use as cover**, and "Is this X?" with Yes and No; the Info panel of a
-photo shows its people as chips (a face nobody claimed offers "Who is this?"). Metrics (`docs/observability.md`): `cyanotype.people.run_ms`, `.assigned`, `.created`,
+feature is on) opens a grid of round faces with name and counts in three sections that are never mixed: the named people, then **Unnamed** (open one to name it), then **Hidden people**, collapsed. A named
+person with "Is this X?" suggestions waiting wears a count in the corner of the card ("3 photos to confirm" to a screen reader; nothing at 0, "99+" above that); it is read again
+when the page opens, so answering on the person's page updates it. **Select** on the page picks several people for **Merge** (choose who stays and optionally type the name they end
+up with, then confirm), **Hide** / **Show** and **Delete** (after asking: the person and the name go, the photos stay). A person's page has the photos in the usual grid and
+selection, inline rename, **Change cover** (a paged picker of the person's faces, usable with the keyboard and a screen reader), Hide, Merge into, Delete person, selected photos to **Not this person** or **Use as cover**, and "Is this X?" with Yes and No; the Info panel of a
+photo shows its people as chips (a face nobody claimed offers "Who is this?"). **Only named, shown people are ever a choice in a menu or picker**: the merge picker, "Who is this?", the
+search filter, the names read out of a typed query and the smart-album rule (the server's `named_people` for the query parser and `filterablePeople` in the web app); the People page itself is the one
+place unnamed and hidden people are listed. Metrics (`docs/observability.md`): `cyanotype.people.run_ms`, `.assigned`, `.created`,
 `.ungrouped_faces`.
 
 ## People in search, albums and bulk actions
@@ -427,7 +434,8 @@ Metrics (`docs/observability.md`): `cyanotype.faces.model_loaded` (gauge), `cyan
   it; skips and failure classes; the sweep and the pruning.
 - `apps/assets`: the processing report (absent while off, owner-scoped on) and the purge removing a photo's faces, rejections and orphaned unnamed people;
   `routes/people_tests.rs`: the switch (every People route a `404` while off), the list with counts and covers, owner isolation on every verb, rename/hide/cover
-  with bad input, merge and delete, "not this person", assign and reject, suggestions, the Hidden view, a photo's faces, and that no share link carries anything of it.
+  with bad input, merge and delete, the bulk changes (hide, show, delete, merge with the name rules; all or nothing; another owner's id is a `404`), the cover choices (paged, hidden photos,
+  owner), the pending count (right, one query's worth for every person, never from another owner's faces, moves with a Yes and a No), "not this person", assign and reject, suggestions, the Hidden view, a photo's faces, and that no share link carries anything of it.
 - `crates/cyanotype-core/tests/people.rs`: a rescan after a rotate, a version change and a model change keeps people, rejections and covers; grouping makes people only
   from enough faces; a new face joins the right person and never one it was rejected from; the owner's decisions win and other owners are invisible; faces of one
   photo are never one person; the queue (quiet period, queued scans, newer requests); suggestions; cascades; `delete_all`; the HNSW index is used. `people_math`

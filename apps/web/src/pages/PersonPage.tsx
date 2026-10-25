@@ -4,6 +4,7 @@ import { api, ApiError, isScope, type AssetListItem, type FaceSuggestion, type P
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { CoverPicker } from "../components/CoverPicker";
 import { FaceCrop } from "../components/FaceCrop";
 import { Lightbox } from "../components/Lightbox";
 import { RateTools } from "../components/RateTools";
@@ -12,7 +13,7 @@ import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/Shar
 import { TagTools } from "../components/TagTools";
 import { TimelineGrid } from "../components/TimelineGrid";
 import { useToast } from "../components/Toast";
-import { mergedMessage, nameProblem, personLabel, photosWord, removedMessage, suggestionQuestion, ADD_A_NAME } from "../peopleText";
+import { filterablePeople, mergedMessage, nameProblem, personLabel, photosWord, removedMessage, suggestionQuestion, ADD_A_NAME } from "../peopleText";
 import { useSelection } from "../selection";
 import { similarUrl } from "../searchText";
 import { inOrder, runAround } from "../timeline";
@@ -53,7 +54,7 @@ function PersonView({ id }: { id: string }) {
   const [problem, setProblem] = useState<string | null>(null);
   const [missing, setMissing] = useState(false);
   const [renaming, setRenaming] = useState(false);
-  const [dialog, setDialog] = useState<"merge" | "delete" | null>(null);
+  const [dialog, setDialog] = useState<"merge" | "delete" | "cover" | null>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState<{ target: Target; count: number } | null>(null);
@@ -138,6 +139,11 @@ function PersonView({ id }: { id: string }) {
       failure(e, "Couldn’t change that.");
     }
   }
+  async function chooseCover(faceId: string) {
+    setPerson(await api.updatePerson(id, { cover_face_id: faceId }));
+    setDialog(null);
+    show({ message: "Cover changed" });
+  }
   async function merge(into: Person) {
     setBusy(true);
     setDialogError(null);
@@ -193,6 +199,9 @@ function PersonView({ id }: { id: string }) {
               {person.name ? "Rename" : ADD_A_NAME}
             </button>
           )}
+          <button type="button" className="btn btn-quiet" disabled={person.faces === 0} onClick={() => setDialog("cover")}>
+            Change cover
+          </button>
           <button type="button" className="btn btn-quiet" onClick={() => void toggleHidden()}>
             {person.hidden ? "Show" : "Hide"}
           </button>
@@ -219,10 +228,8 @@ function PersonView({ id }: { id: string }) {
         key={`${id}-${version}`}
         person={person}
         onAnswered={(yes) => {
-          if (yes) {
-            setVersion((v) => v + 1);
-            void load();
-          }
+          if (yes) setVersion((v) => v + 1);
+          void load(); // the count of suggestions waiting changed either way
         }}
         failure={failure}
         show={show}
@@ -253,6 +260,7 @@ function PersonView({ id }: { id: string }) {
           }}
         />
       )}
+      {dialog === "cover" && <CoverPicker person={person} onChoose={chooseCover} onCancel={() => setDialog(null)} />}
       {dialog === "merge" && <MergeDialog from={person} busy={busy} error={dialogError} onMerge={(p) => void merge(p)} onCancel={() => setDialog(null)} />}
       {dialog === "delete" && (
         <ConfirmDialog title={`Delete ${personLabel(person)}?`} confirmLabel="Delete person" danger busy={busy} onCancel={() => setDialog(null)} onConfirm={() => void remove()}>
@@ -894,7 +902,8 @@ function MergeDialog({
       .listPeople()
       .then((r) => {
         if (!live) return;
-        const list = r.items.filter((p) => p.id !== from.id);
+        // Only named, shown people: an unnamed or hidden one is not a menu choice.
+        const list = filterablePeople(r.items).filter((p) => p.id !== from.id);
         setOthers(list);
         setInto(list[0]?.id ?? "");
       })
@@ -938,7 +947,7 @@ function MergeDialog({
             </option>
           ))}
         </select>
-        {others !== null && others.length === 0 && <p className="muted small">There is no one else to merge into.</p>}
+        {others !== null && others.length === 0 && <p className="muted small">There is no named person to merge into. Name them first.</p>}
         <p className="muted small">All of {personLabel(from)}’s photos go to the other person, and {personLabel(from)} is deleted. The other person keeps their name.</p>
         {(error ?? loadError) && (
           <p role="alert" className="form-error">

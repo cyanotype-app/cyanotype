@@ -29,10 +29,26 @@ export const photosWord = (count: number) => `${n(count)} ${count === 1 ? "photo
 /** "12 people" / "1 person". */
 export const peopleWord = (count: number) => `${n(count)} ${count === 1 ? "person" : "people"}`;
 
-/** The People page's two lists: the people to show, and the ones the owner hid (a collapsed section). Order is kept. */
-export function splitPeople(people: readonly Person[]): { shown: Person[]; hidden: Person[] } {
-  return { shown: people.filter((p) => !p.hidden), hidden: people.filter((p) => p.hidden) };
+/** Has the owner named the person? A blank name is no name. */
+export const isNamed = (p: { name: string | null }) => (p.name?.trim() ?? "") !== "";
+
+/**
+ * The People page's three sections, never mixed: the named people, the unnamed ones (to name), and the ones the owner hid (a
+ * collapsed section, named or not). Order is kept.
+ */
+export function splitPeople(people: readonly Person[]): { named: Person[]; unnamed: Person[]; hidden: Person[] } {
+  const shown = people.filter((p) => !p.hidden);
+  return { named: shown.filter(isNamed), unnamed: shown.filter((p) => !isNamed(p)), hidden: people.filter((p) => p.hidden) };
 }
+
+/** "3 photos to confirm": the pending "Is this X?" suggestions of a person (the badge on their card). */
+export const pendingLabel = (count: number) => `${photosWord(count)} to confirm`;
+
+/** What a card is called for assistive technology: the person, how many photos, and what waits for an answer. */
+export const cardLabel = (p: Person) => ((p.pending ?? 0) > 0 ? `${openPersonLabel(p)}, ${pendingLabel(p.pending ?? 0)}` : openPersonLabel(p));
+
+/** The badge's text: the number, capped so it stays small. */
+export const badgeText = (count: number) => (count > 99 ? "99+" : String(count));
 
 /** The question over a suggested face. */
 export const suggestionQuestion = (p: { name: string | null }) => (p.name?.trim() ? `Is this ${p.name.trim()}?` : "Is this the same person?");
@@ -42,6 +58,14 @@ export const removedMessage = (photos: number, p: { name: string | null }) => `T
 
 /** The toast after a merge. */
 export const mergedMessage = (into: { name: string | null }, faces: number) => `Merged into ${personLabel(into)} (${n(faces)} ${faces === 1 ? "face" : "faces"})`;
+
+/** The toasts after a change to several people at once. */
+export const bulkMessage = {
+  hide: (count: number) => `${peopleWord(count)} hidden from the People page and from photos`,
+  show: (count: number) => `${peopleWord(count)} shown again`,
+  delete: (count: number) => `${peopleWord(count)} deleted. The photos stay in your library.`,
+  merge: (count: number, into: { name: string | null }) => `Merged ${peopleWord(count)} into ${personLabel(into)}`,
+};
 
 /** The accessible name of a person's card and chip. */
 export const openPersonLabel = (p: Person) => `${personLabel(p)}, ${photosWord(p.photos)}`;

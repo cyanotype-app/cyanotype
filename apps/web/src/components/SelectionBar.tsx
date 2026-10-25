@@ -13,14 +13,16 @@ interface Props {
   children?: ReactNode;
   /** A line under the count, for what the selection includes beyond the tiles that are ticked (photos inside bursts). */
   note?: string | null;
+  /** What the bar says while nothing is selected (default "Select photos"). */
+  emptyLabel?: string;
 }
 
 /** Sticky bar shown while selecting: count, select all / clear, and the page's actions. */
-export function SelectionBar({ count, total, onSelectAll, onClear, onDone, children, note = null }: Props) {
+export function SelectionBar({ count, total, onSelectAll, onClear, onDone, children, note = null, emptyLabel = "Select photos" }: Props) {
   return (
     <div className="selection-bar" role="toolbar" aria-label="Selection">
       <span className="selection-count" aria-live="polite">
-        {count === 0 ? "Select photos" : `${count.toLocaleString("en-US")} selected`}
+        {count === 0 ? emptyLabel : `${count.toLocaleString("en-US")} selected`}
         {note && <span className="selection-note muted small">{note}</span>}
       </span>
       <div className="selection-actions">

@@ -163,7 +163,9 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
             "/assets/people/{id}",
             get(people::get).patch(people::patch).delete(people::remove),
         )
+        .route("/assets/people/bulk", post(people::bulk))
         .route("/assets/people/{id}/merge", post(people::merge))
+        .route("/assets/people/{id}/faces", get(people::cover_faces))
         .route("/assets/people/{id}/photos", get(people::photos))
         .route("/assets/people/{id}/timeline", get(people::timeline))
         .route("/assets/people/{id}/faces/remove", post(people::remove_faces))

@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { Person } from "./api";
 import {
   MAX_FILTER_PEOPLE,
+  badgeText,
+  bulkMessage,
+  cardLabel,
+  pendingLabel,
   cropStyle,
   filterablePeople,
   matchingPeople,
@@ -57,10 +61,31 @@ describe("words", () => {
 
 describe("the people shown and hidden", () => {
   it("splits in order", () => {
-    const l = [person("a", "A"), person("b", null, 1, true), person("c", "C"), person("d", "D", 1, true)];
-    const { shown, hidden } = splitPeople(l);
-    expect(shown.map((p) => p.id)).toEqual(["a", "c"]);
+    const l = [person("a", "A"), person("b", null, 1, true), person("c", "C"), person("d", "D", 1, true), person("e", null), person("f", "  ")];
+    const { named, unnamed, hidden } = splitPeople(l);
+    expect(named.map((p) => p.id)).toEqual(["a", "c"]);
+    expect(unnamed.map((p) => p.id)).toEqual(["e", "f"]);
     expect(hidden.map((p) => p.id)).toEqual(["b", "d"]);
+  });
+  it("never mixes the sections: a person is in exactly one", () => {
+    const l = [person("a", "A"), person("b", null), person("c", "C", 1, true), person("d", null, 1, true)];
+    const { named, unnamed, hidden } = splitPeople(l);
+    expect([...named, ...unnamed, ...hidden].map((p) => p.id).sort()).toEqual(["a", "b", "c", "d"]);
+  });
+  it("says what waits for an answer, for the badge and for assistive technology", () => {
+    expect(pendingLabel(3)).toBe("3 photos to confirm");
+    expect(pendingLabel(1)).toBe("1 photo to confirm");
+    expect(badgeText(7)).toBe("7");
+    expect(badgeText(250)).toBe("99+");
+    expect(cardLabel({ ...person("a", "Person A", 12), pending: 3 })).toBe("Person A, 12 photos, 3 photos to confirm");
+    expect(cardLabel({ ...person("a", "Person A", 12), pending: 0 })).toBe("Person A, 12 photos");
+    expect(cardLabel(person("a", "Person A", 1))).toBe("Person A, 1 photo");
+  });
+  it("words the changes to several people", () => {
+    expect(bulkMessage.hide(2)).toContain("2 people hidden");
+    expect(bulkMessage.show(1)).toBe("1 person shown again");
+    expect(bulkMessage.delete(3)).toContain("3 people deleted");
+    expect(bulkMessage.merge(3, { name: "Person B" })).toBe("Merged 3 people into Person B");
   });
 });
 

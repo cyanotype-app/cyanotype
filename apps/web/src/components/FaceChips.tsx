@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, ApiError, type Person, type PhotoFace } from "../api";
-import { nameProblem, personLabel, photosWord } from "../peopleText";
+import { filterablePeople, nameProblem, personLabel, photosWord } from "../peopleText";
 
 const NEW = "__new__";
 
@@ -20,7 +20,7 @@ export function AssignFaceDialog({ face, onDone, onCancel }: { face: PhotoFace; 
     let live = true;
     api
       .listPeople()
-      .then((r) => live && setPeople(r.items))
+      .then((r) => live && setPeople(filterablePeople(r.items)))
       .catch((e: unknown) => live && setError(e instanceof Error ? e.message : "Could not load your people."));
     return () => {
       live = false;

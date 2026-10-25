@@ -1719,3 +1719,315 @@ async fn with_the_feature_off_the_people_parameters_are_ignored_or_refused_and_n
     assert!(!body.contains(&s.a_photos[0].to_string()), "{body}");
     t.teardown().await;
 }
+
+// ---- follow-ups: pending badge, bulk changes, cover choices ----------------------------------------------------------------------
+
+/// A person with three faces of `who`, and `near` unassigned faces that look like them (shots 50..); returns (person, near faces).
+async fn badge_scene(
+    pool: &PgPool,
+    owner: Uuid,
+    tag: &str,
+    name: Option<&str>,
+    who: &[f32],
+    near: u64,
+) -> (Uuid, Vec<Uuid>) {
+    let p = person(pool, owner, name).await;
+    for i in 0..3 {
+        let a = photo(pool, owner, &format!("{tag}-k{i}.jpg")).await;
+        let f = face(pool, a, Some(shot(who, i)), [0.1, 0.1, 0.2, 0.2]).await;
+        put(pool, f, p).await;
+    }
+    let mut out = Vec::new();
+    for i in 0..near {
+        let a = photo(pool, owner, &format!("{tag}-n{i}.jpg")).await;
+        out.push(face(pool, a, Some(shot(who, 50 + i)), [0.2, 0.3, 0.1, 0.1]).await);
+    }
+    (p, out)
+}
+
+/// The `pending` of one listed person, -1 when they are not listed.
+fn pending_of(v: &Value, id: Uuid) -> i64 {
+    v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == json!(id))
+        .map(|p| p["pending"].as_i64().unwrap())
+        .unwrap_or(-1)
+}
+
+#[tokio::test]
+async fn the_people_list_counts_pending_suggestions_in_one_query_and_only_for_the_owner() {
+    let Some(t) = TestDb::new().await else { return };
+    let (uid, key) = user(&t.pool, "a@example.com").await;
+    let (bid, kb) = user(&t.pool, "b@example.com").await;
+    let app = app_with_people(&t.pool);
+    let alpha = identity(1);
+    // Alpha has three suggestions, Bravo (another face) one; an unnamed and a hidden person show none.
+    let (a, near_a) = badge_scene(&t.pool, uid, "a", Some("Person A"), &alpha, 3).await;
+    let (b, _) = badge_scene(&t.pool, uid, "b", Some("Person B"), &identity(2), 1).await;
+    let (unnamed, _) = badge_scene(&t.pool, uid, "u", None, &identity(3), 2).await;
+    let (hidden, _) = badge_scene(&t.pool, uid, "h", Some("Person H"), &identity(4), 2).await;
+    sqlx::query("UPDATE people SET hidden = true WHERE id = $1")
+        .bind(hidden)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    // A far face, a face without a fingerprint and a trashed photo's face are not suggestions.
+    let far = photo(&t.pool, uid, "far.jpg").await;
+    face(&t.pool, far, Some(identity(9)), [0.2, 0.3, 0.1, 0.1]).await;
+    let none = photo(&t.pool, uid, "none.jpg").await;
+    face(&t.pool, none, None, [0.2, 0.3, 0.1, 0.1]).await;
+    let trashed = photo(&t.pool, uid, "trashed.jpg").await;
+    face(&t.pool, trashed, Some(shot(&alpha, 90)), [0.2, 0.3, 0.1, 0.1]).await;
+    sqlx::query("UPDATE assets SET deleted_at = now() WHERE id = $1")
+        .bind(trashed)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    // Another owner: a person who looks the same as Alpha, with faces and near faces of their own. Nothing crosses over.
+    let (theirs, _) = badge_scene(&t.pool, bid, "t", Some("Person T"), &alpha, 2).await;
+
+    let (st, v) = get(&app, &key, "/assets/people").await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!([a, b, unnamed, hidden].map(|p| pending_of(&v, p)), [3, 1, 0, 0], "{v}");
+    assert_eq!(pending_of(&v, theirs), -1, "not listed to someone else");
+    let (_, v) = get(&app, &kb, "/assets/people").await;
+    assert_eq!(pending_of(&v, theirs), 2, "{v}");
+    assert_eq!(v["items"].as_array().unwrap().len(), 1);
+    // One person's own answer is the same number, and matches what the suggestions list holds.
+    let (_, one) = get(&app, &key, &format!("/assets/people/{a}")).await;
+    assert_eq!(one["pending"], 3);
+    let (_, sug) = get(&app, &key, &format!("/assets/people/{a}/suggestions")).await;
+    assert_eq!(sug["items"].as_array().unwrap().len(), 3);
+    // "No" to one and "Yes" to another: both leave the count.
+    let reject = format!("/assets/faces/{}/reject", near_a[0]);
+    post(&app, &key, &reject, json!({"person_id": a})).await;
+    assert_eq!(pending_of(&get(&app, &key, "/assets/people").await.1, a), 2);
+    let assign = format!("/assets/faces/{}/assign", near_a[1]);
+    post(&app, &key, &assign, json!({"person_id": a})).await;
+    let (_, v) = get(&app, &key, "/assets/people").await;
+    assert_eq!((pending_of(&v, a), pending_of(&v, b)), (1, 1));
+    assert_eq!(pending_of(&get(&app, &kb, "/assets/people").await.1, theirs), 2);
+    // Faces in hidden photos wait for the Hidden view, as the suggestions do.
+    let (uid2, cookie) = session(&t.pool, "c@example.com", "member").await;
+    let (p2, near2) = badge_scene(&t.pool, uid2, "c", Some("Person C"), &identity(5), 2).await;
+    sqlx::query("UPDATE assets SET hidden = true WHERE id = (SELECT asset_id FROM faces WHERE id = $1)")
+        .bind(near2[0])
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let pending = || async {
+        let (_, v) = send_cookie(&app, "GET", "/assets/people", Some(&cookie), None).await;
+        pending_of(&v, p2)
+    };
+    assert_eq!(pending().await, 1);
+    unlock(&t.pool, &cookie).await;
+    assert_eq!(pending().await, 2);
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn bulk_changes_hide_show_delete_and_merge_people_all_or_nothing_for_the_owner() {
+    let Some(t) = TestDb::new().await else { return };
+    let (uid, key) = user(&t.pool, "a@example.com").await;
+    let (bid, other) = user(&t.pool, "b@example.com").await;
+    let app = app_with_people(&t.pool);
+    let (a, b, c) = (
+        person(&t.pool, uid, Some("Person A")).await,
+        person(&t.pool, uid, None).await,
+        person(&t.pool, uid, Some("Person C")).await,
+    );
+    for (i, who) in [a, a, b, c].into_iter().enumerate() {
+        let ph = photo(&t.pool, uid, &format!("bulk{i}.jpg")).await;
+        let f = face(&t.pool, ph, Some(identity(1)), [0.1, 0.1, 0.2, 0.2]).await;
+        put(&t.pool, f, who).await;
+    }
+    let theirs = person(&t.pool, bid, Some("Person T")).await;
+    let hidden_n = || count(&t.pool, "SELECT count(*) FROM people WHERE hidden");
+    let url = "/assets/people/bulk";
+    // Hide, then show, two at once (a repeated id counts once).
+    let (st, v) = post(&app, &key, url, json!({"action": "hide", "ids": [a, b]})).await;
+    assert_eq!((st, v["done"].as_i64()), (StatusCode::OK, Some(2)), "{v}");
+    assert_eq!(hidden_n().await, 2);
+    let (st, v) = post(&app, &key, url, json!({"action": "show", "ids": [a, b, a]})).await;
+    assert_eq!((st, v["done"].as_i64()), (StatusCode::OK, Some(2)), "{v}");
+    assert_eq!(hidden_n().await, 0);
+    // Someone else's person among the ids, or one that is not there: a 404 and nothing at all changes.
+    for bad in [theirs, Uuid::new_v4()] {
+        for action in ["hide", "delete"] {
+            let (st, _) = post(&app, &key, url, json!({"action": action, "ids": [a, bad]})).await;
+            assert_eq!(st, StatusCode::NOT_FOUND, "{action}");
+        }
+    }
+    assert_eq!(hidden_n().await, 0);
+    assert_eq!(count(&t.pool, "SELECT count(*) FROM people").await, 4);
+    let (st, _) = post(&app, &other, url, json!({"action": "hide", "ids": [a]})).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    let (st, _) = post(
+        &app,
+        &other,
+        url,
+        json!({"action": "merge", "ids": [a, theirs], "into": theirs}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert_eq!(
+        count(&t.pool, "SELECT count(*) FROM faces WHERE person_id IS NOT NULL").await,
+        4
+    );
+    // Checked inputs (an action that does not exist is refused by the body's shape).
+    let (st, _) = post(&app, &key, url, json!({"action": "explode", "ids": [a]})).await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+    for bad in [
+        json!({"action": "hide", "ids": []}),
+        json!({"action": "hide", "ids": [a], "into": a}),
+        json!({"action": "hide", "ids": [a], "name": "Person X"}),
+        json!({"action": "merge", "ids": [a]}),
+        json!({"action": "merge", "ids": [a, b]}),
+        json!({"action": "merge", "ids": [a, b], "into": c}),
+        json!({"action": "merge", "ids": [a, b], "into": a, "name": "x".repeat(101)}),
+    ] {
+        assert_eq!(
+            post(&app, &key, url, bad.clone()).await.0,
+            StatusCode::BAD_REQUEST,
+            "{bad}"
+        );
+    }
+    assert_eq!(count(&t.pool, "SELECT count(*) FROM people").await, 4);
+    // Merge: the unnamed one and Person C into Person A, who keeps the name; every face follows.
+    let (st, v) = post(&app, &key, url, json!({"action": "merge", "ids": [a, b, c], "into": a})).await;
+    assert_eq!(
+        (st, v["done"].as_i64(), v["faces"].as_i64()),
+        (StatusCode::OK, Some(2), Some(2)),
+        "{v}"
+    );
+    assert_eq!(v["into"], json!(a));
+    assert_eq!(count(&t.pool, "SELECT count(*) FROM people").await, 2);
+    let (_, one) = get(&app, &key, &format!("/assets/people/{a}")).await;
+    assert_eq!(
+        (one["name"].as_str(), one["faces"].as_i64()),
+        (Some("Person A"), Some(4))
+    );
+    assert_eq!(
+        count(&t.pool, "SELECT count(*) FROM audit_log WHERE action = 'people.merge'").await,
+        2
+    );
+    // Merge into an unnamed person: a merged name is taken over; an explicit name wins over it.
+    let (x, y, z) = (
+        person(&t.pool, uid, None).await,
+        person(&t.pool, uid, Some("Person Y")).await,
+        person(&t.pool, uid, Some("Person Z")).await,
+    );
+    for (i, who) in [x, y, z].into_iter().enumerate() {
+        let ph = photo(&t.pool, uid, &format!("bulkm{i}.jpg")).await;
+        let f = face(&t.pool, ph, Some(identity(2)), [0.1, 0.1, 0.2, 0.2]).await;
+        put(&t.pool, f, who).await;
+    }
+    let (st, v) = post(&app, &key, url, json!({"action": "merge", "ids": [x, y, z], "into": x})).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let (_, one) = get(&app, &key, &format!("/assets/people/{x}")).await;
+    let name = one["name"].as_str().unwrap();
+    assert!(name == "Person Y" || name == "Person Z", "{name}");
+    assert_eq!(one["faces"], 3);
+    let body = json!({"action": "merge", "ids": [a, x], "into": a, "name": "  Person Q "});
+    assert_eq!(post(&app, &key, url, body).await.0, StatusCode::OK);
+    let (_, one) = get(&app, &key, &format!("/assets/people/{a}")).await;
+    assert_eq!(
+        (one["name"].as_str(), one["faces"].as_i64()),
+        (Some("Person Q"), Some(7))
+    );
+    // Delete: the grouping goes; the photos and faces stay (unassigned) and the other owner's person stays.
+    let (st, v) = post(&app, &key, url, json!({"action": "delete", "ids": [a]})).await;
+    assert_eq!((st, v["done"].as_i64()), (StatusCode::OK, Some(1)), "{v}");
+    assert_eq!(
+        count(&t.pool, "SELECT count(*) FROM faces WHERE person_id IS NOT NULL").await,
+        0
+    );
+    assert_eq!(count(&t.pool, "SELECT count(*) FROM faces").await, 7);
+    assert_eq!(count(&t.pool, "SELECT count(*) FROM assets").await, 7);
+    assert_eq!(count(&t.pool, "SELECT count(*) FROM people").await, 1);
+    assert_eq!(
+        count(
+            &t.pool,
+            "SELECT count(*) FROM audit_log WHERE detail::text LIKE '%Person%'"
+        )
+        .await,
+        0,
+        "no names in the audit trail"
+    );
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn a_person_lists_the_faces_a_cover_can_be_chosen_from_a_page_at_a_time() {
+    let Some(t) = TestDb::new().await else { return };
+    let (uid, cookie) = session(&t.pool, "a@example.com", "member").await;
+    let (_, other) = user(&t.pool, "b@example.com").await;
+    let app = app_with_people(&t.pool);
+    let p = person(&t.pool, uid, Some("Person A")).await;
+    let mut fs = Vec::new();
+    for i in 0..5 {
+        let ph = photo(&t.pool, uid, &format!("cv{i}.jpg")).await;
+        let side = 0.1 + 0.02 * i as f32;
+        let f = face(&t.pool, ph, Some(identity(1)), [0.1, 0.1, side, side]).await;
+        put(&t.pool, f, p).await;
+        fs.push((f, ph));
+    }
+    // A hidden photo's face waits for the Hidden view; a photo without a preview is never listed.
+    sqlx::query("UPDATE assets SET hidden = true WHERE id = $1")
+        .bind(fs[0].1)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE assets SET thumbhash = NULL WHERE id = $1")
+        .bind(fs[1].1)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let path = format!("/assets/people/{p}/faces");
+    let page = |q: &str| {
+        let (app, cookie, url) = (app.clone(), cookie.clone(), format!("{path}{q}"));
+        async move { send_cookie(&app, "GET", &url, Some(&cookie), None).await }
+    };
+    let ids = |v: &Value| -> Vec<String> {
+        v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["face_id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (st, v) = page("?limit=2").await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    // Largest faces first; two are listable on this page and one on the next.
+    assert_eq!(ids(&v), vec![fs[4].0.to_string(), fs[3].0.to_string()]);
+    assert_eq!(v["next_cursor"], "2");
+    let first = &v["items"][0];
+    assert_eq!(first["asset_id"], json!(fs[4].1));
+    assert_box(&first["box"], [0.1, 0.1, 0.18, 0.18]);
+    assert!(first["preview_url"].as_str().unwrap().contains("preview.webp"));
+    let (_, v) = page("?limit=2&cursor=2").await;
+    assert_eq!(ids(&v), vec![fs[2].0.to_string()]);
+    assert!(v["next_cursor"].is_null());
+    assert_eq!(page("?cursor=-3").await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(page("?cursor=abc").await.0, StatusCode::BAD_REQUEST);
+    unlock(&t.pool, &cookie).await;
+    assert_eq!(
+        ids(&page("").await.1).len(),
+        4,
+        "the hidden photo's face too, with the view unlocked"
+    );
+    // A listed face can be made the cover; someone else cannot read the list.
+    let body = Some(json!({"cover_face_id": fs[3].0}));
+    let (st, v) = send_cookie(&app, "PATCH", &format!("/assets/people/{p}"), Some(&cookie), body).await;
+    assert_eq!(
+        (st, v["cover"]["face_id"].as_str()),
+        (StatusCode::OK, Some(fs[3].0.to_string().as_str())),
+        "{v}"
+    );
+    assert_eq!(get(&app, &other, &path).await.0, StatusCode::NOT_FOUND);
+    let ghost = format!("/assets/people/{}/faces", Uuid::new_v4());
+    assert_eq!(get(&app, &other, &ghost).await.0, StatusCode::NOT_FOUND);
+    t.teardown().await;
+}
