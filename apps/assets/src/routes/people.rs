@@ -594,7 +594,7 @@ pub(super) async fn cover_faces(
     .await?;
     let more = rows.len() as i64 > limit;
     rows.truncate(limit as usize);
-    let mut items = Vec::with_capacity(rows.len());
+    let mut items = Vec::new();
     for r in &rows {
         items.push(json!({
             "face_id": r.id,
