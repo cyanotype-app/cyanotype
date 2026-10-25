@@ -58,6 +58,7 @@ const ROUTES: &[(&str, &str, Who)] = &[
     ("GET", "/assets/{id}/faces", Read),
     ("GET", "/assets/albums/{id}", Read),
     ("GET", "/assets/albums/{id}/assets", Read),
+    ("GET", "/assets/albums/{id}/zip", Read),
     ("GET", "/assets/shares", Read),
     ("GET", "/assets/shares/{id}", Read),
     ("GET", "/assets/{id}", Read),
@@ -102,6 +103,8 @@ const ROUTES: &[(&str, &str, Who)] = &[
     ("DELETE", "/assets/albums/{id}", Write),
     ("POST", "/assets/albums/{id}/assets", Write),
     ("POST", "/assets/albums/{id}/assets/remove", Write),
+    ("POST", "/assets/zip", Write),
+    ("POST", "/assets/zip/plan", Write),
     ("POST", "/assets/shares", Write),
     ("PATCH", "/assets/shares/{id}", Write),
     ("DELETE", "/assets/shares/{id}", Write),
@@ -122,6 +125,8 @@ const ROUTES: &[(&str, &str, Who)] = &[
     ("GET", "/assets/public/s/{token}/items/{id}", Public),
     ("POST", "/assets/public/s/{token}/items/{id}/prepare", Public),
     ("GET", "/assets/public/s/{token}/items/{id}/download", Public),
+    ("GET", "/assets/public/s/{token}/zip/plan", Public),
+    ("GET", "/assets/public/s/{token}/zip", Public),
 ];
 
 fn fill(path: &str) -> String {

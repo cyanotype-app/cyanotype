@@ -9,6 +9,8 @@
 //! | `GET .../items/{id}` | One photo. |
 //! | `POST .../items/{id}/prepare` | Ask for the location-free download copy of a JPEG to be made now. |
 //! | `GET .../items/{id}/download?file=` | `307` to a presigned attachment URL (one minute). |
+//! | `GET .../zip/plan` | What "Download all" would hold: `{files, bytes, pending, skipped, name, max_files, max_bytes}`; asks for the missing download copies to be made. |
+//! | `GET .../zip` | All the link's downloadable photos as one streamed ZIP (`zip.rs`), or `409` while copies are still being made. |
 //!
 //! Privacy rules, all enforced here:
 //! * An unknown, revoked and expired token is the same `404` with the same body, so tokens cannot be probed.
@@ -71,6 +73,8 @@ pub struct ShareState {
     miss: Arc<RateLimiter>,
     /// Password attempts, per client IP.
     password: Arc<RateLimiter>,
+    /// "Download all" archives (and the size lookups that prepare them), per client IP.
+    zip: Arc<RateLimiter>,
     trusted: Arc<Vec<Cidr>>,
     cookie_secure: bool,
 }
@@ -88,6 +92,7 @@ impl ShareState {
             lookup: limiter(120, 120),
             miss: limiter(10, 10),
             password: limiter(5, 5),
+            zip: limiter(6, 6),
             trusted: Arc::new(trusted),
             cookie_secure,
         }
@@ -110,6 +115,16 @@ impl ShareState {
             cookie_secure,
             parse_proxies(get("TRUSTED_PROXIES").as_deref())?,
         ))
+    }
+
+    #[cfg(test)]
+    pub fn with_zip_limit(mut self, burst: u32, per_minute: u32) -> Self {
+        self.zip = Arc::new(RateLimiter::new(RateLimitConfig {
+            burst,
+            per_minute,
+            max_keys: 100,
+        }));
+        self
     }
 
     #[cfg(test)]
@@ -139,6 +154,8 @@ pub fn routes(state: ShareState) -> Router<AppState> {
         .route("/assets/public/s/{token}/items/{id}", get(item))
         .route("/assets/public/s/{token}/items/{id}/prepare", post(prepare))
         .route("/assets/public/s/{token}/items/{id}/download", get(download))
+        .route("/assets/public/s/{token}/zip/plan", get(zip_plan))
+        .route("/assets/public/s/{token}/zip", get(zip_download))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .layer(Extension(state))
 }
@@ -514,8 +531,12 @@ struct PublicItem {
 }
 
 fn is_jpeg(r: &ItemRow) -> bool {
-    let ct = r.content_type.to_ascii_lowercase();
-    ct == "image/jpeg" || ct == "image/jpg" || matches!(keys::sanitize_ext(&r.original_name).as_str(), "jpg" | "jpeg")
+    is_jpeg_file(&r.content_type, &r.original_name)
+}
+
+fn is_jpeg_file(content_type: &str, original_name: &str) -> bool {
+    let ct = content_type.to_ascii_lowercase();
+    ct == "image/jpeg" || ct == "image/jpg" || matches!(keys::sanitize_ext(original_name).as_str(), "jpg" | "jpeg")
 }
 
 fn format_label(r: &ItemRow) -> String {
@@ -802,4 +823,217 @@ mod cookie_tests {
         let off = unlock_cookie("n".into(), "v".into(), "tok", false).to_string();
         assert!(!off.contains("Secure") && off.contains("HttpOnly"), "{off}");
     }
+}
+
+/// Most files, and most bytes, one "Download all" archive of a link may hold. A visitor has no account to charge, so the
+/// largest request is bounded: bigger links are downloaded photo by photo.
+const ZIP_MAX_FILES: usize = 1_000;
+const ZIP_MAX_BYTES: u64 = 4 << 30;
+/// Size lookups (`HEAD`) in flight at once while an archive of stripped copies is planned (their sizes are not in the database).
+const HEAD_CONCURRENCY: usize = 8;
+
+/// A photo of a link, as the archive needs it.
+#[derive(FromRow)]
+struct CopyRow {
+    id: Uuid,
+    content_type: String,
+    original_name: String,
+    share_copy_at: Option<OffsetDateTime>,
+    edited: bool,
+    edited_copy_at: Option<OffsetDateTime>,
+    mtime: Option<OffsetDateTime>,
+}
+
+struct PublicPlan {
+    archive: super::zip::Archive,
+    /// Photos whose download copy the worker has not made yet (they are queued).
+    pending: usize,
+    /// Photos the link does not offer for download (not JPEG, and no originals).
+    skipped: usize,
+}
+
+/// The files "Download all" of this link holds: the same ones the per-photo downloads offer, nothing else. With "include
+/// originals" the untouched files (a RAW + JPEG pair as both); without, the location-free JPEG copies (an edited photo's edited
+/// render), and only for the photos that have one. `limit` charges the visitor's zip budget before the size lookups.
+async fn zip_plan_for(s: &AppState, share: &ShareRow, limit: Option<(&ShareState, IpAddr)>) -> PubResult<PublicPlan> {
+    if !share.allow_download {
+        return Err(ApiError::Forbidden("downloads are turned off for this link".into()).into());
+    }
+    let title = share.title.as_deref().or(share.album_title.as_deref());
+    let (from, wh, r) = share.source(s).await?;
+    let too_many = || {
+        ApiError::PayloadTooLarge(format!(
+            "this link has too many photos for one download (at most {ZIP_MAX_FILES} files or {} GiB); download them one by one",
+            ZIP_MAX_BYTES >> 30
+        ))
+    };
+    if share.include_originals {
+        // The photo's file and the RAW behind it: two index lookups, not a join on `id = ... OR primary_id = ...`.
+        let rows: Vec<super::zip::FileRow> = sqlx::query_as(&format!(
+            "SELECT original_key, original_name, size_bytes, mtime FROM (
+               SELECT f.original_key, f.original_name, f.size_bytes, coalesce(x.taken_at, x.file_modified_at) AS mtime,
+                      {SORT} AS sort_t, x.id AS pid, 0 AS part, f.id AS fid
+               FROM {from} JOIN assets f ON f.id = x.id WHERE {wh} AND {VISIBLE}
+               UNION ALL
+               SELECT f.original_key, f.original_name, f.size_bytes, coalesce(x.taken_at, x.file_modified_at), {SORT}, x.id, 1, f.id
+               FROM {from} JOIN assets f ON f.primary_id = x.id AND f.owner_id = x.owner_id
+               WHERE {wh} AND {VISIBLE} AND f.purging_at IS NULL
+             ) u ORDER BY sort_t, pid, part, fid LIMIT $3"
+        ))
+        .bind(share.owner_id)
+        .bind(r)
+        .bind(ZIP_MAX_FILES as i64 + 1)
+        .fetch_all(&s.db)
+        .await?;
+        if rows.len() > ZIP_MAX_FILES {
+            return Err(too_many().into());
+        }
+        let archive = super::zip::Archive::new(title, super::zip::plan_files(rows));
+        if archive.bytes() > ZIP_MAX_BYTES {
+            return Err(too_many().into());
+        }
+        return Ok(PublicPlan {
+            archive,
+            pending: 0,
+            skipped: 0,
+        });
+    }
+    let rows: Vec<CopyRow> = sqlx::query_as(&format!(
+        "SELECT x.id, x.content_type, x.original_name, x.share_copy_at, (x.recipe IS NOT NULL) AS edited, x.edited_copy_at,
+                coalesce(x.taken_at, x.file_modified_at) AS mtime
+         FROM {from} WHERE {wh} AND {VISIBLE} ORDER BY {SORT}, x.id LIMIT $3"
+    ))
+    .bind(share.owner_id)
+    .bind(r)
+    .bind(ZIP_MAX_FILES as i64 + 1)
+    .fetch_all(&s.db)
+    .await?;
+    if rows.len() > ZIP_MAX_FILES {
+        return Err(too_many().into());
+    }
+    // (storage key, name in the archive, capture time) of each copy that exists; the photos still to be made are queued.
+    let mut ready = Vec::new();
+    let (mut pending, mut skipped) = (0, 0);
+    for p in &rows {
+        if p.edited {
+            if p.edited_copy_at.is_some() {
+                ready.push((
+                    keys::edited_copy(share.owner_id, p.id),
+                    keys::edited_file_name(&p.original_name),
+                    p.mtime,
+                ));
+            } else {
+                pending += 1;
+                jobs::requeue(&s.db, jobs::KIND_EDITED_COPY, p.id, 1).await?;
+            }
+        } else if is_jpeg_file(&p.content_type, &p.original_name) {
+            if p.share_copy_at.is_some() {
+                ready.push((keys::share_copy(share.owner_id, p.id), p.original_name.clone(), p.mtime));
+            } else {
+                pending += 1;
+                jobs::enqueue(&s.db, jobs::KIND_SHARE_COPY, p.id, 1).await?;
+            }
+        } else {
+            skipped += 1;
+        }
+    }
+    if pending > 0 {
+        return Ok(PublicPlan {
+            archive: super::zip::Archive::new(title, Vec::new()),
+            pending,
+            skipped,
+        });
+    }
+    if let Some((st, ip)) = limit {
+        st.zip
+            .check(ip, std::time::Instant::now())
+            .map_err(|wait| PubError::TooMany(retry_after_secs(wait)))?;
+    }
+    // The copies' sizes are not recorded: ask the bucket (a few at a time), so the archive can announce its exact length.
+    let mut sizes = Vec::new();
+    for batch in ready.chunks(HEAD_CONCURRENCY) {
+        sizes.extend(futures_util::future::join_all(batch.iter().map(|c| head(&s.storage, &c.0))).await);
+    }
+    let mut files = Vec::new();
+    for ((key, name, mtime), size) in ready.into_iter().zip(sizes) {
+        let Some(size_bytes) = size else {
+            return Err(
+                ApiError::Conflict("this download is still being prepared, try again in a moment".into()).into(),
+            );
+        };
+        files.push(super::zip::FileRow {
+            original_key: key,
+            original_name: name,
+            size_bytes,
+            mtime,
+        });
+    }
+    let archive = super::zip::Archive::new(title, super::zip::plan_files(files));
+    if archive.bytes() > ZIP_MAX_BYTES {
+        return Err(too_many().into());
+    }
+    Ok(PublicPlan {
+        archive,
+        pending: 0,
+        skipped,
+    })
+}
+
+/// The size of a stored object, `None` if it is not there (or the store cannot say).
+async fn head(storage: &cyanotype_core::storage::Storage, key: &str) -> Option<i64> {
+    storage.head_size(key).await.unwrap_or(None)
+}
+
+async fn zip_plan(
+    State(s): State<AppState>,
+    Extension(st): Extension<ShareState>,
+    Extension(ClientIp(ip)): Extension<ClientIp>,
+    Path(token): Path<String>,
+    jar: CookieJar,
+) -> PubResult<Json<serde_json::Value>> {
+    let share = open(&s, &st, ip, &token, &jar).await?;
+    let p = zip_plan_for(&s, &share, Some((&st, ip))).await?;
+    Ok(Json(serde_json::json!({
+        "files": p.archive.files.len(),
+        "bytes": p.archive.bytes(),
+        "pending": p.pending,
+        "skipped": p.skipped,
+        "name": p.archive.file_name,
+        "max_files": ZIP_MAX_FILES,
+        "max_bytes": ZIP_MAX_BYTES,
+    })))
+}
+
+async fn zip_download(
+    State(s): State<AppState>,
+    Extension(st): Extension<ShareState>,
+    Extension(ClientIp(ip)): Extension<ClientIp>,
+    Path(token): Path<String>,
+    jar: CookieJar,
+) -> PubResult<Response> {
+    let share = open(&s, &st, ip, &token, &jar).await?;
+    if !share.allow_download {
+        return Err(ApiError::Forbidden("downloads are turned off for this link".into()).into());
+    }
+    st.zip
+        .check(ip, std::time::Instant::now())
+        .map_err(|wait| PubError::TooMany(retry_after_secs(wait)))?;
+    let permit = super::zip::public_slot()?;
+    let p = zip_plan_for(&s, &share, None).await?;
+    if p.pending > 0 {
+        return Err(ApiError::Conflict("this download is still being prepared, try again in a moment".into()).into());
+    }
+    if p.archive.files.is_empty() {
+        return Err(ApiError::BadRequest("none of the photos in this link can be downloaded".into()).into());
+    }
+    metrics::global().count("shares.downloads", 1, &[("kind", share.kind.as_str())]);
+    metrics::global().count("shares.zip_downloads", 1, &[("kind", share.kind.as_str())]);
+    tracing::info!(
+        share_id = %share.id,
+        files = p.archive.files.len(),
+        bytes = p.archive.bytes(),
+        originals = share.include_originals,
+        "share zip download"
+    );
+    Ok(super::zip::respond(&s.storage, p.archive, permit))
 }

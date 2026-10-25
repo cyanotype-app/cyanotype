@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api";
-import { shareApi } from "../shareApi";
+import { shareApi, type PublicZipPlan } from "../shareApi";
 import { pubInfo, pubItem } from "../test/shareFixtures";
 import { ShareView } from "./ShareView";
 
@@ -223,6 +223,65 @@ describe("ShareView", () => {
     await waitFor(() => expect(within(screen.getByRole("list", { name: "Photos" })).getAllByRole("button")).toHaveLength(3));
     expect(items).toHaveBeenLastCalledWith("tok", "c1");
     expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+  });
+
+  describe("Download all", () => {
+    const zipPlan = (over: Partial<PublicZipPlan> = {}): PublicZipPlan => ({
+      files: 3,
+      bytes: 3 << 20,
+      pending: 0,
+      skipped: 0,
+      name: "Summer trip.zip",
+      max_files: 1000,
+      max_bytes: 4 << 30,
+      ...over,
+    });
+
+    it("follows a plain link to the archive once the server says it is ready", async () => {
+      open();
+      const plan = vi.spyOn(shareApi, "publicZipPlan").mockResolvedValue(zipPlan());
+      let href = "";
+      vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+        href = this.getAttribute("href") ?? "";
+      });
+      const user = userEvent.setup();
+      renderView();
+      await user.click(await screen.findByRole("button", { name: "Download all" }));
+      await waitFor(() => expect(href).toBe("/assets/public/s/tok/zip"));
+      expect(plan).toHaveBeenCalledWith("tok");
+      expect(await screen.findByRole("status")).toHaveTextContent("Downloading 3 files (3.0 MB) as a ZIP");
+    });
+
+    it("waits while the download copies are being made, and says how many are left", async () => {
+      open();
+      vi.spyOn(shareApi, "publicZipPlan")
+        .mockResolvedValueOnce(zipPlan({ pending: 2, files: 0, bytes: 0 }))
+        .mockResolvedValue(zipPlan());
+      const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+      const user = userEvent.setup();
+      renderView();
+      await user.click(await screen.findByRole("button", { name: "Download all" }));
+      expect(await screen.findByRole("status")).toHaveTextContent("2 photos to go");
+      await waitFor(() => expect(click).toHaveBeenCalled(), { timeout: 4000 });
+    });
+
+    it("shows the server's refusal and downloads nothing", async () => {
+      open();
+      vi.spyOn(shareApi, "publicZipPlan").mockRejectedValue(new ApiError(413, "this link has too many photos for one download"));
+      const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+      const user = userEvent.setup();
+      renderView();
+      await user.click(await screen.findByRole("button", { name: "Download all" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("too many photos");
+      expect(click).not.toHaveBeenCalled();
+    });
+
+    it("is not offered when the owner turned downloads off", async () => {
+      open(undefined, pubInfo({ allow_download: false }));
+      renderView();
+      await screen.findByRole("heading", { name: "Summer trip" });
+      expect(screen.queryByRole("button", { name: "Download all" })).not.toBeInTheDocument();
+    });
   });
 
   it("says so when the link currently holds no photos", async () => {

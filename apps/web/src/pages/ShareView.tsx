@@ -7,9 +7,10 @@ import { ZoomControls } from "../components/ZoomControls";
 import { fitStyle } from "../photoFit";
 import { usePhotoZoom } from "../usePhotoZoom";
 import { fileSize } from "../pairText";
-import { publicDownloadHref, shareApi, type PublicInfo, type PublicItem } from "../shareApi";
+import { publicDownloadHref, publicZipHref, shareApi, type PublicInfo, type PublicItem } from "../shareApi";
 import { expiryText } from "../shareText";
 import { placeholderUrl } from "../thumbhash";
+import { followLink, planShareZip, sharePlanMessage } from "../zipDownload";
 
 type Phase =
   | { kind: "loading" }
@@ -218,6 +219,7 @@ function Photos({ token, info, onLocked }: { token: string; info: PublicInfo; on
         <p className="muted small">
           {[photoCount(info.item_count), info.expires_at ? expiryText(info.expires_at) : null].filter(Boolean).join(" · ")}
         </p>
+        {info.allow_download && info.item_count > 0 && <DownloadAll token={token} onLocked={onLocked} />}
       </div>
       {loaded && items.length === 0 && !error && (
         <div className="empty">
@@ -282,6 +284,53 @@ function Photos({ token, info, onLocked }: { token: string; info: PublicInfo; on
         />
       )}
     </main>
+  );
+}
+
+/**
+ * "Download all": every photo of the link the owner lets visitors download, as one ZIP. The page first asks the server what it
+ * holds (and waits for the download copies of JPEGs it is still making), then follows a plain link, so the browser streams the
+ * archive to disk and shows its own progress.
+ */
+function DownloadAll({ token, onLocked }: { token: string; onLocked: () => void }) {
+  const [state, setState] = useState<{ kind: "idle" } | { kind: "busy"; note: string } | { kind: "done"; note: string } | { kind: "error"; note: string }>({ kind: "idle" });
+
+  async function start() {
+    setState({ kind: "busy", note: "Preparing the download…" });
+    try {
+      const plan = await planShareZip(() => shareApi.publicZipPlan(token), {
+        onWaiting: (n) => setState({ kind: "busy", note: `Preparing the download… (${n.toLocaleString("en-US")} ${n === 1 ? "photo" : "photos"} to go)` }),
+      });
+      if (plan.files === 0) {
+        setState({ kind: "error", note: "None of the photos on this link can be downloaded." });
+        return;
+      }
+      followLink(publicZipHref(token));
+      setState({ kind: "done", note: sharePlanMessage(plan) });
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) onLocked();
+      else if (e instanceof ApiError && e.status === 429) setState({ kind: "error", note: "Too many downloads just now. Wait a minute and try again." });
+      else setState({ kind: "error", note: e instanceof Error ? e.message : "Could not start the download." });
+    }
+  }
+
+  return (
+    <div className="share-download-all">
+      <button type="button" className="btn btn-primary" disabled={state.kind === "busy"} onClick={() => void start()}>
+        {state.kind === "busy" ? "Preparing…" : "Download all"}
+      </button>
+      {state.kind === "error" ? (
+        <p role="alert" className="form-error small">
+          {state.note}
+        </p>
+      ) : (
+        state.kind !== "idle" && (
+          <p role="status" className="muted small">
+            {state.note}
+          </p>
+        )
+      )}
+    </div>
   );
 }
 
