@@ -40,6 +40,9 @@ mod group;
 mod health;
 #[cfg(test)]
 mod health_tests;
+mod integrity;
+#[cfg(test)]
+mod integrity_tests;
 #[cfg(test)]
 mod key_scope_tests;
 #[cfg(test)]
@@ -188,6 +191,10 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/usage", get(usage::mine))
         .route("/assets/admin/health", get(health::health))
         .route("/assets/admin/jobs/retry", post(health::retry_failed))
+        .route("/assets/admin/integrity", get(integrity::summary))
+        .route("/assets/admin/integrity/run", post(integrity::start))
+        .route("/assets/admin/integrity/findings", get(integrity::list))
+        .route("/assets/admin/integrity/findings/{id}", post(integrity::act))
         .route("/assets/admin/accounts", get(usage::accounts))
         .route("/assets/admin/accounts/{id}/limits", put(usage::set_limits))
         .route(

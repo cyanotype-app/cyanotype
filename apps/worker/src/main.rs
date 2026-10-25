@@ -12,6 +12,7 @@ mod handlers;
 mod heif;
 mod heif_tiles;
 mod imaging;
+mod integrity;
 mod media;
 #[cfg(test)]
 mod memcal;
@@ -200,6 +201,7 @@ async fn main() -> Result<()> {
         tokio::spawn(dup::run_loop(ctx.clone()));
     }
     admin::spawn(ctx.clone());
+    integrity::spawn(ctx.clone());
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
     loop {

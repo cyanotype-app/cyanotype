@@ -90,6 +90,11 @@ configuration in Datadog (distributions would need percentile aggregation enable
 | `cyanotype.queue.failed` | gauge | `kind` | Jobs in state `failed` (cumulative until retried or deleted). |
 | `cyanotype.queue.oldest_queued_age_seconds` | gauge | `kind` | Wait of the oldest runnable queued job; 0 when none. |
 | `cyanotype.queue.stalled_seconds` | gauge | | Runnable work exists and nothing finished: the lesser of the oldest wait and the time since any success; 0 when idle. |
+| `cyanotype.integrity.findings_open` | gauge | `kind` (`missing_original`, `untracked_object`, `checksum_mismatch`) | Open findings of the storage integrity check (docs/admin.md), sampled once a minute by the worker; acknowledged ones are not counted. |
+| `cyanotype.integrity.last_run_age_seconds` | gauge | | Seconds since the last integrity check finished. |
+| `cyanotype.integrity.runs` | count | `result` (`done`, `failed`) | Integrity checks run. |
+| `cyanotype.integrity.bytes_hashed` / `.derived_requeued` | count | | Originals re-read for the checksum sample, and thumbnails queued again, per run. |
+| `cyanotype.integrity.run.duration_seconds` | histogram | | Wall time of a check. |
 | `cyanotype.jobs.completed` | count | `kind`, `family`, `outcome` (`done`, `skipped`) | Jobs finished. |
 | `cyanotype.jobs.failed` | count | `kind`, `family`, `outcome:failed`, `permanent` | Jobs that failed for good (use `.as_count()` sums for rates). |
 | `cyanotype.jobs.retried` | count | `kind`, `family`, `outcome:retry` | Failures that will be retried. |

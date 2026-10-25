@@ -9,6 +9,7 @@ pub mod edits;
 pub mod embeddings;
 pub mod faces;
 pub mod identity;
+pub mod integrity;
 pub mod jobs;
 pub mod keys;
 pub mod limits;

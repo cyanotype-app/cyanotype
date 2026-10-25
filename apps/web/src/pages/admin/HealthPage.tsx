@@ -3,6 +3,7 @@ import { api, type Health } from "../../api";
 import { bytesLabel } from "../../adminText";
 import { backupStatus, duration, failedKinds, memoryLine, queueTotals } from "../../healthText";
 import { ago, countLabel } from "../../storageText";
+import { IntegrityCard } from "./IntegrityCard";
 
 const REFRESH_MS = 15_000;
 
@@ -65,6 +66,7 @@ export function HealthPage() {
       ) : (
         <>
           <Queue h={h} busy={busy} onRetry={(k) => void retry(k)} note={note} />
+          <IntegrityCard />
           <Workers h={h} />
           <Backup h={h} />
           <Sizes h={h} />

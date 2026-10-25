@@ -222,6 +222,17 @@ exist: the manifest already carries the names of old photos. Use it only if you 
 without manifests, and only after you have a lifecycle rule that expires noncurrent versions. Objects over 5 GiB
 cannot be copied this way and are reported. Reindex never deletes the old versions itself.
 
+## Finding damage before you need this: the nightly integrity check
+
+Recovery is only as good as the bucket, so the worker looks at the bucket every night (`docs/admin.md`, "Storage integrity"):
+originals the database lists but the bucket lost, objects no row points at, and originals whose bytes no longer match their sha256
+(a rolling sample, oldest-verified first). Admin > Health lists the findings. The fixes reuse what this document describes:
+**Restore from a previous version** makes an earlier version of the object current again (the versioned bucket keeps them until the
+photo is purged; the version chosen is the one whose hash is the stored one), and **Restore as photo** is `reindex --apply` for a single
+object (the row, the jobs and the `edits/` object; albums, pairs, tags and share links come only from a whole-library `reindex`).
+Purging a photo deletes its versions on purpose, so nothing here fights it: a photo in the trash or being purged is never reported,
+and the check never deletes anything by itself.
+
 ## The `reindex` command
 
 ```sh

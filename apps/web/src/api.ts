@@ -228,6 +228,71 @@ export interface Health {
   };
 }
 
+export type IntegrityKind = "missing_original" | "untracked_object" | "checksum_mismatch";
+export type IntegrityAction = "restore_version" | "trash" | "acknowledge" | "restore_photo" | "delete_object";
+
+/** One run of the storage integrity check (GET /assets/admin/integrity). */
+export interface IntegrityRun {
+  id: number;
+  trigger: "schedule" | "manual";
+  state: "running" | "done" | "failed";
+  started_at: string;
+  finished_at: string | null;
+  error: string | null;
+  objects_listed: number;
+  assets_checked: number;
+  assets_verified: number;
+  bytes_hashed: number;
+  missing_originals: number;
+  untracked_objects: number;
+  checksum_mismatches: number;
+  derived_requeued: number;
+  findings_resolved: number;
+}
+
+export interface IntegritySummary {
+  last_run: IntegrityRun | null;
+  open: Record<IntegrityKind, number>;
+  acknowledged: number;
+  coverage: { assets: number; verified: number; oldest_verified_at: string | null };
+  task: { state: "queued" | "running"; created_at: string; started_at: string | null } | null;
+}
+
+export interface IntegrityFinding {
+  id: number;
+  kind: IntegrityKind;
+  state: "open" | "acknowledged" | "resolved";
+  owner_id: string | null;
+  owner_email: string | null;
+  asset_id: string | null;
+  key: string;
+  detail: {
+    reason?: "size" | "hash" | "no_row" | "duplicate_content" | "unrecognised_key";
+    size_bytes?: number;
+    actual_bytes?: number;
+    expected_sha256?: string;
+    actual_sha256?: string;
+    sha256?: string;
+    previous_versions?: number | null;
+    owner_known?: boolean;
+  };
+  resolution: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+  resolved_at: string | null;
+}
+
+export interface IntegrityFindingsPage {
+  items: IntegrityFinding[];
+  next_before: number | null;
+}
+
+export interface IntegrityQuery {
+  kind?: IntegrityKind;
+  state?: "open" | "acknowledged" | "resolved";
+  before?: number;
+}
+
 export interface AdminTask<R = unknown> {
   id: number;
   kind: string;
@@ -1279,6 +1344,21 @@ export const api = {
     request<{ task: AdminTask<BucketReport>; already_running: boolean }>("/assets/admin/bucket-check", { method: "POST" }),
   bucketCheck: () => request<{ task: AdminTask<BucketReport> | null }>("/assets/admin/bucket-check"),
   health: () => request<Health>("/assets/admin/health"),
+  integrity: () => request<IntegritySummary>("/assets/admin/integrity"),
+  runIntegrityCheck: () =>
+    request<{ task: { state: string }; already_running: boolean }>("/assets/admin/integrity/run", { method: "POST" }),
+  integrityFindings: (q: IntegrityQuery = {}) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) if (v !== undefined) p.set(k, String(v));
+    const qs = p.toString();
+    return request<IntegrityFindingsPage>(`/assets/admin/integrity/findings${qs ? `?${qs}` : ""}`);
+  },
+  /** `confirm: "delete"` is required for `delete_object`. */
+  integrityAct: (id: number, action: IntegrityAction, confirm?: "delete") =>
+    request<{ changed: boolean; finding: IntegrityFinding }>(
+      `/assets/admin/integrity/findings/${id}`,
+      json(confirm ? { action, confirm } : { action }),
+    ),
   /** Requeue failed jobs of every account (one `kind`, or all). */
   retryAllFailedJobs: (kind?: string) =>
     request<{ requeued: number }>("/assets/admin/jobs/retry", json(kind ? { kind } : {})),

@@ -1,0 +1,22 @@
+{
+  "name": "[Cyanotype] Storage integrity check has open findings",
+  "type": "query alert",
+  "query": "max(last_30m):sum:cyanotype.integrity.findings_open{*} > 0",
+  "message": "{{#is_alert}}The nightly storage integrity check has findings: a photo whose original is missing, an object no photo points at, or an original that no longer matches its checksum.{{/is_alert}}\nOpen Admin > Health > Storage integrity to see which. Missing originals and mismatches can usually be restored from a previous version of the object; untracked objects can be restored as photos or deleted. Findings marked lost or left are not counted. See docs/admin.md, \"Storage integrity\".",
+  "tags": [
+    "team:cyanotype",
+    "app:cyanotype",
+    "service:cyanotype-worker"
+  ],
+  "priority": null,
+  "options": {
+    "thresholds": {
+      "critical": 0
+    },
+    "notify_no_data": false,
+    "include_tags": false,
+    "notify_audit": false,
+    "require_full_window": false,
+    "renotify_interval": 0
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "[Cyanotype] Storage integrity check has not finished for 36 hours",
+  "type": "query alert",
+  "query": "min(last_30m):max:cyanotype.integrity.last_run_age_seconds{*} > 129600",
+  "message": "{{#is_alert}}No storage integrity check has finished for 36 hours.{{/is_alert}}\nThe worker runs it nightly (INTEGRITY_CHECK_HOUR). Check that the worker is up and the schedule is not off (INTEGRITY_CHECK_ENABLED=0), and look at the last run on Admin > Health: a failed run shows its error. Silent when the check was never run on this instance (the metric does not exist until the first run finishes).",
+  "tags": [
+    "team:cyanotype",
+    "app:cyanotype",
+    "service:cyanotype-worker"
+  ],
+  "priority": null,
+  "options": {
+    "thresholds": {
+      "critical": 129600
+    },
+    "notify_no_data": false,
+    "include_tags": false,
+    "notify_audit": false,
+    "require_full_window": false,
+    "renotify_interval": 0
+  }
+}
