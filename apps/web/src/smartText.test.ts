@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SmartRules } from "./api";
-import { MAX_RULES, NO_TEXT_QUERY_NOTE, blankRule, blankRules, cleanRules, describeRules, ruleLabel, rulesProblem, smartCount } from "./smartText";
+import { MAX_RULES, NO_TEXT_QUERY_NOTE, blankRule, blankRules, cleanRules, describeRules, ruleFieldsFor, ruleLabel, rulesProblem, smartCount } from "./smartText";
 
 const rules = (r: SmartRules["rules"], over: Partial<SmartRules> = {}): SmartRules => ({ match: "all", archived: "include", rules: r, ...over });
 
@@ -17,6 +17,11 @@ describe("smart album words", () => {
     expect(ruleLabel({ field: "has_location", value: false })).toBe("No location");
     expect(ruleLabel({ field: "has_text", value: true })).toBe("Has text in the photo");
     expect(ruleLabel({ field: "caption", text: "cake" })).toBe("Caption has “cake”");
+    expect(ruleLabel({ field: "people", ids: ["a", "b"] })).toBe("People: 2 people together");
+  });
+  it("offers the people rule only while People is on", () => {
+    expect(ruleFieldsFor(true).map((f) => f.field)).toContain("people");
+    expect(ruleFieldsFor(false).map((f) => f.field)).not.toContain("people");
   });
   it("describes the whole album with its join and the archived switch", () => {
     const r = [{ field: "place" as const, value: "Lisbon" }, { field: "favorite" as const, value: true as const }];
@@ -40,6 +45,9 @@ describe("smart album rules before they are sent", () => {
     expect(rulesProblem(rules([blankRule("place")]))).toMatch(/needs a value/);
     expect(rulesProblem(rules([blankRule("caption")]))).toMatch(/some text/);
     expect(rulesProblem(rules([blankRule("tags")]))).toMatch(/at least one tag/);
+    expect(rulesProblem(rules([blankRule("people")]))).toMatch(/at least one person/);
+    expect(rulesProblem(rules([{ field: "people", ids: ["a"] }]))).toBeNull();
+    expect(rulesProblem(rules([{ field: "people", ids: Array.from({ length: 11 }, (_, i) => `p${i}`) }]))).toMatch(/at most 10/);
     expect(rulesProblem(rules([{ field: "tags", names: ["a,b"], mode: "all" }]))).toMatch(/comma/);
     expect(rulesProblem(rules([blankRule("rating"), blankRule("type"), blankRule("has_text")]))).toBeNull();
   });

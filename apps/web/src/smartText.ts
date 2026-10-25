@@ -1,6 +1,7 @@
 // Pure helpers of smart albums: the shape of a rule, a blank one per kind, what a rule or a whole album says in words, and the
 // check the editor runs before it asks the server. The server's own validation (`smart.rs`) is the last word. Unit tested.
 import type { SmartRule, SmartRules } from "./api";
+import { MAX_FILTER_PEOPLE, peopleRuleLabel } from "./peopleText";
 import { ratingFilterLabel } from "./ratingText";
 import { nameProblem } from "./tagText";
 
@@ -21,7 +22,11 @@ export const RULE_FIELDS: { field: RuleField; label: string }[] = [
   { field: "has_location", label: "Location" },
   { field: "has_text", label: "Text in the photo" },
   { field: "caption", label: "Caption contains" },
+  { field: "people", label: "People" },
 ];
+
+/** The kinds of rule to offer: People's only while People is on. */
+export const ruleFieldsFor = (people: boolean) => RULE_FIELDS.filter((f) => f.field !== "people" || people);
 
 /** Why a semantic text search cannot be a rule; the editor shows it next to "Add rule". */
 export const NO_TEXT_QUERY_NOTE =
@@ -48,6 +53,8 @@ export function blankRule(field: RuleField): SmartRule {
       return { field, value: true };
     case "caption":
       return { field, text: "" };
+    case "people":
+      return { field, ids: [] };
   }
 }
 
@@ -82,6 +89,8 @@ export function ruleLabel(r: SmartRule): string {
       return r.value ? "Has text in the photo" : "No text in the photo";
     case "caption":
       return `Caption has “${r.text}”`;
+    case "people":
+      return peopleRuleLabel(r.ids);
   }
 }
 
@@ -109,6 +118,10 @@ export function rulesProblem(rules: SmartRules): string | null {
         break;
       case "caption":
         if (!r.text.trim()) return "The caption rule needs some text.";
+        break;
+      case "people":
+        if (r.ids.length === 0) return "The people rule needs at least one person.";
+        if (r.ids.length > MAX_FILTER_PEOPLE) return `The people rule takes at most ${MAX_FILTER_PEOPLE} people.`;
         break;
       case "tags": {
         if (r.names.length === 0) return "The tags rule needs at least one tag.";

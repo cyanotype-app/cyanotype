@@ -408,3 +408,27 @@ describe("the edited download", () => {
     expect((f.mock.calls[0] as unknown as [string, RequestInit])[1].body).toBe(JSON.stringify({ ids: ["a"], recipe: { turn: 90 } }));
   });
 });
+
+describe("people in lists, scopes and searches", () => {
+  it("lists and counts one person's photos through the person's own endpoints", async () => {
+    const f = mockFetchJson({ total: 1, days: [{ day: "2026-10-14", count: 1 }] });
+    await api.timeline({ person: "p 1" });
+    expect(f).toHaveBeenLastCalledWith("/assets/people/p%201/timeline", expect.anything());
+    await api.listAssets({ person: "p1", before: "2026-10-15T00:00:00.000Z", limit: 120 });
+    expect(f).toHaveBeenLastCalledWith("/assets/people/p1/photos?limit=120&before=2026-10-15T00%3A00%3A00.000Z", expect.anything());
+    await api.listAssets({ person: "p1", cursor: "6162|x" });
+    expect(f).toHaveBeenLastCalledWith("/assets/people/p1/photos?cursor=6162%7Cx", expect.anything());
+  });
+
+  it("sends a person scope to a bulk endpoint, and the people filter in search", async () => {
+    const f = mockFetchJson({ count: 4 });
+    await api.favoriteAssets({ scope: { person: "p1" }, except: ["x"] }, true);
+    const [url, init] = f.mock.calls.at(-1)! as unknown as [string, RequestInit];
+    expect(url).toBe("/assets/favorite");
+    expect(JSON.parse(init.body as string)).toEqual({ scope: { person: "p1" }, except: ["x"], favorite: true });
+    await api.search({ people: "a,b", place: "Lisbon" });
+    expect(f).toHaveBeenLastCalledWith("/assets/search?place=Lisbon&people=a%2Cb", expect.anything());
+    await api.search({ similar: "s1", people: "a" });
+    expect(f).toHaveBeenLastCalledWith("/assets/s1/similar?people=a", expect.anything());
+  });
+});

@@ -36,15 +36,15 @@ pub(super) struct TimelineQuery {
 #[derive(Serialize, FromRow)]
 pub(super) struct Day {
     /// `YYYY-MM-DD`, UTC.
-    day: String,
-    count: i64,
+    pub(super) day: String,
+    pub(super) count: i64,
 }
 
 #[derive(Serialize)]
 pub(super) struct TimelineResponse {
     /// Sum of the counts.
-    total: i64,
-    days: Vec<Day>,
+    pub(super) total: i64,
+    pub(super) days: Vec<Day>,
 }
 
 /// The day counts of one view: exactly the photos the same view's list returns (`visibility::view_sql`).

@@ -57,6 +57,16 @@ describe("search URL", () => {
     expect(paramsFromUrl(new URLSearchParams(urlFromParams(p)))).toEqual(p);
   });
 
+  it("round-trips the people filter, dropping bad ids", () => {
+    const a = "6f1c2b0e-0000-4000-8000-000000000001";
+    const b = "6f1c2b0e-0000-4000-8000-000000000002";
+    expect(paramsFromUrl(new URLSearchParams({ people: `${a},${b}` }))).toEqual({ people: `${a},${b}` });
+    expect(paramsFromUrl(new URLSearchParams({ people: `nope,${a},${a}` }))).toEqual({ people: a });
+    expect(paramsFromUrl(new URLSearchParams({ people: "nope" }))).toEqual({});
+    expect(urlFromParams({ people: `${a},${b}`, place: "Lisbon" })).toBe(`place=Lisbon&people=${encodeURIComponent(`${a},${b}`)}`);
+    expect(hasFilters({ people: a })).toBe(true);
+  });
+
   it("drops what the server would reject instead of sending it", () => {
     const p = paramsFromUrl(
       new URLSearchParams("q=%20%20&from=yesterday&to=2024-5-1&type=gif&album=nope&favorite=1&has_location=maybe&camera=%20"),
@@ -75,8 +85,10 @@ describe("search URL", () => {
 });
 
 describe("what the server may not read out of the query (skip)", () => {
-  it("keeps only date and place, once each, in a fixed order", () => {
+  it("keeps only date, place and people, once each, in a fixed order", () => {
     expect(parseSkip("place,date")).toBe("date,place");
+    expect(parseSkip("people, PLACE")).toBe("place,people");
+    expect(addSkip("date", "people")).toBe("date,people");
     expect(parseSkip("DATE, date,nonsense")).toBe("date");
     expect(parseSkip("nonsense")).toBeUndefined();
     expect(parseSkip(null)).toBeUndefined();
@@ -128,6 +140,19 @@ describe("filter chips", () => {
     expect(paramsFromUrl(new URLSearchParams(urlFromParams(p)))).toEqual(p);
     expect(chipsOf(p).map((c) => c.label)).toEqual(["Canon EOS R5", "RF 24-70mm F2.8 L"]);
     expect(chipsOf(p)[1]!.clears).toEqual(["lens"]);
+  });
+
+  it("names the people of the people filter, in one chip that clears it", () => {
+    const a = "6f1c2b0e-0000-4000-8000-000000000001";
+    const b = "6f1c2b0e-0000-4000-8000-000000000002";
+    const people = [
+      { id: a, name: "Person A" },
+      { id: b, name: "Person B" },
+    ];
+    const chips = chipsOf({ people: `${a},${b}`, place: "Lisbon" }, undefined, people);
+    expect(chips.map((c) => c.label)).toEqual(["Lisbon", "Person A and Person B"]);
+    expect(chips[1]!.clears).toEqual(["people"]);
+    expect(chipsOf({ people: a }, undefined, [])[0]!.label).toBe("Unknown person");
   });
 
   it("makes one chip per filter and says which parameters it clears", () => {

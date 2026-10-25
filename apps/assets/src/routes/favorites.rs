@@ -30,7 +30,7 @@ pub(super) async fn set(
     unlock: Unlock,
     Json(req): Json<FavoriteRequest>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.pick.validated(unlock)?;
+    let pick = req.pick.validated(unlock, s.faces_enabled)?;
     let mut tx = s.db.begin().await?;
     let ids: Vec<Uuid> = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();
     let done = sqlx::query(

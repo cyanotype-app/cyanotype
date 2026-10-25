@@ -4788,3 +4788,40 @@ a.tag-chip-name:hover {
     min-height: 2.25rem;
   }
 }
+/* The people filter of the search sheet and of a smart album's rule: a box to narrow, then a short list of checkboxes. */
+.sheet-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.people-picker {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.people-picker legend {
+  padding: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.people-picker .text-input {
+  width: 100%;
+  min-width: 0;
+}
+.people-picker-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.people-picker-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.people-picker .sheet-check input {
+  flex: none;
+}

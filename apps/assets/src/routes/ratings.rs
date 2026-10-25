@@ -37,7 +37,7 @@ pub(super) async fn set(
     if !(0..=5).contains(&req.rating) {
         return Err(ApiError::BadRequest("rating must be 0 to 5".into()));
     }
-    let pick = req.pick.validated(unlock)?;
+    let pick = req.pick.validated(unlock, s.faces_enabled)?;
     let mut tx = s.db.begin().await?;
     let ids: Vec<Uuid> = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();
     let done = sqlx::query(

@@ -3,9 +3,13 @@
 //! photos without the browser ever listing them.
 //!
 //! ```json
-//! {"scope": "library" | "favorites" | "archive" | "hidden" | "trash" | {"album": "<id>"} | {"search": {"from": "2024-01-01", ...}}
-//!           | {"trash_batch": "<rfc3339>"}, "except": ["<id>"]}
+//! {"scope": "library" | "favorites" | "archive" | "hidden" | "trash" | {"album": "<id>"} | {"person": "<id>"}
+//!           | {"search": {"from": "2024-01-01", ...}} | {"trash_batch": "<rfc3339>"}, "except": ["<id>"]}
 //! ```
+//!
+//! `person` is the photos of one of the owner's people, as the person's page lists them (live, archived ones too, hidden ones only
+//! with the Hidden view unlocked). People is off (`FACES_ENABLED`) or the id is not the owner's: `404`, as for an unknown album. A `search`
+//! scope with a `people` filter is refused while People is off, not read as "no filter" (a bulk trash must never widen).
 //!
 //! `search` takes the filters of `GET /assets/search` (never `q`: a ranked search selects what it shows, by id) and names the
 //! photos a filter-only search lists. A scope names the same photos the matching list shows: not trashed (or only trashed, for `trash`), hidden RAW
@@ -32,6 +36,8 @@ pub(super) enum Scope {
     Hidden,
     Trash,
     Album(Uuid),
+    /// The photos of one of the owner's people (`FACES_ENABLED`).
+    Person(Uuid),
     /// Boxed: the filters are much bigger than the other scopes.
     Search(Box<super::search::SearchQuery>),
     TrashBatch(#[serde(with = "time::serde::rfc3339")] OffsetDateTime),
@@ -51,12 +57,12 @@ pub(super) struct Selector {
 
 pub(super) enum Pick {
     Ids(Vec<Uuid>),
-    /// The scope, its `except` list, and whether this session has the Hidden view unlocked.
-    Scope(Scope, Vec<Uuid>, bool),
+    /// The scope, its `except` list, whether this session has the Hidden view unlocked, and whether People is on.
+    Scope(Scope, Vec<Uuid>, bool, bool),
 }
 
 impl Selector {
-    pub(super) fn validated(mut self, unlock: Unlock) -> ApiResult<Pick> {
+    pub(super) fn validated(mut self, unlock: Unlock, faces: bool) -> ApiResult<Pick> {
         match self.scope {
             None => {
                 if !self.except.is_empty() {
@@ -81,7 +87,16 @@ impl Selector {
                 if scope == Scope::Hidden {
                     unlock.require()?;
                 }
-                Ok(Pick::Scope(scope, self.except, unlock.0))
+                // With People off nothing about it exists: a scope that names a person, or filters by people, is a 404.
+                let people = match &scope {
+                    Scope::Person(_) => true,
+                    Scope::Search(q) => q.people.as_deref().is_some_and(|p| !p.trim().is_empty()),
+                    _ => false,
+                };
+                if people && !faces {
+                    return Err(ApiError::NotFound);
+                }
+                Ok(Pick::Scope(scope, self.except, unlock.0, faces))
             }
         }
     }
@@ -96,7 +111,9 @@ impl Pick {
     pub(super) async fn resolve(&self, tx: &mut sqlx::PgConnection, owner: Uuid) -> ApiResult<Option<Vec<Uuid>>> {
         match self {
             Pick::Ids(ids) => Ok(Some(ids.clone())),
-            Pick::Scope(scope, except, unlocked) => Ok(Some(resolve(tx, owner, scope, except, *unlocked).await?)),
+            Pick::Scope(scope, except, unlocked, faces) => {
+                Ok(Some(resolve(tx, owner, scope, except, *unlocked, *faces).await?))
+            }
         }
     }
 }
@@ -113,9 +130,13 @@ pub(super) async fn resolve(
     scope: &Scope,
     except: &[Uuid],
     unlocked: bool,
+    faces: bool,
 ) -> ApiResult<Vec<Uuid>> {
     if let Scope::Search(q) = scope {
-        return resolve_search(tx, owner, q, except).await;
+        return resolve_search(tx, owner, q, except, faces).await;
+    }
+    if let Scope::Person(person) = scope {
+        return resolve_person(tx, owner, *person, except, unlocked, faces).await;
     }
     // A smart album has no members: its photos are what its rules match now (never a hidden one: `push_where`).
     if let Scope::Album(album) = scope {
@@ -126,7 +147,7 @@ pub(super) async fn resolve(
                 .fetch_optional(&mut *tx)
                 .await?;
         if let Some(rules) = rules.ok_or(ApiError::NotFound)?.0 {
-            let filters = super::smart::Rules::from_json(&rules)?.filters();
+            let filters = super::smart::Rules::from_json(&rules)?.filters(faces);
             let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT a.id FROM assets a WHERE");
             filters.push_where(&mut qb, owner);
             qb.push(" AND a.id <> ALL(").push_bind(except.to_vec()).push(")");
@@ -189,7 +210,7 @@ pub(super) async fn resolve(
             None,
             Some(*at),
         ),
-        Scope::Search(_) => unreachable!("handled above"),
+        Scope::Search(_) | Scope::Person(_) => unreachable!("handled above"),
         Scope::Album(album) => {
             let owned: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM albums WHERE id = $1 AND owner_id = $2")
                 .bind(album)
@@ -225,17 +246,54 @@ fn hidden_clause(alias: &str, unlocked: bool) -> String {
     }
 }
 
+/// The photos of one of the owner's people, as the person's page lists them.
+async fn resolve_person(
+    tx: &mut sqlx::PgConnection,
+    owner: Uuid,
+    person: Uuid,
+    except: &[Uuid],
+    unlocked: bool,
+    faces: bool,
+) -> ApiResult<Vec<Uuid>> {
+    if !faces {
+        return Err(ApiError::NotFound);
+    }
+    let owned: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM people WHERE id = $1 AND owner_id = $2")
+        .bind(person)
+        .bind(owner)
+        .fetch_optional(&mut *tx)
+        .await?;
+    owned.ok_or(ApiError::NotFound)?;
+    Ok(sqlx::query_scalar(&format!(
+        "SELECT x.id FROM assets x
+         WHERE x.owner_id = $1 AND {} AND x.id <> ALL($2)
+           AND EXISTS (SELECT 1 FROM faces f WHERE f.asset_id = x.id AND f.person_id = $3 AND {})",
+        super::people::seen("x", "$4"),
+        super::people::SCANNED
+    ))
+    .bind(owner)
+    .bind(except)
+    .bind(person)
+    .bind(unlocked)
+    .fetch_all(&mut *tx)
+    .await?)
+}
+
 /// The photos a filter-only search lists (ownership, not trashed, not a hidden RAW, then the filters), as ids.
 async fn resolve_search(
     tx: &mut sqlx::PgConnection,
     owner: Uuid,
     q: &super::search::SearchQuery,
     except: &[Uuid],
+    faces: bool,
 ) -> ApiResult<Vec<Uuid>> {
     if q.q.as_deref().is_some_and(|t| !t.trim().is_empty()) {
         return Err(ApiError::BadRequest(
             "a text search selects the photos it shows: send their ids".into(),
         ));
+    }
+    if !faces && q.people.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+        return Err(ApiError::NotFound);
     }
     let filters = super::search::Filters::parse(q)?;
     let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT a.id FROM assets a WHERE");

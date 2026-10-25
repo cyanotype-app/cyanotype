@@ -64,3 +64,44 @@ export function cropStyle(box: FaceBox, natW: number, natH: number, margin = 1.7
   const pct = (v: number) => `${Math.round(v * 1e4) / 1e2}%`;
   return { width: pct(natW / side), left: pct(-x0 / side), top: pct(-y0 / side) };
 }
+
+/** Most people one search or smart-album rule can name together (the server's limit). */
+export const MAX_FILTER_PEOPLE = 10;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The ids in a `people` URL parameter: valid ids only, each once, at most [`MAX_FILTER_PEOPLE`]. Anything else is dropped. */
+export function peopleIdsOf(v: string | null | undefined): string[] {
+  const out: string[] = [];
+  for (const part of (v ?? "").split(",")) {
+    const id = part.trim().toLowerCase();
+    if (UUID.test(id) && !out.includes(id)) out.push(id);
+  }
+  return out.slice(0, MAX_FILTER_PEOPLE);
+}
+
+/** The people a filter can choose: named and not hidden, in the order given (most photos first). */
+export const filterablePeople = (people: readonly Person[]): Person[] => people.filter((p) => !p.hidden && (p.name?.trim() ?? "") !== "");
+
+/** The picker's list for what is typed: the chosen people first, then the others whose name contains it (case-insensitive). */
+export function matchingPeople(people: readonly Person[], typed: string, chosen: readonly string[]): Person[] {
+  const t = typed.trim().toLowerCase();
+  const hit = (p: Person) => t === "" || (p.name ?? "").toLowerCase().includes(t);
+  return [...people.filter((p) => chosen.includes(p.id)), ...people.filter((p) => !chosen.includes(p.id) && hit(p))];
+}
+
+/** "Person A", "Person A and Person B", "Person A, Person B and Person C": the chip of a people filter. A person who is gone says so. */
+export function peopleFilterLabel(ids: readonly string[], people: readonly Pick<Person, "id" | "name">[]): string {
+  const names = ids.map((id) => people.find((p) => p.id === id)?.name?.trim() || "Unknown person");
+  return names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+export const PEOPLE_FILTER_NOTE = "Photos with all of the chosen people in them.";
+export const NO_NAMED_PEOPLE = "Name a person on the People page to filter by them.";
+export const FIND_A_PERSON = "Find a person";
+
+/** The note under "Save as album": the title is what anyone the album is shared with sees. */
+export const SAVE_ALBUM_NOTE =
+  "A copy of these photos as they are now. The album has its own title, which people you share it with can see, so it does not start as a name.";
+
+/** "People: 2 people together" for a smart-album rule (names are not kept in the rule). */
+export const peopleRuleLabel = (ids: readonly string[]) => (ids.length === 1 ? "People: 1 person" : `People: ${ids.length} people together`);

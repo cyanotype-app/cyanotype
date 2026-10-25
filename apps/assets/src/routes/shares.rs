@@ -161,7 +161,7 @@ impl From<ShareRow> for Share {
     }
 }
 
-async fn fetch(db: &sqlx::PgPool, owner: Uuid, id: Option<Uuid>) -> ApiResult<Vec<Share>> {
+async fn fetch(db: &sqlx::PgPool, faces: bool, owner: Uuid, id: Option<Uuid>) -> ApiResult<Vec<Share>> {
     let rows: Vec<ShareRow> = sqlx::query_as(
         "SELECT s.id, s.kind, s.album_id, a.title AS album_title, s.title, s.token,
                 (s.password_hash IS NOT NULL) AS has_password, s.allow_download, s.include_originals,
@@ -190,7 +190,7 @@ async fn fetch(db: &sqlx::PgPool, owner: Uuid, id: Option<Uuid>) -> ApiResult<Ve
     for r in &mut rows {
         // A link to a smart album shows what the album's rules match now (visitors never see a hidden photo).
         if let Some(rules) = &r.album_rules {
-            let filters = super::smart::Rules::from_json(rules)?.filters();
+            let filters = super::smart::Rules::from_json(rules)?.filters(faces);
             let mut qb =
                 sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT count(*) FROM (SELECT 1 FROM assets a WHERE");
             filters.push_where(&mut qb, owner);
@@ -202,11 +202,13 @@ async fn fetch(db: &sqlx::PgPool, owner: Uuid, id: Option<Uuid>) -> ApiResult<Ve
 }
 
 async fn list(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<serde_json::Value>> {
-    Ok(Json(serde_json::json!({"items": fetch(&s.db, user.id, None).await?})))
+    Ok(Json(
+        serde_json::json!({"items": fetch(&s.db, s.faces_enabled, user.id, None).await?}),
+    ))
 }
 
 async fn get_one(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> ApiResult<Json<Share>> {
-    fetch(&s.db, user.id, Some(id))
+    fetch(&s.db, s.faces_enabled, user.id, Some(id))
         .await?
         .pop()
         .map(Json)
@@ -267,7 +269,7 @@ async fn create(
                 return Err(ApiError::BadRequest("hidden photos cannot be shared".into()));
             }
             let mut conn = s.db.acquire().await?;
-            let ids = scope::resolve(&mut conn, user.id, &scope, &req.except, false).await?;
+            let ids = scope::resolve(&mut conn, user.id, &scope, &req.except, false, s.faces_enabled).await?;
             if ids.is_empty() {
                 return Err(ApiError::BadRequest("choose at least one photo to share".into()));
             }
@@ -327,7 +329,10 @@ async fn create(
     }
     tx.commit().await?;
     tracing::info!(share_id = %id, kind, has_password = password_hash.is_some(), allow_download, include_originals, "share created");
-    let share = fetch(&s.db, user.id, Some(id)).await?.pop().ok_or(ApiError::NotFound)?;
+    let share = fetch(&s.db, s.faces_enabled, user.id, Some(id))
+        .await?
+        .pop()
+        .ok_or(ApiError::NotFound)?;
     Ok((StatusCode::CREATED, Json(share)))
 }
 
@@ -410,7 +415,10 @@ async fn update(
     }
     tx.commit().await?;
     tracing::info!(share_id = %id, "share updated");
-    let share = fetch(&s.db, user.id, Some(id)).await?.pop().ok_or(ApiError::NotFound)?;
+    let share = fetch(&s.db, s.faces_enabled, user.id, Some(id))
+        .await?
+        .pop()
+        .ok_or(ApiError::NotFound)?;
     Ok(Json(share))
 }
 

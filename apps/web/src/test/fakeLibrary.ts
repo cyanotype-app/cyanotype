@@ -23,7 +23,7 @@ export function fakeLibrary(initial: AssetListItem[]): FakeLibrary {
     lib.photos
       .filter((p) => (v.hidden ? p.hidden === true : p.hidden !== true))
       .filter((p) => !v.favorite || p.favorite === true)
-      .filter((p) => (v.archived ? p.archived === true : v.favorite || v.hidden || p.archived !== true))
+      .filter((p) => (v.archived ? p.archived === true : v.favorite || v.hidden || v.person !== undefined || p.archived !== true))
       .sort(newestFirst); // (the fake has no upload times: both orders use sort_time)
 
   lib.timeline = vi.spyOn(api, "timeline").mockImplementation(async (opts = {}) => {
@@ -64,6 +64,8 @@ export function fakeLibrary(initial: AssetListItem[]): FakeLibrary {
           ? from.filter((p) => p.archived === true && p.hidden !== true)
           : s === "hidden"
             ? from.filter((p) => p.hidden === true)
+            : typeof s === "object" && "person" in s
+              ? from.filter((p) => p.hidden !== true) // (every photo of the fake belongs to the person under test)
             : s === "library"
               ? from.filter((p) => p.hidden !== true && p.archived !== true)
               : typeof s === "object" && "trash_batch" in s

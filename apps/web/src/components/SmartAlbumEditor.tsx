@@ -1,6 +1,9 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { api, type Facets, type SmartPreview, type SmartRule, type SmartRules } from "../api";
-import { MAX_RULES, NO_TEXT_QUERY_NOTE, RULE_FIELDS, blankRule, cleanRules, rulesProblem, smartCount, type RuleField } from "../smartText";
+import { api, type Facets, type Person, type SmartPreview, type SmartRule, type SmartRules } from "../api";
+import { MAX_FILTER_PEOPLE, NO_NAMED_PEOPLE, filterablePeople } from "../peopleText";
+import { MAX_RULES, NO_TEXT_QUERY_NOTE, RULE_FIELDS, blankRule, cleanRules, ruleFieldsFor, rulesProblem, smartCount, type RuleField } from "../smartText";
+import { usePeopleEnabled } from "../usePeople";
+import { PeoplePicker } from "./PeoplePicker";
 import { TagInput } from "./TagInput";
 
 interface Props {
@@ -17,9 +20,12 @@ interface Props {
   preview?: (rules: SmartRules, signal: AbortSignal) => Promise<SmartPreview>;
   /** The library's cameras, lenses and places, for suggestions. */
   loadFacets?: () => Promise<Facets>;
+  /** The owner's people, for the People rule (asked only while People is on). */
+  loadPeople?: () => Promise<Person[]>;
 }
 
 const defaultPreview = (rules: SmartRules, signal: AbortSignal) => api.previewSmartAlbum(rules, signal);
+const defaultPeople = () => api.listPeople().then((r) => r.items);
 
 /**
  * The editor of a smart album: a title, "match all / any" over a list of rules, whether archived photos are in, and a live preview
@@ -36,11 +42,14 @@ export function SmartAlbumEditor({
   onCancel,
   preview = defaultPreview,
   loadFacets = api.searchFacets,
+  loadPeople = defaultPeople,
 }: Props) {
   const id = useId();
   const [title, setTitle] = useState(initialTitle);
   const [rules, setRules] = useState<SmartRules>(initialRules);
   const [facets, setFacets] = useState<Facets | null>(null);
+  const peopleOn = usePeopleEnabled() === true;
+  const [people, setPeople] = useState<Person[] | null>(null);
   const [shown, setShown] = useState<SmartPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [add, setAdd] = useState<RuleField>("place");
@@ -56,6 +65,17 @@ export function SmartAlbumEditor({
       live = false;
     };
   }, [loadFacets]);
+  useEffect(() => {
+    if (!peopleOn) return;
+    let live = true;
+    loadPeople().then(
+      (p) => live && setPeople(filterablePeople(p)),
+      () => live && setPeople([]),
+    );
+    return () => {
+      live = false;
+    };
+  }, [peopleOn, loadPeople]);
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
     ref.current?.querySelector<HTMLElement>("input")?.focus();
@@ -125,7 +145,7 @@ export function SmartAlbumEditor({
         <ul className="smart-rules" aria-label="Rules">
           {rules.rules.map((r, i) => (
             <li key={i} className="smart-rule">
-              <RuleRow rule={r} facets={facets} onChange={(n) => setRule(i, n)} disabled={busy} index={i} />
+              <RuleRow rule={r} facets={facets} people={people} onChange={(n) => setRule(i, n)} disabled={busy} index={i} />
               <button
                 type="button"
                 className="btn btn-quiet smart-rule-x"
@@ -143,7 +163,7 @@ export function SmartAlbumEditor({
             Kind of rule to add
           </label>
           <select id={`${id}-add`} className="text-input" value={add} onChange={(e) => setAdd(e.target.value as RuleField)} disabled={busy}>
-            {RULE_FIELDS.map((f) => (
+            {ruleFieldsFor(peopleOn).map((f) => (
               <option key={f.field} value={f.field}>
                 {f.label}
               </option>
@@ -208,7 +228,21 @@ export function SmartAlbumEditor({
   );
 }
 
-function RuleRow({ rule, facets, onChange, disabled, index }: { rule: SmartRule; facets: Facets | null; onChange: (r: SmartRule) => void; disabled: boolean; index: number }) {
+function RuleRow({
+  rule,
+  facets,
+  people,
+  onChange,
+  disabled,
+  index,
+}: {
+  rule: SmartRule;
+  facets: Facets | null;
+  people: Person[] | null;
+  onChange: (r: SmartRule) => void;
+  disabled: boolean;
+  index: number;
+}) {
   const id = useId();
   const n = index + 1;
   const label = RULE_FIELDS.find((f) => f.field === rule.field)?.label ?? rule.field;
@@ -329,6 +363,26 @@ function RuleRow({ rule, facets, onChange, disabled, index }: { rule: SmartRule;
             {label}
           </label>
           <input id={`${id}-v`} className="text-input" value={rule.text} maxLength={200} onChange={(e) => onChange({ ...rule, text: e.target.value })} disabled={disabled} />
+        </div>
+      );
+    case "people":
+      return (
+        <div className="smart-rule-body smart-rule-tags">
+          {people !== null && people.length === 0 && rule.ids.length === 0 ? (
+            <>
+              <span className="smart-rule-label">{label}</span>
+              <span className="muted small">{NO_NAMED_PEOPLE}</span>
+            </>
+          ) : (
+            <PeoplePicker
+              label={`People together (rule ${n})`}
+              people={people ?? []}
+              value={rule.ids}
+              max={MAX_FILTER_PEOPLE}
+              onChange={(ids) => onChange({ ...rule, ids })}
+              disabled={disabled}
+            />
+          )}
         </div>
       );
   }

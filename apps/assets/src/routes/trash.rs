@@ -141,7 +141,7 @@ pub(super) async fn trash(
     unlock: Unlock,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated(unlock)?;
+    let pick = req.validated(unlock, s.faces_enabled)?;
     let (applied, now) = apply_pick(&s.db, user.id, Op::Trash, &pick).await?;
     let batch = (pick.is_scope() && applied.photos > 0).then_some(now);
     Ok(Json(Count {
@@ -156,7 +156,7 @@ pub(super) async fn restore(
     unlock: Unlock,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated(unlock)?;
+    let pick = req.validated(unlock, s.faces_enabled)?;
     let (applied, _) = apply_pick(&s.db, user.id, Op::Restore, &pick).await?;
     // Files that were trashed while their counterpart was uploaded were not paired then; they can be now.
     // Pairing is per file, so only look at files that have a live, unpaired namesake to pair with (a restore of
@@ -186,7 +186,7 @@ pub(super) async fn purge(
     unlock: Unlock,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated(unlock)?;
+    let pick = req.validated(unlock, s.faces_enabled)?;
     let count = apply_pick(&s.db, user.id, Op::Purge, &pick).await?.0.photos;
     if count > 0 {
         s.purge_wake.notify_one();

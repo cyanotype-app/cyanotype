@@ -1,7 +1,8 @@
 // People at phone and desktop widths: the way in (More menu), the People page with long and missing names and a hidden section, a
-// person's page with suggestions, the inline rename, selection and its dialogs, and the viewer's People chips and "Who is this?"
-// dialog. Set SHOT_DIR to save the screenshots.
+// person's page (a timeline, with suggestions), the inline rename, selection of the whole person and its dialogs, "Save as album", and the
+// viewer's People chips and "Who is this?" dialog. Set SHOT_DIR to save the screenshots.
 import { expect, test } from "@playwright/test";
+import { pageOf, timelineOf, type FakeAsset } from "./fakeLibrary";
 import { json, makeCheck, RUNS, setupApp, shotPrefix, viewportOf, type Handler } from "./kit";
 
 const LONG = "A really quite long name with_an_unbroken_run_of_characters_that_could_overflow_" + "x".repeat(10);
@@ -33,6 +34,8 @@ for (const { width, scheme } of RUNS) {
       const problems: string[] = [];
       const check = makeCheck(page, shotPrefix("people", width, scheme), problems);
       const calls: { method: string; path: string; body: unknown }[] = [];
+      // The person's photos: the first twelve of the library (a timeline of their own, set once the library exists).
+      let mine: FakeAsset[] = [];
       const handlers: Handler[] = [
         (route, url, method) => {
           const p = url.pathname;
@@ -61,8 +64,23 @@ for (const { width, scheme } of RUNS) {
             );
             return true;
           }
+          if (p === "/assets/people/p1/timeline") {
+            void route.fulfill(json(timelineOf(mine, false)));
+            return true;
+          }
           if (p === "/assets/people/p1/photos") {
-            void route.fulfill(json({ items: [], next_cursor: null, next_before: null }));
+            const page = pageOf(mine, url.searchParams);
+            void route.fulfill(json({ ...page, items: page.items.map((a) => ({ ...a, rating: 0, archived: false, hidden: false, edited: false })) }));
+            return true;
+          }
+          if (p === "/assets/albums" && method === "POST") {
+            calls.push({ method, path: p, body: route.request().postDataJSON() });
+            void route.fulfill(json({ id: "al1", title: "Holiday", description: null, photo_count: 0, cover: null, first_at: null, last_at: null, created_at: "", updated_at: "" }, 201));
+            return true;
+          }
+          if (p === "/assets/albums/al1/assets" && method === "POST") {
+            calls.push({ method, path: p, body: route.request().postDataJSON() });
+            void route.fulfill(json({ count: 12345 }));
             return true;
           }
           if (p === "/assets/people/p1/faces/remove") {
@@ -90,10 +108,7 @@ for (const { width, scheme } of RUNS) {
         },
       ];
       const assets = await setupApp(page, { handlers });
-      // The person's photos: the first six of the library (set after setupApp so its handler order is kept: ours answer first).
-      await page.route("**/assets/people/p1/photos*", (route) =>
-        route.fulfill(json({ items: assets.slice(0, 6).map((a) => ({ ...a, rating: 0, archived: false, hidden: false, edited: false })), next_cursor: null, next_before: null })),
-      );
+      mine = assets.slice(0, 12);
       await page.route(/\/assets\/a2$/, (route) =>
         route.fulfill(json({ ...assets[2], albums: [], original_url: assets[2]!.thumb_url, preview_url: assets[2]!.thumb_url, tags: [] })),
       );
@@ -119,11 +134,12 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("heading", { name: LONG, level: 1 }).waitFor();
       await page.getByRole("region", { name: "Suggestions" }).waitFor();
       await page.getByRole("button", { name: /Open IMG_00000/ }).waitFor();
+      await page.getByRole("heading", { level: 2, name: /2026/ }).first().waitFor();
       await check("person");
       await page.getByRole("button", { name: "Rename" }).click();
       await page.getByLabel("Name", { exact: true }).fill("Person One");
       await check("person-rename");
-      await page.getByRole("button", { name: "Save" }).click();
+      await page.getByRole("button", { name: "Save", exact: true }).click();
       await page.getByRole("heading", { name: "Person One", level: 1 }).waitFor();
       expect(calls.at(-1)?.body).toEqual({ name: "Person One" });
 
@@ -139,6 +155,22 @@ for (const { width, scheme } of RUNS) {
       await page.getByText(/^Took 2 photos out of/).waitFor();
       expect(calls.at(-1)?.body).toEqual({ asset_ids: ["a0", "a1"] });
       await check("person-removed-toast");
+
+      // The whole person: the selection bar with every action, and "Save as album" through the scope.
+      await page.getByRole("button", { name: "Select", exact: true }).click();
+      await page.getByRole("button", { name: "Select all" }).click();
+      await page.getByText("12 selected").waitFor();
+      await check("person-select-all");
+      await page.getByRole("toolbar", { name: "Selection" }).getByRole("button", { name: "Save as album" }).click();
+      const save = page.getByRole("dialog", { name: "Save 12 photos as an album" });
+      await save.waitFor();
+      await check("person-save-album");
+      await save.getByLabel("Album title").fill("Holiday");
+      await save.getByRole("button", { name: "Create album" }).click();
+      await page.getByText("Created Holiday with 12,345 photos").waitFor();
+      expect(calls.at(-1)).toEqual({ method: "POST", path: "/assets/albums/al1/assets", body: { scope: { person: "p1" }, except: [] } });
+      await check("person-saved-toast");
+      await page.getByRole("button", { name: "Done" }).click();
 
       // Merge and delete dialogs.
       await page.getByRole("button", { name: "Merge into…" }).click();

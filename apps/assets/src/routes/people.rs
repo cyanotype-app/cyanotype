@@ -11,7 +11,10 @@
 //! - `PATCH /assets/people/{id} {name?, hidden?, cover_face_id?}`: rename (null or blank clears), hide or show, choose the cover.
 //!   `DELETE /assets/people/{id}`: the person goes, its faces are unassigned (they may be grouped again, into a new person).
 //! - `POST /assets/people/{id}/merge {into}`: all the faces go to the other person, which keeps its name unless it has none.
-//! - `GET /assets/people/{id}/photos?limit&cursor`: the person's photos, same item shape, ordering and keyset pagination as `GET /assets`.
+//! - `GET /assets/people/{id}/photos?limit&cursor|before`: the person's photos, same item shape, ordering and keyset pagination as `GET /assets`.
+//!   `GET /assets/people/{id}/timeline`: `{total, days: [{day, count}]}`, the same photos per day as `GET /assets/timeline` counts them, so
+//!   the person's page is laid out and scrubbed like the library. Photos are in the person's page when they are live, archived ones too.
+//!   A `{"person": "<id>"}` scope (`scope.rs`) names the same photos for the bulk actions.
 //! - `POST /assets/people/{id}/faces/remove {asset_ids?, face_ids?}`: "not this person": the person's faces in those photos (or those faces)
 //!   become unassigned, and a rejection is written so the worker never puts them back and they are never suggested. `{removed}`.
 //! - `GET /assets/people/{id}/suggestions?limit`: "Is this X?": unassigned faces that look like the person, best first, each
@@ -34,7 +37,11 @@ use serde_json::{Value, json};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use super::{ListQuery, ListResponse, ListRow, decode_cursor, encode_cursor, list_items, trash::MAX_IDS};
+use super::{
+    ListQuery, ListResponse, ListRow, decode_cursor, encode_cursor, list_items,
+    timeline::{Day, TimelineResponse},
+    trash::MAX_IDS,
+};
 use crate::AppState;
 use cyanotype_service::{ApiError, ApiResult, AuthUser, Unlock};
 
@@ -47,9 +54,10 @@ const MAX_SUGGESTIONS: i64 = 50;
 const SORT: &str = "coalesce(x.taken_at, x.file_modified_at, x.created_at)";
 
 /// A face counts when its photo has a scan by the face's model (after a rotate or crop the old faces wait, unread, for the new scan).
-const SCANNED: &str = "EXISTS (SELECT 1 FROM face_scans s WHERE s.asset_id = f.asset_id AND s.model = f.model)";
+pub(super) const SCANNED: &str =
+    "EXISTS (SELECT 1 FROM face_scans s WHERE s.asset_id = f.asset_id AND s.model = f.model)";
 /// A photo this session may see: live, not a RAW half, not hidden unless the Hidden view is unlocked (`$unlock` is the parameter).
-fn seen(alias: &str, unlock: &str) -> String {
+pub(super) fn seen(alias: &str, unlock: &str) -> String {
     format!(
         "{alias}.deleted_at IS NULL AND {alias}.purging_at IS NULL AND {alias}.primary_id IS NULL AND (NOT {alias}.hidden OR {unlock})"
     )
@@ -401,9 +409,10 @@ pub(super) async fn photos(
         return Err(ApiError::NotFound);
     }
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
-    let after = match &q.cursor {
-        Some(c) => Some(decode_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
-        None => None,
+    let after = match (&q.cursor, q.before) {
+        (Some(c), _) => Some(decode_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
+        (None, Some(t)) => Some((t, Uuid::nil())),
+        (None, None) => None,
     };
     let select = format!(
         "SELECT x.id, x.original_name, x.content_type, x.size_bytes, x.width, x.height, {SORT} AS sort_time, x.favorite, x.rating, x.archived, x.hidden, (x.recipe IS NOT NULL) AS edited, x.thumbhash
@@ -445,6 +454,33 @@ pub(super) async fn photos(
         next_cursor,
         next_before,
     }))
+}
+
+pub(super) async fn timeline(
+    State(s): State<AppState>,
+    user: AuthUser,
+    unlock: Unlock,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<TimelineResponse>> {
+    on(&s)?;
+    if load(&s, user.id, unlock.0, Some(id)).await?.is_empty() {
+        return Err(ApiError::NotFound);
+    }
+    let days: Vec<Day> = sqlx::query_as(&format!(
+        "SELECT to_char(d, 'YYYY-MM-DD') AS day, count(*) AS count FROM (
+         SELECT ({SORT} AT TIME ZONE 'UTC')::date AS d FROM assets x
+         WHERE x.owner_id = $2 AND {}
+           AND EXISTS (SELECT 1 FROM faces f WHERE f.asset_id = x.id AND f.person_id = $1 AND {SCANNED})) t
+         GROUP BY d ORDER BY d DESC",
+        seen("x", "$3")
+    ))
+    .bind(id)
+    .bind(user.id)
+    .bind(unlock.0)
+    .fetch_all(&s.db)
+    .await?;
+    let total = days.iter().map(|d| d.count).sum();
+    Ok(Json(TimelineResponse { total, days }))
 }
 
 #[derive(Deserialize)]

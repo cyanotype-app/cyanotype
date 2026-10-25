@@ -9,6 +9,7 @@
 //!            {"field": "favorite", "value": true},
 //!            {"field": "rating", "min": 4},
 //!            {"field": "tags", "names": ["beach", "sunset"], "mode": "all" | "any"},
+//!            {"field": "people", "ids": ["<person id>"]},
 //!            {"field": "has_location" | "has_text", "value": true | false},
 //!            {"field": "caption", "text": "birthday"}]}
 //! ```
@@ -17,11 +18,17 @@
 //! by default, as in a search), so "exclude" never turns into "or not archived". A text query (a semantic search such as "dog on the
 //! beach") is deliberately **not** a rule: its ranking depends on the model and on the library, so the album's contents would
 //! change without a photo changing. The caption rule is a plain substring, which is stable.
+//!
+//! The **people** rule is "all of these people are in the photo" (their ids, the owner's own: the album is checked when it is saved, an
+//! id that is not the owner's is a `404`). It needs People (`FACES_ENABLED`): saving one while it is off is a `404`, and a saved rule
+//! matches no photo while it is off. The album keeps only ids, never a name, so renaming a person changes nothing; a deleted person
+//! leaves the rule matching nothing, and a merged one is not followed (edit the rule).
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::Date;
+use uuid::Uuid;
 
-use super::search::{FileType, Filters};
+use super::search::{FileType, Filters, MAX_PEOPLE_FILTERS};
 use cyanotype_service::{ApiError, ApiResult};
 
 /// Most rules in one album.
@@ -94,6 +101,10 @@ pub(super) enum Rule {
     },
     Caption {
         text: String,
+    },
+    /// Every one of these people is in the photo.
+    People {
+        ids: Vec<Uuid>,
     },
 }
 
@@ -227,13 +238,38 @@ impl Rules {
                 }
                 Rule::HasLocation { .. } | Rule::HasText { .. } => {}
                 Rule::Caption { text: t } => *t = text("caption", t)?,
+                Rule::People { ids } => {
+                    let mut out: Vec<Uuid> = Vec::new();
+                    for id in ids.iter() {
+                        if !out.contains(id) {
+                            out.push(*id);
+                        }
+                    }
+                    if out.is_empty() || out.len() > MAX_PEOPLE_FILTERS {
+                        return Err(bad(format!("the people rule needs 1 to {MAX_PEOPLE_FILTERS} people")));
+                    }
+                    *ids = out;
+                }
             }
         }
         Ok(self)
     }
 
-    /// The filters of the album: one `Filters` per rule, joined as `match` says, with the archived switch.
-    pub(super) fn filters(&self) -> Filters {
+    /// The people the rules name (to check that they are the owner's, and that People is on).
+    pub(super) fn people(&self) -> Vec<Uuid> {
+        self.rules
+            .iter()
+            .filter_map(|r| match r {
+                Rule::People { ids } => Some(ids.iter().copied()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// The filters of the album: one `Filters` per rule, joined as `match` says, with the archived switch. While People is off
+    /// (`faces`) a people rule matches nothing.
+    pub(super) fn filters(&self, faces: bool) -> Filters {
         let members = self
             .rules
             .iter()
@@ -265,6 +301,8 @@ impl Rules {
                     Rule::HasLocation { value } => f.with_has_location(*value),
                     Rule::HasText { value } => f.with_has_text(*value),
                     Rule::Caption { text } => f.with_caption(text.clone()),
+                    Rule::People { .. } if !faces => f.nothing(),
+                    Rule::People { ids } => f.with_people(ids.clone()),
                 }
             })
             .collect();

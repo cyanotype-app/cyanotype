@@ -1,6 +1,7 @@
 // Pure helpers of the search UI: the URL <-> filters mapping, the labels of the filter chips, the indexing message and
 // the recent-searches list. Kept apart from the components so the rules are unit tested.
 import type { Processing, SearchParams } from "./api";
+import { peopleFilterLabel, peopleIdsOf } from "./peopleText";
 import { ratingFilterLabel } from "./ratingText";
 import { tagFilterLabel, tagListOf } from "./tagText";
 
@@ -43,6 +44,8 @@ export function paramsFromUrl(search: URLSearchParams): SearchParams {
   if (lens) out.lens = lens;
   const place = search.get("place")?.trim();
   if (place) out.place = place;
+  const people = peopleIdsOf(search.get("people"));
+  if (people.length > 0) out.people = people.join(",");
   const type = search.get("type");
   if (type && (TYPES as readonly string[]).includes(type)) out.type = type as SearchParams["type"];
   const album = search.get("album");
@@ -65,15 +68,15 @@ export function paramsFromUrl(search: URLSearchParams): SearchParams {
   return out;
 }
 
-/** `skip=place,date,x` to the canonical `date,place` (only the two kinds the server knows, each once), or undefined. */
+/** `skip=place,date,x` to the canonical `date,place,people` (only the kinds the server knows, each once), or undefined. */
 export function parseSkip(v: string | null): string | undefined {
   const kinds = new Set((v ?? "").split(",").map((k) => k.trim().toLowerCase()));
-  const out = (["date", "place"] as const).filter((k) => kinds.has(k));
+  const out = (["date", "place", "people"] as const).filter((k) => kinds.has(k));
   return out.length ? out.join(",") : undefined;
 }
 
 /** `skip` with one more kind turned off. */
-export const addSkip = (skip: string | undefined, kind: "date" | "place") => parseSkip(`${skip ?? ""},${kind}`);
+export const addSkip = (skip: string | undefined, kind: "date" | "place" | "people") => parseSkip(`${skip ?? ""},${kind}`);
 
 /** Params to the `/search` URL's query string (the same names as the API). */
 export function urlFromParams(p: SearchParams): string {
@@ -89,6 +92,7 @@ export function urlFromParams(p: SearchParams): string {
   if (p.camera) q.set("camera", p.camera);
   if (p.lens) q.set("lens", p.lens);
   if (p.place) q.set("place", p.place);
+  if (p.people) q.set("people", p.people);
   if (p.type) q.set("type", p.type);
   if (p.album) q.set("album", p.album);
   if (p.has_location !== undefined) q.set("has_location", String(p.has_location));
@@ -132,8 +136,11 @@ export function dateRangeLabel(from?: string, to?: string): string {
   return "";
 }
 
-/** The chips under the search bar, one per active filter. `albumTitle` names the album filter (an id alone is no label). */
-export function chipsOf(p: SearchParams, albumTitle?: string): Chip[] {
+/**
+ * The chips under the search bar, one per active filter. `albumTitle` names the album filter (an id alone is no label), and `people`
+ * the people of the people filter (the owner's list; an id that is not in it reads "Unknown person").
+ */
+export function chipsOf(p: SearchParams, albumTitle?: string, people: readonly { id: string; name: string | null }[] = []): Chip[] {
   const chips: Chip[] = [];
   if (p.from || p.to) chips.push({ clears: ["from", "to"], label: dateRangeLabel(p.from, p.to) });
   if (p.favorite) chips.push({ clears: ["favorite"], label: "Favorites" });
@@ -143,6 +150,7 @@ export function chipsOf(p: SearchParams, albumTitle?: string): Chip[] {
   if (p.camera) chips.push({ clears: ["camera"], label: p.camera });
   if (p.lens) chips.push({ clears: ["lens"], label: p.lens });
   if (p.place) chips.push({ clears: ["place"], label: p.place });
+  if (p.people) chips.push({ clears: ["people"], label: peopleFilterLabel(peopleIdsOf(p.people), people) });
   if (p.type) chips.push({ clears: ["type"], label: TYPE_LABEL[p.type] });
   if (p.has_location !== undefined) chips.push({ clears: ["has_location"], label: p.has_location ? "Has location" : "No location" });
   if (p.has_text !== undefined) chips.push({ clears: ["has_text"], label: p.has_text ? "Has text" : "No text" });

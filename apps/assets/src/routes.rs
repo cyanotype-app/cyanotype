@@ -165,6 +165,7 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         )
         .route("/assets/people/{id}/merge", post(people::merge))
         .route("/assets/people/{id}/photos", get(people::photos))
+        .route("/assets/people/{id}/timeline", get(people::timeline))
         .route("/assets/people/{id}/faces/remove", post(people::remove_faces))
         .route("/assets/people/{id}/suggestions", get(people::suggestions))
         .route("/assets/faces/{id}/assign", post(people::assign))
