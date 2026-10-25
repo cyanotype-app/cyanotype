@@ -147,9 +147,10 @@ pub(super) async fn run(s: &AppState, owner: Uuid, id: Uuid, q: &SimilarQuery) -
 
     // The source must be a photo of the caller's that is listed (not trashed, not the hidden half of a pair). Its burst, if
     // it is in one, is left out of the list with it: the shots of one moment are not "more like this".
-    let source: Option<(Option<Uuid>,)> = sqlx::query_as(
-        "SELECT burst_id FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL AND primary_id IS NULL",
-    )
+    let source: Option<(Option<Uuid>,)> = sqlx::query_as(&format!(
+        "SELECT {} FROM assets a WHERE a.id = $1 AND a.owner_id = $2 AND a.deleted_at IS NULL AND a.primary_id IS NULL",
+        super::stacks::key_sql("a")
+    ))
     .bind(id)
     .bind(owner)
     .fetch_optional(&s.db)

@@ -165,7 +165,8 @@ pub(super) async fn get(
     let r: Row = sqlx::query_as(
         "SELECT original_name, content_type, size_bytes, width, height, taken_at, file_modified_at, created_at,
                 latitude, longitude, camera_make, camera_model, camera_label, lens_model, exif, file_ext,
-                place_city, place_region, place_country, place_country_code, burst_id,
+                place_city, place_region, place_country, place_country_code,
+                coalesce(stack_id, CASE WHEN stack_unlinked THEN NULL ELSE burst_id END) AS burst_id,
                 caption, date_edited, taken_at_exif, taken_offset_edit, location_edited, latitude_exif, longitude_exif,
                 recipe, width_orig, height_orig, edited_copy_at
          FROM assets WHERE id = $1 AND owner_id = $2 AND deleted_at IS NULL AND (NOT hidden OR $3)",
@@ -228,11 +229,12 @@ pub(super) async fn get(
         Some(b) => {
             // Members are the owner's visible photos of the group, in capture order (the worker's grouping rules:
             // docs/library.md, "Bursts").
-            let (position, size): (i64, i64) = sqlx::query_as(
+            let (position, size): (i64, i64) = sqlx::query_as(&format!(
                 "SELECT count(*) FILTER (WHERE m.taken_at < $4 OR (m.taken_at = $4 AND m.id <= $3)), count(*)
-                 FROM assets m WHERE m.owner_id = $2 AND m.burst_id = $1 AND m.deleted_at IS NULL AND m.primary_id IS NULL
+                 FROM assets m WHERE m.owner_id = $2 AND {} AND m.deleted_at IS NULL AND m.primary_id IS NULL
                    AND NOT m.hidden",
-            )
+                super::stacks::in_stack_sql("m", "$1")
+            ))
             .bind(b)
             .bind(user.id)
             .bind(id)

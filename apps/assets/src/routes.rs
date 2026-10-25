@@ -83,6 +83,9 @@ mod slideshow_tests;
 mod smart;
 #[cfg(test)]
 mod smart_tests;
+mod stacks;
+#[cfg(test)]
+mod stacks_tests;
 mod tags;
 #[cfg(test)]
 mod tags_tests;
@@ -230,6 +233,10 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/albums/{id}/zip", get(zip::album))
         .route("/assets/zip", post(zip::selection))
         .route("/assets/zip/plan", post(zip::plan_selection))
+        .route("/assets/stacks", post(stacks::create))
+        .route("/assets/{id}/stack", get(stacks::get).delete(stacks::dissolve))
+        .route("/assets/{id}/stack/cover", post(stacks::set_cover))
+        .route("/assets/{id}/stack/remove", post(stacks::remove))
         .route("/assets/{id}/unpair", post(unpair))
         .route("/assets/{id}/similar", get(similar::similar))
         .route("/assets/{id}/details", get(details::get))
@@ -1034,6 +1041,9 @@ struct ListRow {
     #[sqlx(flatten)]
     summary: AssetSummary,
     thumbhash: Option<Vec<u8>>,
+    /// The stack the photo is in (`stacks.rs`); only the timeline's list selects it.
+    #[sqlx(default)]
+    stack_key: Option<Uuid>,
 }
 
 /// A list entry: the summary plus what the grid needs to draw a tile without a request per item.
@@ -1047,6 +1057,9 @@ struct ListItem {
     thumb_url: Option<String>,
     /// The RAW file stacked behind this photo (empty for a single file).
     paired: Vec<PairedFile>,
+    /// The stack the photo is in, when it is in one of two or more and the list is the timeline (`stacks.rs`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stack: Option<stacks::StackInfo>,
 }
 
 /// The other file of a RAW + JPEG pair, shown with its primary.
@@ -1134,6 +1147,9 @@ struct ListQuery {
     sort: visibility::Sort,
     /// `west,south,east,north`: only geotagged photos inside this box (the map's viewport list; see `map`).
     bbox: Option<String>,
+    /// Stacks in the timeline (`stacks.rs`): `collapsed` lists one tile per stack, `expanded` every photo. Absent: the user's
+    /// setting (`GET /assets/prefs`, collapsed by default). Favorites, the archive, Hidden and the map never collapse.
+    stacks: Option<visibility::StacksMode>,
 }
 
 #[derive(Serialize)]
@@ -1174,9 +1190,10 @@ fn decode_cursor(c: &str) -> Option<(OffsetDateTime, Uuid)> {
 fn list_select(sort: visibility::Sort) -> String {
     format!(
         "SELECT id, original_name, content_type, size_bytes, width, height,
-        {} AS sort_time, favorite, rating, archived, hidden, (recipe IS NOT NULL) AS edited, thumbhash
+        {} AS sort_time, favorite, rating, archived, hidden, (recipe IS NOT NULL) AS edited, thumbhash, {} AS stack_key
  FROM assets WHERE owner_id = $1 AND deleted_at IS NULL AND primary_id IS NULL",
-        sort.expr()
+        sort.expr(),
+        stacks::key_sql("assets")
     )
 }
 
@@ -1197,11 +1214,14 @@ async fn list(
     // Row comparison against the (owner_id, sort expression DESC, id DESC) index; two statements so the planner
     // never has to guess around an optional predicate.
     let expr = q.sort.expr();
-    let mut select = format!(
-        "{}{}",
-        list_select(q.sort),
-        visibility::view_sql(q.favorite, q.archived, q.hidden, unlock)?
-    );
+    let view = visibility::view_sql(q.favorite, q.archived, q.hidden, unlock)?;
+    let mut select = format!("{}{view}", list_select(q.sort));
+    // The timeline (and Recently added) shows stacks; the other lists never collapse them and carry no stack info.
+    let timeline = !q.favorite && !q.archived && !q.hidden && q.bbox.is_none();
+    let collapsed = timeline && visibility::stacks_collapsed(&s.db, user.id, q.stacks).await?;
+    if collapsed {
+        select.push_str(&stacks::collapse_sql(&view));
+    }
     if let Some(b) = &q.bbox {
         select.push_str(&map::Bbox::parse(b)?.sql());
     }
@@ -1232,7 +1252,14 @@ async fn list(
     let last = if rows.len() as i64 == limit { rows.last() } else { None };
     let next_cursor = last.map(|r| encode_cursor(r.summary.sort_time, r.summary.id));
     let next_before = last.map(|r| r.summary.sort_time);
-    let items = list_items(&s, user.id, rows).await?;
+    let keys: Vec<Option<Uuid>> = rows.iter().map(|r| r.stack_key).collect();
+    let mut items = list_items(&s, user.id, rows).await?;
+    if timeline {
+        let infos = stacks::infos(&s.db, user.id, &keys, &view, collapsed).await?;
+        for (item, info) in items.iter_mut().zip(infos) {
+            item.stack = info;
+        }
+    }
     Ok(Json(ListResponse {
         items,
         next_cursor,
@@ -1252,6 +1279,7 @@ async fn list_items(s: &AppState, owner: Uuid, rows: Vec<ListRow>) -> ApiResult<
             summary: r.summary,
             thumbhash,
             thumb_url,
+            stack: None,
         });
     }
     Ok(items)
@@ -1997,6 +2025,7 @@ mod tests {
             },
             thumbhash: Some("AQ==".into()),
             thumb_url: None,
+            stack: None,
             paired: vec![],
         };
         let v = serde_json::to_value(item).unwrap();

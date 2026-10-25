@@ -404,6 +404,85 @@ async fn the_sweep_queues_what_was_never_grouped_and_leaves_queued_and_failed_jo
     t.teardown().await;
 }
 
+/// The owner's choices about stacks (migration 0033, `stack_id`, `stack_unlinked`, `stack_cover`) are columns the grouping never
+/// writes: a regroup, the sweep and a capture-time change rewrite `burst_id` and `burst_version` and leave them as they are.
+#[tokio::test]
+async fn what_the_owner_decided_about_a_stack_survives_regroups_and_the_sweep() {
+    let Some(t) = TestDb::new().await else { return };
+    let o = user(&t.pool).await;
+    let (a, b, c, d) = (
+        photo(&t.pool, o, "R5", 0.0, 0).await,
+        photo(&t.pool, o, "R5", 0.5, 0).await,
+        photo(&t.pool, o, "R5", 1.0, 0).await,
+        photo(&t.pool, o, "R5", 1.5, 0).await,
+    );
+    bursts::regroup(&t.pool, a, &rules()).await.unwrap();
+    let first = burst_of(&t.pool, a).await;
+    assert!(first.is_some());
+
+    // b was taken out of the burst, c and d were stacked by hand (c is the cover), a stays with the burst.
+    let manual = Uuid::new_v4();
+    sqlx::query("UPDATE assets SET stack_unlinked = true WHERE id = $1")
+        .bind(b)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE assets SET stack_id = $2, stack_cover = (id = $3) WHERE id = ANY($1)")
+        .bind(vec![c, d])
+        .bind(manual)
+        .bind(c)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let decided = |pool: PgPool| async move {
+        sqlx::query_as::<_, (Uuid, Option<Uuid>, bool, bool)>(
+            "SELECT id, stack_id, stack_unlinked, stack_cover FROM assets ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    };
+    let before = decided(t.pool.clone()).await;
+
+    // The neighbourhood is computed again from scratch, by every path that can: from a photo, by the sweep, after a time change.
+    sqlx::query("UPDATE assets SET burst_id = NULL, burst_version = NULL")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(bursts::enqueue_missing(&t.pool).await.unwrap(), 4);
+    bursts::regroup(&t.pool, d, &rules()).await.unwrap();
+    assert_eq!(
+        burst_of(&t.pool, a).await,
+        first,
+        "the burst is found again, on all four"
+    );
+    assert_eq!(
+        burst_of(&t.pool, b).await,
+        first,
+        "b is still in the stored burst, which the stack rules ignore"
+    );
+    bursts::requeue_after_time_change(&t.pool, c, first).await.unwrap();
+    bursts::regroup(&t.pool, c, &rules()).await.unwrap();
+    assert_eq!(
+        decided(t.pool.clone()).await,
+        before,
+        "nothing the owner decided was touched"
+    );
+
+    // The stack as the routes see it: a with nobody, b alone, c and d together.
+    let keys: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
+        "SELECT id, coalesce(stack_id, CASE WHEN stack_unlinked THEN NULL ELSE burst_id END) FROM assets ORDER BY id",
+    )
+    .fetch_all(&t.pool)
+    .await
+    .unwrap();
+    let key = |id: Uuid| keys.iter().find(|k| k.0 == id).unwrap().1;
+    assert_eq!(key(b), None);
+    assert_eq!((key(c), key(d)), (Some(manual), Some(manual)));
+    assert_eq!(key(a), first, "a keeps the burst, which still names the earliest photo");
+    t.teardown().await;
+}
+
 /// How long a regroup takes on the synthetic 50,000-photo library of `scripts/search-perf-seed.sql` (CLIP vectors), after
 /// adding 3 near-identical shots a third of a second apart to each of 5,000 photos, and the sweep that groups it all:
 ///

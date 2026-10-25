@@ -3,7 +3,7 @@
 //! photos only for the part that is on screen, starting at any date with `GET /assets?before=...`.
 //!
 //! Days are UTC dates of the same timeline time as the list (`coalesce(taken_at, file_modified_at, created_at)`, or the
-//! upload time with `?sort=added`), counting exactly what the list returns: not trashed, not a hidden RAW file, not a hidden
+//! upload time with `?sort=added`), counting exactly what the list returns (one photo per stack while stacks are collapsed, `stacks.rs`): not trashed, not a hidden RAW file, not a hidden
 //! photo and (outside favorites and the archive) not archived. The query reads only that expression (and the `archived` flag
 //! the index carries) from `assets_timeline_idx` (`assets_added_idx` for `sort=added`, `assets_favorites_idx` with
 //! `?favorite=true`, `assets_archived_idx` with `?archived=true`), so it is an index-only scan.
@@ -31,6 +31,8 @@ pub(super) struct TimelineQuery {
     /// `taken` (default): days of capture time; `added`: days of upload time (the Recently added view).
     #[serde(default)]
     sort: super::visibility::Sort,
+    /// `collapsed` or `expanded`: count one photo per stack or every photo. Absent: the user's setting.
+    stacks: Option<super::visibility::StacksMode>,
 }
 
 #[derive(Serialize, FromRow)]
@@ -63,7 +65,12 @@ pub(super) async fn days(
     unlock: Unlock,
     Query(q): Query<TimelineQuery>,
 ) -> ApiResult<Json<TimelineResponse>> {
-    let view = super::visibility::view_sql(q.favorite, q.archived, q.hidden, unlock)?;
+    let mut view = super::visibility::view_sql(q.favorite, q.archived, q.hidden, unlock)?;
+    // The same rule as the list (`routes::list`): only the timeline collapses stacks.
+    if !q.favorite && !q.archived && !q.hidden && super::visibility::stacks_collapsed(&s.db, user.id, q.stacks).await? {
+        let collapse = super::stacks::collapse_sql(&view);
+        view.push_str(&collapse);
+    }
     let days: Vec<Day> = sqlx::query_as(&days_sql(q.sort, &view))
         .bind(user.id)
         .fetch_all(&s.db)

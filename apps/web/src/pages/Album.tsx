@@ -540,7 +540,7 @@ function PhotoPicker({
   onAdded: (count: number) => void;
 }) {
   const { setAnonymous } = useAuth();
-  const fetchPage = useCallback((cursor: string | null) => api.listAssets({ cursor, limit: PAGE }), []);
+  const fetchPage = useCallback((cursor: string | null) => api.listAssets({ cursor, limit: PAGE, stacks: "expanded" }), []);
   const {
     items: pickItems,
     started: pickStarted,
@@ -557,9 +557,9 @@ function PhotoPicker({
 
   useEffect(() => setSelecting(true), [setSelecting]);
   useEffect(() => {
-    // "Select all" in the picker means the whole library; the count is the timeline's total.
+    // "Select all" in the picker means the whole library (every photo of a stack, not its tile); the count is the timeline's total.
     let live = true;
-    api.timeline().then(
+    api.timeline({ stacks: "expanded" }).then(
       (t) => live && setLibraryTotal(t.total),
       () => undefined,
     );

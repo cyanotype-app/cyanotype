@@ -291,7 +291,7 @@ in at once, so nothing flickers; while selecting, that waits for selection mode 
 
 | Request | Effect |
 |---|---|
-| `GET /assets/timeline[?favorite=true]` | `{total, days: [{day: "YYYY-MM-DD", count}]}`, newest first, owner-scoped. |
+| `GET /assets/timeline[?favorite=true]` | `{total, days: [{day: "YYYY-MM-DD", count}]}`, newest first, owner-scoped. The timeline view counts one photo per stack while stacks are collapsed (`?stacks=`, "Stacks in the timeline"). |
 | `GET /assets?before=<RFC 3339>&limit=` | A page starting at a date: photos strictly older than `before` (the keyset position for "the end of that day"); continue with `next_cursor`. Existing parameter, now covered by tests with the day counts. |
 | `GET /assets?favorite=true` | Favorites only (also combines with `before` / `cursor`). Items of every listing (library, trash, albums) and `GET /assets/{id}` carry `favorite`. |
 | `POST /assets/favorite {ids, favorite}` | Set or clear the flag. `{count}` = photos that changed; unknown, foreign and trashed ids are ignored; at most 1000 ids; a hidden RAW's id means its primary. Idempotent. |
@@ -685,8 +685,8 @@ search model").
   is still being indexed"** instead. See "More like this" below.
 - **Bursts.** Rapid-fire shots of one moment collapse into one result: a tile with a **"+N"** badge (N more photos behind it). Tapping
   the badge opens the burst inline (its photos appear right behind the cover, set apart by an accent edge; the badge turns into a
-  "-" that closes it again). This is in text searches and in "More like this", not in the timeline, the albums, or a filter-only
-  search, which list every photo. See "Bursts" below.
+  "-" that closes it again). This is in text searches and in "More like this", and in the timeline as stacks (see "Stacks in the
+  timeline" at the end); the albums and a filter-only search list every photo. See "Bursts" below.
 - **Select all** on a filter-only search selects every match (a server-side scope, like the other views). On a text search
   it selects the results that are loaded (at most 300): a ranked list has no stable "everything" for the server to
   re-resolve, so those actions send explicit ids. **A collapsed burst is one tile that stands for all of its photos**: tapping it
@@ -925,7 +925,8 @@ after ranking and before the tiers are cut, so everything after it counts **grou
 - **"More like this" leaves out the source photo's own burst** (the other shots of that moment are not "more like this"; you can
   see them next to it in the library). Other bursts in its results collapse like anywhere else. A photo whose burst has not been
   computed yet is just the source.
-- A filter-only search and the timeline are **not** collapsed (the timeline stays unchanged; collapsing it is a possible follow-up).
+- A filter-only search is **not** collapsed. The timeline collapses the same groups as **stacks** ("Stacks in the timeline" at the end),
+  and search now uses the stack rule too: a photo the owner took out of a burst is its own result, and a stack made by hand is one result.
 
 ### What is read out of the words
 
@@ -1355,7 +1356,7 @@ dismissals in the bucket.
 | `GET /assets/search?include_archived=false` | Leave archived photos out (the default keeps them). |
 | `GET /assets/memories?date=YYYY-MM-DD&all=true` | `{enabled, day, years: [{year, years_ago, count, items}]}`; the strip form is a few photos per year and empty when the strip is off; `all` is the page. |
 | `POST /assets/memories/dismiss {ids, dismissed?}` | "Not this one" (a burst goes along); `dismissed: false` takes it back. |
-| `GET\|PUT /assets/prefs` | `{memories_enabled, library_sort: "taken" \| "added"}`. |
+| `GET\|PUT /assets/prefs` | `{memories_enabled, library_sort: "taken" \| "added", stacks_collapsed}`. |
 | Albums | `hidden_count` beside `photo_count`; the album's list leaves hidden photos out. |
 
 ## Tests
@@ -1969,3 +1970,95 @@ photo's preview address (`GET .../items/{id}`) just before showing it.
   loop, shuffle cycles, reduced motion, announcements, memory, backoff, timeouts, 401), the slideshow component (keys, settings, full screen,
   states), "Play from here", the frame (setup, session, offline, archived, small page, no object URLs, menu).
 - Playwright: `e2e/slideshow-layout.spec.ts` and `e2e/frame-layout.spec.ts`, under the gateway's real CSP.
+
+# Stacks in the timeline
+
+Bursts (rapid-fire shots, "Bursts" above) were grouped in search only. A **stack** takes them to the timeline and adds the owner's
+own say: photos shown as **one tile, the cover**, with a stack badge and the number of photos. A stack is either an automatic burst
+(`assets.burst_id`, found by the worker) or one the owner made by hand (migration 0033). Same idea as stacks in other photo
+libraries, with one difference on purpose: what the owner decided is never undone by the worker.
+
+## What the user sees
+
+- **Timeline.** A stack is one tile at the date of its cover, with a badge (two sheets and the count, "Stack of 3 photos" for screen
+  readers). A **Stacked / Every photo** switch in the library bar (the setting is remembered per user, default **Stacked**) lists every
+  photo instead. The day counts, the scrubber, the paging and "Select all" follow the switch.
+- **Which views collapse.** The **timeline** (All, and Recently added) and **search** collapse stacks. **Favorites, the Archive, Hidden,
+  albums, the map, People, shares and the trash list every photo**: those views are about the photos themselves (a favorite stack member
+  is a favorite on its own, an album is a list somebody made photo by photo, and the album's "Add photos" picker asks for every
+  photo), so nothing there is hidden behind a cover. Only photos
+  the view lists are in a stack's count: an archived or trashed member leaves the tile's number.
+- **The viewer.** Opening a stack's tile shows a strip under the photo: "Photo 3 of 5 in this stack", the stack's photos as a filmstrip
+  (the cover is marked), previous and next buttons, and the keys **`[`** and **`]`** (the arrows still move through the timeline, so
+  next and previous across the library work as before; the strip is for the stack). The viewer opens on the cover. Every action of the
+  viewer (favorite, stars, Info, trash, album, share...) is about the photo on show, not the whole stack.
+- **Controls** (in the strip): **Set as stack cover** (the viewer stays; the timeline is read again when it closes, so photos do not move
+  under you), **Remove from stack** (the photo leaves, the viewer closes) and **Unstack all** (with Undo, which stacks the same photos
+  again by hand). In the selection bar of the timeline, **Stack** makes one stack of the selected tiles (two or more photos; the first
+  selected is the cover; not available for "Select all").
+- **Selecting a stack's tile means all of its photos**, like a collapsed burst in search: its label says "Select IMG_1 and 2 more from
+  its stack", the bar says "plus 2 more in stacks", and favorite, archive, hide, trash, add to album, share, download, tags, stars
+  and edit work on every photo of it. In the viewer an action means the one photo on show.
+
+## What is kept, and what the sweep may do
+
+| Column (migration 0033) | Written by | Meaning |
+|---|---|---|
+| `burst_id`, `burst_version` | the worker (regroup jobs, the 15-minute sweep) | the automatic burst, as before |
+| `stack_id` | the owner (Stack) | the manual stack a photo is in; a random id shared by its members; wins over the burst |
+| `stack_unlinked` | the owner (Remove from stack, Unstack all) | never part of an automatic burst again |
+| `stack_cover` | the owner (Set as cover, Stack) | the owner's choice of cover (at most one per stack) |
+
+A photo's stack is `coalesce(stack_id, CASE WHEN stack_unlinked THEN NULL ELSE burst_id END)`. The worker only ever writes the first
+row, so **a regroup, the sweep or a time change never re-adds a photo the owner removed and never breaks a manual stack** (test:
+`what_the_owner_decided_about_a_stack_survives_regroups_and_the_sweep`). The cover is the owner's choice, else the first favorite of
+the stack, else its earliest photo, among the photos the view lists. Details:
+
+- **Manual stacks merge.** Stacking a photo that is already in a manual stack brings that whole stack along (trashed members too, so a
+  restored photo does not return to a stack that is gone). The other photos of a picked photo's *burst* do not come along on the
+  server; the web app sends all of a collapsed burst's photos when its tile is picked, so picking a burst tile stacks the burst.
+- **At most 100 photos** in a stack made by hand; **at least two**. A manual stack that drops to one photo dissolves.
+- A trashed photo keeps its stack columns (restoring it puts it back); a hidden photo cannot be stacked and is not in a stack's count
+  in the timeline. A RAW that is the hidden half of a pair is never a stack member (its JPEG is).
+- **Recovery.** The columns are in the database, so a dump keeps them. A rebuild from the bucket alone (`reindex`) does not: bursts are
+  found again by the worker, **stacks made by hand, taken-out photos and chosen covers are lost** (the recovery manifest does not carry
+  them yet).
+- Search groups by the same rule (`burst_id` in its results is the stack), so a manual stack is one search result and a photo taken out
+  of a burst is its own. A search result's cover is still its best-ranked favorite, then its best-ranked photo; the owner's cover
+  choice is the timeline's.
+
+## API (assets service, owner-scoped)
+
+| Request | Effect |
+|---|---|
+| `GET /assets?stacks=collapsed\|expanded`, `GET /assets/timeline?stacks=` | Timeline only (not with `favorite`, `archived`, `hidden` or `bbox`). Absent: the user's setting. Collapsed: one item per stack (its cover), the day counts count tiles. Items in a stack of two or more carry `stack: {size, members}` (`members`: the ids of every listed photo of the stack, the cover included, only while collapsed). |
+| `GET /assets/{id}/stack` | `{cover_id, manual, items}`: the stack's photos in capture order as list items. `404` if the photo is not in a stack of two or more (also another account's, and a hidden photo while the Hidden view is locked; every route below answers the same). |
+| `POST /assets/stacks {ids}` | Stack photos by hand; the first id is the cover. `{size, cover_id}`. `400` for fewer than two photos or more than 100; foreign, unknown, trashed and hidden ids are ignored. |
+| `POST /assets/{id}/stack/cover` | Make the photo its stack's cover. |
+| `POST /assets/{id}/stack/remove` | Take the photo out of its stack (it stays out of automatic bursts). |
+| `DELETE /assets/{id}/stack` | Dissolve the photo's stack: `{count}`. |
+| `GET\|PUT /assets/prefs` | gains `stacks_collapsed` (default true). |
+
+The write routes need a `full` API key (like the other writes). Everything filters on `owner_id`: another account's photo is a `404`, and
+a stack never holds photos of two owners.
+
+## How it works
+
+`apps/assets/src/routes/stacks.rs` holds the SQL that says what a stack is (`key_sql`, `in_stack_sql`, `cover_order_sql`) and
+`collapse_sql`, the one extra `WHERE` term the list and the day counts share, so they cannot disagree: a photo in a stack is listed only
+when it is the cover of the stack's photos of the same view (a correlated subquery that runs only for photos in a stack, through
+`assets_stack_idx` and `assets_burst_idx`). The page's stack info is one more query for all of its stacks. The migration adds three
+columns with constant defaults, one partial index and a preference column: nothing is rewritten, so it is instant at any size. While
+collapsed the day counts are no longer an index-only scan (the filter reads three more columns for the rows that have a stack key); with
+"Every photo" they are unchanged.
+
+## Tests
+
+- Rust (`routes/stacks_tests.rs`, Postgres): collapsed list and day counts agree, paging, the setting and `?stacks=`, favorites/archive/
+  albums list everything, stacking (cover, merging, limits), cover change, remove and dissolve (and a regroup that does not undo them),
+  a manual stack that wins over a burst, search, trashed and hidden members, and **ownership** (every route is a `404` for another
+  account, a stacking request mixing accounts only stacks the caller's photos); `key_scope_tests` lists the new routes.
+  `crates/cyanotype-core/tests/bursts.rs`: the owner's columns survive `regroup`, the sweep and a time change.
+- Web: `stacks.test.ts` (selection, expansion, stepping), `pages/Library.stacks.test.tsx` (badge, switch, viewer strip and keys, cover,
+  remove, unstack and Undo, stacking from the selection bar, trashing a stack's tile); Playwright `e2e/stacks-layout.spec.ts` (badge,
+  viewer strip, controls, selection bar and the switch at 320 to 1280 px, light and dark).

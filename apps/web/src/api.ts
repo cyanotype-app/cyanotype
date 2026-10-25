@@ -417,6 +417,23 @@ export interface AssetListItem extends AssetSummary {
   thumb_url: string | null;
   /** The RAW file stacked behind this photo; empty or absent for a single file (older servers omit it). */
   paired?: PairedFile[];
+  /** The stack this photo is in (two or more photos shown as one tile); only the timeline's list carries it. */
+  stack?: StackInfo;
+}
+
+/** What a timeline entry says about its stack: how many photos the view lists in it, and, while the stack is collapsed to
+ * this tile, their ids (this photo's too), so that selecting the tile means all of them. */
+export interface StackInfo {
+  size: number;
+  members?: string[];
+}
+
+/** GET /assets/{id}/stack: the photos of a stack in capture order, and which one is the cover. */
+export interface StackDetail {
+  cover_id: string;
+  /** Made by hand, rather than found by the worker as a burst. */
+  manual: boolean;
+  items: AssetListItem[];
 }
 
 /** GET /assets */
@@ -1238,9 +1255,12 @@ export interface LibraryView {
   sort?: "taken" | "added";
   /** One person's photos (People): the list and the day counts of `/assets/people/{id}`, nothing else of the view applies. */
   person?: string;
+  /** Stacks in the timeline: one tile each (`collapsed`) or every photo. Absent: the user's setting. */
+  stacks?: "collapsed" | "expanded";
 }
 
 function viewQuery(v: LibraryView, q: URLSearchParams) {
+  if (v.stacks && !v.favorite && !v.archived && !v.hidden && !v.person) q.set("stacks", v.stacks);
   if (v.favorite) q.set("favorite", "true");
   if (v.archived) q.set("archived", "true");
   if (v.hidden) q.set("hidden", "true");
@@ -1267,6 +1287,8 @@ export interface Memories {
 export interface Prefs {
   memories_enabled: boolean;
   library_sort: "taken" | "added";
+  /** Stacks show as one tile in the timeline (default); off lists every photo. */
+  stacks_collapsed: boolean;
 }
 
 /** Whether this session has the Hidden view open (GET /auth/hidden). */
@@ -1621,6 +1643,17 @@ export const api = {
     bulk(`/assets/albums/${encodeURIComponent(id)}/assets/remove`, target),
   /** Separate a RAW + JPEG pair into two photos (either file's id); they are not paired again automatically. */
   unpair: (id: string) => request<void>(`/assets/${encodeURIComponent(id)}/unpair`, { method: "POST" }),
+  /** The photos of the stack `id` is in (404 when it is in none). */
+  getStack: (id: string) => request<StackDetail>(`/assets/${encodeURIComponent(id)}/stack`),
+  /** Stack photos by hand: the first id is the cover; stacks the photos are already in join the new one. */
+  stackAssets: (ids: string[]) =>
+    request<{ size: number; cover_id: string }>("/assets/stacks", json({ ids })),
+  /** Make `id` the cover of its stack. */
+  setStackCover: (id: string) => request<{ cover_id: string }>(`/assets/${encodeURIComponent(id)}/stack/cover`, { method: "POST" }),
+  /** Take `id` out of its stack (it stays out of automatic bursts). */
+  removeFromStack: (id: string) => request<{ removed: string }>(`/assets/${encodeURIComponent(id)}/stack/remove`, { method: "POST" }),
+  /** Dissolve the stack `id` is in. */
+  unstack: (id: string) => request<{ count: number }>(`/assets/${encodeURIComponent(id)}/stack`, { method: "DELETE" }),
   /** Natural-language and/or filtered search; `cursor` from the previous page's `next_cursor`. */
   search: (params: SearchParams, opts: { cursor?: string | null; limit?: number; weaker?: boolean } = {}) =>
     request<SearchResult>(

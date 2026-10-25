@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { dayFromSearch } from "../detailsText";
-import { api, ApiError, isScope, type AssetListItem, type Target } from "../api";
+import { api, ApiError, isScope, type AssetListItem, type StackDetail, type Target } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
 import { ProcessingStatus } from "../components/ProcessingStatus";
@@ -10,6 +10,8 @@ import { Lightbox } from "../components/Lightbox";
 import { LibraryTabs } from "../components/LibraryTabs";
 import { MemoriesStrip } from "../components/MemoriesStrip";
 import { SortToggle } from "../components/SortToggle";
+import { StackToggle } from "../components/StackToggle";
+import type { StackView } from "../components/StackBar";
 import { usePrefs } from "../usePrefs";
 import { archiveMessage, emptyView, viewTitle, type ViewKind } from "../viewText";
 import { SelectionBar } from "../components/SelectionBar";
@@ -24,6 +26,7 @@ import { useToast } from "../components/Toast";
 import { similarUrl } from "../searchText";
 import { useSelection } from "../selection";
 import { inOrder, runAround } from "../timeline";
+import { STACK_MESSAGES, alone, canStack, expandIds, expandTarget, hiddenInStacks, positionOf, selectionNote, step, substitute, tileIds } from "../stacks";
 import { PAGE, useTimeline } from "../useTimeline";
 import { ACCEPT, filesFromDrop, filterFiles } from "../upload/files";
 import { useUploads } from "../upload/UploadProvider";
@@ -61,12 +64,16 @@ export function Library(props: LibraryProps) {
   const { prefs, update } = usePrefs(plain);
   if (plain && prefs === null) return <p className="center muted" role="status">Loading your photos…</p>;
   const sort = props.recent ? "added" : plain ? (prefs?.library_sort ?? "taken") : "taken";
+  // Bursts and stacks as one tile each, or every photo (the Recently added view follows the setting on the server).
+  const stacks = plain ? (prefs?.stacks_collapsed === false ? "expanded" : "collapsed") : undefined;
   return (
     <LibraryView
-      key={sort}
+      key={`${sort}-${stacks}`}
       {...props}
       sort={sort}
+      stacks={stacks}
       onSort={plain ? (s) => void update({ library_sort: s }) : undefined}
+      onStacks={plain ? (collapsed) => void update({ stacks_collapsed: collapsed }) : undefined}
     />
   );
 }
@@ -78,8 +85,15 @@ function LibraryView({
   recent = false,
   onLocked,
   sort,
+  stacks,
   onSort,
-}: LibraryProps & { sort: "taken" | "added"; onSort?: (s: "taken" | "added") => void }) {
+  onStacks,
+}: LibraryProps & {
+  sort: "taken" | "added";
+  stacks?: "collapsed" | "expanded";
+  onSort?: (s: "taken" | "added") => void;
+  onStacks?: (collapsed: boolean) => void;
+}) {
   const kind: ViewKind = hidden ? "hidden" : archive ? "archive" : favorites ? "favorites" : recent ? "recent" : "library";
   const navigate = useNavigate();
   const [search] = useSearchParams();
@@ -104,13 +118,13 @@ function LibraryView({
   const [editKind, setEditKind] = useState<EditKind | null>(null);
 
   const selectedRef = useRef<ReadonlySet<string>>(new Set());
-  const tl = useTimeline({ view: { favorite: favorites, archived: archive, hidden, sort }, keep: () => selectedRef.current });
+  const tl = useTimeline({ view: { favorite: favorites, archived: archive, hidden, sort, stacks }, keep: () => selectedRef.current });
   const scope = hidden ? "hidden" : archive ? "archive" : favorites ? "favorites" : "library";
   // The ten minutes of the Hidden view ran out while it was open: back to the password prompt.
   useEffect(() => {
     if (hidden && tl.error === "hidden_locked") onLocked?.();
   }, [hidden, tl.error, onLocked]);
-  const { index, loaded, ensure, refresh, remove, patch } = tl;
+  const { index, loaded, ensure, refresh, remove, patch: patchTimeline } = tl;
   const items = useMemo(() => inOrder(loaded), [loaded]);
   const itemIds = useMemo(() => items.map((i) => i.id), [items]);
   const sel = useSelection(itemIds, index.total);
@@ -119,6 +133,52 @@ function LibraryView({
     // Selecting everything must not pin every loaded page in memory: only an explicit selection is kept loaded.
     selectedRef.current = sel.all ? new Set() : selectedIds;
   }, [selectedIds, sel.all]);
+
+  // The stack of the tile on show in the viewer: its photos (read when the tile opens), and the one on show. The timeline holds
+  // only the stack's cover, so the viewer swaps the photo on show in for it.
+  const tile = open === null ? undefined : loaded.items.get(open);
+  const tileId = tile?.id;
+  const tileStacked = (tile?.stack?.size ?? 0) > 1;
+  const [stackState, setStackState] = useState<{ tile: string; detail: StackDetail; pick: string } | null>(null);
+  const [stackVersion, setStackVersion] = useState(0);
+  const [stackBusy, setStackBusy] = useState(false);
+  useEffect(() => {
+    if (!tileId || !tileStacked) return;
+    let live = true;
+    api.getStack(tileId).then(
+      (detail) =>
+        live &&
+        setStackState((prev) => ({
+          tile: tileId,
+          detail,
+          pick: prev && prev.tile === tileId && detail.items.some((i) => i.id === prev.pick) ? prev.pick : detail.cover_id,
+        })),
+      () => live && setStackState(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [tileId, tileStacked, stackVersion]);
+  // A viewer opened again starts at the cover.
+  useEffect(() => {
+    if (open === null) setStackState(null);
+  }, [open]);
+  const activeStack = tileStacked && stackState?.tile === tileId ? stackState : null;
+  const stackIds = useMemo(() => new Set(activeStack?.detail.items.map((i) => i.id) ?? []), [activeStack]);
+  // Fields of loaded photos changed in place (a heart, stars), also in the stack the viewer shows.
+  const patch = useCallback(
+    (ids: ReadonlySet<string>, fields: Partial<AssetListItem>) => {
+      patchTimeline(ids, fields);
+      setStackState((s) =>
+        s ? { ...s, detail: { ...s.detail, items: s.detail.items.map((i) => (ids.has(i.id) ? { ...i, ...fields } : i)) } } : s,
+      );
+    },
+    [patchTimeline],
+  );
+
+  // A tile that stands for a stack stands for all of its photos: bulk calls send them all (a "select all" already means the lot).
+  const bulkTarget = useCallback(() => expandTarget(sel.target(scope), items), [sel, scope, items]);
+  const hiddenCount = useMemo(() => (sel.all ? 0 : hiddenInStacks(items, selectedIds)), [sel.all, items, selectedIds]);
 
   const refreshItem = useCallback(
     async (id: string) => {
@@ -220,7 +280,15 @@ function LibraryView({
     },
   };
 
-  const closeLightbox = useCallback(() => setOpen(null), []);
+  // Changing a stack's cover while the viewer is open must not move the photos under it: the timeline is read again on close.
+  const [staleOnClose, setStaleOnClose] = useState(false);
+  const closeLightbox = useCallback(() => {
+    setOpen(null);
+    if (staleOnClose) {
+      setStaleOnClose(false);
+      void refresh();
+    }
+  }, [staleOnClose, refresh]);
 
   const failure = useCallback(
     (e: unknown, what: string) => {
@@ -228,6 +296,32 @@ function LibraryView({
       else show({ tone: "error", message: `${what} ${e instanceof Error ? e.message : ""}`.trim() });
     },
     [setAnonymous, show],
+  );
+
+  // The controls of the stack on show. Taking a photo out or dissolving the stack closes the viewer (the tile it opened from
+  // changes); a new cover keeps it open and is shown in the timeline once it closes.
+  const changeStack = useCallback(
+    async (call: () => Promise<unknown>, message: string, closes: boolean, undo?: () => void) => {
+      if (stackBusy) return;
+      setStackBusy(true);
+      try {
+        await call();
+      } catch (e) {
+        setStackBusy(false);
+        failure(e, STACK_MESSAGES.failed);
+        return;
+      }
+      setStackBusy(false);
+      if (closes) {
+        setOpen(null);
+        void refresh();
+      } else {
+        setStaleOnClose(true);
+        setStackVersion((v) => v + 1);
+      }
+      show({ message, action: undo ? { label: "Undo", onClick: undo } : undefined });
+    },
+    [stackBusy, failure, refresh, show],
   );
 
   // Moving to trash is reversible, so there is no confirmation: the photos leave the grid at once (rolled back if
@@ -244,13 +338,19 @@ function LibraryView({
     },
     [show, failure, refresh],
   );
+  // Photos that are in a stack change the tile that stands for it (a new cover, a smaller count): the timeline is read again
+  // after the call instead of being edited in place, and the viewer closes.
+  const inStack = useCallback((targets: AssetListItem[]) => targets.some((t) => t.stack || stackIds.has(t.id)), [stackIds]);
   const trashItems = useCallback(
     async (targets: AssetListItem[]) => {
       if (targets.length === 0) return;
-      const ids = targets.map((t) => t.id);
-      const left = index.total - remove(new Set(ids)).length;
-      // The lightbox shows the photo that took the removed one's place, or closes when nothing is left.
-      setOpen((o) => (o === null || left <= 0 ? null : Math.min(o, left - 1)));
+      const ids = [...new Set(targets.flatMap(tileIds))];
+      const stacked = inStack(targets);
+      if (!stacked) {
+        const left = index.total - remove(new Set(ids)).length;
+        // The lightbox shows the photo that took the removed one's place, or closes when nothing is left.
+        setOpen((o) => (o === null || left <= 0 ? null : Math.min(o, left - 1)));
+      }
       try {
         await api.trashAssets(ids);
       } catch (e) {
@@ -258,12 +358,16 @@ function LibraryView({
         failure(e, "Couldn’t move to trash.");
         return;
       }
+      if (stacked) {
+        setOpen(null);
+        void refresh();
+      }
       show({
-        message: `${targets.length} moved to trash`,
+        message: `${ids.length} moved to trash`,
         action: { label: "Undo", onClick: () => void undoTrash(ids, ids.length) },
       });
     },
-    [index.total, remove, refresh, show, failure, undoTrash],
+    [index.total, remove, refresh, show, failure, undoTrash, inStack],
   );
   // "Select all" covers photos that are not loaded, so the server trashes the whole view (minus what was deselected)
   // and the grid is re-read; Undo restores exactly that batch.
@@ -288,7 +392,7 @@ function LibraryView({
     [refresh, show, failure, undoTrash],
   );
   const trashSelected = useCallback(() => {
-    const target = sel.target(scope);
+    const target = expandTarget(sel.target(scope), items);
     const ids = new Set(sel.ids);
     sel.setSelecting(false);
     if (isScope(target)) void trashView(target);
@@ -319,10 +423,11 @@ function LibraryView({
   const archiveItems = useCallback(
     async (targets: AssetListItem[], archived: boolean) => {
       if (targets.length === 0) return;
-      const ids = targets.map((t) => t.id);
+      const ids = [...new Set(targets.flatMap(tileIds))];
+      const stacked = inStack(targets);
       // In Favorites an archived photo stays (flagged); everywhere else it leaves the view it was archived from or restored to.
       if (favorites) patch(new Set(ids), { archived });
-      else leaveView(ids);
+      else if (!stacked) leaveView(ids);
       try {
         await api.archiveAssets(ids, archived);
       } catch (e) {
@@ -330,12 +435,16 @@ function LibraryView({
         failure(e, archived ? "Couldn’t archive." : "Couldn’t restore.");
         return;
       }
+      if (stacked && !favorites) {
+        setOpen(null);
+        void refresh();
+      }
       show({
         message: archiveMessage(ids.length, archived),
         action: { label: "Undo", onClick: () => void undoArchive(ids, !archived, ids.length) },
       });
     },
-    [favorites, patch, leaveView, refresh, failure, show, undoArchive],
+    [favorites, patch, leaveView, refresh, failure, show, undoArchive, inStack],
   );
   const archiveView = useCallback(
     async (target: Target, archived: boolean) => {
@@ -359,19 +468,19 @@ function LibraryView({
   );
   const archiveSelected = useCallback(() => {
     const archived = !archive;
-    const target = sel.target(scope);
+    const target = expandTarget(sel.target(scope), items);
     const ids = new Set(sel.ids);
     sel.setSelecting(false);
     if (isScope(target)) void archiveView(target, archived);
     else void archiveItems(items.filter((i) => ids.has(i.id)), archived);
   }, [archive, sel, scope, items, archiveView, archiveItems]);
   const hideItems = useCallback(
-    async (target: Target, ids: string[], hide: boolean) => {
-      if (ids.length > 0) leaveView(ids);
+    async (target: Target, ids: string[], hide: boolean, stacked = false) => {
+      if (ids.length > 0 && !stacked) leaveView(ids);
       else setOpen(null);
       try {
         const r = await api.hideAssets(target, hide);
-        if (ids.length === 0) void refresh();
+        if (ids.length === 0 || stacked) void refresh();
         show({
           message: hide
             ? `${r.count.toLocaleString("en-US")} hidden. Find ${r.count === 1 ? "it" : "them"} under More, Hidden.`
@@ -385,11 +494,12 @@ function LibraryView({
     [leaveView, refresh, show, failure],
   );
   const hideSelected = useCallback(() => {
-    const target = sel.target(scope);
-    const ids = isScope(target) ? [] : [...sel.ids];
+    const target = expandTarget(sel.target(scope), items);
+    const ids = isScope(target) ? [] : target.slice();
+    const stacked = items.some((i) => sel.selected.has(i.id) && i.stack);
     sel.setSelecting(false);
-    void hideItems(target, ids, !hidden);
-  }, [sel, scope, hidden, hideItems]);
+    void hideItems(target, ids, !hidden, stacked);
+  }, [sel, scope, items, hidden, hideItems]);
 
   // Separate a RAW + JPEG pair: the photo loses its RAW badge and the RAW appears as a photo of its own.
   const unpairItem = useCallback(
@@ -412,7 +522,7 @@ function LibraryView({
   const setFavorite = useCallback(
     async (targets: AssetListItem[], favorite: boolean, leave = false) => {
       if (targets.length === 0) return;
-      const ids = targets.map((t) => t.id);
+      const ids = [...new Set(targets.flatMap(tileIds))];
       const was = targets.filter((t) => t.favorite === true).map((t) => t.id);
       patch(new Set(ids), { favorite });
       try {
@@ -480,7 +590,7 @@ function LibraryView({
   );
   const favoriteSelected = useCallback(() => {
     if (sel.all) {
-      const target = sel.target(scope);
+      const target = expandTarget(sel.target(scope), items);
       sel.setSelecting(false);
       void favoriteView(target, !allSelectedFavorite);
       return;
@@ -489,7 +599,7 @@ function LibraryView({
     const value = !targets.every((i) => i.favorite === true);
     sel.setSelecting(false);
     void setFavorite(targets, value, favorites);
-  }, [selectedItems, sel, scope, setFavorite, favoriteView, allSelectedFavorite, favorites]);
+  }, [selectedItems, items, sel, scope, setFavorite, favoriteView, allSelectedFavorite, favorites]);
 
   // Trashing the whole view asks first, with the exact number; a few photos go straight to the trash (Undo).
   const onTrashClick = useCallback(() => {
@@ -515,11 +625,40 @@ function LibraryView({
     return () => document.removeEventListener("keydown", onKey);
   }, [open, confirmTrash, addIds, shareTarget, sel]);
 
+  // Stacking by hand: the selected tiles (a stack's tile brings its photos along) become one stack with the first as its cover.
+  const stackSelected = useCallback(async () => {
+    // A collapsed stack's tile stands for all of its photos (the first tile's photo comes first and becomes the cover).
+    const ids = expandIds(items, sel.ids);
+    sel.setSelecting(false);
+    try {
+      const r = await api.stackAssets(ids);
+      void refresh();
+      show({ message: STACK_MESSAGES.stacked(r.size) });
+    } catch (e) {
+      failure(e, STACK_MESSAGES.failed);
+    }
+  }, [sel, items, refresh, show, failure]);
+
   // The lightbox pages through what is loaded around the open photo; keep that stocked as it moves.
   useEffect(() => {
     if (open !== null) ensure(Math.max(0, open - 5), open + PAGE, true);
   }, [open, ensure]);
   const run = open === null ? null : runAround(loaded, open, LIGHTBOX_RUN);
+  const member = activeStack?.detail.items.find((i) => i.id === activeStack.pick);
+  const shown = run && open !== null ? substitute(run.items, open - run.start, member) : [];
+
+  const stackView = activeStack && member ? stackViewOf(activeStack, stackBusy, {
+    pick: (id) => setStackState((s) => (s ? { ...s, pick: id } : s)),
+    cover: (id) => void changeStack(() => api.setStackCover(id), STACK_MESSAGES.cover, false),
+    remove: (id) => void changeStack(() => api.removeFromStack(id), STACK_MESSAGES.removed, true),
+    dissolve: (id, restack) =>
+      void changeStack(() => api.unstack(id), STACK_MESSAGES.dissolved, true, () => {
+        void api.stackAssets(restack).then(
+          () => void refresh(),
+          (e) => failure(e, STACK_MESSAGES.failed),
+        );
+      }),
+  }) : undefined;
 
   if (tl.status === "loading") return <p className="center muted" role="status">Loading your photos…</p>;
 
@@ -588,6 +727,7 @@ function LibraryView({
           <SlideshowButton source={() => scopeSource(scope, title ?? (favorites ? "Favorites" : "Library"))} />
         )}
         {onSort && <SortToggle value={sort} onChange={onSort} />}
+        {onStacks && <StackToggle collapsed={stacks !== "expanded"} onChange={onStacks} />}
         {notice && <span className="muted small" role="status">{notice}</span>}
       </div>
       {sel.selecting && (
@@ -597,18 +737,19 @@ function LibraryView({
           onSelectAll={sel.selectAll}
           onClear={sel.clear}
           onDone={() => sel.setSelecting(false)}
+          note={selectionNote(hiddenCount)}
         >
           <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || bulkBusy} onClick={favoriteSelected}>
             {allSelectedFavorite ? "Unfavorite" : "Favorite"}
           </button>
           <ZipButton
-            target={sel.target(scope)}
+            target={bulkTarget()}
             disabled={sel.count === 0}
             onStarted={(message) => show({ message })}
             onError={(e) => failure(e, "Couldn’t download.")}
           />
           <RateTools
-            target={sel.target(scope)}
+            target={bulkTarget()}
             count={sel.count}
             disabled={sel.count === 0 || bulkBusy}
             onDone={(_r, _n, message) => {
@@ -619,7 +760,7 @@ function LibraryView({
             onError={(e) => failure(e, "Couldn’t rate.")}
           />
           <TagTools
-            target={sel.target(scope)}
+            target={bulkTarget()}
             count={sel.count}
             disabled={sel.count === 0 || bulkBusy}
             onDone={(message) => {
@@ -628,6 +769,17 @@ function LibraryView({
               show({ message });
             }}
           />
+          {kind === "library" && (
+            <button
+              type="button"
+              className="btn btn-quiet"
+              disabled={bulkBusy || !canStack(items, sel.selected, sel.all)}
+              title={STACK_MESSAGES.needTwo}
+              onClick={() => void stackSelected()}
+            >
+              Stack
+            </button>
+          )}
           {!hidden && (
             <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || bulkBusy} onClick={archiveSelected}>
               {archive ? "Restore" : "Archive"}
@@ -640,7 +792,7 @@ function LibraryView({
             type="button"
             className="btn btn-quiet"
             disabled={sel.count === 0 || bulkBusy}
-            onClick={() => setAddIds({ target: sel.target(scope), count: sel.count })}
+            onClick={() => setAddIds({ target: bulkTarget(), count: sel.count + hiddenCount })}
           >
             Add to album
           </button>
@@ -648,7 +800,7 @@ function LibraryView({
             type="button"
             className="btn btn-quiet"
             disabled={sel.count === 0 || bulkBusy}
-            onClick={() => setShareTarget(shareTargetOf(sel.target(scope), sel.count))}
+            onClick={() => setShareTarget(shareTargetOf(bulkTarget(), sel.count + hiddenCount))}
           >
             Share
           </button>
@@ -692,7 +844,7 @@ function LibraryView({
       )}
       {open !== null && run && (
         <Lightbox
-          items={run.items}
+          items={shown}
           index={open - run.start}
           offset={run.start}
           total={index.total}
@@ -700,15 +852,16 @@ function LibraryView({
           onClose={closeLightbox}
           loadDetail={api.getAsset}
           loadDetails={api.getDetails}
-          onTrash={(it) => void trashItems([it])}
+          stack={stackView}
+          onTrash={(it) => void trashItems([alone(it)])}
           onAddToAlbum={(it) => setAddIds({ target: [it.id], count: 1 })}
           onShare={(it) => setShareTarget({ kind: "photos", ids: [it.id] })}
           onUnpair={(it) => void unpairItem(it)}
           onSimilar={(it) => navigate(similarUrl(it.id))}
-          onFavorite={(it, value) => void setFavorite([it], value)}
+          onFavorite={(it, value) => void setFavorite([alone(it)], value)}
           onRate={(it, n) => void rateOne(it, n)}
-          onArchive={hidden ? undefined : (it) => void archiveItems([it], it.archived !== true)}
-          onHide={(it) => void hideItems([it.id], [it.id], !hidden)}
+          onArchive={hidden ? undefined : (it) => void archiveItems([alone(it)], it.archived !== true)}
+          onHide={(it) => void hideItems([it.id], [it.id], !hidden, inStack([alone(it)]))}
           refreshKey={albumsVersion}
           onEdited={() => void refresh()}
         />
@@ -770,7 +923,7 @@ function LibraryView({
       {editKind !== null && (
         <EditDialog
           kind={editKind}
-          target={sel.target(scope)}
+          target={bulkTarget()}
           count={sel.count}
           onClose={() => setEditKind(null)}
           onDone={(r) => {
@@ -786,6 +939,36 @@ function LibraryView({
       {dragging && <DropOverlay />}
     </div>
   );
+}
+
+interface StackActions {
+  pick: (id: string) => void;
+  cover: (id: string) => void;
+  remove: (id: string) => void;
+  /** `restack`: the stack's photos with the cover first (what Undo stacks again). */
+  dissolve: (id: string, restack: string[]) => void;
+}
+
+/** What the viewer's stack strip shows and does for the stack on show (`pick` is the photo on show). */
+function stackViewOf(stack: { detail: StackDetail; pick: string }, busy: boolean, act: StackActions): StackView {
+  const { detail, pick } = stack;
+  const position = positionOf(detail.items, pick);
+  const restack = detail.items.map((i) => i.id).sort((a, b) => Number(b === detail.cover_id) - Number(a === detail.cover_id));
+  return {
+    items: detail.items,
+    position,
+    coverId: detail.cover_id,
+    manual: detail.manual,
+    busy,
+    onPick: act.pick,
+    onStep: (delta) => {
+      const next = detail.items[step(position, delta, detail.items.length)];
+      if (next) act.pick(next.id);
+    },
+    onCover: () => act.cover(pick),
+    onRemove: () => act.remove(pick),
+    onDissolve: () => act.dissolve(pick, restack),
+  };
 }
 
 function DropOverlay() {
