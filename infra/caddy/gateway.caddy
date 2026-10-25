@@ -50,10 +50,17 @@ import /etc/caddy/csp.caddy
 	}
 
 	# JSON APIs, CLI downloads and the health check get the lock-everything policy; every other path is the web UI.
-	@api path /auth /auth/* /assets /assets/* /cli /cli/* /healthz
+	# /cli/authorize is the exception under /cli: it is a page of the web UI (where `cyanotype login` sends the browser to
+	# allow the login), so it gets the web UI's policy and not the download area's.
+	@cliauth path /cli/authorize
+	@api {
+		path /auth /auth/* /assets /assets/* /cli /cli/* /healthz
+		not path /cli/authorize
+	}
 	@page not path /auth /auth/* /assets /assets/* /cli /cli/* /healthz
 	import csp_api @api
 	import csp_spa @page {args[0]}
+	import csp_spa @cliauth {args[0]}
 
 	handle /healthz {
 		respond `{"ok":true}` 200

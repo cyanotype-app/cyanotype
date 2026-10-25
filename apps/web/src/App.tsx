@@ -4,7 +4,9 @@ import { useAuth } from "./auth";
 import { Logo } from "./components/Logo";
 import { AlbumPage } from "./pages/Album";
 import { Albums } from "./pages/Albums";
+import { Activate } from "./pages/Activate";
 import { ApiKeys } from "./pages/ApiKeys";
+import { CliAuthorize } from "./pages/CliAuthorize";
 import { AdminLayout } from "./pages/admin/AdminLayout";
 import { Accounts } from "./pages/admin/Accounts";
 import { TwoFactorAdmin } from "./pages/admin/TwoFactorAdmin";
@@ -39,7 +41,8 @@ import { PeopleProvider } from "./usePeople";
 import { UploadProvider } from "./upload/UploadProvider";
 import { UploadTray } from "./upload/UploadTray";
 
-// Client routes must not start with /auth or /assets: the gateway sends those to the API.
+// Client routes must not start with /auth or /assets: the gateway sends those to the API. /cli/authorize is the one client
+// route under /cli (the rest of /cli is the CLI download); the gateway and the web container name it explicitly.
 export function App() {
   return (
     <Routes>
@@ -47,6 +50,9 @@ export function App() {
       <Route path="/register" element={<Register />} />
       <Route path="/logout" element={<Logout />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      {/* Approving a command-line login: sign in first if needed (and come back), no app shell around the question. */}
+      <Route path="/cli/authorize" element={<CliAuthorize />} />
+      <Route path="/activate" element={<Activate />} />
       {/* Public share links: no login, outside the signed-in shell. */}
       <Route path="/s/:token" element={<ShareView />} />
       {/* The photo frame: a wall tablet's view. Signed in, but outside the shell (no bar, nothing to click). */}
@@ -97,7 +103,7 @@ function RequireAuth() {
   const { state, signOut } = useAuth();
   const loc = useLocation();
   if (state.status === "loading") return <p className="center muted" role="status">Loading…</p>;
-  if (state.status === "anonymous") return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
+  if (state.status === "anonymous") return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;
   // The administrator requires 2FA and this account has none: the server refuses everything else, so go and enrol.
   if (state.user.mfa_enrol_required && loc.pathname !== "/settings/security") {
     return <Navigate to="/settings/security" replace />;

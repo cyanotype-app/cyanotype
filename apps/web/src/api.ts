@@ -2,6 +2,7 @@
 // structs in apps/auth/src/routes.rs and apps/assets/src/routes.rs; generating this from a utoipa
 // OpenAPI document is a planned follow-up (see docs/build.md).
 
+import type { CliAuthorizeParams } from "./cliLoginText";
 import type { Crop, ServerRecipe } from "./recipeText";
 
 /** GET /auth/me */
@@ -372,6 +373,26 @@ export interface ApiKey {
 }
 
 export type ApiKeyScope = "import" | "read" | "full";
+
+/** An API key in an admin's view of an account (GET /auth/admin/users/{id}/api-keys). */
+export interface AccountApiKey {
+  id: string;
+  name: string;
+  prefix: string;
+  scope: ApiKeyScope;
+  created_at: string;
+  last_used_at: string | null;
+  expires_at: string | null;
+}
+
+/** What a command-line login request is, as the server read it (POST /auth/cli/authorize/check, /auth/cli/device/lookup). */
+export interface CliRequest {
+  /** The device name as the server will store it (cut down to plain text). */
+  device: string;
+  scope: ApiKeyScope;
+  /** Device flow only: seconds the code still works. */
+  expires_in?: number;
+}
 
 /** POST /auth/api-keys: `key` is the plaintext secret, returned only once. */
 export interface CreatedApiKey extends Omit<ApiKey, "last_used_at" | "expired"> {
@@ -1465,6 +1486,21 @@ export const api = {
       json(expiresInDays ? { name, scope, expires_in_days: expiresInDays } : { name, scope }),
     ),
   revokeApiKey: (id: string) => request<void>(`/auth/api-keys/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  accountApiKeys: (id: string) =>
+    request<{ items: AccountApiKey[] }>(`/auth/admin/users/${encodeURIComponent(id)}/api-keys`),
+  revokeAccountApiKey: (id: string, keyId: string) =>
+    request<void>(`/auth/admin/users/${encodeURIComponent(id)}/api-keys/${encodeURIComponent(keyId)}`, { method: "DELETE" }),
+  /** Command-line login in the browser (docs/import.md, "Log in"): the loopback page's request, read by the server. */
+  cliAuthorizeCheck: (p: CliAuthorizeParams) => request<CliRequest>("/auth/cli/authorize/check", json(p)),
+  /** Allow: `redirect` is the CLI's loopback address with the single-use code. */
+  cliAuthorizeApprove: (p: CliAuthorizeParams) => request<{ redirect: string }>("/auth/cli/authorize/approve", json(p)),
+  cliAuthorizeDeny: (p: CliAuthorizeParams) => request<{ redirect: string }>("/auth/cli/authorize/deny", json(p)),
+  /** The device flow: the code travels in the body, never in an address. */
+  cliDeviceLookup: (userCode: string) => request<CliRequest>("/auth/cli/device/lookup", json({ user_code: userCode })),
+  cliDeviceApprove: (userCode: string) =>
+    request<{ approved: boolean; device: string }>("/auth/cli/device/approve", json({ user_code: userCode })),
+  cliDeviceDeny: (userCode: string) =>
+    request<{ approved: boolean; device: string }>("/auth/cli/device/deny", json({ user_code: userCode })),
   listAssets: (
     opts: { cursor?: string | null; before?: string | null; limit?: number; bbox?: string } & LibraryView = {},
   ) => {

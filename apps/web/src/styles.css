@@ -5724,3 +5724,46 @@ button.person-card {
     font-size: 0.8rem;
   }
 }
+
+/* Approving a command-line login (/cli/authorize, /activate) */
+.cli-card {
+  width: min(28rem, 100%);
+}
+.cli-question {
+  margin: 0 0 1rem;
+  font-size: 1.15rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.cli-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.4rem 0.9rem;
+  margin: 0 0 1rem;
+}
+.cli-facts dt {
+  color: var(--muted);
+}
+.cli-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.cli-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.cli-actions .btn {
+  flex: 1 1 8rem;
+}
+.auth-card .cli-actions .btn-primary {
+  width: auto;
+  margin-top: 0;
+}
+.auth-card .user-code-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1.4rem;
+  letter-spacing: 0.15em;
+  text-align: center;
+  text-transform: uppercase;
+}

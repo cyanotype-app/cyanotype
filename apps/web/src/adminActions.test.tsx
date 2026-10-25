@@ -44,6 +44,35 @@ describe("AccountActions", () => {
   };
   const open = async (user: ReturnType<typeof userEvent.setup>) => user.click(screen.getByText("Manage"));
 
+  it("lists the account's API keys with their last use and revokes one", async () => {
+    const key = {
+      id: "k1",
+      name: "cyanotype CLI on test-laptop",
+      prefix: "cyk_abcdef",
+      scope: "import" as const,
+      created_at: "2026-01-01T00:00:00Z",
+      last_used_at: null,
+      expires_at: null,
+    };
+    const list = vi
+      .spyOn(api, "accountApiKeys")
+      .mockResolvedValueOnce({ items: [key] })
+      .mockResolvedValue({ items: [] });
+    const revoke = vi.spyOn(api, "revokeAccountApiKey").mockResolvedValue(undefined);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    const changed = setup(account());
+    await open(user);
+    await user.click(screen.getByRole("button", { name: "API keys" }));
+    expect(await screen.findByText("cyanotype CLI on test-laptop")).toBeInTheDocument();
+    expect(screen.getByText(/last used never/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Revoke cyanotype CLI on test-laptop" }));
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith("u2", "k1"));
+    expect(await screen.findByText("No API keys.")).toBeInTheDocument();
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(changed).toHaveBeenCalled();
+  });
+
   it("disables and reloads", async () => {
     const disable = vi.spyOn(api, "disableAccount").mockResolvedValue({ disabled: true, changed: true });
     const user = userEvent.setup();

@@ -39,7 +39,6 @@ indicatif = "0.17"
 # Already in the lock file through rustls (Ed25519 verification of release signatures); no new crate.
 ring = "0.17"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
-rpassword = "7"
 tokio-util = { version = "0.7", features = ["io"] }
 toml = "0.8"
 walkdir = "2"

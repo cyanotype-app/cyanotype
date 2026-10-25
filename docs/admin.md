@@ -95,6 +95,8 @@ target and a small JSON detail. Never a token, a password or a photo name. Servi
 | `account.role` | promoted or demoted (`from`, `to`) |
 | `account.reset_link` | a reset link made (never the link); `account.password_reset` is by the person who used it |
 | `account.sessions_revoked` | an admin signed an account out everywhere |
+| `cli_login.approve`, `cli_login.deny`, `cli_login.issue` | someone allowed or denied a command-line login (`device`, `scope`, `flow`: `browser` or `device`), and the API key it made (`cyanotype CLI on <device>`, never the key) |
+| `account.api_key_revoked` | an admin revoked one of an account's API keys |
 | `account.delete.requested`, `account.delete.finished` | the two ends of an account deletion (the second is written by the worker, with counts) |
 | `storage.bucket_check`, `jobs.retry` | a bucket check started; failed jobs retried (kind and count) |
 
@@ -235,6 +237,9 @@ On each account's card on Admin > Accounts, under **Manage** (all of them admin 
 - **Sessions** (`GET|DELETE /auth/admin/users/{id}/sessions`): the account's active sessions (when they started and expire, never
   a token) and **Sign out everywhere**. People see their own at Settings > Sessions (`GET /auth/sessions`, `POST
   /auth/sessions/revoke-others`, `/revoke-all`, `DELETE /auth/sessions/{id}`; sessions only, not API keys).
+- **API keys** (`GET /auth/admin/users/{id}/api-keys`, `DELETE /auth/admin/users/{id}/api-keys/{key_id}`): the account's keys (name,
+  scope, created, last used; never the key), among them the "cyanotype CLI on <device>" ones that `cyanotype login` makes, each with
+  **Revoke** (a lost laptop). Audited as `account.api_key_revoked`. People see and revoke their own at Settings > API keys.
 - **Delete account** (`POST /auth/admin/users/{id}/delete` with `confirm_email`): two steps in the web app (open the panel, then
   type the account's email; the server checks it again). The account is disabled and signed out at once and a `delete_account` task
   is queued; the worker then marks every file as being purged (so no new thumbnails are written for them) and waits for jobs
