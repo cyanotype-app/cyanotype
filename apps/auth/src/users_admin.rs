@@ -44,6 +44,8 @@ pub fn admin_routes() -> Router<AppState> {
             "/auth/admin/users/{id}/sessions",
             get(user_sessions).delete(revoke_user_sessions),
         )
+        .route("/auth/admin/users/{id}/api-keys", get(user_api_keys))
+        .route("/auth/admin/users/{id}/api-keys/{key_id}", delete(revoke_user_api_key))
         .route("/auth/admin/users/{id}/delete", post(delete_account))
         .route("/auth/admin/audit", get(audit_log))
 }
@@ -443,6 +445,64 @@ async fn revoke_one(State(st): State<AppState>, user: SessionUser, Path(id): Pat
     if n == 0 {
         return Err(ApiError::NotFound);
     }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- API keys
+
+/// An account's API keys (never the key itself), for the Manage panel: the CLI logins appear here with their last use.
+async fn user_api_keys(State(st): State<AppState>, _admin: AdminUser, Path(id): Path<Uuid>) -> ApiResult<Json<Value>> {
+    target(&mut *st.db.acquire().await?, id).await?;
+    type Row = (
+        Uuid,
+        String,
+        String,
+        String,
+        time::OffsetDateTime,
+        Option<time::OffsetDateTime>,
+        Option<time::OffsetDateTime>,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, name, prefix, scope, created_at, last_used_at, expires_at
+         FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(id)
+    .fetch_all(&st.db)
+    .await?;
+    let items: Vec<Value> = rows
+        .into_iter()
+        .map(|(id, name, prefix, scope, created, used, expires)| {
+            json!({
+                "id": id, "name": name, "prefix": prefix, "scope": scope, "created_at": rfc3339(created),
+                "last_used_at": used.map(rfc3339), "expires_at": expires.map(rfc3339),
+            })
+        })
+        .collect();
+    Ok(Json(json!({"items": items})))
+}
+
+/// Revoke one of an account's API keys (a lost laptop). Audited; the key stops working at once.
+async fn revoke_user_api_key(
+    State(st): State<AppState>,
+    admin: AdminUser,
+    Path((id, key_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<StatusCode> {
+    let t = target(&mut *st.db.acquire().await?, id).await?;
+    let name: Option<String> = sqlx::query_scalar("DELETE FROM api_keys WHERE id = $1 AND user_id = $2 RETURNING name")
+        .bind(key_id)
+        .bind(id)
+        .fetch_optional(&st.db)
+        .await?;
+    let name = name.ok_or(ApiError::NotFound)?;
+    audit::record(
+        &st.db,
+        Some(admin.id),
+        "account.api_key_revoked",
+        Some("user"),
+        Some(&id.to_string()),
+        json!({"email": t.email, "key": name}),
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

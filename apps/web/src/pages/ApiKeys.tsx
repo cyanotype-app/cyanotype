@@ -94,8 +94,10 @@ export function ApiKeys() {
     <div className="settings">
       <h1>API keys</h1>
       <p className="muted">
-        Keys let the <code>cyanotype</code> command line import photos without your password. Run{" "}
-        <code>cyanotype login --server {window.location.origin} --api-key …</code>.
+        Keys let the <code>cyanotype</code> command line import photos without your password. The easy way is{" "}
+        <code>cyanotype login {window.location.origin}</code>, which asks you to allow it here and adds a key named
+        &quot;cyanotype CLI on …&quot; below. To use a key you made yourself, run{" "}
+        <code>cyanotype login {window.location.origin} --api-key …</code>.
       </p>
 
       <InstallCli />

@@ -96,10 +96,17 @@ spa_csp() {
 api_csp="default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
 perms="accelerometer=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), serial=(), usb=(), xr-spatial-tracking=()"
 
-# Web UI: the SPA, a client-side route, a share page, the map.
-for path in / /library /s/x /map /settings/security; do
+# Web UI: the SPA, a client-side route, a share page, the map, the pages that approve a command-line login (/cli/authorize
+# lives under /cli, whose other files are downloads with the lock-everything policy).
+for path in / /library /s/x /map /settings/security /cli/authorize /activate; do
   hdr "$port" "$path" Content-Security-Policy "$(spa_csp "https://s3.example.test 'self'" "'self'")"
 done
+# /cli/authorize is the SPA shell (not the download area's 404), while an unknown file under /cli stays a real 404.
+body="$(curl -s "http://127.0.0.1:$port/cli/authorize?state=x")"
+if [ "$body" = "<html>spa</html>" ]; then echo "ok   - /cli/authorize serves the SPA shell"; else echo "FAIL - /cli/authorize body: $body"; fail=1; fi
+code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/cli/authorize/x")"
+if [ "$code" = 404 ]; then echo "ok   - /cli/authorize/x is a 404"; else echo "FAIL - /cli/authorize/x: $code"; fail=1; fi
+hdr "$port" /cli/authorize X-Robots-Tag "noindex, nofollow"
 # APIs, the CLI download and the health check.
 for path in /assets/me /assets/public/s/x /auth/me /cli/latest.json /healthz; do
   hdr "$port" "$path" Content-Security-Policy "$api_csp"

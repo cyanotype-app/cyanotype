@@ -39,29 +39,61 @@ cargo install --path apps/cli --locked      # installs the `cyanotype` binary
 A source build includes the operator commands (`migrate`, `reindex`, `manifest`) that the downloadable build leaves out,
 and reports itself as a development build (`0.0.1-dev`), which `cyanotype update` will not overwrite.
 
-## 2. Create an API key and log in
-
-Either let the CLI do it with your email and password:
+## 2. Log in
 
 ```sh
-cyanotype login --server https://photos-dev.cyanotype.app
-# Email: you@example.com
-# Password: ********        (use --password-stdin or CYANOTYPE_PASSWORD for scripts)
+cyanotype login https://photos.example.com
 ```
 
-This logs in, asks the server for a new API key (named `cli on <hostname>`, or `--name`), throws the session
-away and stores the key. Or create the key yourself in the web UI (Settings, "API keys": the key is shown
-once, copy it) or with `POST /auth/api-keys {"name": "..."}` while logged in, then:
+No password is typed into the terminal. The CLI opens your browser at `https://photos.example.com/cli/authorize` (signing you
+in first if you are not, and bringing you back), which asks **"Allow cyanotype CLI on <this computer> to access your library?"**
+and says what the key may do. **Allow** makes the server create an API key named `cyanotype CLI on <hostname>`, which the CLI
+stores; **Deny** cancels. If the browser cannot be opened the address is printed instead. Only press Allow for a login you
+started yourself: the page names the computer so you can tell.
+
+How it works (the same idea as `gh auth login`, with PKCE): the CLI listens on `127.0.0.1:<random port>` and sends the browser
+to `/cli/authorize?redirect_uri=http://127.0.0.1:<port>/callback&state=...&code_challenge=...&device=<hostname>&scope=import`.
+After Allow the page navigates to that address with a single-use code (valid 60 seconds, stored only as a hash), and the CLI
+trades the code plus its PKCE verifier for the key at `POST /auth/cli/token`. The server accepts only `http://127.0.0.1:<port>/callback`
+and `http://[::1]:<port>/callback` (port 1024 or higher) as the address to return to: no `localhost`, no other host or address, no
+`https`, no userinfo, query or fragment.
+
+**Over SSH, or on a machine without a display** (no `DISPLAY`/`WAYLAND_DISPLAY` on Linux, or `SSH_CONNECTION`/`SSH_TTY` set), and
+whenever you pass `--device`, the CLI uses the device-code flow instead:
 
 ```sh
-cyanotype login --server https://photos-dev.cyanotype.app --api-key cyk_...
+cyanotype login https://photos.example.com --device
+# To sign in, open https://photos.example.com/activate on any device and enter this code:
+#
+#   WDJB-MJHT
 ```
+
+Open `/activate` on your phone or any computer, sign in if asked, type the code, check the device name and Allow. The CLI polls
+`POST /auth/cli/device/token` until you do (the code works for 10 minutes; the CLI honours the server's interval and `slow_down`,
+and stops on `access_denied` or `expired_token`). The code is typed into the page and sent in a request body, never put in an
+address.
+
+Other ways to log in:
+
+```sh
+cyanotype login https://photos.example.com --api-key cyk_...      # store a key you made yourself (Settings, "API keys")
+cyanotype login https://photos.example.com --scope read           # what the new key may do: import (default) or read
+printf '%s\n' "$PASSWORD" | cyanotype login https://photos.example.com --email you@example.com --password-stdin   # deprecated
+```
+
+`--password-stdin` (with `--email`, `--name`, `--code`) is the old email-and-password login for scripts. It still works but is
+deprecated: prefer the browser login, or create a key in the web UI and use `--api-key`.
+
+`cyanotype whoami` prints the account you are logged in as; `cyanotype logout` revokes this machine's key on the server and
+removes it from the config file (a key from `CYANOTYPE_API_KEY` is left alone).
 
 The server URL and key are written to `$XDG_CONFIG_HOME/cyanotype/config.toml` (default
 `~/.config/cyanotype/config.toml`, mode 600). `CYANOTYPE_SERVER` and `CYANOTYPE_API_KEY` override the file,
-which is handy in CI. `cyanotype status` shows the server, the account and the asset count. Revoke a key
-(Settings, "API keys", or `DELETE /auth/api-keys/{id}`) and it stops working immediately. API keys cannot
-create, list or revoke keys; only a login session can.
+which is handy in CI. `cyanotype status` shows the server, the account and the asset count. A login through the browser is an
+ordinary API key: it is listed at Settings, "API keys" (and in Admin, Accounts, Manage, "API keys") with when it was last used,
+and revoking it there stops it working immediately. API keys cannot create, list or revoke keys; only a login session can.
+Allowing and denying a login, and every key made this way, are in the audit log (`cli_login.approve`, `cli_login.deny`,
+`cli_login.issue`). The login endpoints share the per-IP rate limit of `/auth/login`.
 
 ### Key scopes and expiry
 
@@ -73,10 +105,10 @@ Every API key has a **scope**, and optionally an expiry (Settings > API keys, or
 | `read` | Everything a `GET` reaches (library, search, downloads). Cannot upload or change anything. |
 | `full` | Everything a session can do except what is session-only: managing keys, two-factor authentication, sessions and the whole admin portal (those refuse every key). |
 
-`cyanotype login` makes an **`import`** key by default; ask for another with `--scope read` or `--scope full`. Keys that existed before
+`cyanotype login` makes an **`import`** key by default; ask for a read key with `--scope read`. A `full` key is never made by a browser or code approval (a link someone sends you could ask for one): make it on the API keys page and pass it with `--api-key`. Keys that existed before
 scopes are `full` with no expiry. An expired key is refused like a revoked one (401) and is listed as expired. The scope is checked
 by the server on every route (a key with too small a scope gets `403` with `code: insufficient_scope`), not by the client. If your
-account uses two-factor authentication, `cyanotype login` asks for the code after the password (`--code`, or a recovery code).
+account uses two-factor authentication, the browser login asks for the code in the browser like any sign-in (the deprecated password login asks in the terminal: `--code`, or a recovery code).
 
 ## 3. Import
 

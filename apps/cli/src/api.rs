@@ -87,6 +87,35 @@ pub struct Me {
     pub scope: Option<String>,
 }
 
+/// What a finished login through the browser returns (`POST /auth/cli/token`, and the device poll once approved).
+#[derive(Debug, Clone, Deserialize)]
+pub struct KeyGrant {
+    pub key: String,
+    pub email: String,
+}
+
+/// `POST /auth/cli/device`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceStart {
+    pub device_code: String,
+    pub user_code: String,
+    /// Where on the server the code is entered (`/activate`).
+    pub verification_path: String,
+    pub expires_in: u64,
+    pub interval: u64,
+}
+
+/// The answer to one poll of the device flow.
+#[derive(Debug)]
+pub enum PollOutcome {
+    Key(KeyGrant),
+    Pending,
+    /// Poll less often: the new interval in seconds.
+    SlowDown(u64),
+    Denied,
+    Expired,
+}
+
 /// What a correct password earned: a session, or (the account has two-factor authentication) a challenge to answer with a code.
 pub enum LoginOutcome {
     Session(String),
@@ -509,6 +538,68 @@ impl Api {
             })
             .await?;
         Ok(self.json::<Created>(res).await?.key)
+    }
+
+    // ---- login through the browser (src/login.rs)
+
+    /// The loopback flow's last step: the single-use code and the PKCE verifier for an API key.
+    pub async fn cli_token(&self, code: &str, verifier: &str, redirect_uri: &str) -> ApiResult<KeyGrant> {
+        let res = self
+            .send(|| {
+                self.req(Method::POST, "/auth/cli/token")
+                    .json(&serde_json::json!({"code": code, "code_verifier": verifier, "redirect_uri": redirect_uri}))
+            })
+            .await?;
+        self.json(res).await
+    }
+
+    /// The device flow's first step: a user code to show and a device code to poll with.
+    pub async fn device_start(&self, device: &str, scope: &str) -> ApiResult<DeviceStart> {
+        let res = self
+            .send(|| {
+                self.req(Method::POST, "/auth/cli/device")
+                    .json(&serde_json::json!({"device": device, "scope": scope}))
+            })
+            .await?;
+        self.json(res).await
+    }
+
+    /// One poll of the device flow (RFC 8628, section 3.5).
+    pub async fn device_poll(&self, device_code: &str) -> ApiResult<PollOutcome> {
+        let res = self
+            .send(|| {
+                self.req(Method::POST, "/auth/cli/device/token")
+                    .json(&serde_json::json!({"device_code": device_code}))
+            })
+            .await?;
+        if res.status().is_success() {
+            return Ok(PollOutcome::Key(self.json(res).await?));
+        }
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        let body: serde_json::Value = serde_json::from_str(text.trim()).unwrap_or_default();
+        match body.get("code").and_then(|c| c.as_str()) {
+            Some("authorization_pending") => Ok(PollOutcome::Pending),
+            Some("slow_down") => Ok(PollOutcome::SlowDown(
+                body.get("interval").and_then(|i| i.as_u64()).unwrap_or(10),
+            )),
+            Some("access_denied") => Ok(PollOutcome::Denied),
+            Some("expired_token") | Some("invalid_grant") => Ok(PollOutcome::Expired),
+            _ => Err(ApiError::Fatal(snippet_of(status, &text))),
+        }
+    }
+
+    /// `cyanotype logout`: revoke the key this client is configured with. False when the server no longer knows it.
+    pub async fn cli_logout(&self) -> ApiResult<bool> {
+        let res = self.send(|| self.req(Method::POST, "/auth/cli/logout")).await?;
+        match res.status() {
+            StatusCode::NO_CONTENT | StatusCode::OK => Ok(true),
+            StatusCode::UNAUTHORIZED => Ok(false),
+            status => Err(ApiError::Fatal(snippet_of(
+                status,
+                &res.text().await.unwrap_or_default(),
+            ))),
+        }
     }
 
     pub async fn logout(&self, cookie: &str) {

@@ -1,4 +1,5 @@
 //! Auth service: registration, login, logout, `/auth/me`. Routes live under `/auth/*`.
+mod cli_login;
 mod invites;
 mod routes;
 mod settings;

@@ -27,7 +27,7 @@ use sqlx::PgPool;
 use cyanotype_core::limits::{self, Limits};
 
 use crate::settings::{AuthConfig, RegistrationMode};
-use crate::{invites, twofactor, users_admin};
+use crate::{cli_login, invites, twofactor, users_admin};
 
 const SESSION_DAYS: i64 = 30;
 /// Serialises first-user registration across all auth replicas (transaction-scoped advisory lock).
@@ -58,6 +58,7 @@ pub fn routes(state: AppState) -> Router {
         .route("/auth/invites/check", post(invites::check))
         .route("/auth/reset-password/check", post(users_admin::reset_check))
         .route("/auth/reset-password", post(users_admin::reset_password))
+        .merge(cli_login::limited_routes())
         .route_layer(middleware::from_fn_with_state(limit, ratelimit::limit));
     Router::new()
         .merge(limited)
@@ -71,6 +72,7 @@ pub fn routes(state: AppState) -> Router {
         .merge(invites::admin_routes())
         .merge(users_admin::admin_routes())
         .merge(users_admin::session_routes())
+        .merge(cli_login::routes())
         .route("/auth/api-keys", get(list_api_keys).post(create_api_key))
         .route("/auth/api-keys/{id}", delete(revoke_api_key))
         .with_state(state)
@@ -421,12 +423,12 @@ async fn me(State(db): State<PgPool>, AnyCaller(c): AnyCaller) -> ApiResult<Json
 }
 
 /// Plaintext API keys look like `cyk_<64 hex>` (32 random bytes). Only the sha256 is stored.
-const API_KEY_PREFIX: &str = "cyk_";
+pub(crate) const API_KEY_PREFIX: &str = "cyk_";
 /// Characters of the key (after `cyk_`) kept in clear so the list can tell keys apart.
-const API_KEY_HINT_LEN: usize = 6;
-const MAX_API_KEYS_PER_USER: i64 = 50;
+pub(crate) const API_KEY_HINT_LEN: usize = 6;
+pub(crate) const MAX_API_KEYS_PER_USER: i64 = 50;
 
-fn new_api_key() -> String {
+pub(crate) fn new_api_key() -> String {
     format!("{API_KEY_PREFIX}{}", random_token())
 }
 
@@ -1069,4 +1071,5 @@ mod tests {
 
     include!("invites_tests.rs");
     include!("twofactor_tests.rs");
+    include!("cli_login_tests.rs");
 }

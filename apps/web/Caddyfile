@@ -33,6 +33,17 @@
 		file_server
 	}
 
+	# /cli/authorize is not a download: it is the page where `cyanotype login` sends the browser to allow the login (a client
+	# route of the SPA). Its address carries a state and a PKCE challenge, so it stays out of search engines. It has to come
+	# before the /cli/* download handler below.
+	@cliauth path /cli/authorize
+	handle @cliauth {
+		header X-Robots-Tag "noindex, nofollow"
+		header Cache-Control "no-cache"
+		try_files /index.html
+		file_server
+	}
+
 	# The downloadable CLI (docs/releases.md): programs, SHA256SUMS(.sig), latest.json and the install scripts, built into the
 	# image under /srv/cli. A missing file is a real 404, never the SPA shell (a script piped into `sh` must not get HTML).
 	# The metadata files change with every release and are tiny: always revalidate. The programs are named by target, not

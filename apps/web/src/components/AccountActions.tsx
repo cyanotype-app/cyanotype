@@ -1,7 +1,8 @@
 import { useEffect, useId, useState } from "react";
-import { api, type AdminAccount, type ResetLink, type SessionInfo } from "../api";
+import { api, type AccountApiKey, type AdminAccount, type ResetLink, type SessionInfo } from "../api";
+import { SCOPE_LABEL } from "../twoFactorText";
 
-type Panel = null | "reset" | "sessions" | "delete";
+type Panel = null | "reset" | "sessions" | "keys" | "delete";
 
 const when = (iso: string) => new Date(iso).toLocaleString();
 
@@ -93,6 +94,9 @@ export function AccountActions({ account: a, meId, onChanged }: Props) {
         <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => toggle("sessions")} aria-expanded={panel === "sessions"}>
           Sessions
         </button>
+        <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => toggle("keys")} aria-expanded={panel === "keys"}>
+          API keys
+        </button>
         {!mine && (
           <button type="button" className="btn btn-danger-quiet" disabled={busy} onClick={() => toggle("delete")} aria-expanded={panel === "delete"}>
             Delete account…
@@ -109,6 +113,7 @@ export function AccountActions({ account: a, meId, onChanged }: Props) {
       )}
       {panel === "reset" && <ResetPanel account={a} />}
       {panel === "sessions" && <SessionsPanel account={a} />}
+      {panel === "keys" && <KeysPanel account={a} onChanged={onChanged} />}
       {panel === "delete" && (
         <DeletePanel
           account={a}
@@ -228,6 +233,71 @@ function SessionsPanel({ account: a }: { account: AdminAccount }) {
         <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => void signOut()}>
           Sign out everywhere
         </button>
+      )}
+      <div role="alert" className="form-error">
+        {error}
+      </div>
+    </div>
+  );
+}
+
+/** The account's API keys, the command-line logins among them ("cyanotype CLI on <device>"), with last use and revoke. */
+function KeysPanel({ account: a, onChanged }: { account: AdminAccount; onChanged: () => Promise<void> }) {
+  const [items, setItems] = useState<AccountApiKey[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    api
+      .accountApiKeys(a.id)
+      .then((r) => live && setItems(r.items))
+      .catch((e: unknown) => live && setError(e instanceof Error ? e.message : "Could not load the API keys."));
+    return () => {
+      live = false;
+    };
+  }, [a.id, tick]);
+
+  async function revoke(k: AccountApiKey) {
+    if (!window.confirm(`Revoke "${k.name}"? Anything using it stops working.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.revokeAccountApiKey(a.id, k.id);
+      setTick((t) => t + 1);
+      await onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not revoke the key.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="account-panel">
+      {items === null ? (
+        <p className="muted small" role="status">
+          Loading…
+        </p>
+      ) : items.length === 0 ? (
+        <p className="small">No API keys.</p>
+      ) : (
+        <ul className="key-list small">
+          {items.map((k) => (
+            <li key={k.id}>
+              <div>
+                <strong>{k.name}</strong> <code>{k.prefix}…</code>
+                <div className="muted">
+                  {SCOPE_LABEL[k.scope] ?? k.scope} · created {when(k.created_at)} · last used {k.last_used_at ? when(k.last_used_at) : "never"}
+                </div>
+              </div>
+              <button type="button" className="btn btn-quiet" disabled={busy} aria-label={`Revoke ${k.name}`} onClick={() => void revoke(k)}>
+                Revoke
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
       <div role="alert" className="form-error">
         {error}

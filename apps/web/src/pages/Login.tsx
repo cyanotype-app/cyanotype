@@ -13,7 +13,7 @@ export function Login() {
   const from = (useLocation().state as { from?: string } | null)?.from ?? "/library";
   const [challenge, setChallenge] = useState<string | null>(null);
   if (state.status === "authenticated" && !challenge) {
-    return <Navigate to={state.user.mfa_enrol_required ? "/settings/security" : "/library"} replace />;
+    return <Navigate to={state.user.mfa_enrol_required ? "/settings/security" : from} replace />;
   }
 
   if (challenge) {

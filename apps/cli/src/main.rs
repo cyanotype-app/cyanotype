@@ -4,6 +4,7 @@ mod config;
 #[cfg(feature = "server-tools")]
 mod faces;
 mod import;
+mod login;
 #[cfg(feature = "server-tools")]
 mod places;
 #[cfg(feature = "server-tools")]
@@ -57,31 +58,44 @@ enum Command {
     Import(import::ImportArgs),
     /// Show the server, who you are logged in as, and how many assets it holds.
     Status,
+    /// Print who you are logged in as.
+    Whoami,
+    /// Revoke this machine's API key on the server and remove it from the config file.
+    Logout,
     /// Update this program to the version your Cyanotype server offers (checksum and signature verified).
     Update(update::UpdateArgs),
 }
 
 #[derive(clap::Args)]
 struct LoginArgs {
-    /// Server URL, e.g. https://photos.example.com
+    /// Server URL, e.g. https://photos.example.com (default: the one from the last login).
+    #[arg(value_name = "SERVER")]
+    server_arg: Option<String>,
+    /// Same as the SERVER argument.
     #[arg(long, env = config::ENV_SERVER)]
-    server: String,
-    /// Store this existing API key instead of creating one with email + password.
+    server: Option<String>,
+    /// Use the device-code login: print a short code to enter at <server>/activate on any device. Chosen automatically
+    /// over SSH and on a machine without a display.
+    #[arg(long)]
+    device: bool,
+    /// Store this existing API key instead of signing in through the browser.
     #[arg(long)]
     api_key: Option<String>,
-    /// Account email (prompted when omitted).
-    #[arg(long)]
-    email: Option<String>,
-    /// Read the password from the first line of stdin instead of prompting (for scripts).
+    /// What the new key may do: `import` (upload and status only; the default) or `read`. For a `full` key, make one on
+    /// the API keys page and pass it with --api-key.
+    #[arg(long, value_parser = ["import", "read"], default_value = "import")]
+    scope: String,
+    /// Deprecated: sign in with an email and a password read from stdin (for old scripts; use the browser login, or
+    /// `--api-key`).
     #[arg(long)]
     password_stdin: bool,
-    /// Name for the new API key (default: "cli on <hostname>").
+    /// With --password-stdin: the account email (prompted when omitted).
+    #[arg(long)]
+    email: Option<String>,
+    /// With --password-stdin: name for the new API key (default: "cli on <hostname>").
     #[arg(long)]
     name: Option<String>,
-    /// What the new key may do: `import` (upload and status only; the default), `read` or `full`.
-    #[arg(long, value_parser = ["import", "read", "full"], default_value = "import")]
-    scope: String,
-    /// Two-factor code (or a recovery code), when the account has two-factor authentication (prompted when omitted).
+    /// With --password-stdin: two-factor code (or a recovery code), when the account has two-factor authentication.
     #[arg(long)]
     code: Option<String>,
 }
@@ -133,6 +147,8 @@ async fn dispatch(command: Command) -> Result<ExitCode> {
         Command::Update(a) => update::run(a).await?,
         Command::Login(a) => login(a).await?,
         Command::Status => status().await?,
+        Command::Whoami => whoami().await?,
+        Command::Logout => logout().await?,
         Command::Import(a) => {
             return Ok(if import::run(a).await? {
                 ExitCode::SUCCESS
@@ -156,17 +172,24 @@ fn prompt(label: &str) -> Result<String> {
 }
 
 fn default_key_name() -> String {
-    let host = std::env::var("HOSTNAME")
-        .ok()
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
-        .map(|h| h.trim().to_string())
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "unknown host".into());
-    format!("cli on {host}")
+    format!("cli on {}", login::device_name())
 }
 
+/// `cyanotype login`: the browser (loopback, or the device code), or with `--api-key` / `--password-stdin` the older ways.
 async fn login(a: LoginArgs) -> Result<()> {
-    let server = config::normalize_server(&a.server)?;
+    let legacy = a.password_stdin || std::env::var("CYANOTYPE_PASSWORD").is_ok_and(|p| !p.is_empty());
+    if !legacy && (a.email.is_some() || a.name.is_some() || a.code.is_some()) {
+        bail!(
+            "--email, --name and --code belong to the deprecated password login (--password-stdin); the browser login needs none of them"
+        );
+    }
+    let saved = config::load_from(&config::config_path()?)?;
+    let server = a
+        .server_arg
+        .or(a.server)
+        .or(saved.server)
+        .context("which server? run `cyanotype login https://photos.example.com`")?;
+    let server = config::normalize_server(&server)?;
     // Kept apart from the key so that what is printed below (who) is never derived from the secret.
     let key: String;
     let who: String;
@@ -179,19 +202,21 @@ async fn login(a: LoginArgs) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("that API key was not accepted by {server}: {e}"))?;
             who = me.email;
         }
-        None => {
+        None if legacy => {
+            eprintln!(
+                "note: logging in with a password is deprecated; run `cyanotype login` without --password-stdin to sign in through the browser"
+            );
             let email = match a.email {
                 Some(e) => e,
                 None => prompt("Email")?,
             };
-            let password = if a.password_stdin {
-                let mut p = String::new();
-                std::io::stdin().lock().read_line(&mut p)?;
-                p.trim_end_matches(['\r', '\n']).to_string()
-            } else if let Ok(p) = std::env::var("CYANOTYPE_PASSWORD") {
-                p
-            } else {
-                rpassword::prompt_password("Password: ").context("reading password")?
+            let password = match std::env::var("CYANOTYPE_PASSWORD").ok().filter(|p| !p.is_empty()) {
+                Some(p) if !a.password_stdin => p,
+                _ => {
+                    let mut p = String::new();
+                    std::io::stdin().lock().read_line(&mut p)?;
+                    p.trim_end_matches(['\r', '\n']).to_string()
+                }
             };
             let api = api::Api::new(&server, None)?;
             let cookie = match api.login(&email, &password).await.map_err(|e| anyhow::anyhow!("{e}"))? {
@@ -211,6 +236,11 @@ async fn login(a: LoginArgs) -> Result<()> {
             key = created.map_err(|e| anyhow::anyhow!("creating API key: {e}"))?;
             who = email;
         }
+        None => {
+            let grant = login::login(&api::Api::new(&server, None)?, &server, &a.scope, a.device).await?;
+            key = grant.key;
+            who = grant.email;
+        }
     }
     let path = config::config_path()?;
     config::save_to(
@@ -222,6 +252,44 @@ async fn login(a: LoginArgs) -> Result<()> {
     )?;
     println!("Logged in to {server} as {who}.");
     println!("Credentials saved to {} (mode 600).", path.display());
+    Ok(())
+}
+
+async fn whoami() -> Result<()> {
+    let c = config::credentials()?;
+    let me = api::Api::new(&c.server, Some(&c.api_key))?
+        .me()
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("{} on {}", me.email, c.server);
+    Ok(())
+}
+
+/// Revokes the key in the config file on the server, then forgets it locally (the server address stays, so `login` needs no
+/// argument). A key from `CYANOTYPE_API_KEY` is left alone: it is not ours to remove.
+async fn logout() -> Result<()> {
+    let path = config::config_path()?;
+    let mut cfg = config::load_from(&path)?;
+    let (Some(server), Some(key)) = (cfg.server.clone(), cfg.api_key.clone()) else {
+        println!("Not logged in.");
+        return Ok(());
+    };
+    match api::Api::new(&server, Some(&key))?.cli_logout().await {
+        Ok(true) => println!("Revoked this machine's API key on {server}."),
+        Ok(false) => println!("The server no longer knew this key (already revoked)."),
+        Err(e) => eprintln!(
+            "warning: could not revoke the key on {server} ({e}); remove it under Settings > API keys when the server is reachable"
+        ),
+    }
+    cfg.api_key = None;
+    config::save_to(&path, &cfg)?;
+    println!("Removed the key from {}.", path.display());
+    if std::env::var(config::ENV_API_KEY).is_ok_and(|k| !k.trim().is_empty()) {
+        eprintln!(
+            "note: {} is set in the environment and was not touched",
+            config::ENV_API_KEY
+        );
+    }
     Ok(())
 }
 
