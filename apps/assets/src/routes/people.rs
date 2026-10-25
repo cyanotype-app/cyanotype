@@ -4,13 +4,18 @@
 //! never written to the bucket or to the audit trail.
 //!
 //! - `GET /assets/people/status`: `{enabled}`. The only answer while the feature is off; the web app reads it to show or hide People.
-//! - `GET /assets/people`: `{items: [{id, name, hidden, faces, photos, cover}]}`, most photos first. `name` is null for an unnamed person
+//! - `GET /assets/people`: `{items: [{id, name, hidden, faces, photos, pending, cover}]}`, most photos first. `name` is null for an unnamed person
 //!   and `cover` is `{face_id, asset_id, box: [x, y, w, h], preview_url}` (the box is fractions of the preview image the URL serves; the web
 //!   app crops it with CSS) or null. Counts are of the photos this session may see (live, not a RAW half, and not hidden unless the Hidden
-//!   view is unlocked); a person only hidden photos have is not listed to a locked session. `GET /assets/people/{id}` is one of these.
+//!   view is unlocked); a person only hidden photos have is not listed to a locked session. `pending` is how many "Is this X?" suggestions
+//!   wait for a named, shown person (0 otherwise), counted for all the people in one query. `GET /assets/people/{id}` is one of these.
 //! - `PATCH /assets/people/{id} {name?, hidden?, cover_face_id?}`: rename (null or blank clears), hide or show, choose the cover.
 //!   `DELETE /assets/people/{id}`: the person goes, its faces are unassigned (they may be grouped again, into a new person).
 //! - `POST /assets/people/{id}/merge {into}`: all the faces go to the other person, which keeps its name unless it has none.
+//! - `POST /assets/people/bulk {action: merge|hide|show|delete, ids, into?, name?}`: the single changes for several people, all or nothing
+//!   (an id that is not the caller's is a `404` and nothing changes). `merge` folds `ids` into `into` (one of them) and may then set `name`.
+//! - `GET /assets/people/{id}/faces?limit&cursor`: the faces a cover can be chosen from (`{face_id, asset_id, box, preview_url}`, best first,
+//!   `next_cursor` while there are more), for "Change cover".
 //! - `GET /assets/people/{id}/photos?limit&cursor|before`: the person's photos, same item shape, ordering and keyset pagination as `GET /assets`.
 //!   `GET /assets/people/{id}/timeline`: `{total, days: [{day, count}]}`, the same photos per day as `GET /assets/timeline` counts them, so
 //!   the person's page is laid out and scrubbed like the library. Photos are in the person's page when they are live, archived ones too.
@@ -49,6 +54,8 @@ const MAX_NAME: usize = 100;
 /// Most people one list returns.
 const MAX_LIST: i64 = 5_000;
 const MAX_SUGGESTIONS: i64 = 50;
+/// Most faces one page of a person's cover choices holds.
+const MAX_COVER_FACES: i64 = 60;
 
 /// Same expression as the library timeline (`x` is the assets alias).
 const SORT: &str = "coalesce(x.taken_at, x.file_modified_at, x.created_at)";
@@ -114,6 +121,8 @@ pub(super) struct Person {
     /// Faces in the photos this session may see, and how many photos they are in.
     faces: i64,
     photos: i64,
+    /// "Is this X?" suggestions waiting for an answer: 0 for an unnamed or hidden person.
+    pending: i64,
     cover: Option<Cover>,
 }
 
@@ -159,6 +168,7 @@ async fn load(s: &AppState, owner: Uuid, unlock: bool, only: Option<Uuid>) -> Ap
     .fetch_all(&s.db)
     .await?;
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let pending = people::pending_counts(&s.db, owner, only, unlock).await?;
     // The cover: the chosen face when this session may see its photo, else the best face (the most confident, the largest).
     let covers: Vec<CoverRow> = sqlx::query_as(&format!(
         "SELECT DISTINCT ON (f.person_id) f.person_id, f.id, f.asset_id, f.box_x, f.box_y, f.box_w, f.box_h
@@ -189,6 +199,7 @@ async fn load(s: &AppState, owner: Uuid, unlock: bool, only: Option<Uuid>) -> Ap
             hidden: r.hidden,
             faces: r.faces,
             photos: r.photos,
+            pending: pending.get(&r.id).copied().unwrap_or(0),
             cover,
         });
     }
@@ -293,10 +304,8 @@ pub(super) async fn patch(
     get(State(s), user, unlock, Path(id)).await
 }
 
-pub(super) async fn remove(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
-    on(&s)?;
-    let mut tx = s.db.begin().await?;
-    lock_person(&mut tx, user.id, id).await?;
+/// Delete one person (locked and owner-checked by the caller): its faces are free again, the decisions about them go with it.
+async fn delete_in(tx: &mut sqlx::PgConnection, owner: Uuid, id: Uuid) -> ApiResult<()> {
     let (faces_n,): (i64,) = sqlx::query_as("SELECT count(*) FROM faces WHERE person_id = $1")
         .bind(id)
         .fetch_one(&mut *tx)
@@ -312,13 +321,21 @@ pub(super) async fn remove(State(s): State<AppState>, user: AuthUser, Path(id): 
         .await?;
     audit::record(
         &mut *tx,
-        Some(user.id),
+        Some(owner),
         "people.delete",
         None,
         None,
         json!({"faces": faces_n}),
     )
     .await?;
+    Ok(())
+}
+
+pub(super) async fn remove(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> ApiResult<StatusCode> {
+    on(&s)?;
+    let mut tx = s.db.begin().await?;
+    lock_person(&mut tx, user.id, id).await?;
+    delete_in(&mut tx, user.id, id).await?;
     people::request(&mut *tx, user.id).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
@@ -327,6 +344,66 @@ pub(super) async fn remove(State(s): State<AppState>, user: AuthUser, Path(id): 
 #[derive(Deserialize)]
 pub(super) struct MergeBody {
     into: Uuid,
+}
+
+/// Move every face of `id` to `into` (both locked and owner-checked by the caller, names as they were read) and delete `id`.
+/// `into` keeps its name unless it has none. Returns how many faces moved.
+async fn merge_in(
+    tx: &mut sqlx::PgConnection,
+    owner: Uuid,
+    id: Uuid,
+    from_name: Option<String>,
+    into: Uuid,
+    into_name: &Option<String>,
+) -> ApiResult<u64> {
+    let moved = sqlx::query("UPDATE faces SET person_id = $2 WHERE person_id = $1")
+        .bind(id)
+        .bind(into)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    // "Not the first person" now means "not the second", unless the face is the second's by now.
+    sqlx::query(
+        "INSERT INTO face_rejections (face_id, person_id)
+         SELECT r.face_id, $2 FROM face_rejections r JOIN faces f ON f.id = r.face_id
+         WHERE r.person_id = $1 AND f.person_id IS DISTINCT FROM $2
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(id)
+    .bind(into)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM face_rejections r USING faces f WHERE f.id = r.face_id AND r.person_id = $1 AND f.person_id = $1",
+    )
+    .bind(into)
+    .execute(&mut *tx)
+    .await?;
+    if into_name.is_none() && from_name.is_some() {
+        sqlx::query("UPDATE people SET name = $2 WHERE id = $1")
+            .bind(into)
+            .bind(from_name)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("UPDATE people SET updated_at = now() WHERE id = $1")
+        .bind(into)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM people WHERE id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    audit::record(
+        &mut *tx,
+        Some(owner),
+        "people.merge",
+        None,
+        None,
+        json!({"faces": moved}),
+    )
+    .await?;
+    Ok(moved)
 }
 
 pub(super) async fn merge(
@@ -345,56 +422,185 @@ pub(super) async fn merge(
     let n1 = lock_person(&mut tx, user.id, first).await?;
     let n2 = lock_person(&mut tx, user.id, second).await?;
     let (from_name, into_name) = if first == id { (n1, n2) } else { (n2, n1) };
-    let moved = sqlx::query("UPDATE faces SET person_id = $2 WHERE person_id = $1")
-        .bind(id)
-        .bind(req.into)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-    // "Not the first person" now means "not the second", unless the face is the second's by now.
-    sqlx::query(
-        "INSERT INTO face_rejections (face_id, person_id)
-         SELECT r.face_id, $2 FROM face_rejections r JOIN faces f ON f.id = r.face_id
-         WHERE r.person_id = $1 AND f.person_id IS DISTINCT FROM $2
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(id)
-    .bind(req.into)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "DELETE FROM face_rejections r USING faces f WHERE f.id = r.face_id AND r.person_id = $1 AND f.person_id = $1",
-    )
-    .bind(req.into)
-    .execute(&mut *tx)
-    .await?;
-    if into_name.is_none() && from_name.is_some() {
-        sqlx::query("UPDATE people SET name = $2 WHERE id = $1")
-            .bind(req.into)
-            .bind(from_name)
-            .execute(&mut *tx)
-            .await?;
-    }
-    sqlx::query("UPDATE people SET updated_at = now() WHERE id = $1")
-        .bind(req.into)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM people WHERE id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    audit::record(
-        &mut *tx,
-        Some(user.id),
-        "people.merge",
-        None,
-        None,
-        json!({"faces": moved}),
-    )
-    .await?;
+    let moved = merge_in(&mut tx, user.id, id, from_name, req.into, &into_name).await?;
     people::request(&mut *tx, user.id).await?;
     tx.commit().await?;
     Ok(Json(json!({"into": req.into, "faces": moved})))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BulkAction {
+    Merge,
+    Hide,
+    Show,
+    Delete,
+}
+
+#[derive(Deserialize)]
+pub(super) struct BulkBody {
+    action: BulkAction,
+    ids: Vec<Uuid>,
+    /// `merge`: the person who stays (one of `ids`).
+    into: Option<Uuid>,
+    /// `merge`: the name the person who stays ends up with (blank clears it); absent leaves it to the usual rule.
+    #[serde(default, deserialize_with = "present")]
+    name: Option<Option<String>>,
+}
+
+/// Several people at once, all or nothing: `{action: "merge" | "hide" | "show" | "delete", ids, into?, name?}`. Every id must be one
+/// of the caller's people (else `404`, and nothing changes). `merge` folds the others of `ids` into `into` (one of them, named or not)
+/// with the single merge's rules and may then set its name. `{done, into?, faces?}`.
+pub(super) async fn bulk(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<BulkBody>,
+) -> ApiResult<Json<Value>> {
+    on(&s)?;
+    let mut ids = req.ids.clone();
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return Err(ApiError::BadRequest("send the ids of the people".into()));
+    }
+    if ids.len() > MAX_IDS {
+        return Err(ApiError::BadRequest(format!("at most {MAX_IDS} at a time")));
+    }
+    let name = match &req.name {
+        Some(Some(n)) => Some(clean_name(n)?),
+        Some(None) => Some(None),
+        None => None,
+    };
+    if !matches!(req.action, BulkAction::Merge) && (req.into.is_some() || name.is_some()) {
+        return Err(ApiError::BadRequest("into and name go with merge".into()));
+    }
+    let mut tx = s.db.begin().await?;
+    // Every lock in id order (as the single merge does), so two bulk changes cannot wait for each other.
+    let rows: Vec<(Uuid, Option<String>)> =
+        sqlx::query_as("SELECT id, name FROM people WHERE id = ANY($1) AND owner_id = $2 ORDER BY id FOR UPDATE")
+            .bind(&ids)
+            .bind(user.id)
+            .fetch_all(&mut *tx)
+            .await?;
+    if rows.len() != ids.len() {
+        return Err(ApiError::NotFound);
+    }
+    let out = match req.action {
+        BulkAction::Hide | BulkAction::Show => {
+            sqlx::query("UPDATE people SET hidden = $2, updated_at = now() WHERE id = ANY($1)")
+                .bind(&ids)
+                .bind(matches!(req.action, BulkAction::Hide))
+                .execute(&mut *tx)
+                .await?;
+            json!({"done": ids.len()})
+        }
+        BulkAction::Delete => {
+            for id in &ids {
+                delete_in(&mut tx, user.id, *id).await?;
+            }
+            people::request(&mut *tx, user.id).await?;
+            json!({"done": ids.len()})
+        }
+        BulkAction::Merge => {
+            let into = req
+                .into
+                .ok_or_else(|| ApiError::BadRequest("send into: who stays".into()))?;
+            if ids.len() < 2 || !ids.contains(&into) {
+                return Err(ApiError::BadRequest(
+                    "merge at least two people, one of them being into".into(),
+                ));
+            }
+            let mut into_name = rows.iter().find(|r| r.0 == into).and_then(|r| r.1.clone());
+            let mut faces = 0;
+            for (id, from_name) in rows.iter().filter(|r| r.0 != into) {
+                faces += merge_in(&mut tx, user.id, *id, from_name.clone(), into, &into_name).await?;
+                // A merged name is taken over once, by the first named person; the others must not overwrite it.
+                if into_name.is_none() {
+                    into_name = from_name.clone();
+                }
+            }
+            if let Some(name) = name {
+                sqlx::query("UPDATE people SET name = $2, updated_at = now() WHERE id = $1")
+                    .bind(into)
+                    .bind(name)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            people::request(&mut *tx, user.id).await?;
+            json!({"done": ids.len() - 1, "into": into, "faces": faces})
+        }
+    };
+    tx.commit().await?;
+    Ok(Json(out))
+}
+
+#[derive(Deserialize, Default)]
+pub(super) struct CoverQuery {
+    limit: Option<i64>,
+    /// How many to skip (what `next_cursor` of the page before says).
+    cursor: Option<String>,
+}
+
+#[derive(FromRow)]
+struct CoverFaceRow {
+    id: Uuid,
+    asset_id: Uuid,
+    box_x: f32,
+    box_y: f32,
+    box_w: f32,
+    box_h: f32,
+}
+
+/// `GET /assets/people/{id}/faces?limit&cursor`: the person's faces a cover can be chosen from (in photos this session may see, with a
+/// preview), best first, `{items: [{face_id, asset_id, box, preview_url}], next_cursor}`.
+pub(super) async fn cover_faces(
+    State(s): State<AppState>,
+    user: AuthUser,
+    unlock: Unlock,
+    Path(id): Path<Uuid>,
+    Query(q): Query<CoverQuery>,
+) -> ApiResult<Json<Value>> {
+    on(&s)?;
+    if load(&s, user.id, unlock.0, Some(id)).await?.is_empty() {
+        return Err(ApiError::NotFound);
+    }
+    let limit = q.limit.unwrap_or(24).clamp(1, MAX_COVER_FACES);
+    let skip: i64 = match &q.cursor {
+        Some(c) => c
+            .parse()
+            .ok()
+            .filter(|n| *n >= 0)
+            .ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?,
+        None => 0,
+    };
+    // One more than asked: whether there is a next page.
+    let mut rows: Vec<CoverFaceRow> = sqlx::query_as(&format!(
+        "SELECT f.id, f.asset_id, f.box_x, f.box_y, f.box_w, f.box_h
+         FROM faces f JOIN assets x ON x.id = f.asset_id
+         WHERE f.person_id = $1 AND f.owner_id = $2 AND {SCANNED} AND x.thumbhash IS NOT NULL AND {}
+         ORDER BY f.score * f.box_w * f.box_h DESC, f.id LIMIT $4 OFFSET $5",
+        seen("x", "$3")
+    ))
+    .bind(id)
+    .bind(user.id)
+    .bind(unlock.0)
+    .bind(limit + 1)
+    .bind(skip)
+    .fetch_all(&s.db)
+    .await?;
+    let more = rows.len() as i64 > limit;
+    rows.truncate(limit as usize);
+    let mut items = Vec::with_capacity(rows.len());
+    for r in &rows {
+        items.push(json!({
+            "face_id": r.id,
+            "asset_id": r.asset_id,
+            "box": [r.box_x, r.box_y, r.box_w, r.box_h],
+            "preview_url": s.storage.presign_get(&keys::preview(user.id, r.asset_id)).await?,
+        }));
+    }
+    let next = more.then(|| (skip + limit).to_string());
+    Ok(Json(json!({"items": items, "next_cursor": next})))
 }
 
 pub(super) async fn photos(

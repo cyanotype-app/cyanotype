@@ -43,7 +43,9 @@ const face = (id: string, personRef: PhotoFace["person"]): PhotoFace => ({ id, b
 
 describe("AssignFaceDialog", () => {
   beforeEach(() => {
-    vi.spyOn(api, "listPeople").mockResolvedValue({ items: [person("p1", "Person A", 4), person("p2", null, 1)] });
+    vi.spyOn(api, "listPeople").mockResolvedValue({
+      items: [person("p1", "Person A", 4), person("p2", null, 1), person("p3", "Person H", 2, { hidden: true })],
+    });
   });
   it("makes a new person, with an optional name, by default", async () => {
     const assign = vi.spyOn(api, "assignFace").mockResolvedValue({ person: null });
@@ -61,8 +63,9 @@ describe("AssignFaceDialog", () => {
     const done = vi.fn();
     render(<AssignFaceDialog face={face("f1", null)} onDone={done} onCancel={vi.fn()} />);
     const select = screen.getByLabelText("Person");
-    await waitFor(() => expect(within(select).getAllByRole("option")).toHaveLength(3));
-    expect(within(select).getByRole("option", { name: "Unnamed person (1 photo)" })).toBeInTheDocument();
+    // A new person, and the named, shown ones: never an unnamed or a hidden person.
+    await waitFor(() => expect(within(select).getAllByRole("option")).toHaveLength(2));
+    expect(within(select).queryByRole("option", { name: /Unnamed person|Person H/ })).not.toBeInTheDocument();
     await userEvent.selectOptions(select, "p1");
     expect(screen.queryByLabelText("Name (optional)")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Save" }));

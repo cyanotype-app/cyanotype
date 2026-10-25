@@ -715,8 +715,23 @@ export interface Person {
   hidden: boolean;
   faces: number;
   photos: number;
+  /** "Is this X?" suggestions waiting for an answer (named, shown people only; 0 or absent otherwise). */
+  pending?: number;
   cover: PersonCover | null;
 }
+
+/** A face a person's cover can be chosen from (GET /assets/people/{id}/faces). */
+export interface CoverFace {
+  face_id: string;
+  asset_id: string;
+  box: FaceBox;
+  preview_url: string;
+}
+
+/** One change to several people at once (POST /assets/people/bulk). */
+export type PeopleBulk =
+  | { action: "hide" | "show" | "delete"; ids: readonly string[] }
+  | { action: "merge"; ids: readonly string[]; into: string; name?: string | null };
 
 /** A face in one photo (GET /assets/{id}/faces); `person` is null for a face nobody has claimed. */
 export interface PhotoFace {
@@ -1361,6 +1376,19 @@ export const api = {
   /** "Not this person": the person's faces in these photos (or these faces) are taken out and never put back. */
   removeFromPerson: (id: string, what: { asset_ids?: readonly string[]; face_ids?: readonly string[] }) =>
     request<{ removed: number }>(`/assets/people/${encodeURIComponent(id)}/faces/remove`, json(what)),
+  /** Hide, show, delete or merge several people, all or nothing. `merge` folds `ids` into `into` and may then set its name. */
+  bulkPeople: (what: PeopleBulk) =>
+    request<{ done: number; into?: string; faces?: number }>("/assets/people/bulk", json(what)),
+  /** The faces a person's cover can be chosen from, best first, a page at a time. */
+  personCoverFaces: (id: string, opts: { cursor?: string | null; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts.cursor) q.set("cursor", opts.cursor);
+    const qs = q.toString();
+    return request<{ items: CoverFace[]; next_cursor: string | null }>(
+      `/assets/people/${encodeURIComponent(id)}/faces${qs ? `?${qs}` : ""}`,
+    );
+  },
   personSuggestions: (id: string) => request<{ items: FaceSuggestion[] }>(`/assets/people/${encodeURIComponent(id)}/suggestions`),
   /** This face is that person, or a new one (with an optional name). */
   assignFace: (face: string, to: { person_id: string } | { new: true; name?: string }) =>

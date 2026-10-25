@@ -37,28 +37,151 @@ describe("the People page", () => {
     expect(list).not.toHaveBeenCalled();
   });
 
-  it("shows round faces with names, 'Add a name' for the unnamed, counts, and hidden people in a collapsed section", async () => {
+  it("shows round faces with names, counts, the unnamed in their own section, and hidden people in a collapsed one", async () => {
     vi.spyOn(api, "peopleStatus").mockResolvedValue({ enabled: true });
     vi.spyOn(api, "listPeople").mockResolvedValue({
-      items: [person("a", "Person A", 12), person("b", null, 1), person("c", "Person C", 2, { hidden: true }), person("d", "Person D", 0, { cover: null })],
+      items: [person("a", "Person A", 12), person("b", null, 1), person("c", "Person C", 2, { hidden: true }), person("d", "Person D", 0, { cover: null }), person("e", null, 4, { hidden: true })],
     });
     renderPeople();
     const grid = await screen.findByRole("list", { name: "People" });
     const a = within(grid).getByRole("link", { name: "Person A, 12 photos" });
     expect(a).toHaveAttribute("href", "/people/a");
     expect(within(a).getByText("Person A")).toBeInTheDocument();
-    const b = within(grid).getByRole("link", { name: "Unnamed person, 1 photo" });
-    expect(within(b).getByText("Add a name")).toBeInTheDocument();
     // The face is the preview, cropped by CSS (no other file).
     expect(a.querySelector("img")).toHaveAttribute("src", "https://s3.test/preview-a");
     expect(within(grid).getByRole("link", { name: "Person D, 0 photos" })).toBeInTheDocument();
-    // Hidden people: not in the main list, in a section that starts closed.
+    // Unnamed people are not in the named list: they have a section of their own, after it.
+    expect(within(grid).queryByRole("link", { name: /Unnamed person/ })).not.toBeInTheDocument();
+    const unnamed = screen.getByRole("region", { name: "Unnamed (1)" });
+    const b = within(within(unnamed).getByRole("list", { name: "Unnamed people" })).getByRole("link", { name: "Unnamed person, 1 photo" });
+    expect(within(b).getByText("Add a name")).toBeInTheDocument();
+    expect(grid.compareDocumentPosition(unnamed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Hidden people, named or not: in neither list, in a section that starts closed and comes last.
     expect(within(grid).queryByRole("link", { name: /Person C/ })).not.toBeInTheDocument();
-    const hidden = screen.getByText("Hidden people (1)").closest("details")!;
+    expect(within(unnamed).queryByRole("link", { name: /4 photos/ })).not.toBeInTheDocument();
+    const hidden = screen.getByText("Hidden people (2)").closest("details")!;
     expect(hidden).not.toHaveAttribute("open");
-    await userEvent.click(screen.getByText("Hidden people (1)"));
-    expect(within(screen.getByRole("list", { name: "Hidden people" })).getByRole("link", { name: "Person C, 2 photos" })).toBeInTheDocument();
+    expect(unnamed.compareDocumentPosition(hidden) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await userEvent.click(screen.getByText("Hidden people (2)"));
+    const hiddenList = screen.getByRole("list", { name: "Hidden people" });
+    expect(within(hiddenList).getByRole("link", { name: "Person C, 2 photos" })).toBeInTheDocument();
+    expect(within(hiddenList).getByRole("link", { name: "Unnamed person, 4 photos" })).toBeInTheDocument();
     expect(screen.getByText("3 people")).toBeInTheDocument();
+  });
+
+  it("shows a badge with the suggestions waiting on a person's card, named for assistive technology, and none at 0", async () => {
+    vi.spyOn(api, "peopleStatus").mockResolvedValue({ enabled: true });
+    vi.spyOn(api, "listPeople").mockResolvedValue({
+      items: [person("a", "Person A", 12, { pending: 3 }), person("b", "Person B", 5, { pending: 0 }), person("c", "Person C", 5)],
+    });
+    renderPeople();
+    const a = await screen.findByRole("link", { name: "Person A, 12 photos, 3 photos to confirm" });
+    expect(within(a).getByText("3")).toBeInTheDocument();
+    for (const name of ["Person B, 5 photos", "Person C, 5 photos"]) {
+      const card = screen.getByRole("link", { name });
+      expect(card.querySelector(".person-card-badge")).toBeNull();
+    }
+  });
+
+  describe("selecting people", () => {
+    const list = [person("a", "Person A", 12), person("b", "Person B", 5), person("c", null, 2), person("d", "Person D", 1, { hidden: true })];
+    const start = async () => {
+      vi.spyOn(api, "peopleStatus").mockResolvedValue({ enabled: true });
+      const listing = vi.spyOn(api, "listPeople").mockResolvedValue({ items: list });
+      renderPeople();
+      await screen.findByRole("list", { name: "People" });
+      await userEvent.click(screen.getByRole("button", { name: "Select" }));
+      return listing;
+    };
+    const pick = (name: RegExp) => userEvent.click(screen.getByRole("button", { name }));
+
+    it("turns cards into toggles, counts them, and Escape clears and then leaves", async () => {
+      await start();
+      const bar = screen.getByRole("toolbar", { name: "Selection" });
+      expect(within(bar).getByText("Select people")).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /Person A/ })).not.toBeInTheDocument();
+      await pick(/^Person A/);
+      await pick(/^Unnamed person/);
+      expect(screen.getByRole("button", { name: /^Person A/ })).toHaveAttribute("aria-pressed", "true");
+      expect(within(bar).getByText("2 selected")).toBeInTheDocument();
+      await userEvent.click(within(bar).getByRole("button", { name: "Select all" }));
+      expect(within(bar).getByText("4 selected")).toBeInTheDocument();
+      await userEvent.keyboard("{Escape}");
+      expect(within(bar).getByText("Select people")).toBeInTheDocument();
+      await userEvent.keyboard("{Escape}");
+      expect(screen.queryByRole("toolbar", { name: "Selection" })).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /Person A/ })).toBeInTheDocument();
+    });
+
+    it("merges the selected people into the one chosen to stay, with an optional name, after confirming", async () => {
+      const listing = await start();
+      const bulk = vi.spyOn(api, "bulkPeople").mockResolvedValue({ done: 2, into: "b", faces: 3 });
+      const bar = screen.getByRole("toolbar", { name: "Selection" });
+      expect(within(bar).getByRole("button", { name: "Merge" })).toBeDisabled();
+      await pick(/^Person A/);
+      expect(within(bar).getByRole("button", { name: "Merge" })).toBeDisabled();
+      await pick(/^Person B/);
+      await pick(/^Unnamed person/);
+      await userEvent.click(within(bar).getByRole("button", { name: "Merge" }));
+      const dialog = screen.getByRole("dialog", { name: "Merge 3 people into one?" });
+      // The named person with the most photos stays by default; the survivor can be chosen.
+      expect(within(dialog).getByRole("radio", { name: /Person A/ })).toBeChecked();
+      await userEvent.click(within(dialog).getByRole("radio", { name: /Person B/ }));
+      await userEvent.type(within(dialog).getByLabelText("Name (optional)"), " Person N ");
+      expect(bulk).not.toHaveBeenCalled();
+      await userEvent.click(within(dialog).getByRole("button", { name: "Merge" }));
+      await waitFor(() => expect(bulk).toHaveBeenCalledWith({ action: "merge", ids: ["a", "b", "c"], into: "b", name: "Person N" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      expect(screen.getByText("Merged 3 people into Person N")).toBeInTheDocument();
+      // The list is read again and selection mode ends.
+      expect(listing).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("toolbar", { name: "Selection" })).not.toBeInTheDocument();
+    });
+
+    it("shows a failed merge in the dialog and keeps the selection", async () => {
+      await start();
+      vi.spyOn(api, "bulkPeople").mockRejectedValue(new Error("boom"));
+      await pick(/^Person A/);
+      await pick(/^Person B/);
+      await userEvent.click(screen.getByRole("button", { name: "Merge" }));
+      const dialog = screen.getByRole("dialog");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Merge" }));
+      expect(await within(dialog).findByRole("alert")).toHaveTextContent("boom");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(screen.getByText("2 selected")).toBeInTheDocument();
+    });
+
+    it("hides and shows the selected people", async () => {
+      await start();
+      const bulk = vi.spyOn(api, "bulkPeople").mockResolvedValue({ done: 1 });
+      const bar = screen.getByRole("toolbar", { name: "Selection" });
+      // A shown person: Hide is offered, Show is not.
+      await pick(/^Person A/);
+      expect(within(bar).queryByRole("button", { name: "Show" })).not.toBeInTheDocument();
+      await userEvent.click(within(bar).getByRole("button", { name: "Hide" }));
+      await waitFor(() => expect(bulk).toHaveBeenCalledWith({ action: "hide", ids: ["a"] }));
+      expect(await screen.findByText(/1 person hidden/)).toBeInTheDocument();
+      // Selection mode ended; start again with a hidden person.
+      await userEvent.click(screen.getByRole("button", { name: "Select" }));
+      await pick(/^Person D/);
+      expect(within(screen.getByRole("toolbar", { name: "Selection" })).queryByRole("button", { name: "Hide" })).not.toBeInTheDocument();
+      await userEvent.click(within(screen.getByRole("toolbar", { name: "Selection" })).getByRole("button", { name: "Show" }));
+      await waitFor(() => expect(bulk).toHaveBeenLastCalledWith({ action: "show", ids: ["d"] }));
+    });
+
+    it("deletes the selected people only after asking, and says the photos stay", async () => {
+      await start();
+      const bulk = vi.spyOn(api, "bulkPeople").mockResolvedValue({ done: 2 });
+      await pick(/^Person B/);
+      await pick(/^Unnamed person/);
+      await userEvent.click(within(screen.getByRole("toolbar", { name: "Selection" })).getByRole("button", { name: "Delete" }));
+      const dialog = screen.getByRole("alertdialog", { name: "Delete 2 people?" });
+      expect(within(dialog).getByText(/The photos stay in your library/)).toBeInTheDocument();
+      expect(bulk).not.toHaveBeenCalled();
+      await userEvent.click(within(dialog).getByRole("button", { name: "Delete people" }));
+      await waitFor(() => expect(bulk).toHaveBeenCalledWith({ action: "delete", ids: ["b", "c"] }));
+      expect(await screen.findByText(/2 people deleted/)).toBeInTheDocument();
+    });
   });
 
   it("explains an empty page and reports a failure", async () => {

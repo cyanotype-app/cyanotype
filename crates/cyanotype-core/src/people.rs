@@ -471,3 +471,48 @@ pub async fn suggestions(
         })
         .collect())
 }
+
+/// How many "Is this X?" suggestions wait for each named, shown person of `owner` (`only` one of them): the unassigned faces
+/// [`suggestions`] would list, counted in one statement for all of them (the centre of each person's faces is an `avg`, and each is
+/// asked the index through a lateral join), so the people list costs one query and not one per person. People without a pending
+/// suggestion are left out. Like [`suggestions`] it looks at the 300 nearest faces of each person.
+pub async fn pending_counts(
+    db: &PgPool,
+    owner: Uuid,
+    only: Option<Uuid>,
+    unlocked: bool,
+) -> Result<HashMap<Uuid, i64>> {
+    let sql = format!(
+        "WITH centres AS MATERIALIZED (
+             SELECT f.person_id, avg(f.embedding::vector(128)) AS c
+             FROM faces f JOIN people p ON p.id = f.person_id
+             WHERE f.owner_id = $1 AND f.model = '{MODEL}' AND f.embedding IS NOT NULL
+               AND p.owner_id = $1 AND p.name IS NOT NULL AND NOT p.hidden AND ($4::uuid IS NULL OR p.id = $4)
+               AND EXISTS (SELECT 1 FROM face_scans s WHERE s.asset_id = f.asset_id AND s.model = f.model)
+             GROUP BY f.person_id)
+         SELECT c.person_id, count(*) FROM centres c
+         CROSS JOIN LATERAL (
+             SELECT n.id, n.asset_id FROM (
+                 SELECT f.id, f.asset_id, 1 - (f.embedding::halfvec(128) <=> c.c::halfvec(128)) AS sim FROM faces f
+                 WHERE f.model = '{MODEL}' AND f.owner_id = $1 AND f.person_id IS NULL AND f.embedding IS NOT NULL
+                 ORDER BY f.embedding::halfvec(128) <=> c.c::halfvec(128) LIMIT 300) n
+             WHERE n.sim >= $2) nn
+         JOIN assets a ON a.id = nn.asset_id
+         WHERE a.deleted_at IS NULL AND a.purging_at IS NULL AND a.primary_id IS NULL AND (NOT a.hidden OR $3)
+           AND EXISTS (SELECT 1 FROM face_scans s WHERE s.asset_id = nn.asset_id AND s.model = '{MODEL}')
+           AND NOT EXISTS (SELECT 1 FROM face_rejections r WHERE r.face_id = nn.id AND r.person_id = c.person_id)
+         GROUP BY c.person_id"
+    );
+    let mut tx = db.begin().await?;
+    tune_index(&mut tx).await?;
+    let rows: Vec<(Uuid, i64)> = sqlx::query_as(&sql)
+        .bind(owner)
+        .bind(f64::from(pm::SUGGEST))
+        .bind(unlocked)
+        .bind(only)
+        .persistent(false)
+        .fetch_all(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(rows.into_iter().collect())
+}
