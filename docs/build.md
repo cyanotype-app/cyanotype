@@ -572,9 +572,11 @@ Candidates compared but not shipped: PP-OCRv3 and v5 exports by `monkt/paddleocr
 - Dependencies: the cargo-chef `cook` layer is reused until `Cargo.toml`/`Cargo.lock` change. Editing
   source only rebuilds the workspace crates.
 - Cargo registry and git checkouts are BuildKit cache mounts (`sharing=locked`).
-- CI: `CACHE=gha` makes bake use `type=gha` cache (one scope, `mode=max`, so the builder and cook layers
-  are stored). Locally, `CACHE=local` writes to `.buildcache/`; with neither set the normal BuildKit
-  cache is used.
+- CI: `CACHE=gha` makes bake use `type=gha` cache (`mode=max`, so the builder and cook layers are stored). Every image has
+  its own scope (`cyanotype-<target>`): an export replaces its scope's manifest, so images sharing one scope undid each
+  other's layers, and layers are stored once by digest, so the builder layers they share are not duplicated. `CACHE_WRITE=false` (pull requests)
+  reads only: main's publish run is what fills the cache, and PRs do not spend the 10 GB repository budget on copies.
+  Locally, `CACHE=local` writes to `.buildcache*/`; with neither set the normal BuildKit cache is used.
 - `.dockerignore` keeps `target/`, `.git`, `.env*`, docs and other non-build files out of the context,
   so unrelated edits do not invalidate layers.
 
