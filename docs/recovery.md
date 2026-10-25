@@ -47,6 +47,8 @@ comparing the table before and after):
 | Tags | ✅ | ✅ as of the newest manifest (changes rewrite it within about 30 seconds); a restored photo's keywords are not imported again; `reindex` reports `tags / photo-tag links` |
 | Smart albums | ✅ | ✅ the album, its rules and its share link as of the newest manifest (a change rewrites it within about 30 seconds); `reindex` reports `smart albums (saved rules)` |
 | Near-duplicate groups | ✅ | ✅ re-found by the first check (automatic after the re-embedding) |
+| Stacks: bursts | ✅ | ✅ found again by the worker |
+| Stacks: made by hand, photos taken out of a burst, chosen covers (migration 0033) | ✅ | ❌ not in the bucket (the manifest does not carry them yet): the stacks must be made again; bursts are re-found, including photos you had taken out |
 | "Not duplicates" dismissals | ✅ | ❌ not in the bucket: dismissed groups come back for review |
 | Memory dismissals, the On this day and sort settings (`user_prefs`) | ✅ | ❌ not in the bucket: back to the defaults (strip on, sorted by date taken, nothing dismissed) |
 | Albums and their members, covers | ✅ | ✅ as of the newest manifest |

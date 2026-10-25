@@ -233,7 +233,7 @@ describe("Album page", () => {
     await user.click(screen.getByRole("button", { name: "Add photos" }));
 
     const picker = await screen.findByRole("dialog", { name: "Add photos" });
-    expect(library).toHaveBeenCalledWith({ cursor: null, limit: 60 });
+    expect(library).toHaveBeenCalledWith({ cursor: null, limit: 60, stacks: "expanded" });
     expect(within(picker).getByRole("button", { name: "Add" })).toBeDisabled();
     await user.click(await within(picker).findByRole("button", { name: "Select photo-4.jpg" }));
     await user.click(within(picker).getByRole("button", { name: "Select photo-5.jpg" }));

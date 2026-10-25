@@ -76,6 +76,22 @@ pub(super) fn view_sql(favorite: bool, archived: bool, hidden: bool, unlock: Unl
     Ok(s)
 }
 
+/// Stacks in the timeline: one tile per stack, or every photo (`?stacks=`, else the user's setting).
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum StacksMode {
+    Collapsed,
+    Expanded,
+}
+
+/// Does the timeline of this user collapse stacks? The request's choice, else the setting (collapsed unless turned off).
+pub(super) async fn stacks_collapsed(db: &PgPool, user: Uuid, asked: Option<StacksMode>) -> ApiResult<bool> {
+    Ok(match asked {
+        Some(m) => m == StacksMode::Collapsed,
+        None => load_prefs(db, user).await?.stacks_collapsed,
+    })
+}
+
 #[derive(Deserialize)]
 pub(super) struct HideRequest {
     #[serde(flatten)]
@@ -199,6 +215,8 @@ pub(super) struct Prefs {
     pub(super) memories_enabled: bool,
     /// `taken` or `added`.
     library_sort: String,
+    /// Stacks (bursts and the ones made by hand) show as one tile in the timeline; off lists every photo.
+    pub(super) stacks_collapsed: bool,
 }
 
 pub(super) async fn prefs(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<Prefs>> {
@@ -206,22 +224,24 @@ pub(super) async fn prefs(State(s): State<AppState>, user: AuthUser) -> ApiResul
 }
 
 pub(super) async fn load_prefs(db: &PgPool, user: Uuid) -> ApiResult<Prefs> {
-    Ok(
-        sqlx::query_as::<_, Prefs>("SELECT memories_enabled, library_sort FROM user_prefs WHERE user_id = $1")
-            .bind(user)
-            .fetch_optional(db)
-            .await?
-            .unwrap_or(Prefs {
-                memories_enabled: true,
-                library_sort: "taken".into(),
-            }),
+    Ok(sqlx::query_as::<_, Prefs>(
+        "SELECT memories_enabled, library_sort, stacks_collapsed FROM user_prefs WHERE user_id = $1",
     )
+    .bind(user)
+    .fetch_optional(db)
+    .await?
+    .unwrap_or(Prefs {
+        memories_enabled: true,
+        library_sort: "taken".into(),
+        stacks_collapsed: true,
+    }))
 }
 
 #[derive(Deserialize)]
 pub(super) struct PrefsPatch {
     memories_enabled: Option<bool>,
     library_sort: Option<Sort>,
+    stacks_collapsed: Option<bool>,
 }
 
 pub(super) async fn set_prefs(
@@ -234,14 +254,16 @@ pub(super) async fn set_prefs(
         Sort::Added => "added",
     });
     sqlx::query(
-        "INSERT INTO user_prefs (user_id, memories_enabled, library_sort)
-         VALUES ($1, coalesce($2, true), coalesce($3, 'taken'))
+        "INSERT INTO user_prefs (user_id, memories_enabled, library_sort, stacks_collapsed)
+         VALUES ($1, coalesce($2, true), coalesce($3, 'taken'), coalesce($4, true))
          ON CONFLICT (user_id) DO UPDATE SET memories_enabled = coalesce($2, user_prefs.memories_enabled),
-                                             library_sort = coalesce($3, user_prefs.library_sort)",
+                                             library_sort = coalesce($3, user_prefs.library_sort),
+                                             stacks_collapsed = coalesce($4, user_prefs.stacks_collapsed)",
     )
     .bind(user.id)
     .bind(p.memories_enabled)
     .bind(sort)
+    .bind(p.stacks_collapsed)
     .execute(&s.db)
     .await?;
     Ok(Json(load_prefs(&s.db, user.id).await?))

@@ -301,6 +301,7 @@ pub(super) async fn list(
                 summary: r.summary,
                 thumbhash,
                 thumb_url,
+                stack: None,
             },
             deleted_at: r.deleted_at,
             purge_at: r.purge_at,

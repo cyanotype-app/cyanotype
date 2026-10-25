@@ -26,6 +26,7 @@ import { sharperUrl } from "../zoomMath";
 import { ZoomControls } from "./ZoomControls";
 import { itemsSource } from "../slideshow/sources";
 import { useSlideshow } from "../slideshow/SlideshowHost";
+import { StackBar, type StackView } from "./StackBar";
 
 /** The keys that zoom the photo: + and = in, - and _ out, z between fit and zoomed. */
 const ZOOM_KEYS = ["+", "=", "-", "_", "z"];
@@ -72,6 +73,8 @@ interface Props {
   refreshKey?: number;
   /** How often to ask whether the worker has finished rendering an edited picture or an edited download (tests shorten it). */
   pollMs?: number;
+  /** The photo on show is part of a stack: the strip under it, `[` and `]` to step through the stack (the arrows still move through `items`). */
+  stack?: StackView;
 }
 
 export function Lightbox({
@@ -96,6 +99,7 @@ export function Lightbox({
   total = items.length,
   refreshKey = 0,
   pollMs = POLL_MS,
+  stack,
 }: Props) {
   const item = items[index];
   // Which photo's file chooser is open (it closes by itself when the photo changes).
@@ -468,6 +472,16 @@ export function Lightbox({
         if (!cur) return;
         e.preventDefault();
         onRate(cur, ratingKey(e)!);
+      } else if (
+        stack &&
+        (e.key === "[" || e.key === "]") &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        [null, dialogRef.current].includes((e.target as HTMLElement | null)?.closest('[role="dialog"]') ?? null)
+      ) {
+        e.preventDefault();
+        stack.onStep(e.key === "[" ? -1 : 1);
       } else if (e.key === "ArrowLeft") {
         e.preventDefault();
         go(-1);
@@ -495,7 +509,7 @@ export function Lightbox({
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [go, close, onTrash, onRate, items, index, info, closeInfo, loadDetails, text, closeText, pictureOpen, canEditPicture, moreOpen, zoom, slideshow, playFromHere]);
+  }, [go, close, onTrash, onRate, items, index, info, closeInfo, loadDetails, text, closeText, pictureOpen, canEditPicture, moreOpen, zoom, slideshow, playFromHere, stack]);
 
   // The More menu: focus its first item when it opens, and close it on a tap or click anywhere else.
   useEffect(() => {
@@ -868,6 +882,7 @@ export function Lightbox({
           {detail?.place && <span className="lightbox-place"> · {placeLine(detail.place)}</span>}
         </span>
       </p>
+      {stack && <StackBar stack={stack} />}
       {paired.length > 0 && !info.open && (
         <div className="lightbox-pair">
           <strong>{pairLabel(item, paired)}</strong>

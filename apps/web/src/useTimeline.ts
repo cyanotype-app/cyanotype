@@ -38,8 +38,8 @@ const initial: TimelineState = { status: "loading", error: null, index: buildInd
  */
 export function useTimeline({ view, keep }: { view: LibraryView; keep: () => ReadonlySet<string> }) {
   // A view is a handful of flags: key the callbacks on their values, not on the object a caller makes anew each render.
-  const { favorite, archived, hidden, sort, person } = view;
-  const v = useMemo<LibraryView>(() => ({ favorite, archived, hidden, sort, person }), [favorite, archived, hidden, sort, person]);
+  const { favorite, archived, hidden, sort, person, stacks } = view;
+  const v = useMemo<LibraryView>(() => ({ favorite, archived, hidden, sort, person, stacks }), [favorite, archived, hidden, sort, person, stacks]);
   const { setAnonymous } = useAuth();
   const [state, setState] = useState<TimelineState>(initial);
   const stateRef = useRef(state);

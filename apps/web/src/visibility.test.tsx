@@ -182,7 +182,7 @@ describe("On this day strip", () => {
 
   it("is hidden for good with Hide", async () => {
     vi.spyOn(api, "memories").mockResolvedValue({ enabled: true, day: "10-19", years });
-    const set = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: false, library_sort: "taken" });
+    const set = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: false, library_sort: "taken", stacks_collapsed: true });
     renderIn(<MemoriesStrip />);
     await userEvent.click(await screen.findByRole("button", { name: "Hide On this day" }));
     expect(set).toHaveBeenCalledWith({ memories_enabled: false });
@@ -193,7 +193,7 @@ describe("On this day strip", () => {
 describe("Library: sort, archive and hide", () => {
   it("offers Date taken / Date added and remembers the choice", async () => {
     fakeLibrary([item(1), item(2)]);
-    const set = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: true, library_sort: "added" });
+    const set = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: true, library_sort: "added", stacks_collapsed: true });
     renderIn(<Library />);
     const taken = await screen.findByRole("button", { name: "Date taken" });
     expect(taken).toHaveAttribute("aria-pressed", "true");
@@ -205,7 +205,7 @@ describe("Library: sort, archive and hide", () => {
 
   it("starts in the saved order", async () => {
     const lib = fakeLibrary([item(1)]);
-    vi.mocked(api.prefs).mockResolvedValue({ memories_enabled: true, library_sort: "added" });
+    vi.mocked(api.prefs).mockResolvedValue({ memories_enabled: true, library_sort: "added", stacks_collapsed: true });
     renderIn(<Library />);
     await screen.findByAltText("photo-1.jpg");
     expect(lib.timeline).toHaveBeenCalledWith(expect.objectContaining({ sort: "added" }));

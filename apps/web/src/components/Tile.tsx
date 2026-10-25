@@ -1,6 +1,7 @@
 import { memo, useRef, useState } from "react";
 import type { AssetListItem } from "../api";
 import { placeholderUrl } from "../thumbhash";
+import { stackLabel, tileIds } from "../stacks";
 
 /** Press and hold this long (touch / pen) to start selecting. */
 const LONG_PRESS_MS = 500;
@@ -26,6 +27,16 @@ export interface TileProps {
   burst?: { more: number; expanded: boolean; onToggle: () => void } | null;
   /** This photo is shown because its burst is expanded. */
   inBurst?: boolean;
+}
+
+/** Two sheets, one behind the other: the stack badge. */
+export function StackIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="100%" height="100%" aria-hidden="true" focusable="false">
+      <rect x="8" y="3" width="13" height="13" rx="2" fill="none" stroke="currentColor" strokeWidth="2" />
+      <path d="M5 8v10a2 2 0 0 0 2 2h10" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
 }
 
 export function HeartIcon({ filled }: { filled: boolean }) {
@@ -63,6 +74,9 @@ export const Tile = memo(function Tile({
   const longPressed = useRef(false);
   const bg = placeholderUrl(item.thumbhash);
   const favorite = item.favorite === true;
+  // A stack in the timeline (two or more photos behind this tile): the badge, and what selecting the tile means.
+  const stackSize = item.stack && item.stack.size > 1 ? item.stack.size : 0;
+  const behind = tileIds(item).length - 1;
 
   const cancelPress = () => {
     if (press.current) clearTimeout(press.current.timer);
@@ -71,7 +85,7 @@ export const Tile = memo(function Tile({
   const canLongPress = !selecting && onLongPress !== undefined;
 
   return (
-    <div className={`tile-cell${favorite ? " is-favorite" : ""}${inBurst ? " in-burst" : ""}${burst ? " burst-cover" : ""}`}>
+    <div className={`tile-cell${favorite ? " is-favorite" : ""}${stackSize ? " is-stack" : ""}${inBurst ? " in-burst" : ""}${burst ? " burst-cover" : ""}`}>
       <button
         type="button"
         className={`tile${selected ? " selected" : ""}`}
@@ -114,8 +128,12 @@ export const Tile = memo(function Tile({
           selecting
             ? burst && !burst.expanded
               ? `Select ${item.original_name} and ${burst.more} more from its burst`
-              : `Select ${item.original_name}`
-            : `Open ${item.original_name}`
+              : behind > 0
+                ? `Select ${item.original_name} and ${behind} more from its stack`
+                : `Select ${item.original_name}`
+            : stackSize
+              ? `Open ${item.original_name}, ${stackLabel(stackSize).toLowerCase()}`
+              : `Open ${item.original_name}`
         }
         aria-pressed={selecting ? selected : undefined}
       >
@@ -146,6 +164,14 @@ export const Tile = memo(function Tile({
         {item.archived === true && (
           <span className="tile-badge tile-badge-archived" title="Archived: not in the timeline or the map">
             Archived
+          </span>
+        )}
+        {stackSize > 0 && (
+          <span className="tile-stack" title={stackLabel(stackSize)}>
+            <span className="tile-stack-icon">
+              <StackIcon />
+            </span>
+            <span aria-hidden="true">{stackSize}</span>
           </span>
         )}
         {selecting && (

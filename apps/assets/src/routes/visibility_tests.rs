@@ -1043,7 +1043,10 @@ async fn the_sort_order_and_the_memories_strip_are_remembered_per_user() {
     let (_, other) = session(&t.pool, "b@example.com", "member").await;
     let app = app()(&t.pool);
     let (_, p) = get(&app, &c, "/assets/prefs").await;
-    assert_eq!(p, json!({"memories_enabled": true, "library_sort": "taken"}));
+    assert_eq!(
+        p,
+        json!({"memories_enabled": true, "library_sort": "taken", "stacks_collapsed": true})
+    );
     let (st, p) = send_cookie(
         &app,
         "PUT",
@@ -1064,11 +1067,17 @@ async fn the_sort_order_and_the_memories_strip_are_remembered_per_user() {
         Some(json!({"memories_enabled": false})),
     )
     .await;
-    assert_eq!(p, json!({"memories_enabled": false, "library_sort": "added"}));
+    assert_eq!(
+        p,
+        json!({"memories_enabled": false, "library_sort": "added", "stacks_collapsed": true})
+    );
     let (_, again) = get(&app, &c, "/assets/prefs").await;
     assert_eq!(again, p);
     let (_, theirs) = get(&app, &other, "/assets/prefs").await;
-    assert_eq!(theirs, json!({"memories_enabled": true, "library_sort": "taken"}));
+    assert_eq!(
+        theirs,
+        json!({"memories_enabled": true, "library_sort": "taken", "stacks_collapsed": true})
+    );
     let (st, _) = send_cookie(
         &app,
         "PUT",

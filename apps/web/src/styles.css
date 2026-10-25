@@ -5605,3 +5605,122 @@ button.person-card {
 .frame-address code {
   overflow-wrap: anywhere;
 }
+
+/* Stacks: the badge on a timeline tile that stands for two or more photos, the toggle in the library bar, and the strip under
+   the viewer's photo (the stack's photos as a filmstrip, with the controls). */
+.tile-stack {
+  position: absolute;
+  right: 0.35rem;
+  bottom: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.1rem 0.4rem 0.1rem 0.3rem;
+  border-radius: 999px;
+  background: rgb(0 19 31 / 0.72);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.3;
+  pointer-events: none;
+}
+.tile-stack-icon {
+  display: inline-grid;
+  width: 0.85rem;
+  height: 0.85rem;
+}
+.sort-toggle.stack-toggle {
+  margin-left: 0;
+}
+.stack-bar {
+  display: grid;
+  gap: 0.5rem;
+  max-width: 100%;
+  padding: 0 1rem 1rem;
+  color: #fff;
+}
+.stack-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+.stack-step {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+.stack-step .btn {
+  min-width: 2.5rem;
+  min-height: 2.25rem;
+  padding: 0 0.6rem;
+}
+.stack-strip {
+  display: flex;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0.15rem 0;
+  list-style: none;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.stack-strip li {
+  flex: 0 0 auto;
+}
+.stack-thumb {
+  position: relative;
+  display: block;
+  width: 3.25rem;
+  height: 3.25rem;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  overflow: hidden;
+  background-color: rgb(255 255 255 / 0.12);
+  background-size: cover;
+  color: #fff;
+  cursor: pointer;
+}
+.stack-thumb.on {
+  border-color: #fff;
+}
+.stack-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.stack-cover-mark {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgb(0 19 31 / 0.72);
+  font-size: 0.6rem;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+}
+.stack-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.stack-actions .btn {
+  min-height: 2.25rem;
+  padding: 0 0.7rem;
+  font-size: 0.85rem;
+}
+.stack-actions .btn:disabled {
+  opacity: 0.5;
+}
+@media (max-width: 400px) {
+  .stack-bar {
+    padding: 0 0.5rem 0.75rem;
+  }
+  .stack-actions .btn {
+    flex: 1 1 auto;
+    padding: 0 0.4rem;
+    font-size: 0.8rem;
+  }
+}
