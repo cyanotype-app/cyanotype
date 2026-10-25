@@ -266,6 +266,8 @@ pub(super) async fn set_prefs(
     .bind(p.stacks_collapsed)
     .execute(&s.db)
     .await?;
+    // The switches are in the recovery manifest.
+    manifest_soon(&s, user.id);
     Ok(Json(load_prefs(&s.db, user.id).await?))
 }
 

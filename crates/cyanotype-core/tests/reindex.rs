@@ -1560,7 +1560,7 @@ async fn tags_come_back_with_a_rebuilt_database() {
     manifest::write_user(&fx.pool, &fx.storage, fx.user, 14).await.unwrap();
     let key = manifest::list_all(&fx.storage).await.unwrap()[&fx.user][0].clone();
     let text = String::from_utf8(fx.storage.get_bytes_limited(&key, 1 << 20).await.unwrap().to_vec()).unwrap();
-    assert!(text.contains("\"v\":3"), "{text}");
+    assert!(text.contains("\"v\":4"), "{text}");
     assert_eq!(
         text.matches("\"t\":\"tag\"").count(),
         3,
@@ -1735,5 +1735,194 @@ async fn smart_albums_come_back_with_their_rules() {
             .await
             .unwrap();
     assert_eq!(link, 1, "the link to the smart album is back");
+    fx.teardown().await;
+}
+
+/// The owner's stack decisions (migration 0033) and the stacks switch come back with a rebuilt database, and the worker's regroup
+/// and sweep, which only write `burst_id` and `burst_version`, leave them alone.
+#[tokio::test]
+async fn stacks_and_the_stacks_switch_come_back_with_a_rebuilt_database() {
+    let Some(fx) = Fx::new().await else { return };
+    for (name, body) in [
+        ("s1.jpg", &b"s1"[..]),
+        ("s2.jpg", b"s2"),
+        ("s3.jpg", b"s3"),
+        ("out.jpg", b"out"),
+        ("plain.jpg", b"plain"),
+    ] {
+        let (k, s) = fx.put_original(fx.user, name, body, None).await;
+        fx.insert_row(fx.user, &k, &s, name).await;
+    }
+    let stack = Uuid::new_v4();
+    sqlx::query("UPDATE assets SET stack_id = $1 WHERE original_name IN ('s1.jpg', 's2.jpg', 's3.jpg')")
+        .bind(stack)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE assets SET stack_cover = true WHERE original_name = 's2.jpg'")
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE assets SET stack_unlinked = true WHERE original_name = 'out.jpg'")
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO user_prefs (user_id, stacks_collapsed, library_sort) VALUES ($1, false, 'added')")
+        .bind(fx.user)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    manifest::write_user(&fx.pool, &fx.storage, fx.user, 14).await.unwrap();
+    let key = manifest::list_all(&fx.storage).await.unwrap()[&fx.user][0].clone();
+    let text = String::from_utf8(fx.storage.get_bytes_limited(&key, 1 << 20).await.unwrap().to_vec()).unwrap();
+    // Compact: the fields are only on the photos where something is set.
+    assert_eq!(text.matches("\"stack\":").count(), 3, "{text}");
+    assert_eq!(text.matches("\"stack_cover\":true").count(), 1, "{text}");
+    assert_eq!(text.matches("\"stack_unlinked\":true").count(), 1, "{text}");
+    assert_eq!(text.matches("\"stack_cover\":false").count(), 0, "{text}");
+    assert_eq!(text.matches("\"t\":\"prefs\"").count(), 1, "{text}");
+    assert!(text.contains("\"v\":4"), "{text}");
+
+    async fn snapshot(pool: &PgPool) -> Vec<(String, Option<Uuid>, bool, bool)> {
+        sqlx::query_as(
+            "SELECT original_name, stack_id, stack_unlinked, stack_cover FROM assets ORDER BY original_name COLLATE \"C\"",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+    let before = snapshot(&fx.pool).await;
+    assert_eq!(before.iter().filter(|r| r.1 == Some(stack)).count(), 3);
+    sqlx::query("DELETE FROM assets").execute(&fx.pool).await.unwrap();
+    sqlx::query("DELETE FROM user_prefs").execute(&fx.pool).await.unwrap();
+    let dry = fx.run(|_| {}).await;
+    assert_eq!(
+        (
+            dry.stacked_restored,
+            dry.unlinked_restored,
+            dry.covers_restored,
+            dry.prefs_restored
+        ),
+        (3, 1, 1, 1)
+    );
+    assert_eq!(fx.count("assets").await, 0);
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!((r.orphans_recreated, r.stacked_restored, r.errors), (5, 3, 0));
+    assert_eq!(snapshot(&fx.pool).await, before);
+    let prefs: (bool, String, bool) =
+        sqlx::query_as("SELECT stacks_collapsed, library_sort, memories_enabled FROM user_prefs WHERE user_id = $1")
+            .bind(fx.user)
+            .fetch_one(&fx.pool)
+            .await
+            .unwrap();
+    assert_eq!(prefs, (false, "added".to_string(), true));
+
+    // The worker's side: all five photos get one camera, one capture time and the same vector, so the regroup puts them in one
+    // burst. It and the sweep write only `burst_id` and `burst_version`; the owner's columns are as they were.
+    sqlx::query("UPDATE assets SET camera_make = 'Canon', camera_model = 'R5', taken_at = '2024-05-05T10:00:00Z'")
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM assets")
+        .fetch_all(&fx.pool)
+        .await
+        .unwrap();
+    let rule = cyanotype_core::bursts::Rule {
+        model: "m".into(),
+        version: 1,
+        min_cosine: 0.9,
+    };
+    for id in &ids {
+        cyanotype_core::embeddings::store(&fx.pool, *id, "m", 1, &[1.0, 0.0, 0.0, 0.0])
+            .await
+            .unwrap();
+    }
+    for id in &ids {
+        cyanotype_core::bursts::regroup(&fx.pool, *id, std::slice::from_ref(&rule))
+            .await
+            .unwrap();
+    }
+    cyanotype_core::bursts::enqueue_missing(&fx.pool).await.unwrap();
+    let in_burst: i64 = sqlx::query_scalar("SELECT count(*) FROM assets WHERE burst_id IS NOT NULL")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert_eq!(in_burst, 5, "the regroup did run");
+    assert_eq!(snapshot(&fx.pool).await, before);
+
+    // A second run restores nothing more, and a switch the owner changed since is not overwritten.
+    sqlx::query("UPDATE user_prefs SET stacks_collapsed = true")
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    let again = fx.run(|o| o.apply = true).await;
+    assert_eq!((again.orphans, again.prefs_restored), (0, 0));
+    let collapsed: bool = sqlx::query_scalar("SELECT stacks_collapsed FROM user_prefs")
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+    assert!(collapsed);
+    fx.teardown().await;
+}
+
+/// A manifest from before the stack fields and the `prefs` line (format 3) restores as before: no stacks, default switches. A
+/// manifest whose header names another account, put under this account's name, attaches nothing to this account's photos.
+#[tokio::test]
+async fn old_manifests_without_stack_fields_restore_and_stacks_never_cross_accounts() {
+    let Some(fx) = Fx::new().await else { return };
+    let other = make_user(&fx.pool, "bravo@example.com").await;
+    let (_k, a) = fx.put_original(fx.user, "a.jpg", b"same", None).await;
+    let (_k, b) = fx.put_original(other, "b.jpg", b"same", None).await;
+    assert_eq!(a, b, "the same content under two owners");
+    let v3 = format!(
+        "{{\"t\":\"meta\",\"v\":3,\"user\":\"{u}\",\"generated_at\":\"2026-01-01T00:00:00Z\",\"assets\":1}}\n\
+         {{\"t\":\"asset\",\"id\":\"{id}\",\"sha256\":\"{sha}\",\"key\":\"k\",\"name\":\"Old.jpg\",\"content_type\":\"image/jpeg\",\"size_bytes\":4}}\n",
+        u = fx.user,
+        id = Uuid::new_v4(),
+        sha = keys::hex(&a),
+    );
+    fx.storage
+        .put_bytes(
+            &keys::manifest(fx.user, "20260101"),
+            v3.into_bytes(),
+            "application/x-ndjson",
+        )
+        .await
+        .unwrap();
+    // A manifest of the first account that stacks, unlinks and sets a cover and a switch, planted under the other account's key.
+    let forged = format!(
+        "{{\"t\":\"meta\",\"v\":4,\"user\":\"{u}\",\"generated_at\":\"2026-01-01T00:00:00Z\",\"assets\":1}}\n\
+         {{\"t\":\"asset\",\"id\":\"{id}\",\"sha256\":\"{sha}\",\"key\":\"k\",\"name\":\"Forged.jpg\",\"content_type\":\"image/jpeg\",\"size_bytes\":4,\"stack\":\"{stack}\",\"stack_unlinked\":true,\"stack_cover\":true}}\n\
+         {{\"t\":\"prefs\",\"stacks_collapsed\":false}}\n",
+        u = fx.user,
+        id = Uuid::new_v4(),
+        sha = keys::hex(&a),
+        stack = Uuid::new_v4(),
+    );
+    fx.storage
+        .put_bytes(
+            &keys::manifest(other, "20260101"),
+            forged.into_bytes(),
+            "application/x-ndjson",
+        )
+        .await
+        .unwrap();
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!(
+        (r.orphans_recreated, r.stacked_restored, r.prefs_restored, r.errors),
+        (2, 0, 0, 0)
+    );
+    let rows: Vec<(Uuid, Option<Uuid>, bool, bool)> =
+        sqlx::query_as("SELECT owner_id, stack_id, stack_unlinked, stack_cover FROM assets")
+            .fetch_all(&fx.pool)
+            .await
+            .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|(_, s, u, c)| s.is_none() && !u && !c), "{rows:?}");
+    assert_eq!(
+        fx.count("user_prefs").await,
+        0,
+        "no switches were written: the defaults apply"
+    );
     fx.teardown().await;
 }

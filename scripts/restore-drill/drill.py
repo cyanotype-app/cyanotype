@@ -277,6 +277,12 @@ def cmd_seed(a):
     bob.ok("POST", "/assets/favorite", {"ids": [ids["bob/guitar.jpg"]], "favorite": True})
     alice.ok("POST", "/assets/trash", {"ids": [ids["coffee.jpg"]]})
 
+    log("stack by hand (with a chosen cover), a photo taken out of it, and the stacks switch")
+    alice.ok("POST", "/assets/stacks", {"ids": [ids[n] for n in ("dog.jpg", "airplane.jpg", "pizza.jpg", "forest.jpg")]})
+    alice.ok("POST", f"/assets/{ids['airplane.jpg']}/stack/cover", {})
+    alice.ok("POST", f"/assets/{ids['forest.jpg']}/stack/remove", {})
+    alice.ok("PUT", "/assets/prefs", {"stacks_collapsed": False})
+
     log("photo edits (date, location, caption)")
     alice.ok(
         "POST",
@@ -383,6 +389,9 @@ SECTIONS = [
      f"id::text, owner_id::text, encode(sha256,'hex'), original_key, original_name, content_type, size_bytes::text, {_t('file_modified_at')}", "assets"),
     ("photos", "assets: trash state", "original_name", "id::text, (deleted_at IS NOT NULL)::text", "assets"),
     ("photos", "assets: favorites", "original_name", "id::text, favorite::text", "assets"),
+    ("photos", "assets: stacks made by hand, unlinked photos, chosen covers", "original_name",
+     "id::text, coalesce(stack_id::text,''), stack_unlinked::text, stack_cover::text", "assets WHERE stack_id IS NOT NULL OR stack_unlinked OR stack_cover"),
+    ("photos", "user_prefs", "user_id::text", "user_id::text, memories_enabled::text, library_sort, stacks_collapsed::text", "user_prefs"),
     ("photos", "assets: RAW+JPEG pairs", "original_name", "id::text, primary_id::text", "assets WHERE primary_id IS NOT NULL"),
     ("photos", "assets: edits (date, location, caption)", "original_name",
      f"id::text, coalesce(caption,''), date_edited::text, location_edited::text, {_t('taken_at')}, coalesce(taken_offset_edit::text,''), coalesce(latitude::text,''), coalesce(longitude::text,''), {_t('taken_at_exif')}",
@@ -493,6 +502,7 @@ def api_samples(state):
     lst = get("alice", "alice: library list", "/assets?limit=100")
     get("alice", "alice: favorites list", "/assets?limit=100&favorite=true")
     get("alice", "alice: trash", "/assets/trash")
+    get("alice", "alice: prefs", "/assets/prefs")
     albums = get("alice", "alice: albums", "/assets/albums")
     for item in (albums or {}).get("items", albums if isinstance(albums, list) else []):
         get("alice", f"alice: album contents: {item.get('title')}", f"/assets/albums/{item['id']}/assets")
