@@ -73,7 +73,7 @@ for (const { width, scheme } of RUNS) {
       await mock(page, checks, planCalls);
 
       await page.goto("/settings/google-photos");
-      await page.getByRole("heading", { name: "Moving from Google Photos" }).waitFor();
+      await page.getByRole("heading", { name: "Google Photos" }).waitFor();
       await check("start");
 
       // Choosing the folder sends names only: no file bytes, and the mock saw every name once.

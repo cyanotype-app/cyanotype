@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, type ApiKey } from "../api";
@@ -69,10 +69,11 @@ describe("ApiKeys", () => {
       .mockResolvedValueOnce({ items: [key(1)] })
       .mockResolvedValue({ items: [] });
     const revoke = vi.spyOn(api, "revokeApiKey").mockResolvedValue(undefined);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     render(<ApiKeys />);
     await user.click(await screen.findByRole("button", { name: "Revoke" }));
+    expect(revoke).not.toHaveBeenCalled(); // the question comes first
+    await user.click(within(screen.getByRole("alertdialog", { name: "Revoke “key 1”?" })).getByRole("button", { name: "Revoke" }));
     expect(revoke).toHaveBeenCalledWith("k1");
     expect(await screen.findByText("No API keys yet.")).toBeInTheDocument();
   });

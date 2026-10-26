@@ -859,7 +859,7 @@ for (const { width, scheme } of RUNS) {
       await check("upload-tray-collapsed");
 
       // Trash
-      await open("/trash", "Trash");
+      await open("/trash", /Select IMG_1000/);
       await page.getByRole("button", { name: /Select IMG_1000/ }).waitFor();
       await check("trash");
       await page.getByRole("button", { name: /Select IMG_1001/ }).click();
@@ -867,7 +867,8 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: "Delete forever" }).click();
       await check("dialog-delete-forever");
       await page.getByRole("button", { name: "Cancel" }).click();
-      await page.getByRole("button", { name: "Empty trash" }).click();
+      await page.getByRole("button", { name: "More" }).click();
+      await page.getByRole("menuitem", { name: "Empty trash" }).click();
       await check("dialog-empty-trash");
       await page.getByRole("button", { name: "Cancel" }).click();
 
@@ -1105,7 +1106,7 @@ for (const { width, scheme } of RUNS) {
       await mockUsage(page);
       bucketTask = null;
       memberView = false;
-      await page.goto("/admin");
+      await page.goto("/admin/accounts");
       await page.getByRole("heading", { name: "Accounts", exact: true }).waitFor();
       await page.getByText(LONG_EMAIL).first().waitFor();
       await check("accounts");

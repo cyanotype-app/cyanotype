@@ -1,7 +1,9 @@
-import { useEffect, useId, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../api";
-import { Logo } from "../components/Logo";
+import { AuthShell } from "../components/AuthShell";
+import { Field, FormError, inputClass, Notice } from "../settings/kit";
+import { Button } from "../ui/Button";
 
 const PROBLEM: Record<string, string> = {
   unknown: "This reset link is not valid. Check that you copied all of it, or ask the administrator for a new one.",
@@ -14,7 +16,6 @@ type State = { status: "checking" } | { status: "ready"; email: string } | { sta
 
 /** The page a password reset link opens: choose a new password, once. No sign-in needed. */
 export function ResetPassword() {
-  const id = useId();
   const [params] = useSearchParams();
   const token = (params.get("token") ?? "").trim();
   const [state, setState] = useState<State>(token ? { status: "checking" } : { status: "problem", reason: "unknown" });
@@ -58,42 +59,39 @@ export function ResetPassword() {
   }
 
   return (
-    <div className="auth-page">
-      <div className="card auth-card">
-        <div className="auth-brand">
-          <Logo size={44} />
-          <h1>Choose a new password</h1>
+    <AuthShell title="Choose a new password">
+      {done ? (
+        <div className="flex flex-col gap-4">
+          <Notice tone="ok" role="status">
+            Your password is changed and you were signed out everywhere.
+          </Notice>
+          <Button variant="primary" size="lg" className="w-full" asChild>
+            <Link to="/login">Sign in with the new password</Link>
+          </Button>
         </div>
-        {done ? (
-          <>
-            <p className="notice notice-ok" role="status">
-              Your password is changed and you were signed out everywhere.
-            </p>
-            <p className="auth-footer">
-              <Link to="/login">Sign in with the new password</Link>
-            </p>
-          </>
-        ) : state.status === "problem" ? (
-          <p className="notice" role="alert">
-            {PROBLEM[state.reason] ?? PROBLEM.unknown}
-          </p>
-        ) : (
-          <form onSubmit={submit}>
-            {state.status === "ready" && state.email && <p className="muted small">For {state.email}</p>}
-            <label htmlFor={`${id}-p`}>New password</label>
-            <input id={`${id}-p`} type="password" autoComplete="new-password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} />
-            <p className="muted small">At least 8 characters.</p>
-            <label htmlFor={`${id}-a`}>Again</label>
-            <input id={`${id}-a`} type="password" autoComplete="new-password" required value={again} onChange={(e) => setAgain(e.target.value)} />
-            <div role="alert" className="form-error">
-              {error}
-            </div>
-            <button type="submit" className="btn btn-primary" disabled={busy || state.status === "checking"}>
-              {busy ? "Please wait…" : "Set the password"}
-            </button>
-          </form>
-        )}
-      </div>
-    </div>
+      ) : state.status === "problem" ? (
+        <Notice tone="warn" role="alert">
+          {PROBLEM[state.reason] ?? PROBLEM.unknown}
+        </Notice>
+      ) : (
+        <form onSubmit={submit} className="flex flex-col gap-4">
+          {state.status === "ready" && state.email && <p className="text-sm text-muted">For {state.email}</p>}
+          <Field label="New password" hint="At least 8 characters.">
+            {(p) => (
+              <input {...p} className={inputClass} type="password" autoComplete="new-password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} />
+            )}
+          </Field>
+          <Field label="Again">
+            {(p) => (
+              <input {...p} className={inputClass} type="password" autoComplete="new-password" required value={again} onChange={(e) => setAgain(e.target.value)} />
+            )}
+          </Field>
+          <FormError>{error}</FormError>
+          <Button type="submit" variant="primary" size="lg" className="w-full" disabled={busy || state.status === "checking"}>
+            {busy ? "Please wait…" : "Set the password"}
+          </Button>
+        </form>
+      )}
+    </AuthShell>
   );
 }

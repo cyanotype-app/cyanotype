@@ -1,7 +1,9 @@
-import { useId, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import type { Limits } from "../api";
 import { gigabytesToBytes } from "../adminText";
 import { gigabytesField } from "../limitsText";
+import { Field, FormError, inputClass } from "../settings/kit";
+import { Button } from "../ui/Button";
 
 interface Props {
   initial: Partial<Limits>;
@@ -13,7 +15,6 @@ interface Props {
 
 /** Three limit fields in gigabytes; an empty field means no limit. */
 export function LimitsForm({ initial, onSave, onCancel, saveLabel = "Save limits" }: Props) {
-  const id = useId();
   const [quota, setQuota] = useState(gigabytesField(initial.quota_bytes));
   const [daily, setDaily] = useState(gigabytesField(initial.daily_upload_bytes));
   const [maxFile, setMaxFile] = useState(gigabytesField(initial.max_file_bytes));
@@ -39,32 +40,27 @@ export function LimitsForm({ initial, onSave, onCancel, saveLabel = "Save limits
     }
   }
 
+  const field = (label: string, value: string, set: (v: string) => void) => (
+    <Field label={label}>
+      {(p) => <input {...p} className={inputClass} inputMode="decimal" value={value} placeholder="No limit" onChange={(e) => set(e.target.value)} />}
+    </Field>
+  );
+
   return (
-    <form className="limits-form" onSubmit={submit}>
-      <div className="invite-limit-fields">
-        <div>
-          <label htmlFor={`${id}-q`}>Storage (GB)</label>
-          <input id={`${id}-q`} inputMode="decimal" value={quota} placeholder="No limit" onChange={(e) => setQuota(e.target.value)} />
-        </div>
-        <div>
-          <label htmlFor={`${id}-d`}>Uploads per day (GB)</label>
-          <input id={`${id}-d`} inputMode="decimal" value={daily} placeholder="No limit" onChange={(e) => setDaily(e.target.value)} />
-        </div>
-        <div>
-          <label htmlFor={`${id}-f`}>Largest file (GB)</label>
-          <input id={`${id}-f`} inputMode="decimal" value={maxFile} placeholder="No limit" onChange={(e) => setMaxFile(e.target.value)} />
-        </div>
+    <form className="flex flex-col gap-4" onSubmit={submit}>
+      <div className="grid grid-cols-1 gap-3 min-[480px]:grid-cols-3">
+        {field("Storage (GB)", quota, setQuota)}
+        {field("Uploads per day (GB)", daily, setDaily)}
+        {field("Largest file (GB)", maxFile, setMaxFile)}
       </div>
-      <div role="alert" className="form-error">
-        {error}
-      </div>
-      <div className="invite-actions">
-        <button type="submit" className="btn btn-primary" disabled={busy}>
+      <FormError>{error}</FormError>
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" variant="primary" disabled={busy}>
           {saveLabel}
-        </button>
-        <button type="button" className="btn btn-quiet" onClick={onCancel}>
+        </Button>
+        <Button variant="quiet" onClick={onCancel}>
           Cancel
-        </button>
+        </Button>
       </div>
     </form>
   );

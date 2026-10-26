@@ -16,6 +16,8 @@ interface SheetProps {
   footer?: ReactNode;
   /** `sm` for questions and short forms, `lg` for pickers and lists. Desktop only: a phone sheet is full width. */
   size?: "sm" | "md" | "lg";
+  /** `alertdialog` for a question that wants an answer (ConfirmDialog). */
+  role?: "dialog" | "alertdialog";
   className?: string;
   children?: ReactNode;
 }
@@ -28,7 +30,7 @@ const DISMISS_VELOCITY = 600;
  * Built on `<dialog>` so focus stays inside, Escape closes and the page behind is inert, with no style element at
  * runtime (the gateway's CSP allows none). The page behind does not scroll while one is open (theme.css).
  */
-export function Sheet({ open, onOpenChange, title, description, hideTitle, footer, size = "md", className, children }: SheetProps) {
+export function Sheet({ open, onOpenChange, title, description, hideTitle, footer, size = "md", role, className, children }: SheetProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const [mounted, setMounted] = useState(open);
   const desktop = useDesktop();
@@ -68,6 +70,7 @@ export function Sheet({ open, onOpenChange, title, description, hideTitle, foote
   return (
     <dialog
       ref={ref}
+      role={role}
       aria-labelledby={titleId}
       aria-describedby={description ? descId : undefined}
       className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none overflow-hidden bg-transparent p-0 text-fg backdrop:bg-transparent"

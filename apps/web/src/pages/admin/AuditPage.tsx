@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api, type AuditEntry, type AuditQuery } from "../../api";
 import { actionLabel, detailLines } from "../../auditText";
+import { Field, FormError, Group, inputClass, Loading, Row, SelectBox } from "../../settings/kit";
+import { Button } from "../../ui/Button";
 
 const when = (iso: string) => new Date(iso).toLocaleString();
 
@@ -15,7 +17,6 @@ const NONE: Filters = { action: "", actor: "", target: "", from: "", to: "" };
 
 /** Admin > Audit log: what admins (and invite use) did, newest first, filterable by action, who, what and when. */
 export function AuditPage() {
-  const id = useId();
   const [form, setForm] = useState<Filters>(NONE);
   const [applied, setApplied] = useState<Filters>(NONE);
   const [items, setItems] = useState<AuditEntry[] | null>(null);
@@ -77,79 +78,80 @@ export function AuditPage() {
   const set = (k: keyof Filters) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
   return (
-    <section aria-labelledby="audit-title">
-      <h2 id="audit-title">Audit log</h2>
-      <p className="muted">Administrative actions, newest first. Entries never hold a password, a link or a file name.</p>
-      <form className="audit-filters" onSubmit={apply}>
-        <div>
-          <label htmlFor={`${id}-a`}>Action</label>
-          <select id={`${id}-a`} value={form.action} onChange={set("action")}>
-            <option value="">Any action</option>
-            {actions.map((a) => (
-              <option key={a} value={a}>
-                {actionLabel(a)}
-              </option>
-            ))}
-          </select>
+    <section aria-label="Audit log" className="[overflow-wrap:anywhere]">
+      <p className="text-sm text-muted">Administrative actions, newest first. Entries never hold a password, a link or a file name.</p>
+      <form className="mt-4 grid grid-cols-1 gap-3 rounded-card bg-card p-4 ring-1 ring-line min-[560px]:grid-cols-2" onSubmit={apply}>
+        <Field label="Action">
+          {(p) => (
+            <SelectBox {...p} value={form.action} onChange={set("action")}>
+              <option value="">Any action</option>
+              {actions.map((a) => (
+                <option key={a} value={a}>
+                  {actionLabel(a)}
+                </option>
+              ))}
+            </SelectBox>
+          )}
+        </Field>
+        <Field label="Done by">
+          {(p) => <input {...p} className={inputClass} value={form.actor} placeholder="email" onChange={set("actor")} />}
+        </Field>
+        <Field label="About">
+          {(p) => <input {...p} className={inputClass} value={form.target} placeholder="email or id" onChange={set("target")} />}
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="From">{(p) => <input {...p} className={inputClass} type="date" value={form.from} onChange={set("from")} />}</Field>
+          <Field label="Until">{(p) => <input {...p} className={inputClass} type="date" value={form.to} onChange={set("to")} />}</Field>
         </div>
-        <div>
-          <label htmlFor={`${id}-w`}>Done by</label>
-          <input id={`${id}-w`} value={form.actor} placeholder="email" onChange={set("actor")} />
-        </div>
-        <div>
-          <label htmlFor={`${id}-t`}>About</label>
-          <input id={`${id}-t`} value={form.target} placeholder="email or id" onChange={set("target")} />
-        </div>
-        <div>
-          <label htmlFor={`${id}-f`}>From</label>
-          <input id={`${id}-f`} type="date" value={form.from} onChange={set("from")} />
-        </div>
-        <div>
-          <label htmlFor={`${id}-u`}>Until</label>
-          <input id={`${id}-u`} type="date" value={form.to} onChange={set("to")} />
-        </div>
-        <div className="audit-filter-actions">
-          <button type="submit" className="btn btn-primary" disabled={busy}>
+        <div className="flex flex-wrap gap-2 min-[560px]:col-span-2">
+          <Button type="submit" variant="primary" disabled={busy}>
             Filter
-          </button>
-          <button type="button" className="btn btn-quiet" onClick={clear}>
+          </Button>
+          <Button variant="quiet" onClick={clear}>
             Clear
-          </button>
+          </Button>
         </div>
       </form>
-      <div role="alert" className="form-error">
-        {error}
+      <div className="mt-3">
+        <FormError>{error}</FormError>
       </div>
       {items === null ? (
-        !error && (
-          <p className="muted" role="status">
-            Loading…
-          </p>
-        )
+        !error && <Loading />
       ) : items.length === 0 ? (
-        <p className="muted">Nothing matches.</p>
+        <p className="mt-4 text-sm text-muted">Nothing matches.</p>
       ) : (
-        <ul className="audit-list">
+        <Group as="ul" className="mt-4">
           {items.map((e) => (
-            <li key={e.id}>
-              <div className="audit-head">
-                <strong>{actionLabel(e.action)}</strong>
-                <span className="muted small">{when(e.at)}</span>
-              </div>
-              <div className="small muted">by {e.actor_email ?? "the system"}</div>
-              {detailLines(e).map((l, i) => (
-                <div key={i} className="small">
-                  {l}
-                </div>
-              ))}
-            </li>
+            <Row
+              as="li"
+              key={e.id}
+              className="py-3"
+              label={
+                <span className="flex flex-wrap items-baseline justify-between gap-x-3">
+                  <strong className="font-medium">{actionLabel(e.action)}</strong>
+                  <span className="text-[0.8125rem] font-normal text-muted">{when(e.at)}</span>
+                </span>
+              }
+              detail={
+                <>
+                  <span className="block">by {e.actor_email ?? "the system"}</span>
+                  {detailLines(e).map((l, i) => (
+                    <span key={i} className="block text-fg">
+                      {l}
+                    </span>
+                  ))}
+                </>
+              }
+            />
           ))}
-        </ul>
+        </Group>
       )}
       {next !== null && (
-        <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => void more()}>
-          Load more
-        </button>
+        <div className="mt-4">
+          <Button disabled={busy} onClick={() => void more()}>
+            Load more
+          </Button>
+        </div>
       )}
     </section>
   );

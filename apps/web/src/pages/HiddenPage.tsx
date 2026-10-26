@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type HiddenState } from "../api";
 import { useAuth } from "../auth";
-import { EyeOff } from "lucide-react";
+import { Lock } from "lucide-react";
+import { Field, inputClass } from "../settings/kit";
 import { PageHeader } from "../shell/PageHeader";
 import { Button } from "../ui/Button";
 import { msUntil, unlockedUntil } from "../viewText";
@@ -99,43 +100,32 @@ export function UnlockPrompt({ onUnlocked }: { onUnlocked: (s: HiddenState) => v
   };
 
   return (
-    <div>
+    <>
       <PageHeader title="Hidden" />
-      <form
-        className="mx-auto flex max-w-sm flex-col items-center px-6 pt-[10vh] pb-10 text-center"
-        onSubmit={(e) => void submit(e)}
-        aria-labelledby="unlock-title"
-      >
-        <span className="mb-5 grid size-16 grid-cols-1 place-items-center rounded-full bg-surface text-accent">
-          <EyeOff className="size-7" strokeWidth={1.6} aria-hidden="true" />
+      <div className="mx-auto flex max-w-sm flex-col items-center px-5 pt-10 pb-16 md:pt-20">
+        <span className="mb-5 inline-flex size-14 items-center justify-center rounded-full bg-surface text-muted">
+          <Lock className="size-6" aria-hidden="true" />
         </span>
-        <h2 id="unlock-title" className="text-[1.1875rem] font-semibold tracking-tight">
-          Hidden photos
-        </h2>
-        <p className="mt-1.5 text-[0.9375rem] text-muted">Enter your password to open the photos you hid. They stay open for 10 minutes.</p>
-        <label htmlFor="unlock-password" className="mt-6 self-start text-sm font-medium">
-          Password
-        </label>
-        <input
-          id="unlock-password"
-          ref={input}
-          className="mt-1.5 h-11 w-full rounded-xl border border-line bg-card px-3.5 text-[0.9375rem] text-fg"
-          type="password"
-          autoComplete="current-password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          aria-invalid={error !== null}
-          aria-describedby={error ? "unlock-error" : undefined}
-        />
-        {error && (
-          <p id="unlock-error" className="mt-2 self-start text-sm text-danger" role="alert">
-            {error}
-          </p>
-        )}
-        <Button type="submit" variant="primary" className="mt-5 w-full" disabled={!password || busy}>
-          {busy ? "Opening…" : "Open Hidden"}
-        </Button>
-      </form>
-    </div>
+        <form className="flex w-full flex-col gap-4" onSubmit={(e) => void submit(e)} aria-label="Open Hidden">
+          <p className="text-center text-[0.9375rem] text-muted">Enter your password to open the photos you hid. They stay open for 10 minutes.</p>
+          <Field label="Password" error={error}>
+            {(p) => (
+              <input
+                {...p}
+                ref={input}
+                className={inputClass}
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            )}
+          </Field>
+          <Button type="submit" variant="primary" size="lg" disabled={!password || busy}>
+            {busy ? "Opening…" : "Open Hidden"}
+          </Button>
+        </form>
+      </div>
+    </>
   );
 }

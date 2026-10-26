@@ -92,7 +92,7 @@ describe("Accounts page", () => {
     const totals = screen.getByLabelText("Server totals");
     expect(within(totals).getByText("Accounts")).toBeInTheDocument();
     expect(within(totals).getByText("10 GB")).toBeInTheDocument(); // uploaded in 30 days
-    const cards = screen.getAllByRole("listitem").filter((li) => li.classList.contains("account"));
+    const cards = Array.from(screen.getByRole("list", { name: "Accounts" }).children) as HTMLElement[];
     expect(cards).toHaveLength(2);
     expect(within(cards[0]!).getByText("admin")).toBeInTheDocument();
     expect(within(cards[1]!).getByText("member")).toBeInTheDocument();

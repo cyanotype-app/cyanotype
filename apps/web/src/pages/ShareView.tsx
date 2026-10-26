@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { useParams } from "react-router-dom";
 import { ApiError } from "../api";
 import { photoCount } from "../albumText";
+import { AuthShell } from "../components/AuthShell";
 import { Logo } from "../components/Logo";
+import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
+import { Empty, Field, FormError, inputClass, Loading } from "../settings/kit";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
 import { ZoomControls } from "../components/ZoomControls";
 import { fitStyle } from "../photoFit";
 import { usePhotoZoom } from "../usePhotoZoom";
@@ -69,30 +74,30 @@ export function ShareView() {
 
   return (
     <SlideshowProvider>
-    <div className="share-page">
-      <header className="share-top">
-        <Logo size={22} />
-        <span>Cyanotype</span>
-      </header>
-      {phase.kind === "loading" && <p className="center muted" role="status">Loading…</p>}
+      {phase.kind === "loading" && (
+        <main className="flex min-h-dvh items-center justify-center bg-bg">
+          <Loading />
+        </main>
+      )}
       {phase.kind === "gone" && (
-        <div className="empty">
-          <h1>This link is not available</h1>
-          <p>It may have expired or been turned off by its owner.</p>
-        </div>
+        <AuthShell title="This link is not available">
+          <p className="text-center text-[0.9375rem] text-muted">It may have expired or been turned off by its owner.</p>
+        </AuthShell>
       )}
       {phase.kind === "error" && (
-        <div className="empty">
-          <h1>Something went wrong</h1>
-          <p role="alert">{phase.message}</p>
-          <button type="button" className="btn btn-primary" onClick={() => void load()}>
-            Try again
-          </button>
-        </div>
+        <AuthShell title="Something went wrong">
+          <div className="flex flex-col items-center gap-4">
+            <p role="alert" className="text-center text-[0.9375rem] text-muted">
+              {phase.message}
+            </p>
+            <Button variant="primary" onClick={() => void load()}>
+              Try again
+            </Button>
+          </div>
+        </AuthShell>
       )}
       {phase.kind === "locked" && <PasswordForm token={token} onUnlocked={() => void load()} />}
       {phase.kind === "open" && <Photos token={token} info={phase.info} onLocked={load} />}
-    </div>
     </SlideshowProvider>
   );
 }
@@ -120,28 +125,28 @@ function PasswordForm({ token, onUnlocked }: { token: string; onUnlocked: () => 
   }
 
   return (
-    <form className="card share-password" onSubmit={(e) => void submit(e)}>
-      <h1>This link is protected</h1>
-      <label htmlFor="share-password">Password</label>
-      <input
-        id="share-password"
-        className="text-input"
-        type="password"
-        autoComplete="current-password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        disabled={busy}
-        autoFocus
-      />
-      {error && (
-        <p role="alert" className="form-error">
-          {error}
-        </p>
-      )}
-      <button type="submit" className="btn btn-primary" disabled={busy || !password}>
-        View photos
-      </button>
-    </form>
+    <AuthShell title="This link is protected">
+      <form className="flex flex-col gap-4" onSubmit={(e) => void submit(e)}>
+        <Field label="Password">
+          {(p) => (
+            <input
+              {...p}
+              className={inputClass}
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={busy}
+              autoFocus
+            />
+          )}
+        </Field>
+        <FormError>{error}</FormError>
+        <Button type="submit" variant="primary" size="lg" disabled={busy || !password}>
+          View photos
+        </Button>
+      </form>
+    </AuthShell>
   );
 }
 
@@ -217,64 +222,74 @@ function Photos({ token, info, onLocked }: { token: string; info: PublicInfo; on
   const update = useCallback((item: PublicItem) => setItems((prev) => prev.map((p) => (p.id === item.id ? item : p))), []);
 
   return (
-    <main className="share-main">
-      <div className="share-head">
-        <h1>{info.title ?? "Shared photos"}</h1>
-        <p className="muted small">
-          {[photoCount(info.item_count), info.expires_at ? expiryText(info.expires_at) : null].filter(Boolean).join(" · ")}
-        </p>
-        {info.allow_download && info.item_count > 0 && <DownloadAll token={token} onLocked={onLocked} />}
-        {items.length > 0 && <SlideshowButton source={() => shareSource(token, info.title ?? "Shared photos")} />}
-      </div>
-      {loaded && items.length === 0 && !error && (
-        <div className="empty">
-          <h2>Nothing to see here</h2>
-          <p>There are no photos on this link right now.</p>
+    <div className="min-h-dvh bg-bg text-fg">
+      <header className="glass sticky top-0 z-[5] flex h-12 items-center gap-2 px-4 pt-[env(safe-area-inset-top,0px)] md:px-8">
+        <Logo size={22} />
+        <span className="text-[0.9375rem] font-semibold tracking-tight">Cyanotype</span>
+      </header>
+      <main className="mx-auto max-w-6xl px-1 pb-12 md:px-8">
+        <div className="flex flex-col gap-4 px-3 pt-5 pb-5 md:px-0 md:pt-8">
+          <div>
+            <h1 className="text-[1.75rem] leading-tight font-bold tracking-[-0.02em] break-words md:text-[2rem]">{info.title ?? "Shared photos"}</h1>
+            <p className="mt-1 text-sm text-muted">
+              {[photoCount(info.item_count), info.expires_at ? expiryText(info.expires_at) : null].filter(Boolean).join(" · ")}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-start gap-2">
+            {info.allow_download && info.item_count > 0 && <DownloadAll token={token} onLocked={onLocked} />}
+            {items.length > 0 && <SlideshowButton source={() => shareSource(token, info.title ?? "Shared photos")} />}
+          </div>
         </div>
-      )}
-      {items.length > 0 && (
-        <ul className="grid share-grid" aria-label="Photos">
-          {items.map((it, i) => (
-            <li key={it.id} className="tile-cell">
-              <button
-                type="button"
-                className="tile"
-                aria-label={`Open photo ${i + 1} of ${info.item_count}`}
-                style={placeholderUrl(it.thumbhash) ? { backgroundImage: `url(${placeholderUrl(it.thumbhash)})` } : undefined}
-                onClick={() => setOpen(i)}
-              >
-                {it.thumb_url ? (
-                  <img
-                    src={it.thumb_url}
-                    alt=""
-                    loading="lazy"
-                    className="loaded"
-                    onError={() => void refresh()}
-                  />
-                ) : (
-                  <span className="tile-pending">Processing…</span>
-                )}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <div ref={sentinel} className="sentinel" aria-hidden="true" />
-      {cursor && typeof IntersectionObserver === "undefined" && (
-        <p className="center">
-          <button type="button" className="btn btn-quiet" onClick={() => void more(cursor)}>
-            Show more
-          </button>
-        </p>
-      )}
-      {error && (
-        <p className="center" role="alert">
-          {error}{" "}
-          <button type="button" className="btn btn-quiet" onClick={() => void more(cursor)}>
-            Retry
-          </button>
-        </p>
-      )}
+        {loaded && items.length === 0 && !error && (
+          <Empty title="Nothing to see here">
+            <p>There are no photos on this link right now.</p>
+          </Empty>
+        )}
+        {items.length > 0 && (
+          <ul className="grid grid-cols-3 gap-0.5 sm:grid-cols-4 md:grid-cols-5 md:gap-1 lg:grid-cols-6" aria-label="Photos">
+            {items.map((it, i) => {
+              const bg = placeholderUrl(it.thumbhash);
+              return (
+                <li key={it.id}>
+                  <button
+                    type="button"
+                    className="relative block aspect-square w-full overflow-hidden bg-surface bg-cover md:rounded-tile"
+                    aria-label={`Open photo ${i + 1} of ${info.item_count}`}
+                    style={bg ? { backgroundImage: `url(${bg})` } : undefined}
+                    onClick={() => setOpen(i)}
+                  >
+                    {it.thumb_url ? (
+                      <img
+                        src={it.thumb_url}
+                        alt=""
+                        loading="lazy"
+                        className="size-full object-cover transition-transform duration-300 ease-soft hover:scale-[1.03]"
+                        onError={() => void refresh()}
+                      />
+                    ) : (
+                      <span className="absolute inset-0 grid grid-cols-1 place-items-center text-xs text-muted">Processing…</span>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        <div ref={sentinel} className="h-px" aria-hidden="true" />
+        {cursor && typeof IntersectionObserver === "undefined" && (
+          <div className="flex justify-center py-6">
+            <Button onClick={() => void more(cursor)}>Show more</Button>
+          </div>
+        )}
+        {error && (
+          <p className="py-6 text-center text-sm" role="alert">
+            {error}{" "}
+            <Button size="sm" onClick={() => void more(cursor)}>
+              Retry
+            </Button>
+          </p>
+        )}
+      </main>
       {open !== null && items[open] && (
         <ShareLightbox
           token={token}
@@ -288,7 +303,7 @@ function Photos({ token, info, onLocked }: { token: string; info: PublicInfo; on
           onImageError={() => void refresh()}
         />
       )}
-    </main>
+    </div>
   );
 }
 
@@ -320,17 +335,18 @@ function DownloadAll({ token, onLocked }: { token: string; onLocked: () => void 
   }
 
   return (
-    <div className="share-download-all">
-      <button type="button" className="btn btn-primary" disabled={state.kind === "busy"} onClick={() => void start()}>
+    <div className="flex flex-col items-start gap-2">
+      <Button variant="primary" disabled={state.kind === "busy"} onClick={() => void start()}>
+        <Download />
         {state.kind === "busy" ? "Preparing…" : "Download all"}
-      </button>
+      </Button>
       {state.kind === "error" ? (
-        <p role="alert" className="form-error small">
+        <p role="alert" className="max-w-md text-sm text-danger">
           {state.note}
         </p>
       ) : (
         state.kind !== "idle" && (
-          <p role="status" className="muted small">
+          <p role="status" className="max-w-md text-sm text-muted">
             {state.note}
           </p>
         )
@@ -507,66 +523,80 @@ function ShareLightbox({
   const menuOpen = menuFor === item.id;
 
   return (
-    <div className="lightbox" role="dialog" aria-modal="true" aria-label="Photo" ref={dialogRef}>
-      <div className="lightbox-bar">
-        <button type="button" className="btn btn-glass" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex flex-col bg-[#05090d] text-white"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Photo"
+      ref={dialogRef}
+    >
+      <div className="relative z-[3] flex items-center justify-between gap-2 px-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] pb-2">
+        <Button variant="overlay" onClick={onClose}>
+          <X />
           Close
-        </button>
-        <span className="lightbox-count" aria-live="polite">
+        </Button>
+        <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-sm text-white/70 tabular-nums" aria-live="polite">
           {index + 1} / {Math.max(total, items.length)}
         </span>
-        <div className="lightbox-right">
-          <div className="lightbox-actions">
-            {downloads.length === 1 && (
-              <a className="btn btn-glass" href={publicDownloadHref(token, item.id, downloads[0]!.id)} rel="noopener">
+        <div className="flex items-center gap-2">
+          {downloads.length === 1 && (
+            <Button variant="overlay" asChild>
+              <a href={publicDownloadHref(token, item.id, downloads[0]!.id)} rel="noopener">
+                <Download />
                 Download
               </a>
-            )}
-            {downloads.length > 1 && (
-              <button
-                type="button"
-                className="btn btn-glass"
-                aria-expanded={menuOpen}
-                aria-controls="share-downloads"
-                onClick={() => setMenuFor(menuOpen ? null : item.id)}
-              >
-                Download
-              </button>
-            )}
-            {pending && (
-              <button type="button" className="btn btn-glass" disabled>
-                {gaveUp === item.id ? "Download unavailable" : "Preparing download…"}
-              </button>
-            )}
-          </div>
+            </Button>
+          )}
+          {downloads.length > 1 && (
+            <Button variant="overlay" aria-expanded={menuOpen} aria-controls="share-downloads" onClick={() => setMenuFor(menuOpen ? null : item.id)}>
+              <Download />
+              Download
+            </Button>
+          )}
+          {pending && (
+            <Button variant="overlay" disabled>
+              {gaveUp === item.id ? "Download unavailable" : "Preparing download…"}
+            </Button>
+          )}
         </div>
       </div>
       {downloads.length > 1 && menuOpen && (
-        <div className="lightbox-downloads" id="share-downloads">
+        <div
+          className="absolute top-[max(3.75rem,calc(env(safe-area-inset-top,0px)+3rem))] right-3 z-[4] flex flex-col gap-1 rounded-card bg-black/70 p-1.5 backdrop-blur-md"
+          id="share-downloads"
+        >
           {downloads.map((d) => (
-            <a key={d.id} className="btn btn-glass" href={publicDownloadHref(token, item.id, d.id)} rel="noopener">
-              Download {d.label} {d.size_bytes !== null && <span className="muted">{fileSize(d.size_bytes)}</span>}
-            </a>
+            <Button key={d.id} variant="overlay" className="justify-start" asChild>
+              <a href={publicDownloadHref(token, item.id, d.id)} rel="noopener">
+                Download {d.label} {d.size_bytes !== null && <span className="text-white/60">{fileSize(d.size_bytes)}</span>}
+              </a>
+            </Button>
           ))}
         </div>
       )}
       <div
-        className={`lightbox-stage${zoom.zoomed ? " zoomed" : ""}`}
+        className={cn("relative min-h-0 flex-1 touch-none overflow-hidden bg-cover bg-center [container-type:size]", zoom.zoomed && "cursor-grab active:cursor-grabbing")}
         ref={stageRef}
         {...zoom.handlers}
         style={bg ? { backgroundImage: `url(${bg})` } : undefined}
       >
-        <button type="button" className="nav nav-prev" aria-label="Previous photo" onClick={() => go(-1)} disabled={index === 0}>
-          ‹
-        </button>
+        <div className="absolute inset-0 bg-[rgb(0_10_17/0.8)]" aria-hidden="true" />
         {src ? (
-          <div className="lightbox-photo" ref={layerRef}>
+          <div
+            className="[--fit-w:calc(100cqw-env(safe-area-inset-left,0px)-env(safe-area-inset-right,0px))] absolute inset-y-0 right-[env(safe-area-inset-right,0px)] left-[env(safe-area-inset-left,0px)] flex origin-center items-center justify-center [&.easing]:transition-transform [&.easing]:duration-[180ms] [&.easing]:ease-out [&.gesturing]:will-change-transform"
+            ref={layerRef}
+          >
             <img
               key={item.id}
               ref={imgRef}
               src={src}
               alt=""
-              className={`${item.preview_url && loadedId !== item.id ? "loading" : "loaded"}${fit ? " sized" : ""}`}
+              className={cn(
+                "max-h-full max-w-full flex-none object-contain select-none [-webkit-user-drag:none] transition-opacity duration-200",
+                item.preview_url && loadedId !== item.id && "opacity-0",
+                fit &&
+                  "h-auto max-h-none w-[min(var(--fit-w),calc(100cqh*var(--ar)),var(--cap))] max-w-none [aspect-ratio:var(--ar)]",
+              )}
               style={fitStyle(fit)}
               draggable={false}
               onLoad={(e) => {
@@ -577,24 +607,33 @@ function ShareLightbox({
             />
           </div>
         ) : (
-          <p className="lightbox-msg">This photo is still being processed.</p>
+          <p className="absolute inset-0 m-0 grid grid-cols-1 place-items-center text-sm text-white/70">This photo is still being processed.</p>
         )}
-        <button
-          type="button"
-          className="nav nav-next"
+        <Button
+          variant="overlay"
+          size="icon"
+          className="absolute top-1/2 left-2 z-[2] -translate-y-1/2 md:left-4"
+          aria-label="Previous photo"
+          onClick={() => go(-1)}
+          disabled={index === 0}
+        >
+          <ChevronLeft />
+        </Button>
+        <Button
+          variant="overlay"
+          size="icon"
+          className="absolute top-1/2 right-2 z-[2] -translate-y-1/2 md:right-4"
           aria-label="Next photo"
           onClick={() => go(1)}
           disabled={index >= items.length - 1}
         >
-          ›
-        </button>
+          <ChevronRight />
+        </Button>
         {src && <ZoomControls zoomed={zoom.zoomed} onIn={zoom.zoomIn} onOut={zoom.zoomOut} onFit={zoom.fit} levelRef={levelRef} announceRef={announceRef} />}
       </div>
-      <p className="lightbox-caption">
-        <span className="muted">
-          {item.width && item.height ? `${item.width} × ${item.height} · ` : ""}
-          <time dateTime={item.sort_time}>{Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString()}</time>
-        </span>
+      <p className="m-0 px-4 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] text-center text-sm text-white/70">
+        {item.width && item.height ? `${item.width} × ${item.height} · ` : ""}
+        <time dateTime={item.sort_time}>{Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString()}</time>
       </p>
     </div>
   );

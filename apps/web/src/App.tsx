@@ -7,7 +7,7 @@ import { Collections } from "./pages/Collections";
 import { Activate } from "./pages/Activate";
 import { ApiKeys } from "./pages/ApiKeys";
 import { CliAuthorize } from "./pages/CliAuthorize";
-import { AdminLayout } from "./pages/admin/AdminLayout";
+import { AdminHome, AdminLayout } from "./pages/admin/AdminLayout";
 import { Accounts } from "./pages/admin/Accounts";
 import { TwoFactorAdmin } from "./pages/admin/TwoFactorAdmin";
 import { Security } from "./pages/Security";
@@ -31,7 +31,8 @@ import { ShareView } from "./pages/ShareView";
 import { SearchShortcut } from "./components/SearchBar";
 import { SearchPage } from "./pages/Search";
 import { Sessions } from "./pages/Sessions";
-import { SettingsLayout } from "./pages/SettingsLayout";
+import { SettingsHome, SettingsLayout } from "./pages/SettingsLayout";
+import { DisplaySettings } from "./pages/DisplaySettings";
 import { TagPage } from "./pages/TagPage";
 import { TripPage } from "./pages/TripPage";
 import { TagsPage } from "./pages/Tags";
@@ -84,7 +85,8 @@ export function App() {
         <Route path="/shared" element={<SharedLinks />} />
         <Route path="/trash" element={<Trash />} />
         <Route path="/settings" element={<SettingsLayout />}>
-          <Route index element={<Navigate to="storage" replace />} />
+          <Route index element={<SettingsHome />} />
+          <Route path="display" element={<DisplaySettings />} />
           <Route path="storage" element={<Storage />} />
           <Route path="sessions" element={<Sessions />} />
           <Route path="security" element={<Security />} />
@@ -93,7 +95,7 @@ export function App() {
           <Route path="*" element={<NotFound />} />
         </Route>
         <Route path="/admin" element={<AdminLayout />}>
-          <Route index element={<Navigate to="accounts" replace />} />
+          <Route index element={<AdminHome />} />
           <Route path="accounts" element={<Accounts />} />
           <Route path="invites" element={<Invites />} />
           <Route path="security" element={<TwoFactorAdmin />} />

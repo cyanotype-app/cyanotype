@@ -21,7 +21,7 @@ export function QrCode({ text, label }: { text: string; label: string }) {
   }, [text]);
   return (
     <svg
-      className="qr"
+      className="size-44 shrink-0 rounded-xl ring-1 ring-line md:size-48"
       role="img"
       aria-label={label}
       viewBox={`0 0 ${size} ${size}`}

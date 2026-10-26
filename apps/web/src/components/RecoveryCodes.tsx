@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { recoveryCodesFile } from "../twoFactorText";
+import { Button } from "../ui/Button";
 
 /**
  * The recovery codes, shown once. The person must say they have saved them before the list goes away; the codes are never
@@ -23,40 +24,47 @@ export function RecoveryCodes({ codes, email, onDone }: { codes: string[]; email
   }
 
   return (
-    <section className="recovery" aria-label="Recovery codes">
-      <h2>Your recovery codes</h2>
-      <p>
-        <strong>Save these now. They will not be shown again.</strong> Each one works once, if you lose your phone: enter
-        it where the 6-digit code goes.
-      </p>
-      <ul className="recovery-codes">
+    <section aria-label="Recovery codes" className="flex flex-col gap-4 rounded-card bg-card p-4 ring-1 ring-line md:p-5">
+      <div>
+        <h3 className="text-[1.0625rem] font-semibold tracking-tight">Your recovery codes</h3>
+        <p className="mt-1 text-[0.9375rem] text-muted">
+          <strong className="font-semibold text-fg">Save these now. They will not be shown again.</strong> Each one works once, if you lose
+          your phone: enter it where the 6-digit code goes.
+        </p>
+      </div>
+      <ul className="grid grid-cols-1 gap-2 min-[420px]:grid-cols-2">
         {codes.map((c) => (
-          <li key={c}>
-            <code>{c}</code>
+          <li key={c} className="rounded-xl bg-surface px-3 py-2.5 text-center">
+            <code className="font-mono text-[0.9375rem] tracking-wide break-all">{c}</code>
           </li>
         ))}
       </ul>
-      <div className="recovery-actions">
-        <a className="btn btn-primary" href={url} download="cyanotype-recovery-codes.txt">
-          Download
-        </a>
-        <button type="button" className="btn btn-quiet" onClick={() => void copy()}>
-          Copy
-        </button>
-        <button type="button" className="btn btn-quiet" onClick={() => window.print()}>
-          Print
-        </button>
+      <div className="flex flex-wrap gap-2">
+        <Button variant="primary" asChild>
+          <a href={url} download="cyanotype-recovery-codes.txt">
+            Download
+          </a>
+        </Button>
+        <Button onClick={() => void copy()}>Copy</Button>
+        <Button onClick={() => window.print()}>Print</Button>
       </div>
-      <div role="status" className="muted small">
+      <div role="status" className="min-h-5 text-sm text-muted">
         {note}
       </div>
-      <label className="check">
-        <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} /> I have saved these codes
-        somewhere safe
+      <label className="flex items-start gap-3 text-[0.9375rem]">
+        <input
+          type="checkbox"
+          className="mt-0.5 size-5 shrink-0 accent-accent"
+          checked={saved}
+          onChange={(e) => setSaved(e.target.checked)}
+        />
+        <span>I have saved these codes somewhere safe</span>
       </label>
-      <button type="button" className="btn btn-primary" disabled={!saved} onClick={onDone}>
-        Done
-      </button>
+      <div>
+        <Button variant="primary" disabled={!saved} onClick={onDone}>
+          Done
+        </Button>
+      </div>
     </section>
   );
 }
