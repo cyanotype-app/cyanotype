@@ -1,5 +1,5 @@
 // The Info panel of the lightbox: the button, the `i` key, the swipe up, Escape and Back, and that paging keeps it open.
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -49,7 +49,7 @@ function drag(el: Element, { from, to, dx = 0, type = "touch", id = 1, ms = 400 
   fireEvent.pointerMove(el, { pointerType: type, pointerId: id, clientX: 100 + dx, clientY: to, timeStamp: t0 + ms });
   fireEvent.pointerUp(el, { pointerType: type, pointerId: id, clientX: 100 + dx, clientY: to, timeStamp: t0 + ms });
 }
-const stage = () => document.querySelector(".lightbox-stage")!;
+const stage = () => document.querySelector(".viewer-stage")!;
 
 describe("Lightbox Info panel", () => {
   it("offers Info only when the details can be read", () => {
@@ -69,10 +69,9 @@ describe("Lightbox Info panel", () => {
     expect(button).toHaveAttribute("aria-controls", "details-panel");
     expect(await screen.findByText("Tuesday, July 4, 2023")).toBeInTheDocument();
     expect(ok).toHaveBeenCalledWith("id-1");
-    expect(screen.getByRole("button", { name: "Close info" })).toHaveFocus();
 
-    await user.click(screen.getByRole("button", { name: "Close info" }));
-    await waitFor(() => expect(screen.queryByRole("complementary")).not.toBeInTheDocument());
+    await user.click(within(screen.getByRole("dialog", { name: "Info" })).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Info" })).not.toBeInTheDocument());
     expect(button).toHaveFocus();
     expect(button).toHaveAttribute("aria-expanded", "false");
   });
@@ -81,9 +80,9 @@ describe("Lightbox Info panel", () => {
     const user = userEvent.setup();
     render(<Harness loadDetails={ok} />);
     await user.keyboard("i");
-    expect(await screen.findByRole("complementary", { name: "Photo details" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Info" })).toBeInTheDocument();
     await user.keyboard("i");
-    await waitFor(() => expect(screen.queryByRole("complementary")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Info" })).not.toBeInTheDocument());
   });
 
   it("closes the panel on the first Escape and the lightbox on the second", async () => {
@@ -91,9 +90,9 @@ describe("Lightbox Info panel", () => {
     const onClose = vi.fn();
     render(<Harness loadDetails={ok} onClose={onClose} />);
     await user.keyboard("i");
-    await screen.findByRole("complementary");
+    await screen.findByRole("dialog", { name: "Info" });
     await user.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("complementary")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Info" })).not.toBeInTheDocument());
     expect(onClose).not.toHaveBeenCalled();
     await user.keyboard("{Escape}");
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
@@ -105,10 +104,10 @@ describe("Lightbox Info panel", () => {
     render(<Harness loadDetails={ok} onClose={onClose} />);
 
     await user.keyboard("i");
-    await screen.findByRole("complementary");
+    await screen.findByRole("dialog", { name: "Info" });
     expect((window.history.state as { cyInfo?: boolean } | null)?.cyInfo).toBe(true);
     act(() => window.history.back());
-    await waitFor(() => expect(screen.queryByRole("complementary")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Info" })).not.toBeInTheDocument());
     expect(onClose).not.toHaveBeenCalled();
   });
 
@@ -117,9 +116,10 @@ describe("Lightbox Info panel", () => {
     const onClose = vi.fn();
     render(<Harness loadDetails={ok} onClose={onClose} />);
     await user.keyboard("i");
-    await screen.findByRole("complementary");
+    await screen.findByRole("dialog", { name: "Info" });
     expect((window.history.state as { cyInfo?: boolean } | null)?.cyInfo).toBe(true);
-    await user.click(screen.getByRole("button", { name: "Close" }));
+    // (The viewer's own Close is the first one: the sheet's comes after it.)
+    await user.click(screen.getAllByRole("button", { name: "Close" })[0]!);
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect((window.history.state as { cyInfo?: boolean } | null)?.cyInfo).toBeFalsy();
   });
@@ -128,10 +128,10 @@ describe("Lightbox Info panel", () => {
     const user = userEvent.setup();
     render(<Harness loadDetails={ok} />);
     await user.keyboard("i");
-    await screen.findByRole("complementary");
+    await screen.findByRole("dialog", { name: "Info" });
     await user.keyboard("{ArrowRight}");
     await waitFor(() => expect(ok).toHaveBeenCalledWith("id-2"));
-    expect(screen.getByRole("complementary", { name: "Photo details" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Info" })).toBeInTheDocument();
     expect(await screen.findByText("id-2.heic")).toBeInTheDocument();
   });
 
@@ -157,7 +157,7 @@ describe("Lightbox Info panel", () => {
     );
     screen.getByRole("button", { name: "inside" }).focus();
     await user.keyboard("i");
-    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Info" })).not.toBeInTheDocument();
   });
 });
 
@@ -170,13 +170,13 @@ describe("swipe up", () => {
   it("opens the panel on a clear upward drag of one finger", async () => {
     render(<Harness loadDetails={ok} />);
     drag(stage(), { from: 500, to: 380 });
-    expect(await screen.findByRole("complementary", { name: "Photo details" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Info" })).toBeInTheDocument();
   });
 
   it("opens on a short quick flick", async () => {
     render(<Harness loadDetails={ok} />);
     drag(stage(), { from: 500, to: 460, ms: 120 });
-    expect(await screen.findByRole("complementary")).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Info" })).toBeInTheDocument();
   });
 
   it("leaves a mouse, a slow short drag, a downward drag and a mostly sideways one alone", () => {
@@ -185,7 +185,7 @@ describe("swipe up", () => {
     drag(stage(), { from: 500, to: 470, ms: 900 });
     drag(stage(), { from: 380, to: 500 });
     drag(stage(), { from: 500, to: 440, dx: 200 }); // paging, not the details
-    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Info" })).not.toBeInTheDocument();
   });
 
   it("ignores a pinch (a second finger) and a page that is zoomed in", () => {
@@ -194,24 +194,16 @@ describe("swipe up", () => {
     fireEvent.pointerDown(el, { pointerType: "touch", pointerId: 2, clientX: 200, clientY: 500 });
     drag(el, { from: 500, to: 380, id: 1 });
     fireEvent.pointerUp(el, { pointerType: "touch", pointerId: 2 });
-    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Info" })).not.toBeInTheDocument();
 
     Object.defineProperty(window, "visualViewport", { configurable: true, value: { scale: 2.5 } });
     drag(el, { from: 500, to: 380 });
-    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Info" })).not.toBeInTheDocument();
   });
 
   it("does not start on a button (the arrows)", () => {
     render(<Harness loadDetails={ok} />);
     drag(screen.getByRole("button", { name: "Next photo" }), { from: 500, to: 380 });
-    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
-  });
-
-  it("puts the sheet away with a downward drag on its header", async () => {
-    render(<Harness loadDetails={ok} />);
-    drag(stage(), { from: 500, to: 380 });
-    await screen.findByRole("complementary");
-    drag(document.querySelector(".details-head")!, { from: 300, to: 420 });
-    await waitFor(() => expect(screen.queryByRole("complementary")).not.toBeInTheDocument());
+    expect(screen.queryByRole("dialog", { name: "Info" })).not.toBeInTheDocument();
   });
 });

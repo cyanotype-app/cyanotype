@@ -280,9 +280,11 @@ describe("Library: sort, archive and hide", () => {
     const user = userEvent.setup();
     renderIn(<Library />);
     await user.click(await screen.findByRole("button", { name: "Open photo-1.jpg" }));
-    await user.click(await screen.findByRole("button", { name: "Hide" }));
+    await user.click(await screen.findByRole("button", { name: "More" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Hide" }));
     expect(api.hideAssets).toHaveBeenCalledWith(["id-1"], true);
-    await user.click(await screen.findByRole("button", { name: "Archive" }));
+    await user.click(await screen.findByRole("button", { name: "More" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Archive" }));
     expect(api.archiveAssets).toHaveBeenCalledWith(["id-2"], true);
   });
 

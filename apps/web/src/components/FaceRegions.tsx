@@ -1,5 +1,6 @@
 import type { KeyboardEvent } from "react";
 import type { PhotoFace } from "../api";
+import "../viewer.css";
 
 /** Where the displayed picture sits inside the zoomable layer (px): the regions are drawn in it, so they follow every zoom and pan. */
 export interface PictureRect {

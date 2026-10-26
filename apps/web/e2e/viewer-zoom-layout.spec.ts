@@ -23,11 +23,13 @@ async function geo(page: Page): Promise<Geo> {
       const b = el.getBoundingClientRect();
       return { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height };
     };
-    const img = document.querySelector<HTMLImageElement>(".lightbox-photo img")!;
+    // (The public share page still draws its own viewer, with the older class names.)
+    const layer = document.querySelector<HTMLElement>(".viewer-photo.current") ?? document.querySelector<HTMLElement>(".lightbox-photo")!;
+    const img = layer.querySelector<HTMLImageElement>("img")!;
     return {
-      zoom: Number(document.querySelector<HTMLElement>(".lightbox-photo")!.dataset.zoom ?? "1"),
+      zoom: Number(layer.dataset.zoom ?? "1"),
       img: r(img),
-      stage: r(document.querySelector(".lightbox-stage")!),
+      stage: r((document.querySelector(".viewer-stage") ?? document.querySelector(".lightbox-stage"))!),
       src: img.getAttribute("src") ?? "",
       layout: { w: img.offsetWidth, h: img.offsetHeight },
       pageScale: window.visualViewport?.scale ?? 1,
@@ -201,17 +203,17 @@ test.describe("zoom on desktop", () => {
       expect(box.width).toBeGreaterThanOrEqual(36);
       expect(box.height).toBeGreaterThanOrEqual(36);
     }
-    await expect(group.locator(".zoom-level")).toHaveText("100 %");
+    await expect(group.locator("[data-zoom-level]")).toHaveText("100 %");
     await zin.focus();
     await zin.click();
-    await expect(group.locator(".zoom-level")).toHaveText("150 %");
+    await expect(group.locator("[data-zoom-level]")).toHaveText("150 %");
     await expect(zin).toBeFocused();
     await zin.click();
-    await expect(group.locator(".zoom-level")).toHaveText("225 %");
+    await expect(group.locator("[data-zoom-level]")).toHaveText("225 %");
     // Said aloud once it has settled.
     await expect(group.locator("[aria-live=polite]")).toHaveText("225 %");
     await fit.click();
-    await expect(group.locator(".zoom-level")).toHaveText("100 %");
+    await expect(group.locator("[data-zoom-level]")).toHaveText("100 %");
     await expect(fit).toBeFocused();
     await expect.poll(async () => (await geo(page)).zoom).toBe(1);
     await zout.click();
@@ -219,7 +221,7 @@ test.describe("zoom on desktop", () => {
     // Keyboard: Tab reaches the buttons, Enter presses one.
     await zin.focus();
     await page.keyboard.press("Enter");
-    await expect(group.locator(".zoom-level")).toHaveText("150 %");
+    await expect(group.locator("[data-zoom-level]")).toHaveText("150 %");
   });
 
   test("drag pans a zoomed photo but never off the stage; at fit a drag does nothing", async ({ page }) => {
@@ -293,15 +295,15 @@ test.describe("zoom on desktop", () => {
     await page.keyboard.press("+");
     await expect.poll(async () => (await geo(page)).zoom).toBe(2.25);
     await page.keyboard.press("ArrowRight");
-    await expect(page.locator(".lightbox-stage img.loaded")).toHaveAttribute("src", /portrait\.svg/);
+    await expect(page.locator(".viewer-photo.current img.loaded")).toHaveAttribute("src", /portrait\.svg/);
     expect((await geo(page)).zoom).toBe(1);
     await page.keyboard.press("ArrowLeft");
-    await expect(page.locator(".lightbox-stage img.loaded")).toHaveAttribute("src", /landscape\.svg/);
+    await expect(page.locator(".viewer-photo.current img.loaded")).toHaveAttribute("src", /landscape\.svg/);
     expect((await geo(page)).zoom).toBe(1);
     await page.keyboard.press("+");
     await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
     await page.getByRole("button", { name: /Open IMG_00000/ }).first().click();
-    await page.locator(".lightbox-stage img.loaded").waitFor();
+    await page.locator(".viewer-photo.current img.loaded").waitFor();
     expect((await geo(page)).zoom).toBe(1);
   });
 
@@ -319,6 +321,7 @@ test.describe("zoom on desktop", () => {
   test("the sharper picture is requested only past the preview's resolution, and swaps without a jump", async ({ page }) => {
     const o = originals();
     await setupViewer(page, { onOriginal: o.onOriginal });
+    await page.setViewportSize({ width: 900, height: 560 }); // room to zoom below the threshold
     await openPhoto(page, 0);
     const g0 = await geo(page);
     const fitLong = Math.max(g0.layout.w, g0.layout.h);
@@ -349,7 +352,7 @@ test.describe("zoom on desktop", () => {
     // Going back out keeps the sharp one (no flicker); the next photo starts with its preview.
     await page.keyboard.press("0");
     await page.keyboard.press("ArrowRight");
-    await expect(page.locator(".lightbox-stage img.loaded")).toHaveAttribute("src", /fixture-preview\/portrait/);
+    await expect(page.locator(".viewer-photo.current img.loaded")).toHaveAttribute("src", /fixture-preview\/portrait/);
   });
 
   test("no sharper picture for an edited photo, HEIC or a file that is not larger", async ({ page }) => {
@@ -388,7 +391,7 @@ test.describe("zoom on desktop", () => {
     expect(meta).not.toMatch(/user-scalable|maximum-scale|minimum-scale/i);
     const actions = await page.evaluate(() => {
       const ta = (sel: string) => getComputedStyle(document.querySelector(sel)!).touchAction;
-      return { stage: ta(".lightbox-stage"), bar: ta(".lightbox-bar"), lightbox: ta(".lightbox"), body: ta("body"), html: ta("html") };
+      return { stage: ta(".viewer-stage"), bar: ta("[data-chrome]"), lightbox: ta("[role=\"dialog\"][aria-modal=\"true\"]"), body: ta("body"), html: ta("html") };
     });
     expect(actions.stage).toBe("none");
     expect(actions.bar).toBe("auto");
@@ -451,7 +454,7 @@ test.describe("zoom on a phone", () => {
     const c = centreOf(g0);
 
     // Spread two fingers around a point right of centre.
-    const mid = { x: c.x + 60, y: c.y - 20 };
+    const mid = { x: c.x + 60, y: c.y };
     await pinch(cdp, [{ x: mid.x - 20, y: mid.y }, { x: mid.x + 20, y: mid.y }], [{ x: mid.x - 70, y: mid.y }, { x: mid.x + 70, y: mid.y }]);
     const g1 = await geo(page);
     expect(g1.zoom, "3.5x for a finger distance of 40 to 140").toBeGreaterThan(3);
@@ -464,18 +467,18 @@ test.describe("zoom on a phone", () => {
     expect(g1.pageScale, "the page was not zoomed").toBe(1);
     expect(g1.scrollsSideways).toBe(false);
     await expect(page.getByRole("group", { name: "Zoom" })).toBeVisible(); // shown while zoomed
-    await expect(page.locator(".zoom-level")).toHaveText(`${Math.round(g1.zoom * 100)} %`);
+    await expect(page.locator("[data-zoom-level]")).toHaveText(`${Math.round(g1.zoom * 100)} %`);
 
     // One finger pans, and thrown past the edge it stops there.
-    await drag(cdp, { x: c.x, y: c.y }, { x: c.x - 60, y: c.y + 40 });
+    await drag(cdp, { x: c.x, y: c.y }, { x: c.x - 60, y: c.y + 10 });
     const g2 = await geo(page);
-    expect(near(g2.img.l, g1.img.l - 60, 3) && near(g2.img.t, g1.img.t + 40, 3), "panned with the finger").toBe(true);
+    expect(near(g2.img.l, g1.img.l - 60, 3) && near(g2.img.t, g1.img.t + 10, 3), "panned with the finger").toBe(true);
     expectCovering(g2, "panned");
     await drag(cdp, { x: 20, y: g2.stage.t + 40 }, { x: 380, y: g2.stage.b - 40 }, 6);
     await drag(cdp, { x: 20, y: g2.stage.t + 40 }, { x: 380, y: g2.stage.b - 40 }, 6);
-    await drag(cdp, { x: 20, y: g2.stage.t + 40 }, { x: 380, y: g2.stage.b - 40 }, 6);
+    for (let i = 0; i < 2; i++) await drag(cdp, { x: 10, y: g2.stage.t + 120 }, { x: 380, y: g2.stage.b - 100 }, 6);
     const g3 = await geo(page);
-    expect(near(g3.img.l, g3.stage.l, 1.5) && near(g3.img.t, g3.stage.t, 1.5), "stopped at the stage's top left").toBe(true);
+    expect(near(g3.img.l, g3.stage.l, 1.5) && near(g3.img.t, g3.stage.t, 1.5), `stopped at the stage's top left ${JSON.stringify([g3.img, g3.stage])}`).toBe(true);
     expectCovering(g3, "thrown");
     await expectPageUntouched(page, "pan");
 
@@ -527,7 +530,7 @@ test.describe("zoom on a phone", () => {
     await expect(page.locator("#details-panel")).toHaveCount(0);
     expect((await geo(page)).zoom).toBeGreaterThan(2);
     // Same index, still: no paging either.
-    await expect(page.locator(".lightbox-stage img.loaded")).toHaveAttribute("src", /landscape\.svg/);
+    await expect(page.locator(".viewer-photo.current img.loaded")).toHaveAttribute("src", /landscape\.svg/);
     // Back at fit the swipe works again.
     await page.keyboard.press("z");
     await expect.poll(async () => (await geo(page)).zoom).toBe(1);
@@ -584,7 +587,7 @@ test.describe("zoom on the share page", () => {
     await page.getByRole("button", { name: /Open photo 1 of/ }).click();
     await page.locator(".lightbox-stage img.loaded").waitFor();
     await page.getByRole("button", { name: "Zoom in" }).click();
-    await expect(page.locator(".zoom-level")).toHaveText("150 %");
+    await expect(page.locator("[data-zoom-level]")).toHaveText("150 %");
     expect((await geo(page)).zoom).toBe(1.5);
     await page.keyboard.press("+");
     await expect.poll(async () => (await geo(page)).zoom).toBe(2.25);

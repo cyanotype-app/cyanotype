@@ -1,3 +1,4 @@
+import { Crop as CropGlyph, RotateCcw, RotateCw } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import {
   dragCrop,
@@ -17,6 +18,9 @@ import {
   type Handle,
   type Recipe,
 } from "../recipeText";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
+import "../viewer.css";
 
 interface Props {
   /** The photo's name, for the labels. */
@@ -241,89 +245,104 @@ export function RotateCrop({ name, src, initial, fileSize, startCropping = false
   };
   const boxStyle = (c: Crop) => ({ left: c.x * bw, top: c.y * bh, width: c.w * bw, height: c.h * bh });
 
+  const tool = (on: boolean) =>
+    cn(
+      "h-11 flex-1 gap-1.5 rounded-card bg-white/10 px-3 text-[0.9375rem] font-medium text-white hover:bg-white/20 md:flex-none",
+      on && "bg-white/25 hover:bg-white/30",
+    );
+
   return (
-    <div className="rc" role="dialog" aria-modal="true" aria-label="Rotate and crop" tabIndex={-1} ref={rootRef}>
-      <div className="rc-bar">
-        <button type="button" className="btn btn-glass" onClick={onCancel} aria-keyshortcuts="Escape">
-          Cancel
-        </button>
-        <span className="rc-title">{name}</span>
-        <button type="button" className="btn btn-glass rc-save" onClick={() => void save()} disabled={busy || !changed} aria-keyshortcuts="Enter">
-          {busy ? "Saving…" : "Save"}
-        </button>
-      </div>
-      <div className="rc-stage" ref={stageRef}>
-        <div className="rc-frame-wrap" style={{ width: bw, height: bh }}>
-          <div className="rc-frame">
-            <img src={src} alt="" draggable={false} style={imgStyle} onLoad={(e) => setNatural([e.currentTarget.naturalWidth, e.currentTarget.naturalHeight])} />
-            {showFrame && <div className="rc-dim" style={boxStyle(frameCrop)} />}
-          </div>
-          {showFrame && (
-            <div
-              className={`rc-crop${cropping ? " active" : ""}`}
-              style={boxStyle(frameCrop)}
-              data-testid="crop-box"
-              {...(cropping
-                ? {
-                    role: "group",
-                    tabIndex: 0,
-                    "aria-label": `${handleLabel("move")}, move with the arrow keys`,
-                    onPointerDown: (e: PointerEvent<HTMLElement>) => down("move", e),
-                    onPointerMove: move,
-                    onPointerUp: up,
-                    onPointerCancel: up,
-                    onKeyDown: (e: KeyboardEvent<HTMLElement>) => nudge("move", e),
-                  }
-                : {})}
-            >
-              {cropping &&
-                HANDLES.map((h) => (
-                  <button
-                    key={h}
-                    type="button"
-                    className={`rc-handle rc-${h}`}
-                    aria-label={handleLabel(h)}
-                    onPointerDown={(e) => down(h, e)}
-                    onPointerMove={move}
-                    onPointerUp={up}
-                    onPointerCancel={up}
-                    onKeyDown={(e) => nudge(h, e)}
-                  />
-                ))}
+    <div
+      className="fixed inset-0 z-50 flex flex-col bg-black text-white outline-none md:flex-row"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Rotate and crop"
+      tabIndex={-1}
+      ref={rootRef}
+    >
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex items-center gap-3 px-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-2 pl-[max(1rem,env(safe-area-inset-left))]">
+          <Button variant="overlay" onClick={onCancel} aria-keyshortcuts="Escape">
+            Cancel
+          </Button>
+          <span className="min-w-0 flex-1 truncate text-center text-sm text-white/70">{name}</span>
+          <Button variant="primary" onClick={() => void save()} disabled={busy || !changed} aria-keyshortcuts="Enter">
+            {busy ? "Saving…" : "Save"}
+          </Button>
+        </div>
+        <div className="grid grid-cols-1 min-h-0 flex-1 place-items-center p-6 max-[480px]:pb-4" ref={stageRef}>
+          <div className="relative flex-none" style={{ width: bw, height: bh }}>
+            <div className="absolute inset-0 overflow-hidden bg-black" data-testid="crop-frame">
+              <img
+                className="pointer-events-none absolute top-1/2 left-1/2 max-h-none max-w-none select-none"
+                src={src}
+                alt=""
+                draggable={false}
+                style={imgStyle}
+                onLoad={(e) => setNatural([e.currentTarget.naturalWidth, e.currentTarget.naturalHeight])}
+              />
+              {showFrame && <div className="pointer-events-none absolute shadow-[0_0_0_100vmax_rgb(0_0_0/0.62)]" style={boxStyle(frameCrop)} />}
             </div>
-          )}
+            {showFrame && (
+              <div
+                className={cn("crop-box", cropping && "active")}
+                style={boxStyle(frameCrop)}
+                data-testid="crop-box"
+                {...(cropping
+                  ? {
+                      role: "group",
+                      tabIndex: 0,
+                      "aria-label": `${handleLabel("move")}, move with the arrow keys`,
+                      onPointerDown: (e: PointerEvent<HTMLElement>) => down("move", e),
+                      onPointerMove: move,
+                      onPointerUp: up,
+                      onPointerCancel: up,
+                      onKeyDown: (e: KeyboardEvent<HTMLElement>) => nudge("move", e),
+                    }
+                  : {})}
+              >
+                {cropping &&
+                  HANDLES.map((h) => (
+                    <button
+                      key={h}
+                      type="button"
+                      className={`crop-handle h-${h}`}
+                      aria-label={handleLabel(h)}
+                      onPointerDown={(e) => down(h, e)}
+                      onPointerMove={move}
+                      onPointerUp={up}
+                      onPointerCancel={up}
+                      onKeyDown={(e) => nudge(h, e)}
+                    />
+                  ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
-      <div className="rc-tools">
-        <p className="rc-summary" aria-live="polite">
+      <div className="flex shrink-0 flex-col gap-3 px-[max(1rem,env(safe-area-inset-left))] pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:w-80 md:justify-center md:border-l md:border-white/10 md:px-6 md:py-6">
+        <p className="m-0 min-h-[1.2em] text-center text-sm text-white/70 [overflow-wrap:anywhere] md:text-left" aria-live="polite">
           {recipeText(recipe, shape?.[0], shape?.[1])}
         </p>
-        <div className="rc-row">
-          <button type="button" className="btn btn-glass" onClick={() => rotate(-1)} aria-label="Rotate left" aria-keyshortcuts="Shift+R">
+        <div className="flex gap-2">
+          <Button variant="overlay" className={tool(false)} onClick={() => rotate(-1)} aria-label="Rotate left" aria-keyshortcuts="Shift+R">
             <TurnIcon flip />
-            <span className="rc-label">Left</span>
-          </button>
-          <button type="button" className="btn btn-glass" onClick={() => rotate(1)} aria-label="Rotate right" aria-keyshortcuts="r">
+            <span className="max-[380px]:sr-only">Left</span>
+          </Button>
+          <Button variant="overlay" className={tool(false)} onClick={() => rotate(1)} aria-label="Rotate right" aria-keyshortcuts="r">
             <TurnIcon />
-            <span className="rc-label">Right</span>
-          </button>
-          <button type="button" className={`btn btn-glass${cropping ? " on" : ""}`} onClick={toggleCrop} aria-pressed={cropping} aria-keyshortcuts="c">
-            <CropIcon />
-            <span className="rc-label">Crop</span>
-          </button>
-          <button type="button" className="btn btn-glass" onClick={reset} disabled={!changed || busy}>
-            Reset
-          </button>
-          {hasSaved && (
-            <button type="button" className="btn btn-glass" onClick={() => void revert()} disabled={busy}>
-              Revert to original
-            </button>
-          )}
+            <span className="max-[380px]:sr-only">Right</span>
+          </Button>
+          <Button variant="overlay" className={tool(cropping)} onClick={toggleCrop} aria-pressed={cropping} aria-keyshortcuts="c">
+            <CropGlyph aria-hidden="true" />
+            <span className="max-[380px]:sr-only">Crop</span>
+          </Button>
         </div>
-        <label className="rc-straighten">
+        <label className="grid grid-cols-[auto_minmax(0,1fr)_3.25rem] items-center gap-3 text-[0.9375rem]">
           <span>Straighten</span>
           <input
             type="range"
+            className="m-0 min-h-11 w-full accent-[#8fd0ff]"
             min={-MAX_STRAIGHTEN}
             max={MAX_STRAIGHTEN}
             step={0.1}
@@ -331,19 +350,36 @@ export function RotateCrop({ name, src, initial, fileSize, startCropping = false
             onChange={(e) => setRecipe((r) => ({ ...r, straighten: Number(e.target.value) }))}
             aria-valuetext={`${recipe.straighten.toFixed(1)} degrees`}
           />
-          <output>{recipe.straighten.toFixed(1)}°</output>
+          <output className="text-right tabular-nums">{recipe.straighten.toFixed(1)}°</output>
         </label>
         {cropping && (
-          <div className="rc-ratios" role="group" aria-label="Crop shape">
+          <div className="flex flex-wrap justify-center gap-1.5 md:justify-start" role="group" aria-label="Crop shape">
             {RATIOS.map((r) => (
-              <button key={r.id} type="button" className={`btn btn-glass rc-ratio${ratioId === r.id ? " on" : ""}`} aria-pressed={ratioId === r.id} onClick={() => chooseRatio(r.id)}>
+              <Button
+                key={r.id}
+                variant="overlay"
+                size="sm"
+                className={cn("h-9 px-3.5 text-sm", ratioId === r.id && "bg-white/30")}
+                aria-pressed={ratioId === r.id}
+                onClick={() => chooseRatio(r.id)}
+              >
                 {r.label}
-              </button>
+              </Button>
             ))}
           </div>
         )}
+        <div className="flex flex-wrap gap-2">
+          <Button variant="overlay" className="h-10 bg-transparent px-3 hover:bg-white/10" onClick={reset} disabled={!changed || busy}>
+            Reset
+          </Button>
+          {hasSaved && (
+            <Button variant="overlay" className="h-10 bg-transparent px-3 hover:bg-white/10" onClick={() => void revert()} disabled={busy}>
+              Revert to original
+            </Button>
+          )}
+        </div>
         {error && (
-          <p className="rc-error" role="alert">
+          <p className="m-0 text-center text-[#ffb4b4] [overflow-wrap:anywhere]" role="alert">
             {error}
           </p>
         )}
@@ -354,19 +390,9 @@ export function RotateCrop({ name, src, initial, fileSize, startCropping = false
 
 /** A quarter turn arrow; `flip` mirrors it for left. */
 function TurnIcon({ flip = false }: { flip?: boolean }) {
-  return (
-    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={flip ? { transform: "scaleX(-1)" } : undefined}>
-      <path d="M20 12a8 8 0 1 1-2.6-5.9" />
-      <path d="M20 4v5h-5" />
-    </svg>
-  );
+  return flip ? <RotateCcw aria-hidden="true" /> : <RotateCw aria-hidden="true" />;
 }
 
 export function CropIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M6 2v14a2 2 0 0 0 2 2h14" />
-      <path d="M18 22V8a2 2 0 0 0-2-2H2" />
-    </svg>
-  );
+  return <CropGlyph aria-hidden="true" className="size-5" />;
 }

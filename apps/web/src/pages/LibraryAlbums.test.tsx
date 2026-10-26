@@ -7,7 +7,7 @@ import { AuthProvider } from "../auth";
 import { UploadProvider } from "../upload/UploadProvider";
 import { UploadPickerProvider } from "../shell/UploadPicker";
 import "../test/dialogs";
-import { album, detail, item } from "../test/fixtures";
+import { album, detail, item, photoDetails } from "../test/fixtures";
 import { fakeLibrary } from "../test/fakeLibrary";
 import { Library } from "./Library";
 
@@ -102,13 +102,18 @@ describe("Library: add to album", () => {
   it("adds from the lightbox, which also lists the photo's albums", async () => {
     vi.spyOn(api, "listAlbums").mockResolvedValue({ items: [album(1, { title: "Winter" })] });
     const add = vi.spyOn(api, "addToAlbum").mockResolvedValue({ count: 1 });
+    vi.spyOn(api, "getDetails").mockResolvedValue(photoDetails({ albums: [{ id: "album-9", title: "Summer" }] }));
     const user = userEvent.setup();
     renderLibrary();
     await user.click(await screen.findByRole("button", { name: "Open photo-1.jpg" }));
     const box = screen.getByRole("dialog", { name: "photo-1.jpg" });
-    expect(await within(box).findByRole("link", { name: "Summer" })).toHaveAttribute("href", "/albums/album-9");
+    // (The albums are a row of the Info panel.)
+    await user.click(within(box).getByRole("button", { name: "Info" }));
+    expect(await screen.findByRole("link", { name: "Summer" })).toHaveAttribute("href", "/albums/album-9");
+    await user.click(within(screen.getByRole("dialog", { name: "Info" })).getByRole("button", { name: "Close" }));
 
-    await user.click(within(box).getByRole("button", { name: "Add to album" }));
+    await user.click(within(box).getByRole("button", { name: "More" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Add to album" }));
     await user.click(await screen.findByRole("button", { name: /Winter/ }));
     await waitFor(() => expect(add).toHaveBeenCalledWith("album-1", ["id-1"]));
     expect(await screen.findByText("Added 1 to Winter")).toBeInTheDocument();
@@ -122,7 +127,8 @@ describe("Library: add to album", () => {
     const user = userEvent.setup();
     renderLibrary();
     await user.click(await screen.findByRole("button", { name: "Open photo-1.jpg" }));
-    await user.click(screen.getByRole("button", { name: "Add to album" }));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Add to album" }));
     await screen.findByRole("dialog", { name: "Add 1 photo to album" });
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Add 1 photo to album" })).not.toBeInTheDocument();

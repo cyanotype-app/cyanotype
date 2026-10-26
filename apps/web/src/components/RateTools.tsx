@@ -56,10 +56,11 @@ export function RateDialog({ open, onOpenChange, target, count, onDone, onError 
             className="flex min-h-12 items-center gap-3 rounded-xl px-3 text-left text-[0.9375rem] hover:bg-surface disabled:opacity-50"
             disabled={busy}
             onClick={() => void rate(n)}
+            autoFocus={n === 5}
           >
-            <span className="flex w-28 shrink-0 gap-0.5 text-accent" aria-hidden="true">
+            <span className="flex w-28 shrink-0 gap-0.5 text-muted" aria-hidden="true">
               {Array.from({ length: 5 }, (_, i) => (
-                <span key={i} className={i < n ? "size-5" : "size-5 text-muted/60"}>
+                <span key={i} className={i < n ? "size-5 text-(--star)" : "size-5"}>
                   <StarIcon filled={i < n} />
                 </span>
               ))}
@@ -86,9 +87,9 @@ export function RateTools({ disabled, trigger, ...rest }: Props) {
       {trigger ? (
         trigger(() => setOpen(true))
       ) : (
-        <button type="button" className="btn btn-quiet" disabled={disabled} onClick={() => setOpen(true)}>
+        <Button variant="quiet" size="sm" disabled={disabled} onClick={() => setOpen(true)}>
           Rate
-        </button>
+        </Button>
       )}
       <RateDialog open={open} onOpenChange={setOpen} {...rest} />
     </>

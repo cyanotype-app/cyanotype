@@ -1122,6 +1122,28 @@ ways that are unknown (real recall with the real model on a real library is not 
   long names, chips, parsed chips with a very long place, the weaker tier offered and shown, no close matches, no results,
   indexing, re-indexing, unavailable, intro, and the similar-photos page with its chip, weaker tier, lightbox button and not-indexed state) at 320 to 1280 px, light and dark.
 
+# The photo viewer
+
+An immersive, black viewer: the photo is as large as it can be, and the bars float over it and fade out after about three
+seconds without a touch, a mouse move or a key (never while a panel, a menu or an editor is open, or while the keyboard is
+on one of the buttons). A tap on the photo (touch) or any mouse move brings them back.
+
+- **Top bar:** back (Escape), the photo's day and, under it, its place (or its time), `Edited` and its position (`3 / 120`),
+  and **More** (add to album, play from here, similar photos, text in photo, download, archive, hide). On a desktop the icon
+  buttons sit here too; on a phone they are the **bottom bar**: favorite, info, share, rotate and crop, move to trash. Under
+  the photo (above the bar) come its caption, the RAW + JPEG pair with *Unpair*, the stack strip and the stars.
+- **On a phone:** drag sideways to page (the next photo follows the finger, with the real preview of the neighbour, and
+  settles with a spring; at either end it gives way a third of the drag and springs back), drag down to close (the photo
+  shrinks and the backdrop fades with the finger), drag up for the info, pinch and double tap to zoom (a drag pans a zoomed
+  photo and never pages). **On a desktop:** arrows and hover arrows at the sides, Escape, the keys `+` `-` `z`, ctrl + wheel or a
+  trackpad pinch to zoom.
+- **Opening and closing:** the photo grows out of its tile in the grid and shrinks back into it (the grid marks tiles with
+  `data-asset-id`; `ui/sharedTile.ts` finds one). With no tile on screen, or when the device asks for less motion, the viewer
+  only fades.
+- **Keys:** `i` info, `t` text, `s` slideshow, `e` / `r` / `c` rotate and crop, `0`-`5` stars, `[` `]` through a stack, Delete.
+- Editing a date, a place or a caption, adding a tag, the text panel and the rating sheet are sheets (a dialog on a desktop);
+  rotate and crop is a full-screen editor with its tools in a column on a desktop. The slideshow has the same look.
+
 # Photo details
 
 Apple Photos style details for the photo in the lightbox: when and where it was taken, with what, and what the file is.
@@ -1130,12 +1152,13 @@ imported long ago need no reprocessing** and there is no migration.
 
 ## What the user sees
 
-- **Open it** with the Info button in the lightbox's bar, the `i` key, or (on a phone) **a swipe up on the photo**. On a wide
-  screen it is a column beside the photo; on a narrow one the photo moves up and the details sit under it (a header with a
-  grip: drag it down, or tap *Close info*, to put it away). It stays open while paging with the arrows, and shows the next
-  photo's details. **Escape** closes the panel first (a second one closes the lightbox); the browser's **Back** button (or a
-  phone's back gesture) does the same, through one history entry that the panel takes when it opens and gives back when it
-  closes (also when the lightbox closes with it open, or a link in it is followed).
+- **Open it** with the Info button, the `i` key, or (on a phone) **a swipe up on the photo**. On a wide screen it is a column
+  at the right that makes the photo's area narrower (the photo is never covered); on a phone it is a bottom sheet (drag it
+  down, or press Escape, to put it away). The rows are grouped (when and where, tags, people and albums, camera, the file) and
+  are edited where they were before. It stays open while paging with the arrows (a phone's sheet covers the photo: close it to
+  page), and shows the next photo's details. **Escape** closes the panel first (a second one closes the lightbox); the
+  browser's **Back** button (or a phone's back gesture) does the same, through one history entry that the panel takes when it
+  opens and gives back when it closes (also when the lightbox closes with it open, or a link in it is followed).
 - **Rows, only when the photo has the information:**
   - *Date*: weekday, date and time in the photo's own time zone when EXIF recorded one (`UTC+02:00`), otherwise "Time zone
     unknown" (the time is then the camera's clock as it was written). A photo with no capture time says its date is the

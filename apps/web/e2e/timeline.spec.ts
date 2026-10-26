@@ -232,13 +232,13 @@ for (const { width, height, touch } of [
       await page.goto("/photos");
       await page.getByRole("button", { name: "Open IMG_00000.jpg" }).click();
       const box = page.getByRole("dialog");
-      const panel = page.getByRole("complementary", { name: "Photo details" });
+      const panel = page.locator("#details-panel");
       await expect(panel).toBeHidden();
 
       if (touch) {
         // A real touch drag, upward, on the photo (not the arrows): the panel opens.
         const cdp = await page.context().newCDPSession(page);
-        const stage = (await page.locator(".lightbox-stage").boundingBox())!;
+        const stage = (await page.locator(".viewer-stage").boundingBox())!;
         const x = stage.x + stage.width / 2;
         const y0 = stage.y + stage.height * 0.7;
         await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y: y0, id: 1 }] });
@@ -284,20 +284,22 @@ for (const { width, height, touch } of [
       // a0 is a RAW + JPEG pair; a1 is a single file.
       await page.getByRole("button", { name: "Open IMG_00001.jpg" }).click();
       const box = page.getByRole("dialog");
-      await expect(box.getByRole("link", { name: "Download" })).toHaveAttribute("href", "/assets/a1/download");
+      await box.getByRole("button", { name: "More" }).click();
+      await expect(page.getByRole("menuitem", { name: "Download" })).toHaveAttribute("href", "/assets/a1/download");
       await shot(page, "lightbox-download");
-      const [single] = await Promise.all([page.waitForEvent("download"), box.getByRole("link", { name: "Download" }).click()]);
+      const [single] = await Promise.all([page.waitForEvent("download"), page.getByRole("menuitem", { name: "Download" }).click()]);
       expect(single.suggestedFilename()).toBe("IMG_00001.jpg");
       expect(page.url()).toMatch(/\/photos$/); // the page stayed where it was
       await page.keyboard.press("Escape");
 
       await page.getByRole("button", { name: "Open IMG_00000.jpg" }).click();
-      await box.getByRole("button", { name: "Download" }).click();
-      await expect(box.getByRole("link", { name: /Download RAW/ })).toHaveAttribute("href", "/assets/a0/download?file=r0");
+      await box.getByRole("button", { name: "More" }).click();
+      await expect(page.getByRole("menuitem", { name: /Download RAW/ })).toHaveAttribute("href", "/assets/a0/download?file=r0");
       await shot(page, "lightbox-download-pair");
-      const [raw] = await Promise.all([page.waitForEvent("download"), box.getByRole("link", { name: /Download RAW/ }).click()]);
+      const [raw] = await Promise.all([page.waitForEvent("download"), page.getByRole("menuitem", { name: /Download RAW/ }).click()]);
       expect(raw.suggestedFilename()).toBe("IMG_00000.CR3");
-      const [jpg] = await Promise.all([page.waitForEvent("download"), box.getByRole("link", { name: /Download JPEG/ }).click()]);
+      await box.getByRole("button", { name: "More" }).click();
+      const [jpg] = await Promise.all([page.waitForEvent("download"), page.getByRole("menuitem", { name: /Download JPEG/ }).click()]);
       expect(jpg.suggestedFilename()).toBe("IMG_00000.jpg");
 
       // No CORS needed: the bucket sent no CORS headers and was only ever reached by navigations, never fetch()/XHR.

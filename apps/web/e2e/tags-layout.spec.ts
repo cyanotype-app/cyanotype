@@ -86,7 +86,7 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: /Open IMG_00002/ }).first().click();
       await page.getByRole("dialog", { name: "IMG_00002.jpg" }).waitFor();
       await page.keyboard.press("i");
-      const panel = page.getByRole("complementary", { name: "Photo details" });
+      const panel = page.locator("#details-panel");
       await panel.getByRole("button", { name: "Add tag" }).waitFor();
       await check("lightbox-info-tags");
       await panel.getByRole("button", { name: "Add tag" }).click();

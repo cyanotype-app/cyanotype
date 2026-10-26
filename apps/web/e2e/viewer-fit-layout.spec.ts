@@ -1,5 +1,5 @@
-// The photo in the viewer fits: whatever the screen, the picture lies fully inside the stage (the area between the bar and
-// the stars/caption), keeps its shape, and fills the stage's width or height. Phones, a short landscape phone, a tablet and
+// The photo in the viewer fits: whatever the screen, the picture lies fully inside the stage (the whole area; the bars float
+// over it and fade away), keeps its shape, and fills the stage's width or height. Phones, a short landscape phone, a tablet and
 // desktops, light and dark, with the Info panel open on desktop. Set SHOT_DIR to save a screenshot per state.
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
@@ -19,39 +19,39 @@ const SIZES = [
 ];
 
 /** The picture's box against the stage's and the screen's, and what lies under the stage. */
-async function measure(page: Page) {
-  return page.evaluate(() => {
+async function measure(page: Page, sel = { stage: ".viewer-stage", img: ".viewer-photo.current img", chrome: "[data-chrome] button" }) {
+  return page.evaluate((sel) => {
     const r = (el: Element | null) => {
       const b = el?.getBoundingClientRect();
       return b ? { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height } : null;
     };
-    const img = document.querySelector<HTMLImageElement>(".lightbox-stage img");
-    const lb = document.querySelector<HTMLElement>(".lightbox");
+    const img = document.querySelector<HTMLImageElement>(sel.img);
+    const lb = document.querySelector<HTMLElement>('[role="dialog"][aria-modal="true"]');
     return {
       img: r(img),
       natural: img ? ([img.naturalWidth, img.naturalHeight] as [number, number]) : null,
-      stage: r(document.querySelector(".lightbox-stage")),
-      bar: r(document.querySelector(".lightbox-bar")),
-      rating: r(document.querySelector(".lightbox-rating")),
-      caption: r(document.querySelector(".lightbox-caption")),
+      stage: r(document.querySelector(sel.stage)),
       vw: window.innerWidth,
       vh: window.innerHeight,
       lightboxOverflow: lb ? lb.scrollHeight - lb.clientHeight : 0,
-      barOutside: Array.from(document.querySelectorAll<HTMLElement>('.lightbox-bar button, .lightbox-bar a'))
+      barOutside: Array.from(document.querySelectorAll<HTMLElement>(sel.chrome))
         .filter((e) => e.getBoundingClientRect().width > 0)
         .filter((e) => e.getBoundingClientRect().right > window.innerWidth + 0.5 || e.getBoundingClientRect().left < -0.5)
         .map((e) => (e.textContent || e.getAttribute('aria-label') || '').trim()),
-      docOverflow: document.documentElement.scrollWidth - window.innerWidth,
+      viewerOverflowX: lb ? lb.scrollWidth - lb.clientWidth : 0,
     };
-  });
+  }, sel);
 }
 
-async function expectFits(page: Page, label: string) {
+/** The public share page draws its own viewer (still the old markup). */
+const SHARE_SEL = { stage: ".lightbox-stage", img: ".lightbox-photo img", chrome: ".lightbox-bar button, .lightbox-bar a" };
+
+async function expectFits(page: Page, label: string, sel?: Parameters<typeof measure>[1]) {
   // The picture settles after the preview loads and the panels slide in: wait until two reads agree.
-  let m = await measure(page);
+  let m = await measure(page, sel);
   await expect
     .poll(async () => {
-      const next = await measure(page);
+      const next = await measure(page, sel);
       const same = JSON.stringify(next.img) === JSON.stringify(m.img) && JSON.stringify(next.stage) === JSON.stringify(m.stage);
       m = next;
       return same && !!next.img;
@@ -67,12 +67,9 @@ async function expectFits(page: Page, label: string) {
   expect(img.r, `${label}: inside the screen`).toBeLessThanOrEqual(vw + tol);
   expect(img.b, `${label}: above the bottom of the screen`).toBeLessThanOrEqual(vh + tol);
   expect(stage.b, `${label}: the stage ends on screen`).toBeLessThanOrEqual(vh + tol);
-  if (m.bar) expect(img.t, `${label}: not under the bar`).toBeGreaterThanOrEqual(m.bar.b - tol);
-  if (m.rating) expect(img.b, `${label}: not under the stars`).toBeLessThanOrEqual(m.rating.t + tol);
-  if (m.caption) expect(m.caption.b, `${label}: caption on screen`).toBeLessThanOrEqual(vh + tol);
   expect(m.barOutside, `${label}: the bar's buttons are on screen`).toEqual([]);
   expect(m.lightboxOverflow, `${label}: the viewer does not scroll`).toBeLessThanOrEqual(1);
-  expect(m.docOverflow, `${label}: the page does not scroll sideways`).toBeLessThanOrEqual(1);
+  expect(m.viewerOverflowX, `${label}: the viewer does not scroll sideways`).toBeLessThanOrEqual(1);
   // Fills as much as possible: touches the stage's width or height (unless it would be upscaled past 2x its pixels).
   const [nw, nh] = m.natural;
   const capped = img.w >= nw * 2 - 2;
@@ -96,7 +93,7 @@ for (const scheme of ["light", "dark"] as const) {
           const s = SHAPES[i]!;
           if (i > 0) {
             await page.keyboard.press("ArrowRight");
-            await expect(page.locator(".lightbox-stage img.loaded")).toHaveAttribute("src", new RegExp(`/${s.name}\\.svg`));
+            await expect(page.locator(".viewer-photo.current img.loaded")).toHaveAttribute("src", new RegExp(`/${s.name}\\.svg`));
           }
           await expectFits(page, `${size.name} ${scheme} ${s.name}`);
           if (SHOT_DIR) await page.screenshot({ path: join(SHOT_DIR, `fit-${size.name}-${scheme}-${s.name}.png`) });
@@ -113,7 +110,7 @@ for (const scheme of ["light", "dark"] as const) {
           for (let i = 0; i < SHAPES.length; i++) {
             if (i > 0) {
               await page.keyboard.press("ArrowRight");
-              await expect(page.locator(".lightbox-stage img.loaded")).toHaveAttribute("src", new RegExp(`/${SHAPES[i]!.name}\\.svg`));
+              await expect(page.locator(".viewer-photo.current img.loaded")).toHaveAttribute("src", new RegExp(`/${SHAPES[i]!.name}\\.svg`));
             }
             await expectFits(page, `${size.name} ${scheme} info ${SHAPES[i]!.name}`);
           }
@@ -156,7 +153,7 @@ for (const size of [SIZES[0]!, SIZES[2]!, SIZES[4]!, SIZES[6]!]) {
           await page.keyboard.press("ArrowRight");
           await expect(page.locator(".lightbox-stage img.loaded")).toHaveAttribute("src", new RegExp(`/${SHAPES[i]!.name}\\.svg`));
         }
-        await expectFits(page, `share ${size.name} ${SHAPES[i]!.name}`);
+        await expectFits(page, `share ${size.name} ${SHAPES[i]!.name}`, SHARE_SEL);
       }
     });
   });

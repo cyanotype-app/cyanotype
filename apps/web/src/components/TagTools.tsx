@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import type { Target } from "../api";
+import { Button } from "../ui/Button";
 import { TagDialog } from "./TagDialog";
 
 interface Props {
@@ -20,9 +21,9 @@ export function TagTools({ target, count, disabled, onDone, trigger }: Props) {
       {trigger ? (
         trigger(() => setOpen(true))
       ) : (
-        <button type="button" className="btn btn-quiet" disabled={disabled} onClick={() => setOpen(true)}>
+        <Button variant="quiet" size="sm" disabled={disabled} onClick={() => setOpen(true)}>
           Tag
-        </button>
+        </Button>
       )}
       {open && (
         <TagDialog

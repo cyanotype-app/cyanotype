@@ -3,6 +3,8 @@ import { useEffect, useRef } from "react";
 import type { AssetListItem } from "../api";
 import { placeholderUrl } from "../thumbhash";
 import { positionLabel } from "../stacks";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
 
 /** What the viewer needs to step through the stack of the photo on show and to change it. */
 export interface StackView {
@@ -39,70 +41,63 @@ export function StackBar({ stack }: { stack: StackView }) {
   }, [position]);
   if (!here) return null;
   const isCover = here.id === coverId;
-  const pill =
-    "h-9 shrink-0 rounded-full bg-white/15 px-3.5 text-[0.8125rem] font-medium text-white hover:bg-white/25 disabled:pointer-events-none disabled:opacity-40";
   return (
-    <section className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pb-3 text-white" aria-label="Stack">
-      <div className="flex items-center gap-2">
-        <span className="mr-auto text-sm text-white/80" aria-live="polite">
-          {positionLabel(position, items.length)}
-        </span>
-        <span className="flex gap-1">
-          <button
-            type="button"
-            className="grid size-9 grid-cols-1 place-items-center rounded-full bg-white/15 hover:bg-white/25 disabled:pointer-events-none disabled:opacity-40"
+    <section className="grid grid-cols-1 max-w-full gap-2 rounded-card bg-black/45 p-2.5 text-white backdrop-blur-md" aria-label="Stack">
+      <div className="flex items-center justify-between gap-2 pl-1 text-sm">
+        <span aria-live="polite">{positionLabel(position, items.length)}</span>
+        <span className="inline-flex gap-1">
+          <Button
+            variant="overlay"
+            size="icon-sm"
             aria-label="Previous photo in the stack"
             title="Previous in stack ["
             disabled={position === 0}
             onClick={() => stack.onStep(-1)}
           >
-            <ChevronLeft className="size-5" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            className="grid size-9 grid-cols-1 place-items-center rounded-full bg-white/15 hover:bg-white/25 disabled:pointer-events-none disabled:opacity-40"
+            <ChevronLeft aria-hidden="true" />
+          </Button>
+          <Button
+            variant="overlay"
+            size="icon-sm"
             aria-label="Next photo in the stack"
             title="Next in stack ]"
             disabled={position >= items.length - 1}
             onClick={() => stack.onStep(1)}
           >
-            <ChevronRight className="size-5" aria-hidden="true" />
-          </button>
+            <ChevronRight aria-hidden="true" />
+          </Button>
         </span>
       </div>
-      <ul className="m-0 flex list-none gap-1.5 overflow-x-auto p-0 pb-1" ref={strip} aria-label="Photos in this stack">
+      <ul className="m-0 flex list-none gap-1.5 overflow-x-auto p-0.5 [scrollbar-width:thin]" ref={strip} aria-label="Photos in this stack">
         {items.map((it, i) => (
-          <li key={it.id} className="shrink-0">
+          <li key={it.id} className="flex-none">
             <button
               type="button"
-              className={`relative block size-14 overflow-hidden rounded-lg bg-white/10 bg-cover bg-center ring-2 transition-[box-shadow,opacity] ${
-                i === position ? "opacity-100 ring-white" : "opacity-70 ring-transparent hover:opacity-100"
-              }`}
+              className={cn(
+                "relative block size-12 overflow-hidden rounded-lg border-2 bg-white/10 bg-cover p-0 transition-[border-color,transform] duration-150",
+                i === position ? "scale-100 border-white" : "scale-[0.92] border-transparent",
+              )}
               style={placeholderUrl(it.thumbhash) ? { backgroundImage: `url(${placeholderUrl(it.thumbhash)})` } : undefined}
               aria-label={`${it.original_name}${it.id === coverId ? ", cover" : ""}`}
               aria-current={i === position ? "true" : undefined}
               onClick={() => stack.onPick(it.id)}
             >
-              {it.thumb_url && <img src={it.thumb_url} alt="" loading="lazy" draggable={false} className="absolute inset-0 size-full object-cover" />}
-              {it.id === coverId && (
-                <span className="absolute inset-x-0 bottom-0 bg-black/60 py-px text-center text-[0.5625rem] font-semibold tracking-wide text-white uppercase">
-                  Cover
-                </span>
-              )}
+              {it.thumb_url && <img src={it.thumb_url} alt="" loading="lazy" draggable={false} className="block size-full object-cover" />}
+              {it.id === coverId && <span className="absolute inset-x-0 bottom-0 bg-black/65 text-[0.6rem] leading-[1.3] font-bold">Cover</span>}
             </button>
           </li>
         ))}
       </ul>
-      <div className="flex flex-wrap gap-2">
-        <button type="button" className={pill} disabled={busy || isCover} onClick={stack.onCover}>
+      <div className="flex flex-wrap gap-1.5">
+        <Button variant="overlay" size="sm" disabled={busy || isCover} onClick={stack.onCover}>
           Set as stack cover
-        </button>
-        <button type="button" className={pill} disabled={busy} onClick={stack.onRemove}>
+        </Button>
+        <Button variant="overlay" size="sm" disabled={busy} onClick={stack.onRemove}>
           Remove from stack
-        </button>
-        <button type="button" className={pill} disabled={busy} onClick={stack.onDissolve}>
+        </Button>
+        <Button variant="overlay" size="sm" disabled={busy} onClick={stack.onDissolve}>
           Unstack all
-        </button>
+        </Button>
       </div>
     </section>
   );

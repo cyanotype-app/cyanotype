@@ -45,7 +45,8 @@ describe("Lightbox", () => {
     const onClose = vi.fn();
     render(<Harness onClose={onClose} />);
     await user.keyboard("{Escape}");
-    expect(onClose).toHaveBeenCalledOnce();
+    // (The photo shrinks away first: with no tile to shrink into, a short fade.)
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
   });
 
   it("falls back to the thumbnail while the detail request fails", async () => {
@@ -85,10 +86,12 @@ describe("Lightbox", () => {
     const { rerender } = render(
       <Lightbox items={items} index={1} onIndexChange={() => {}} onClose={() => {}} loadDetail={async () => detail(2)} onSimilar={onSimilar} />,
     );
-    await user.click(screen.getByRole("button", { name: "Similar photos" }));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Similar photos" }));
     expect(onSimilar).toHaveBeenCalledWith(items[1]);
     rerender(<Lightbox items={items} index={1} onIndexChange={() => {}} onClose={() => {}} loadDetail={async () => detail(2)} />);
-    expect(screen.queryByRole("button", { name: "Similar photos" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.queryByRole("menuitem", { name: "Similar photos" })).not.toBeInTheDocument();
   });
 
   describe("RAW + JPEG pairs", () => {
@@ -156,9 +159,13 @@ describe("Lightbox", () => {
   });
 
   describe("download", () => {
-    it("is a plain link (a navigation, not fetch) to the download endpoint for a single file", () => {
+    const more = () => screen.getByRole("button", { name: "More" });
+
+    it("is a plain link (a navigation, not fetch) to the download endpoint for a single file", async () => {
+      const user = userEvent.setup();
       render(<Harness />);
-      const link = screen.getByRole("link", { name: "Download" });
+      await user.click(more());
+      const link = screen.getByRole("menuitem", { name: "Download" });
       expect(link).toHaveAttribute("href", "/assets/id-1/download");
       expect(link).not.toHaveAttribute("target"); // the page stays; the attachment header saves the file
     });
@@ -166,22 +173,19 @@ describe("Lightbox", () => {
     it("offers both files of a RAW + JPEG pair, with sizes", async () => {
       const user = userEvent.setup();
       render(<Lightbox items={[withRaw(1)]} index={0} onIndexChange={() => {}} onClose={() => {}} loadDetail={async () => detail(1)} />);
-      expect(screen.queryByRole("link", { name: /Download/ })).not.toBeInTheDocument();
-      const open = screen.getByRole("button", { name: "Download" });
-      expect(open).toHaveAttribute("aria-expanded", "false");
-      await user.click(open);
-      expect(open).toHaveAttribute("aria-expanded", "true");
-      const jpeg = screen.getByRole("link", { name: /Download JPEG/ });
-      const raw = screen.getByRole("link", { name: /Download RAW/ });
+      expect(screen.queryByRole("menuitem", { name: /Download/ })).not.toBeInTheDocument();
+      await user.click(more());
+      const jpeg = screen.getByRole("menuitem", { name: /Download JPEG/ });
+      const raw = screen.getByRole("menuitem", { name: /Download RAW/ });
       expect(jpeg).toHaveAttribute("href", "/assets/id-1/download");
       expect(raw).toHaveAttribute("href", "/assets/id-1/download?file=raw-1");
       expect(jpeg).toHaveTextContent("1001 B");
       expect(raw).toHaveTextContent("24 MB");
-      await user.click(open);
-      expect(screen.queryByRole("link", { name: /Download RAW/ })).not.toBeInTheDocument();
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("menuitem", { name: /Download RAW/ })).not.toBeInTheDocument();
     });
 
-    it("names a HEIC primary and closes the chooser when moving to another photo", async () => {
+    it("names a HEIC primary, and the menu shows the files of the photo moved to", async () => {
       const user = userEvent.setup();
       const heic = item(1, { content_type: "image/heic", original_name: "photo-1.HEIC", paired: withRaw(1).paired });
       function Two() {
@@ -189,11 +193,13 @@ describe("Lightbox", () => {
         return <Lightbox items={[heic, item(2)]} index={i} onIndexChange={setI} onClose={() => {}} loadDetail={async (id) => detail(Number(id.split("-")[1]))} />;
       }
       render(<Two />);
-      await user.click(screen.getByRole("button", { name: "Download" }));
-      expect(screen.getByRole("link", { name: /Download HEIC/ })).toBeInTheDocument();
+      await user.click(more());
+      expect(screen.getByRole("menuitem", { name: /Download HEIC/ })).toBeInTheDocument();
+      await user.keyboard("{Escape}");
       await user.keyboard("{ArrowRight}");
-      expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("href", "/assets/id-2/download");
-      expect(screen.queryByRole("link", { name: /Download HEIC/ })).not.toBeInTheDocument();
+      await user.click(more());
+      expect(screen.getByRole("menuitem", { name: "Download" })).toHaveAttribute("href", "/assets/id-2/download");
+      expect(screen.queryByRole("menuitem", { name: /Download HEIC/ })).not.toBeInTheDocument();
     });
   });
 

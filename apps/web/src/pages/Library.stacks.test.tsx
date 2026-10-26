@@ -82,7 +82,7 @@ describe("stacks in the library", () => {
 
     await user.keyboard("]");
     expect(await within(dialog).findByText("Photo 2 of 3 in this stack")).toBeInTheDocument();
-    expect(within(dialog).getByText("photo-3.jpg")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "photo-3.jpg" })).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "photo-4.jpg" }));
     expect(within(dialog).getByText("Photo 3 of 3 in this stack")).toBeInTheDocument();
     await user.keyboard("]");
@@ -93,7 +93,7 @@ describe("stacks in the library", () => {
     // ArrowRight goes to the next photo of the timeline (photo 5), which is not in a stack: the strip goes.
     await user.keyboard("{ArrowRight}");
     await waitFor(() => expect(within(dialog).queryByRole("region", { name: "Stack" })).not.toBeInTheDocument());
-    expect(within(dialog).getByText("photo-5.jpg")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "photo-5.jpg" })).toBeInTheDocument();
   });
 
   it("sets the photo on show as the cover, and keeps the viewer where it is", async () => {
