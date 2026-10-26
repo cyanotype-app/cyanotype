@@ -282,6 +282,8 @@ def cmd_seed(a):
     alice.ok("POST", f"/assets/{ids['airplane.jpg']}/stack/cover", {})
     alice.ok("POST", f"/assets/{ids['forest.jpg']}/stack/remove", {})
     alice.ok("PUT", "/assets/prefs", {"stacks_collapsed": False})
+    log("a photo dismissed from On this day")
+    alice.ok("POST", "/assets/memories/dismiss", {"ids": [ids["pizza.jpg"]]})
 
     log("photo edits (date, location, caption)")
     alice.ok(
@@ -391,6 +393,7 @@ SECTIONS = [
     ("photos", "assets: favorites", "original_name", "id::text, favorite::text", "assets"),
     ("photos", "assets: stacks made by hand, unlinked photos, chosen covers", "original_name",
      "id::text, coalesce(stack_id::text,''), stack_unlinked::text, stack_cover::text", "assets WHERE stack_id IS NOT NULL OR stack_unlinked OR stack_cover"),
+    ("photos", "assets: memory dismissals", "original_name", "id::text", "assets WHERE memory_dismissed"),
     ("photos", "user_prefs", "user_id::text", "user_id::text, memories_enabled::text, library_sort, stacks_collapsed::text", "user_prefs"),
     ("photos", "assets: RAW+JPEG pairs", "original_name", "id::text, primary_id::text", "assets WHERE primary_id IS NOT NULL"),
     ("photos", "assets: edits (date, location, caption)", "original_name",

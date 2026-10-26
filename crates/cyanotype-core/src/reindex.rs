@@ -20,7 +20,7 @@
 //! Rows queued for permanent deletion (`purging_at`) are never touched and their objects are never resurrected:
 //! an object that still has such a row is counted as `purging` and skipped.
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     hash::{DefaultHasher, Hash, Hasher},
     sync::Arc,
     time::Duration,
@@ -154,6 +154,12 @@ pub struct Report {
     pub stacked_restored: u64,
     pub unlinked_restored: u64,
     pub covers_restored: u64,
+    /// Restored stacks left out because fewer than two of their photos survive in the bucket (their photos come back unstacked),
+    /// and stacks whose recorded cover was gone and got another (or that would).
+    pub stacks_dropped: u64,
+    pub covers_replaced: u64,
+    /// Photos put back as dismissed from On this day (or that would be).
+    pub dismissed_restored: u64,
     /// Users whose switches (`user_prefs`) were put back (they had no row).
     pub prefs_restored: u64,
     /// Tags recreated (the owner had none by that name) and photo-tag links put back (or that would be).
@@ -299,6 +305,12 @@ impl Report {
             "    stacked / unlinked / covers      {} / {} / {}",
             self.stacked_restored, self.unlinked_restored, self.covers_restored
         );
+        let _ = writeln!(
+            s,
+            "    stacks dropped / covers replaced {} / {}",
+            self.stacks_dropped, self.covers_replaced
+        );
+        let _ = writeln!(s, "    memories dismissed               {}", self.dismissed_restored);
         let _ = writeln!(s, "    user preferences                 {}", self.prefs_restored);
         let _ = writeln!(
             s,
@@ -402,6 +414,8 @@ struct Ctx<'a> {
     has_rating: bool,
     /// The schema has `stack_id`, `stack_unlinked` and `stack_cover` (migration 0033).
     has_stacks: bool,
+    /// The schema has `memory_dismissed` (migration 0020).
+    has_dismissals: bool,
     known_users: HashMap<Uuid, bool>,
     manifests: HashMap<Uuid, Arc<UserManifest>>,
     manifest_keys: BTreeMap<Uuid, Vec<String>>,
@@ -410,8 +424,9 @@ struct Ctx<'a> {
     report: Report,
 }
 
-/// Which of the optional `assets` columns this schema has: `(favorite, hidden + archived, rating + rating_source, stacks)`.
-async fn schema_flags(db: &PgPool) -> Result<(bool, bool, bool, bool)> {
+/// Which of the optional `assets` columns this schema has: `(favorite, hidden + archived, rating + rating_source, stacks,
+/// memory_dismissed)`.
+async fn schema_flags(db: &PgPool) -> Result<(bool, bool, bool, bool, bool)> {
     let has = |column: &'static str| async move {
         sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS (SELECT 1 FROM information_schema.columns
@@ -426,12 +441,13 @@ async fn schema_flags(db: &PgPool) -> Result<(bool, bool, bool, bool)> {
         has("hidden").await?,
         has("rating_source").await?,
         has("stack_cover").await?,
+        has("memory_dismissed").await?,
     ))
 }
 
 pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Report> {
     anyhow::ensure!(opts.concurrency >= 1, "concurrency must be at least 1");
-    let (has_favorite, has_state, has_rating, has_stacks) = schema_flags(db).await?;
+    let (has_favorite, has_state, has_rating, has_stacks, has_dismissals) = schema_flags(db).await?;
     if let Some(u) = opts.assign_to {
         let ok: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)")
             .bind(u)
@@ -447,6 +463,7 @@ pub async fn run(db: &PgPool, storage: &Storage, opts: &Options) -> Result<Repor
         has_state,
         has_rating,
         has_stacks,
+        has_dismissals,
         known_users: HashMap::new(),
         manifests: HashMap::new(),
         manifest_keys: if opts.use_manifests {
@@ -535,7 +552,7 @@ pub async fn import_object(db: &PgPool, storage: &Storage, key: &str) -> Result<
         concurrency: 1,
         ..Options::default()
     };
-    let (has_favorite, has_state, has_rating, has_stacks) = schema_flags(db).await?;
+    let (has_favorite, has_state, has_rating, has_stacks, has_dismissals) = schema_flags(db).await?;
     // Only this owner's manifests.
     let mut found = Vec::new();
     let mut token = None;
@@ -565,6 +582,7 @@ pub async fn import_object(db: &PgPool, storage: &Storage, key: &str) -> Result<
         has_state,
         has_rating,
         has_stacks,
+        has_dismissals,
         known_users: HashMap::from([(p.user, true)]),
         manifests: HashMap::new(),
         manifest_keys,
@@ -936,6 +954,7 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
         let stack = entry.and_then(|e| e.stack).filter(|_| cx.has_stacks);
         let stack_unlinked = cx.has_stacks && entry.and_then(|e| e.stack_unlinked).unwrap_or(false);
         let stack_cover = cx.has_stacks && entry.and_then(|e| e.stack_cover).unwrap_or(false);
+        let dismissed = cx.has_dismissals && entry.and_then(|e| e.memory_dismissed).unwrap_or(false);
         let wanted_id = entry.map(|e| e.id);
 
         if !cx.opts.apply {
@@ -955,6 +974,7 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
             cx.report.stacked_restored += u64::from(stack.is_some());
             cx.report.unlinked_restored += u64::from(stack_unlinked);
             cx.report.covers_restored += u64::from(stack_cover);
+            cx.report.dismissed_restored += u64::from(dismissed);
             continue;
         }
         let r = insert_orphan(
@@ -978,6 +998,7 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
                 stack,
                 stack_unlinked,
                 stack_cover,
+                dismissed,
             },
         )
         .await;
@@ -999,6 +1020,7 @@ async fn process_orphans(cx: &mut Ctx<'_>, orphans: Vec<(Listed, keys::ParsedOri
                 cx.report.stacked_restored += u64::from(stack.is_some());
                 cx.report.unlinked_restored += u64::from(stack_unlinked);
                 cx.report.covers_restored += u64::from(stack_cover);
+                cx.report.dismissed_restored += u64::from(dismissed);
             }
             Ok(false) => {
                 cx.report.alias_objects += 1;
@@ -1036,6 +1058,8 @@ struct Insert<'a> {
     stack: Option<Uuid>,
     stack_unlinked: bool,
     stack_cover: bool,
+    /// The owner dismissed the photo from On this day (from the manifest).
+    dismissed: bool,
 }
 
 /// Insert one row and queue its jobs, atomically. False if the owner already has this content (a race or an alias).
@@ -1126,6 +1150,12 @@ async fn insert_orphan(cx: &Ctx<'_>, i: Insert<'_>) -> Result<bool> {
             .bind(i.stack)
             .bind(i.stack_unlinked)
             .bind(i.stack_cover)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if cx.has_dismissals && i.dismissed {
+        sqlx::query("UPDATE assets SET memory_dismissed = true WHERE id = $1")
+            .bind(id)
             .execute(&mut *tx)
             .await?;
     }
@@ -1397,6 +1427,112 @@ async fn asset_ids(db: &PgPool, user: Uuid, shas: &[Vec<u8>]) -> Result<HashMap<
             .fetch_all(db)
             .await?;
     Ok(rows.into_iter().collect())
+}
+
+/// Stacks restored from the manifest whose other photos were lost: a stack left with fewer than two live photos is no stack, so
+/// its photos come back unstacked (as the live app frees the last photo of a stack), and a stack whose recorded cover is gone
+/// (no original in the bucket, or in the trash) gets the first favorite among its live photos, else the earliest, as its cover.
+/// Only stacks that have a photo recreated by this run are looked at, so a stack the owner has made or changed since is left alone.
+/// A stack with no recorded cover is left without one: its default cover (first favorite, else earliest) is already a live photo.
+async fn tidy_stacks(
+    cx: &mut Ctx<'_>,
+    user: Uuid,
+    m: &UserManifest,
+    recreated: &HashSet<(Uuid, [u8; 32])>,
+) -> Result<()> {
+    if !cx.has_stacks {
+        return Ok(());
+    }
+    let stacks: BTreeSet<Uuid> = m
+        .assets
+        .iter()
+        .filter(|(sha, _)| recreated.contains(&(user, **sha)))
+        .filter_map(|(_, a)| a.stack)
+        .collect();
+    if stacks.is_empty() {
+        return Ok(());
+    }
+    if !cx.opts.apply {
+        // A preview from the manifest: a member survives when its row exists or would be created by this run.
+        let shas: Vec<Vec<u8>> = m
+            .assets
+            .iter()
+            .filter(|(_, a)| a.stack.is_some_and(|s| stacks.contains(&s)))
+            .map(|(sha, _)| sha.to_vec())
+            .collect();
+        let have = asset_ids(cx.db, user, &shas).await?;
+        for stack in stacks {
+            let live: Vec<&manifest::AssetLine> = m
+                .assets
+                .iter()
+                .filter(|(sha, a)| {
+                    a.stack == Some(stack)
+                        && a.deleted_at.is_none()
+                        && (recreated.contains(&(user, **sha)) || have.contains_key(&sha[..]))
+                })
+                .map(|(_, a)| a)
+                .collect();
+            if live.len() < 2 {
+                cx.report.stacks_dropped += 1;
+            } else if m
+                .assets
+                .values()
+                .any(|a| a.stack == Some(stack) && a.stack_cover == Some(true))
+                && !live.iter().any(|a| a.stack_cover == Some(true))
+            {
+                cx.report.covers_replaced += 1;
+            }
+        }
+        return Ok(());
+    }
+    for stack in stacks {
+        let r: Result<()> = async {
+            let mut tx = cx.db.begin().await?;
+            // (id, live, cover flag, favorite), earliest first.
+            let members: Vec<(Uuid, bool, bool, bool)> = sqlx::query_as(
+                "SELECT id, deleted_at IS NULL, stack_cover, coalesce((to_jsonb(assets) ->> 'favorite')::boolean, false)
+                 FROM assets WHERE owner_id = $1 AND stack_id = $2 AND primary_id IS NULL ORDER BY created_at, id",
+            )
+            .bind(user)
+            .bind(stack)
+            .fetch_all(&mut *tx)
+            .await?;
+            let live = members.iter().filter(|m| m.1).count();
+            if live < 2 {
+                sqlx::query("UPDATE assets SET stack_id = NULL, stack_cover = false WHERE owner_id = $1 AND stack_id = $2")
+                    .bind(user)
+                    .bind(stack)
+                    .execute(&mut *tx)
+                    .await?;
+                cx.report.stacks_dropped += 1;
+            } else if m.assets.values().any(|a| a.stack == Some(stack) && a.stack_cover == Some(true))
+                && !members.iter().any(|m| m.1 && m.2)
+            {
+                let pick = members
+                    .iter()
+                    .find(|m| m.1 && m.3)
+                    .or_else(|| members.iter().find(|m| m.1))
+                    .map(|m| m.0);
+                sqlx::query(
+                    "UPDATE assets SET stack_cover = (id = $3) WHERE owner_id = $1 AND stack_id = $2 AND (id = $3 OR stack_cover)",
+                )
+                .bind(user)
+                .bind(stack)
+                .bind(pick)
+                .execute(&mut *tx)
+                .await?;
+                cx.report.covers_replaced += 1;
+            }
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+        if let Err(e) = r {
+            cx.report.errors += 1;
+            tracing::warn!(stack = %stack, error = ?e, "could not tidy a restored stack");
+        }
+    }
+    Ok(())
 }
 
 /// The user's switches from the newest manifest, for a user who has no row (one the owner changed since is never overwritten).
@@ -1703,6 +1839,7 @@ async fn restore_user(
         tx.commit().await?;
     }
 
+    tidy_stacks(cx, user, m, recreated).await?;
     restore_prefs(cx, user, m).await?;
     restore_shares(cx, user, m).await?;
     restore_tags(cx, user, m, recreated).await?;

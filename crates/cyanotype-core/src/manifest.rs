@@ -4,7 +4,7 @@
 //! cannot say that a photo was later trashed, favorited or put in an album, and objects uploaded before it existed
 //! have none. The manifest carries that state. Once a day the assets service writes, per user, one JSON object per
 //! line: a `meta` header, every `asset` (not mid-purge) with its id, hash, name, timestamps, trash state, favorite,
-//! hidden and archived flags, star rating, manual stack, unlinked and cover flags and RAW/JPEG partner, and every `album` with
+//! hidden and archived flags, star rating, manual stack, unlinked and cover flags, memory dismissal and RAW/JPEG partner, and every `album` with
 //! its photos by hash (then the shares, the tags and the user's `prefs`). `reindex` reads them to restore what object
 //! keys and metadata alone cannot.
 //!
@@ -26,7 +26,9 @@ use uuid::Uuid;
 use crate::{identity, keys, storage::Storage};
 
 /// 2: adds `share` lines; 3: adds `tag` lines; 4: adds `prefs` lines and the stack fields of `asset` lines (readers of an older
-/// version count lines they do not know and go on, and ignore fields they do not know).
+/// version count lines they do not know and go on, and ignore fields they do not know). `memory_dismissed` on `asset` lines is
+/// an optional field of 4, not a 5: no reader branches on the version except for tags (3), a manifest without the field reads as
+/// "nothing dismissed", which is what it meant before, and an older reader ignores it.
 pub const FORMAT_VERSION: u32 = 4;
 pub const DEFAULT_KEEP: usize = 14;
 const MAX_MANIFEST_BYTES: u64 = 1 << 30;
@@ -100,6 +102,10 @@ pub struct AssetLine {
     /// The owner chose this photo as its stack's cover (`assets.stack_cover`); written only when true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack_cover: Option<bool>,
+    /// The owner dismissed the photo from On this day (`assets.memory_dismissed`, migration 0020); written only when true. Absent
+    /// in older manifests (not dismissed). Older readers ignore the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_dismissed: Option<bool>,
 }
 
 /// A user's switches (`user_prefs`, migrations 0020 and 0033). One line per user that has a row; a user who never changed one
@@ -244,7 +250,8 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
                 (to_jsonb(a) ->> 'hidden')::boolean AS hidden, (to_jsonb(a) ->> 'archived')::boolean AS archived,
                 (to_jsonb(a) ->> 'rating')::smallint AS rating, to_jsonb(a) ->> 'rating_source' AS rating_source,
                 (to_jsonb(a) ->> 'stack_id')::uuid AS stack, (to_jsonb(a) ->> 'stack_unlinked')::boolean AS stack_unlinked,
-                (to_jsonb(a) ->> 'stack_cover')::boolean AS stack_cover
+                (to_jsonb(a) ->> 'stack_cover')::boolean AS stack_cover,
+                (to_jsonb(a) ->> 'memory_dismissed')::boolean AS memory_dismissed
          FROM assets a LEFT JOIN assets p ON p.id = a.primary_id
          WHERE a.owner_id = $1 AND a.purging_at IS NULL ORDER BY a.created_at, a.id",
     )
@@ -285,6 +292,7 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
             // Only what carries information: the flags are written when set.
             stack_unlinked: r.try_get::<Option<bool>, _>("stack_unlinked")?.filter(|b| *b),
             stack_cover: r.try_get::<Option<bool>, _>("stack_cover")?.filter(|b| *b),
+            memory_dismissed: r.try_get::<Option<bool>, _>("memory_dismissed")?.filter(|b| *b),
         }));
     }
     let n_assets = rows.len() as u64;
@@ -658,6 +666,7 @@ mod tests {
             stack: Some(Uuid::new_v4()),
             stack_unlinked: None,
             stack_cover: Some(true),
+            memory_dismissed: Some(true),
         };
         let mut buf = serde_json::to_vec(&Line::Asset(a.clone())).unwrap();
         buf.extend_from_slice(b"\n\nnot json\n{\"t\":\"from_the_future\"}\n");

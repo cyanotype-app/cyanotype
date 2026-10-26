@@ -235,6 +235,10 @@ pub(super) async fn dismiss(
     .bind(req.dismissed)
     .execute(&s.db)
     .await?;
+    // The dismissals are in the recovery manifest.
+    if done.rows_affected() > 0 {
+        super::visibility::manifest_soon(&s, user.id);
+    }
     Ok(Json(Count {
         count: done.rows_affected(),
     }))
