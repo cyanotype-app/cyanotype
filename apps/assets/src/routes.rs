@@ -102,6 +102,9 @@ mod timeline;
 #[cfg(test)]
 mod timeline_tests;
 mod trash;
+mod trips;
+#[cfg(test)]
+mod trips_tests;
 #[cfg(test)]
 mod upload_meta_tests;
 mod usage;
@@ -167,6 +170,7 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/prefs", get(visibility::prefs).put(visibility::set_prefs))
         .route("/assets/memories", get(memories::list))
         .route("/assets/memories/dismiss", post(memories::dismiss))
+        .route("/assets/trips", get(trips::list))
         .route("/assets/tags", get(tags::list).post(tags::create))
         .route("/assets/tags/apply", post(tags::apply))
         .route("/assets/tags/{id}", patch(tags::rename).delete(tags::remove))
@@ -1150,6 +1154,13 @@ struct ListQuery {
     /// Stacks in the timeline (`stacks.rs`): `collapsed` lists one tile per stack, `expanded` every photo. Absent: the user's
     /// setting (`GET /assets/prefs`, collapsed by default). Favorites, the archive, Hidden and the map never collapse.
     stacks: Option<visibility::StacksMode>,
+    /// `YYYY-MM-DD`: only photos whose own local date is on or after / on or before this day (a trip's grid, `trips.rs`).
+    /// Photos without a capture time are left out when either is given.
+    from: Option<String>,
+    to: Option<String>,
+    /// `true` leaves out the photos dismissed from memories ("Not this one"), as trips and On this day do.
+    #[serde(default)]
+    memories: bool,
 }
 
 #[derive(Serialize)]
@@ -1214,7 +1225,10 @@ async fn list(
     // Row comparison against the (owner_id, sort expression DESC, id DESC) index; two statements so the planner
     // never has to guess around an optional predicate.
     let expr = q.sort.expr();
-    let view = visibility::view_sql(q.favorite, q.archived, q.hidden, unlock)?;
+    let mut view = visibility::view_sql(q.favorite, q.archived, q.hidden, unlock)?;
+    if q.memories {
+        view.push_str(" AND NOT memory_dismissed");
+    }
     let mut select = format!("{}{view}", list_select(q.sort));
     // The timeline (and Recently added) shows stacks; the other lists never collapse them and carry no stack info.
     let timeline = !q.favorite && !q.archived && !q.hidden && q.bbox.is_none();
@@ -1225,6 +1239,7 @@ async fn list(
     if let Some(b) = &q.bbox {
         select.push_str(&map::Bbox::parse(b)?.sql());
     }
+    select.push_str(&trips::range_sql(q.from.as_deref(), q.to.as_deref())?);
     let rows = match after {
         Some((ts, id)) => {
             sqlx::query_as::<_, ListRow>(&format!(
