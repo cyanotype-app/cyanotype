@@ -530,7 +530,7 @@ function ShareLightbox({
       aria-label="Photo"
       ref={dialogRef}
     >
-      <div className="relative z-[3] flex items-center justify-between gap-2 px-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] pb-2">
+      <div data-share-bar className="relative z-[3] flex items-center justify-between gap-2 px-3 pt-[max(0.75rem,env(safe-area-inset-top,0px))] pb-2">
         <Button variant="overlay" onClick={onClose}>
           <X />
           Close
@@ -577,6 +577,7 @@ function ShareLightbox({
       <div
         className={cn("relative min-h-0 flex-1 touch-none overflow-hidden bg-cover bg-center [container-type:size]", zoom.zoomed && "cursor-grab active:cursor-grabbing")}
         ref={stageRef}
+        data-share-stage
         {...zoom.handlers}
         style={bg ? { backgroundImage: `url(${bg})` } : undefined}
       >
@@ -585,12 +586,14 @@ function ShareLightbox({
           <div
             className="[--fit-w:calc(100cqw-env(safe-area-inset-left,0px)-env(safe-area-inset-right,0px))] absolute inset-y-0 right-[env(safe-area-inset-right,0px)] left-[env(safe-area-inset-left,0px)] flex origin-center items-center justify-center [&.easing]:transition-transform [&.easing]:duration-[180ms] [&.easing]:ease-out [&.gesturing]:will-change-transform"
             ref={layerRef}
+            data-share-photo
           >
             <img
               key={item.id}
               ref={imgRef}
               src={src}
               alt=""
+              data-loaded={loadedId === item.id ? "" : undefined}
               className={cn(
                 "max-h-full max-w-full flex-none object-contain select-none [-webkit-user-drag:none] transition-opacity duration-200",
                 item.preview_url && loadedId !== item.id && "opacity-0",

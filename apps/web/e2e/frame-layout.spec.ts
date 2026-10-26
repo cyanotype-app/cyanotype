@@ -8,6 +8,10 @@ import { TEST_S3_ORIGIN } from "./csp";
 import type { FakeAsset } from "./fakeLibrary";
 import { installSlidePictures, pictureBox, slideServer, watchViolations } from "./slideshowKit";
 
+// The blurred copy of every photo is painted in software here, and a headless browser that has just finished one of these
+// sometimes cannot start the next context ("Failed to find browser context"). That is the machine, not the page: try again.
+test.describe.configure({ retries: 2 });
+
 const ALBUM_ID = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d";
 const SCREENS = [
   { name: "tablet-portrait", width: 768, height: 1024 },
@@ -61,7 +65,9 @@ const FRAME = "/frame?source=library&interval=5";
 
 for (const { name, width, height } of SCREENS) {
   test.describe(`frame ${name}`, () => {
-    test.use({ viewport: { width, height }, hasTouch: true });
+    // Less motion: the blurred copy of a photo is costly to paint without a GPU, and a fade of it on every change made two
+    // browsers at once starve each other (their contexts timed out). The geometry under test is the same.
+    test.use({ viewport: { width, height }, hasTouch: true, reducedMotion: "reduce" });
 
     test("photo contained over a blurred, darkened copy, with the clock and caption", async ({ page }) => {
       test.setTimeout(90_000);

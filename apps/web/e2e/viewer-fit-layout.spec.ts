@@ -43,8 +43,8 @@ async function measure(page: Page, sel = { stage: ".viewer-stage", img: ".viewer
   }, sel);
 }
 
-/** The public share page draws its own viewer (still the old markup). */
-const SHARE_SEL = { stage: ".lightbox-stage", img: ".lightbox-photo img", chrome: ".lightbox-bar button, .lightbox-bar a" };
+/** The public share page draws its own viewer (data-share-* hooks). */
+const SHARE_SEL = { stage: "[data-share-stage]", img: "[data-share-photo] img", chrome: "[data-share-bar] button, [data-share-bar] a" };
 
 async function expectFits(page: Page, label: string, sel?: Parameters<typeof measure>[1]) {
   // The picture settles after the preview loads and the panels slide in: wait until two reads agree.
@@ -147,11 +147,11 @@ for (const size of [SIZES[0]!, SIZES[2]!, SIZES[4]!, SIZES[6]!]) {
       );
       await page.goto("/s/open");
       await page.getByRole("button", { name: /Open photo 1 of/ }).click();
-      await page.locator(".lightbox-stage img.loaded").waitFor();
+      await page.locator("[data-share-stage] img[data-loaded]").waitFor();
       for (let i = 0; i < SHAPES.length; i++) {
         if (i > 0) {
           await page.keyboard.press("ArrowRight");
-          await expect(page.locator(".lightbox-stage img.loaded")).toHaveAttribute("src", new RegExp(`/${SHAPES[i]!.name}\\.svg`));
+          await expect(page.locator("[data-share-stage] img[data-loaded]")).toHaveAttribute("src", new RegExp(`/${SHAPES[i]!.name}\\.svg`));
         }
         await expectFits(page, `share ${size.name} ${SHAPES[i]!.name}`, SHARE_SEL);
       }

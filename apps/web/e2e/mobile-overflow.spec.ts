@@ -3,6 +3,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { viewerSettled } from "./viewerKit";
 import { installLibrary, makeAssets, pageOf, timelineOf, type FakeAsset } from "./fakeLibrary";
 
 const SHOT_DIR = process.env.SHOT_DIR;
@@ -644,14 +645,16 @@ async function mockUsage(page: Page) {
 function makeCheck(page: Page, prefix: string, problems: string[]) {
   return async function check(name: string) {
     await page.waitForTimeout(150);
+    // The viewer grows from its tile when it opens, and pages to the next photo: measure once it is still.
+    if (await page.locator(".viewer-stage").count()) await viewerSettled(page);
     const r = await page.evaluate(() => {
       const w = window.innerWidth;
       const bad: string[] = [];
       for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
         const b = el.getBoundingClientRect();
         // Tiles clip their hover-zoomed image; map markers sit wherever the map puts them and the pane clips them.
-        // The On this day cards scroll sideways inside their own row (clipped by it, on purpose).
-        if (b.width === 0 || el.closest("[data-tile]") || el.closest(".map-canvas") || el.closest(".memories-row, [data-scroll-row]")) continue;
+        // The On this day cards scroll sideways inside their own row (clipped by it, on purpose), and the viewer pages its photos in a clipped stage.
+        if (b.width === 0 || el.closest("[data-tile]") || el.closest(".viewer-stage") || el.closest(".map-canvas") || el.closest(".memories-row, [data-scroll-row]")) continue;
         if (b.right > w + 0.5 || b.left < -0.5) {
           bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} "${(el.textContent ?? "").trim().slice(0, 24)}" [${Math.round(b.left)}..${Math.round(b.right)}]`);
         }
@@ -659,7 +662,7 @@ function makeCheck(page: Page, prefix: string, problems: string[]) {
       // The page can also be pushed wide by something whose own box fits but whose content spills (scrollWidth): name those.
       if (document.documentElement.scrollWidth > w) {
         for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
-          if (el.scrollWidth > w + 0.5 && !el.closest("[data-tile]") && !el.closest(".map-canvas") && !el.closest(".memories-row, [data-scroll-row]")) {
+          if (el.scrollWidth > w + 0.5 && !el.closest("[data-tile]") && !el.closest(".viewer-stage") && !el.closest(".map-canvas") && !el.closest(".memories-row, [data-scroll-row]")) {
             bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} scrollWidth ${el.scrollWidth}`);
           }
         }
@@ -694,7 +697,7 @@ for (const { width, scheme } of RUNS) {
       const check = makeCheck(page, `${width}${scheme === "dark" ? "-dark" : ""}`, problems);
       const open = async (path: string, ready: string | RegExp) => {
         await page.goto(path);
-        await (typeof ready === "string" ? page.getByText(ready) : page.getByRole("button", { name: ready })).first().waitFor();
+        await (typeof ready === "string" ? page.locator("main").getByText(ready) : page.getByRole("button", { name: ready })).first().waitFor();
         await page.waitForLoadState("networkidle");
       };
 
@@ -803,7 +806,12 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: /Open IMG_20240615/ }).click();
       await page.getByRole("dialog").getByRole("button", { name: "Info" }).waitFor();
       await check("lightbox-long-name");
-      await page.getByRole("button", { name: "Next photo" }).click();
+      await viewerSettled(page);
+      // The arrows are for a mouse: a touch screen swipes, and the key does the same.
+      const nextPhoto = page.getByRole("button", { name: "Next photo" });
+      if (await nextPhoto.isVisible()) await nextPhoto.click();
+      else await page.keyboard.press("ArrowRight");
+      await viewerSettled(page);
       await check("lightbox");
 
       // Photo details: the Info button (then `i` and Escape), a photo with every row, then one with none but the file
@@ -812,7 +820,16 @@ for (const { width, scheme } of RUNS) {
       await panel.waitFor();
       await panel.getByText("Time zone unknown").waitFor();
       await check("lightbox-info-bare");
-      await page.getByRole("button", { name: "Previous photo" }).click();
+      if (await page.getByRole("button", { name: "Previous photo" }).isVisible()) await page.getByRole("button", { name: "Previous photo" }).click();
+      else {
+        // On a phone the details are a sheet over the photo: close it, step back (the key does what a swipe does), open it again.
+        await page.keyboard.press("Escape");
+        await expect(panel).toHaveCount(0);
+        await page.keyboard.press("ArrowLeft");
+        await viewerSettled(page);
+        await page.getByRole("button", { name: "Info" }).click();
+        await panel.waitFor();
+      }
       await panel.getByText("Altitude 38 m above sea level").waitFor();
       await page.locator(".place-map canvas").first().waitFor({ timeout: 20_000 });
       await page.waitForTimeout(1200); // basemap tiles draw
@@ -842,7 +859,8 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("dialog").waitFor();
       await page.keyboard.press("i");
       await panel.waitFor();
-      await page.keyboard.press("i");
+      // `i` toggles the side panel on a wide screen; on a phone the details are a modal sheet, which Escape closes.
+      await page.keyboard.press(width >= 768 ? "i" : "Escape");
       await panel.waitFor({ state: "detached" });
       await check("lightbox-info-closed");
 
@@ -901,7 +919,9 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: /Select IMG_1000/ }).waitFor();
       await page.getByRole("button", { name: /Select IMG_1003/ }).click();
       await check("album-photo-picker");
-      await page.getByRole("dialog", { name: "Add photos" }).getByRole("button", { name: "Cancel" }).click();
+      // The picker has no Cancel button: Escape (or the close button on a desktop, or a drag down) leaves it.
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("dialog", { name: "Add photos" })).toHaveCount(0);
       await page.getByRole("button", { name: /Open IMG_1000/ }).click();
       await check("album-lightbox");
 
@@ -1023,6 +1043,7 @@ for (const { width, scheme } of RUNS) {
       await check("select-archive-hide");
       await page.getByRole("button", { name: "Done" }).click();
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().click();
+      await viewerSettled(page);
       // Hide is inline in the bar on wide screens and in the More menu on phones.
       await page.getByRole("button", { name: /^(Hide|More)$/ }).first().waitFor();
       if (await page.getByRole("button", { name: "More", exact: true }).isVisible()) {

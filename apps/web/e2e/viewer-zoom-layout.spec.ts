@@ -23,13 +23,13 @@ async function geo(page: Page): Promise<Geo> {
       const b = el.getBoundingClientRect();
       return { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height };
     };
-    // (The public share page still draws its own viewer, with the older class names.)
-    const layer = document.querySelector<HTMLElement>(".viewer-photo.current") ?? document.querySelector<HTMLElement>(".lightbox-photo")!;
+    // (The public share page draws its own viewer, with data-share-* hooks.)
+    const layer = document.querySelector<HTMLElement>(".viewer-photo.current") ?? document.querySelector<HTMLElement>("[data-share-photo]")!;
     const img = layer.querySelector<HTMLImageElement>("img")!;
     return {
       zoom: Number(layer.dataset.zoom ?? "1"),
       img: r(img),
-      stage: r((document.querySelector(".viewer-stage") ?? document.querySelector(".lightbox-stage"))!),
+      stage: r((document.querySelector(".viewer-stage") ?? document.querySelector("[data-share-stage]"))!),
       src: img.getAttribute("src") ?? "",
       layout: { w: img.offsetWidth, h: img.offsetHeight },
       pageScale: window.visualViewport?.scale ?? 1,
@@ -585,14 +585,14 @@ test.describe("zoom on the share page", () => {
     );
     await page.goto("/s/open");
     await page.getByRole("button", { name: /Open photo 1 of/ }).click();
-    await page.locator(".lightbox-stage img.loaded").waitFor();
+    await page.locator("[data-share-stage] img[data-loaded]").waitFor();
     await page.getByRole("button", { name: "Zoom in" }).click();
     await expect(page.locator("[data-zoom-level]")).toHaveText("150 %");
     expect((await geo(page)).zoom).toBe(1.5);
     await page.keyboard.press("+");
     await expect.poll(async () => (await geo(page)).zoom).toBe(2.25);
     await page.keyboard.press("ArrowRight");
-    await expect(page.locator(".lightbox-stage img.loaded")).toHaveAttribute("src", /portrait\.svg/);
+    await expect(page.locator("[data-share-stage] img[data-loaded]")).toHaveAttribute("src", /portrait\.svg/);
     expect((await geo(page)).zoom).toBe(1);
     await page.mouse.dblclick(640, 400);
     await expect.poll(async () => (await geo(page)).zoom).toBeGreaterThanOrEqual(2);
