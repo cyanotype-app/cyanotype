@@ -100,12 +100,20 @@ for (const { width, scheme } of RUNS) {
       await page.goto("/tags/t1");
       await page.getByRole("heading", { name: LONG }).waitFor();
       await check("tag-page");
-      await page.getByRole("button", { name: "Merge into…" }).click();
+      await page.getByRole("button", { name: "More" }).click();
+      await check("tag-menu");
+      await page.getByRole("menuitem", { name: "Merge into…" }).click();
       await page.getByRole("dialog", { name: /Merge/ }).waitFor();
       await check("tag-merge-dialog");
       await page.keyboard.press("Escape");
-      await page.getByRole("button", { name: "Delete tag" }).click();
-      await page.getByRole("alertdialog").waitFor();
+      await page.getByRole("button", { name: "More" }).click();
+      await page.getByRole("menuitem", { name: "Rename" }).click();
+      await page.getByRole("dialog", { name: "Rename tag" }).waitFor();
+      await check("tag-rename-dialog");
+      await page.keyboard.press("Escape");
+      await page.getByRole("button", { name: "More" }).click();
+      await page.getByRole("menuitem", { name: "Delete tag" }).click();
+      await page.getByRole("dialog", { name: /^Delete the tag/ }).waitFor();
       await check("tag-delete-dialog");
       await page.keyboard.press("Escape");
 

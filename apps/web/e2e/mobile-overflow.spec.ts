@@ -861,22 +861,25 @@ for (const { width, scheme } of RUNS) {
       await open("/albums", "Albums");
       await page.getByRole("link", { name: /Pets/ }).waitFor();
       await check("albums");
-      await page.getByRole("button", { name: "New album" }).click();
+      await page.getByRole("button", { name: "New", exact: true }).click();
+      await page.getByRole("menuitem", { name: "New album" }).click();
       await check("dialog-new-album");
       await page.keyboard.press("Escape");
 
       // Album page
-      await open("/albums/l1", "Edit");
-      await page.getByRole("button", { name: /Open IMG_1000/ }).waitFor();
+      await open("/albums/l1", /Open IMG_1000/);
       await check("album");
-      await page.getByRole("button", { name: "Edit", exact: true }).click();
+      await page.getByRole("button", { name: "More", exact: true }).click();
+      await check("album-menu");
+      await page.getByRole("menuitem", { name: "Edit details" }).click();
       await check("album-edit");
       await page.getByRole("button", { name: "Cancel" }).click();
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_1001/ }).click();
       await check("album-select");
       await page.getByRole("button", { name: "Done" }).click();
-      await page.getByRole("button", { name: "Delete album" }).click();
+      await page.getByRole("button", { name: "More", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Delete album" }).click();
       await check("dialog-delete-album");
       await page.getByRole("button", { name: "Cancel" }).click();
       await page.getByRole("button", { name: "Add photos" }).click();

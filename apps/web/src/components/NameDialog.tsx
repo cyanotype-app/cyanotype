@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent } from "react";
+import { Button } from "../ui/Button";
+import { FormError, Modal, TextInput } from "./sheetForm";
 
 interface Props {
   title: string;
@@ -11,59 +13,46 @@ interface Props {
   onCancel: () => void;
 }
 
-/** A modal with one text field (new album). Escape cancels. */
+/** A sheet with one text field (new album, rename a tag). Escape cancels. */
 export function NameDialog({ title, label, submitLabel, initial = "", busy, error, onSubmit, onCancel }: Props) {
   const [value, setValue] = useState(initial);
-  const ref = useRef<HTMLFormElement>(null);
-
-  useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
-    ref.current?.querySelector("input")?.focus();
-    return () => prev?.focus?.();
-  }, []);
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onCancel();
-      }
-    }
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [onCancel]);
-
+  const form = useId();
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (value.trim()) onSubmit(value.trim());
   };
-
   return (
-    <div className="modal-backdrop">
-      <form className="modal card" role="dialog" aria-modal="true" aria-labelledby="name-title" ref={ref} onSubmit={submit}>
-        <h2 id="name-title">{title}</h2>
-        <label htmlFor="name-input" className="sr-only">
+    <Modal
+      onClose={onCancel}
+      title={title}
+      size="sm"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" form={form} disabled={busy || !value.trim()}>
+            {submitLabel}
+          </Button>
+        </>
+      }
+    >
+      <form id={form} onSubmit={submit} className="flex flex-col gap-3">
+        <label htmlFor={`${form}-input`} className="sr-only">
           {label}
         </label>
-        <input
-          id="name-input"
-          className="text-input"
+        <TextInput
+          id={`${form}-input`}
+          data-autofocus=""
           placeholder={label}
           value={value}
           maxLength={200}
           onChange={(e) => setValue(e.target.value)}
           disabled={busy}
+          onFocus={(e) => e.currentTarget.select()}
         />
-        {error && <p role="alert" className="form-error">{error}</p>}
-        <div className="modal-actions">
-          <button type="button" className="btn btn-quiet" onClick={onCancel} disabled={busy}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={busy || !value.trim()}>
-            {submitLabel}
-          </button>
-        </div>
+        {error && <FormError>{error}</FormError>}
       </form>
-    </div>
+    </Modal>
   );
 }

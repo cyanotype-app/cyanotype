@@ -136,7 +136,8 @@ for (const { width, scheme } of RUNS) {
 
       // The People rule of a smart album.
       await page.goto("/albums");
-      await page.getByRole("button", { name: "New smart album" }).click();
+      await page.getByRole("button", { name: "New", exact: true }).click();
+      await page.getByRole("menuitem", { name: "New smart album" }).click();
       const editor = page.getByRole("dialog", { name: "New smart album" });
       await editor.waitFor();
       await editor.getByLabel("Kind of rule to add").selectOption("people");

@@ -1,9 +1,14 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { Plus, X } from "lucide-react";
+import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
 import { api, type Facets, type Person, type SmartPreview, type SmartRule, type SmartRules } from "../api";
 import { MAX_FILTER_PEOPLE, NO_NAMED_PEOPLE, filterablePeople } from "../peopleText";
 import { MAX_RULES, NO_TEXT_QUERY_NOTE, RULE_FIELDS, blankRule, cleanRules, ruleFieldsFor, rulesProblem, smartCount, type RuleField } from "../smartText";
 import { usePeopleEnabled } from "../usePeople";
+import { Button } from "../ui/Button";
+import { Segmented } from "../ui/Controls";
+import { cn } from "../ui/cn";
 import { PeoplePicker } from "./PeoplePicker";
+import { CheckRow, Field, FormError, inputClass, Modal, Note, SelectBox, TextInput } from "./sheetForm";
 import { TagInput } from "./TagInput";
 
 interface Props {
@@ -53,7 +58,6 @@ export function SmartAlbumEditor({
   const [shown, setShown] = useState<SmartPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [add, setAdd] = useState<RuleField>("place");
-  const ref = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     let live = true;
@@ -76,22 +80,6 @@ export function SmartAlbumEditor({
       live = false;
     };
   }, [peopleOn, loadPeople]);
-  useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
-    ref.current?.querySelector<HTMLElement>("input")?.focus();
-    return () => prev?.focus?.();
-  }, []);
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onCancel();
-      }
-    }
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [onCancel]);
 
   const problem = rulesProblem(rules);
   const cleaned = cleanRules(rules);
@@ -124,107 +112,107 @@ export function SmartAlbumEditor({
   };
 
   return (
-    <div className="modal-backdrop">
-      <form className="modal card smart-editor" role="dialog" aria-modal="true" aria-labelledby={`${id}-h`} ref={ref} onSubmit={submit}>
-        <h2 id={`${id}-h`}>{heading}</h2>
-        <label className="smart-field" htmlFor={`${id}-title`}>
-          <span>Title</span>
-          <input id={`${id}-title`} className="text-input" value={title} maxLength={200} onChange={(e) => setTitle(e.target.value)} disabled={busy} />
-        </label>
-        <div className="smart-field">
-          <span id={`${id}-match`}>Photos that match</span>
-          <div className="sheet-segments" role="radiogroup" aria-labelledby={`${id}-match`}>
-            {(["all", "any"] as const).map((m) => (
-              <label key={m} className="sheet-segment">
-                <input type="radio" name={`${id}-m`} checked={rules.match === m} onChange={() => setRules({ ...rules, match: m })} disabled={busy} />
-                <span>{m === "all" ? "All of the rules" : "Any of the rules"}</span>
-              </label>
-            ))}
-          </div>
+    <Modal
+      onClose={onCancel}
+      title={heading}
+      size="lg"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" form={id} disabled={busy || !title.trim() || problem !== null}>
+            {submitLabel}
+          </Button>
+        </>
+      }
+    >
+      <form id={id} className="flex flex-col gap-5" onSubmit={submit}>
+        <Field label="Title" htmlFor={`${id}-title`}>
+          <TextInput id={`${id}-title`} data-autofocus="" value={title} maxLength={200} onChange={(e) => setTitle(e.target.value)} disabled={busy} />
+        </Field>
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[0.8125rem] font-medium text-muted">Photos that match</span>
+          <Segmented
+            label="Photos that match"
+            value={rules.match}
+            onChange={(m) => setRules({ ...rules, match: m })}
+            options={[
+              { value: "all", label: "All of the rules" },
+              { value: "any", label: "Any of the rules" },
+            ]}
+            className="self-start"
+          />
         </div>
-        <ul className="smart-rules" aria-label="Rules">
+        <ul className="flex flex-col gap-2.5" aria-label="Rules">
           {rules.rules.map((r, i) => (
-            <li key={i} className="smart-rule">
-              <RuleRow rule={r} facets={facets} people={people} onChange={(n) => setRule(i, n)} disabled={busy} index={i} />
-              <button
-                type="button"
-                className="btn btn-quiet smart-rule-x"
+            <li key={i} className="flex items-start gap-2 rounded-card bg-surface p-3">
+              <div className="min-w-0 flex-1">
+                <RuleRow rule={r} facets={facets} people={people} onChange={(n) => setRule(i, n)} disabled={busy} index={i} />
+              </div>
+              <Button
+                variant="quiet"
+                size="icon-sm"
                 aria-label={`Remove rule ${i + 1}`}
                 disabled={busy}
                 onClick={() => setRules({ ...rules, rules: rules.rules.filter((_, j) => j !== i) })}
               >
-                Remove
-              </button>
+                <X />
+              </Button>
             </li>
           ))}
         </ul>
-        <div className="smart-add">
+        <div className="flex items-center gap-2">
           <label htmlFor={`${id}-add`} className="sr-only">
             Kind of rule to add
           </label>
-          <select id={`${id}-add`} className="text-input" value={add} onChange={(e) => setAdd(e.target.value as RuleField)} disabled={busy}>
-            {ruleFieldsFor(peopleOn).map((f) => (
-              <option key={f.field} value={f.field}>
-                {f.label}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            className="btn btn-quiet"
+          <div className="min-w-0 flex-1">
+            <SelectBox id={`${id}-add`} value={add} onChange={(e) => setAdd(e.target.value as RuleField)} disabled={busy}>
+              {ruleFieldsFor(peopleOn).map((f) => (
+                <option key={f.field} value={f.field}>
+                  {f.label}
+                </option>
+              ))}
+            </SelectBox>
+          </div>
+          <Button
+            variant="secondary"
             disabled={busy || rules.rules.length >= MAX_RULES}
             onClick={() => setRules({ ...rules, rules: [...rules.rules, blankRule(add)] })}
           >
+            <Plus />
             Add rule
-          </button>
+          </Button>
         </div>
-        <p className="muted small smart-note">{NO_TEXT_QUERY_NOTE}</p>
-        <label className="sheet-check">
-          <input
-            type="checkbox"
-            checked={rules.archived === "include"}
-            onChange={(e) => setRules({ ...rules, archived: e.target.checked ? "include" : "exclude" })}
-            disabled={busy}
-          />
-          <span>Include archived photos</span>
-        </label>
-        <div className="smart-preview" aria-live="polite">
+        <Note>{NO_TEXT_QUERY_NOTE}</Note>
+        <CheckRow checked={rules.archived === "include"} onChange={(on) => setRules({ ...rules, archived: on ? "include" : "exclude" })} disabled={busy}>
+          Include archived photos
+        </CheckRow>
+        <div className="flex flex-col gap-3 rounded-card bg-surface p-3.5" aria-live="polite">
           {problem ? (
-            <p className="muted small">{problem}</p>
+            <Note>{problem}</Note>
           ) : previewError ? (
-            <p role="alert" className="form-error small">
-              {previewError}
-            </p>
+            <FormError>{previewError}</FormError>
           ) : shown ? (
             <>
-              <p className="small">
-                <strong>{smartCount(shown.count, shown.capped)}</strong> match now. The album always shows what matches when you open it.
+              <p className="text-sm">
+                <strong className="font-semibold">{smartCount(shown.count, shown.capped)}</strong> match now. The album always shows what matches when you open it.
               </p>
-              <ul className="smart-thumbs" aria-label="A few of the matches">
-                {shown.items.map((it) => (
-                  <li key={it.id}>{it.thumb_url ? <img src={it.thumb_url} alt="" loading="lazy" /> : <span className="smart-thumb-blank" />}</li>
+              <ul className="grid grid-cols-4 gap-1.5 sm:grid-cols-6" aria-label="A few of the matches">
+                {shown.items.slice(0, 6).map((it) => (
+                  <li key={it.id} className="aspect-square overflow-hidden rounded-tile bg-line">
+                    {it.thumb_url && <img src={it.thumb_url} alt="" loading="lazy" className="size-full object-cover" />}
+                  </li>
                 ))}
               </ul>
             </>
           ) : (
-            <p className="muted small">Counting…</p>
+            <Note>Counting…</Note>
           )}
         </div>
-        {error && (
-          <p role="alert" className="form-error">
-            {error}
-          </p>
-        )}
-        <div className="modal-actions">
-          <button type="button" className="btn btn-quiet" onClick={onCancel} disabled={busy}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={busy || !title.trim() || problem !== null}>
-            {submitLabel}
-          </button>
-        </div>
+        {error && <FormError>{error}</FormError>}
       </form>
-    </div>
+    </Modal>
   );
 }
 
@@ -248,33 +236,35 @@ function RuleRow({
   const label = RULE_FIELDS.find((f) => f.field === rule.field)?.label ?? rule.field;
   const listFor = (f: "place" | "camera" | "lens") =>
     f === "camera" ? facets?.cameras.map((c) => c.value) : f === "lens" ? facets?.lenses?.map((c) => c.value) : facets?.places.map((p) => p.value);
+  // Inside a grey rule card the fields sit on the sheet's colour.
+  const field = "bg-card";
   switch (rule.field) {
     case "date":
       return (
-        <div className="smart-rule-body">
-          <span className="smart-rule-label">{label}</span>
-          <label className="smart-mini">
-            <span>From</span>
-            <input className="text-input" type="date" value={rule.from ?? ""} max={rule.to || undefined} onChange={(e) => onChange({ ...rule, from: e.target.value })} disabled={disabled} aria-label={`Rule ${n}: from`} />
-          </label>
-          <label className="smart-mini">
-            <span>To</span>
-            <input className="text-input" type="date" value={rule.to ?? ""} min={rule.from || undefined} onChange={(e) => onChange({ ...rule, to: e.target.value })} disabled={disabled} aria-label={`Rule ${n}: to`} />
-          </label>
-        </div>
+        <Body>
+          <span className="text-[0.8125rem] font-medium text-muted">{label}</span>
+          <div className="grid grid-cols-2 gap-2">
+            <label className="flex flex-col gap-1 text-[0.8125rem] text-muted">
+              <span>From</span>
+              <input className={cn(inputClass, field)} type="date" value={rule.from ?? ""} max={rule.to || undefined} onChange={(e) => onChange({ ...rule, from: e.target.value })} disabled={disabled} aria-label={`Rule ${n}: from`} />
+            </label>
+            <label className="flex flex-col gap-1 text-[0.8125rem] text-muted">
+              <span>To</span>
+              <input className={cn(inputClass, field)} type="date" value={rule.to ?? ""} min={rule.from || undefined} onChange={(e) => onChange({ ...rule, to: e.target.value })} disabled={disabled} aria-label={`Rule ${n}: to`} />
+            </label>
+          </div>
+        </Body>
       );
     case "place":
     case "camera":
     case "lens": {
       const options = listFor(rule.field) ?? [];
       return (
-        <div className="smart-rule-body">
-          <label className="smart-rule-label" htmlFor={`${id}-v`}>
-            {label}
-          </label>
+        <Body>
+          <Label htmlFor={`${id}-v`}>{label}</Label>
           <input
             id={`${id}-v`}
-            className="text-input"
+            className={cn(inputClass, field)}
             value={rule.value}
             maxLength={200}
             list={options.length ? `${id}-l` : undefined}
@@ -288,16 +278,14 @@ function RuleRow({
               ))}
             </datalist>
           )}
-        </div>
+        </Body>
       );
     }
     case "type":
       return (
-        <div className="smart-rule-body">
-          <label className="smart-rule-label" htmlFor={`${id}-v`}>
-            {label}
-          </label>
-          <select id={`${id}-v`} className="text-input" value={rule.value} onChange={(e) => onChange({ ...rule, value: e.target.value })} disabled={disabled}>
+        <Body>
+          <Label htmlFor={`${id}-v`}>{label}</Label>
+          <SelectBox id={`${id}-v`} className={field} value={rule.value} onChange={(e) => onChange({ ...rule, value: e.target.value })} disabled={disabled}>
             {[
               ["jpeg", "JPEG"],
               ["heic", "HEIC"],
@@ -308,70 +296,64 @@ function RuleRow({
                 {l}
               </option>
             ))}
-          </select>
-        </div>
+          </SelectBox>
+        </Body>
       );
     case "favorite":
       return (
-        <div className="smart-rule-body">
-          <span className="smart-rule-label">{label}</span>
-          <span className="muted">Photos with a heart</span>
-        </div>
+        <Body>
+          <span className="text-[0.8125rem] font-medium text-muted">{label}</span>
+          <span className="text-[0.9375rem]">Photos with a heart</span>
+        </Body>
       );
     case "rating":
       return (
-        <div className="smart-rule-body">
-          <label className="smart-rule-label" htmlFor={`${id}-v`}>
-            {label}
-          </label>
-          <select id={`${id}-v`} className="text-input" value={rule.min} onChange={(e) => onChange({ ...rule, min: Number(e.target.value) })} disabled={disabled}>
+        <Body>
+          <Label htmlFor={`${id}-v`}>{label}</Label>
+          <SelectBox id={`${id}-v`} className={field} value={rule.min} onChange={(e) => onChange({ ...rule, min: Number(e.target.value) })} disabled={disabled}>
             {[1, 2, 3, 4, 5].map((s) => (
               <option key={s} value={s}>
                 {s === 5 ? "5 stars" : `${s} ${s === 1 ? "star" : "stars"} & up`}
               </option>
             ))}
-          </select>
-        </div>
+          </SelectBox>
+        </Body>
       );
     case "tags":
       return (
-        <div className="smart-rule-body smart-rule-tags">
+        <Body className="gap-2">
           <TagInput label={`${label} (rule ${n})`} existingOnly value={rule.names} onChange={(names) => onChange({ ...rule, names: [...names] })} disabled={disabled} placeholder="Choose tags" />
-          <select className="text-input" aria-label={`Rule ${n}: match`} value={rule.mode} onChange={(e) => onChange({ ...rule, mode: e.target.value === "any" ? "any" : "all" })} disabled={disabled}>
+          <SelectBox className={field} aria-label={`Rule ${n}: match`} value={rule.mode} onChange={(e) => onChange({ ...rule, mode: e.target.value === "any" ? "any" : "all" })} disabled={disabled}>
             <option value="all">All of these tags</option>
             <option value="any">Any of these tags</option>
-          </select>
-        </div>
+          </SelectBox>
+        </Body>
       );
     case "has_location":
     case "has_text":
       return (
-        <div className="smart-rule-body">
-          <label className="smart-rule-label" htmlFor={`${id}-v`}>
-            {label}
-          </label>
-          <select id={`${id}-v`} className="text-input" value={String(rule.value)} onChange={(e) => onChange({ ...rule, value: e.target.value === "true" })} disabled={disabled}>
+        <Body>
+          <Label htmlFor={`${id}-v`}>{label}</Label>
+          <SelectBox id={`${id}-v`} className={field} value={String(rule.value)} onChange={(e) => onChange({ ...rule, value: e.target.value === "true" })} disabled={disabled}>
             <option value="true">{rule.field === "has_text" ? "Has text" : "Has a location"}</option>
             <option value="false">{rule.field === "has_text" ? "Has no text" : "Has no location"}</option>
-          </select>
-        </div>
+          </SelectBox>
+        </Body>
       );
     case "caption":
       return (
-        <div className="smart-rule-body">
-          <label className="smart-rule-label" htmlFor={`${id}-v`}>
-            {label}
-          </label>
-          <input id={`${id}-v`} className="text-input" value={rule.text} maxLength={200} onChange={(e) => onChange({ ...rule, text: e.target.value })} disabled={disabled} />
-        </div>
+        <Body>
+          <Label htmlFor={`${id}-v`}>{label}</Label>
+          <input id={`${id}-v`} className={cn(inputClass, field)} value={rule.text} maxLength={200} onChange={(e) => onChange({ ...rule, text: e.target.value })} disabled={disabled} />
+        </Body>
       );
     case "people":
       return (
-        <div className="smart-rule-body smart-rule-tags">
+        <Body>
           {people !== null && people.length === 0 && rule.ids.length === 0 ? (
             <>
-              <span className="smart-rule-label">{label}</span>
-              <span className="muted small">{NO_NAMED_PEOPLE}</span>
+              <span className="text-[0.8125rem] font-medium text-muted">{label}</span>
+              <span className="text-sm text-muted">{NO_NAMED_PEOPLE}</span>
             </>
           ) : (
             <PeoplePicker
@@ -383,7 +365,19 @@ function RuleRow({
               disabled={disabled}
             />
           )}
-        </div>
+        </Body>
       );
   }
+}
+
+function Label({ htmlFor, children }: { htmlFor?: string; children: string }) {
+  return (
+    <label htmlFor={htmlFor} className="text-[0.8125rem] font-medium text-muted">
+      {children}
+    </label>
+  );
+}
+
+function Body({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn("flex flex-col gap-1.5", className)}>{children}</div>;
 }

@@ -1,8 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Plus, Search } from "lucide-react";
+import { useEffect, useId, useMemo, useState, type FormEvent } from "react";
 import { api, ApiError, isScope, type Album, type Target } from "../api";
 import { useAuth } from "../auth";
 import { photoCount } from "../albumText";
 import { SAVE_ALBUM_NOTE } from "../peopleText";
+import { Button } from "../ui/Button";
+import { AlbumCover } from "./AlbumCover";
+import { FormError, inputClass, Modal, Note, TextInput } from "./sheetForm";
 
 interface Props {
   /** The photos to add: explicit ids, or a whole view. */
@@ -16,17 +20,17 @@ interface Props {
   mode?: "add" | "save";
 }
 
-/** Modal to pick an album (with search) or create one inline, then add `ids` to it. */
+/** A sheet to pick an album (the most recent first, with search) or make a new one, then add `ids` to it. */
 export function AddToAlbumDialog({ ids, count, onClose, onDone, mode = "add" }: Props) {
   const save = mode === "save";
   const { setAnonymous } = useAuth();
+  const form = useId();
   const [albums, setAlbums] = useState<Album[] | null>(null);
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(save);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (save) {
@@ -50,36 +54,8 @@ export function AddToAlbumDialog({ ids, count, onClose, onDone, mode = "add" }: 
   }, [setAnonymous, save]);
 
   useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
-    return () => prev?.focus?.();
-  }, []);
-  useEffect(() => {
-    ref.current?.querySelector<HTMLElement>("input")?.focus();
+    if (creating) document.querySelector<HTMLElement>("dialog[open] [data-autofocus]")?.focus({ preventScroll: true });
   }, [creating]);
-
-  // Capture so Escape here never also closes the lightbox or clears a selection underneath.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onClose();
-      } else if (e.key === "Tab" && ref.current) {
-        const f = ref.current.querySelectorAll<HTMLElement>("button:not(:disabled), input");
-        const first = f[0];
-        const last = f[f.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last?.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first?.focus();
-        }
-      }
-    }
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [onClose]);
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -117,84 +93,99 @@ export function AddToAlbumDialog({ ids, count, onClose, onDone, mode = "add" }: 
     });
   };
 
+  const heading = save ? `Save ${photoCount(count)} as an album` : `Add ${photoCount(count)} to album`;
+
+  const footer = creating ? (
+    <>
+      <Button variant="secondary" onClick={() => (save ? onClose() : setCreating(false))} disabled={busy}>
+        {save ? "Cancel" : "Back"}
+      </Button>
+      <Button variant="primary" type="submit" form={form} disabled={busy || !title.trim()}>
+        {save ? "Create album" : "Create and add"}
+      </Button>
+    </>
+  ) : undefined;
+
   return (
-    <div className="modal-backdrop">
-      <div className="modal card album-dialog" role="dialog" aria-modal="true" aria-labelledby="add-album-title" ref={ref}>
-        <h2 id="add-album-title">{save ? `Save ${photoCount(count)} as an album` : `Add ${photoCount(count)} to album`}</h2>
-        {creating ? (
-          <form onSubmit={create}>
-            <label htmlFor="new-album-title" className="sr-only">
-              Album title
-            </label>
-            <input
-              id="new-album-title"
-              className="text-input"
-              placeholder="Album title"
-              value={title}
-              maxLength={200}
-              onChange={(e) => setTitle(e.target.value)}
-              disabled={busy}
-            />
-            {save && <p className="muted small">{SAVE_ALBUM_NOTE}</p>}
-            {error && <p role="alert" className="form-error">{error}</p>}
-            <div className="modal-actions">
-              <button type="button" className="btn btn-quiet" onClick={() => (save ? onClose() : setCreating(false))} disabled={busy}>
-                {save ? "Cancel" : "Back"}
-              </button>
-              <button type="submit" className="btn btn-primary" disabled={busy || !title.trim()}>
-                {save ? "Create album" : "Create and add"}
-              </button>
-            </div>
-          </form>
-        ) : (
-          <>
-            <label htmlFor="album-search" className="sr-only">
+    <Modal onClose={onClose} title={heading} size={creating ? "sm" : "md"} footer={footer} className={creating ? undefined : "md:h-[34rem]"}>
+      {creating ? (
+        <form id={form} onSubmit={create} className="flex flex-col gap-3">
+          <label htmlFor={`${form}-title`} className="sr-only">
+            Album title
+          </label>
+          <TextInput
+            id={`${form}-title`}
+            data-autofocus=""
+            placeholder="Album title"
+            value={title}
+            maxLength={200}
+            onChange={(e) => setTitle(e.target.value)}
+            disabled={busy}
+          />
+          {save && <Note>{SAVE_ALBUM_NOTE}</Note>}
+          {error && <FormError>{error}</FormError>}
+        </form>
+      ) : (
+        <div className="flex min-h-0 flex-col gap-3">
+          <div className="relative">
+            <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted" aria-hidden="true" />
+            <label htmlFor={`${form}-search`} className="sr-only">
               Search albums
             </label>
             <input
-              id="album-search"
-              className="text-input"
+              id={`${form}-search`}
+              className={`${inputClass} pl-10`}
               type="search"
               placeholder="Search albums"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               disabled={busy}
             />
-            {error && <p role="alert" className="form-error">{error}</p>}
-            <ul className="album-pick-list" aria-label="Albums">
-              {albums === null && <li className="muted small" role="status">Loading…</li>}
-              {albums !== null && shown.length === 0 && (
-                <li className="muted small">{albums.length === 0 ? "No albums yet." : "No album matches."}</li>
-              )}
-              {shown.map((a) => (
-                <li key={a.id}>
-                  <button type="button" className="album-pick" onClick={() => void addTo(a)} disabled={busy}>
-                    <span className="album-pick-title">{a.title}</span>
-                    <span className="muted small">{photoCount(a.photo_count)}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <div className="modal-actions album-dialog-actions">
-              <button
-                type="button"
-                className="btn btn-quiet"
-                onClick={() => {
-                  setTitle(query.trim());
-                  setCreating(true);
-                }}
-                disabled={busy}
-              >
-                New album
-              </button>
-              <button type="button" className="btn btn-quiet" onClick={onClose} disabled={busy}>
-                Cancel
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+          </div>
+          {error && <FormError>{error}</FormError>}
+          <button
+            type="button"
+            className="flex min-h-14 items-center gap-3 rounded-card px-1.5 text-left text-[0.9375rem] font-medium text-accent hover:bg-surface disabled:opacity-55"
+            disabled={busy}
+            onClick={() => {
+              setTitle(query.trim());
+              setCreating(true);
+            }}
+          >
+            <span className="flex size-11 shrink-0 items-center justify-center rounded-[0.6rem] bg-surface">
+              <Plus className="size-5" aria-hidden="true" />
+            </span>
+            New album
+          </button>
+          <ul aria-label="Albums" className="flex flex-col">
+            {albums === null && (
+              <li className="py-2 text-sm text-muted" role="status">
+                Loading…
+              </li>
+            )}
+            {albums !== null && shown.length === 0 && (
+              <li className="py-2 text-sm text-muted">{albums.length === 0 ? "No albums yet." : "No album matches."}</li>
+            )}
+            {shown.map((a) => (
+              <li key={a.id}>
+                <button
+                  type="button"
+                  className="flex min-h-14 w-full items-center gap-3 rounded-card px-1.5 text-left hover:bg-surface disabled:opacity-55"
+                  onClick={() => void addTo(a)}
+                  disabled={busy}
+                >
+                  <AlbumCover cover={a.cover} className="size-11 shrink-0 rounded-[0.6rem]" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[0.9375rem]">{a.title}</span>
+                    <span className="block text-[0.8125rem] text-muted">{photoCount(a.photo_count)}</span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Modal>
   );
 }
 

@@ -45,6 +45,11 @@ const renderAt = (path = "/people/p1") =>
     </MemoryRouter>,
   );
 
+/** The ⋯ menu of the person's page: open it, then choose an item. */
+async function choose(name: string) {
+  await userEvent.click(await screen.findByRole("button", { name: "More" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name }));
+}
 const open = (n: number) => screen.getByRole("button", { name: new RegExp(`^(Open|Select) photo-${n}\\.jpg$`) });
 const suggestion = (n: number): FaceSuggestion => ({ face_id: `s${n}`, asset_id: `a${n}`, box: [0.1, 0.1, 0.2, 0.2], preview_url: `https://s3.test/p${n}`, similarity: 0.7 });
 
@@ -53,9 +58,9 @@ describe("a person's page", () => {
     vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 3));
     renderAt();
     expect(await screen.findByRole("heading", { name: "Person A" })).toBeInTheDocument();
-    expect(screen.getByText("3 photos")).toBeInTheDocument();
+    expect(screen.getAllByText("3 photos").length).toBeGreaterThan(0);
     expect(await screen.findByRole("button", { name: "Open photo-1.jpg" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "‹ People" })).toHaveAttribute("href", "/people");
+    expect(screen.getByRole("link", { name: "People" })).toHaveAttribute("href", "/people");
     expect(lib.timeline).toHaveBeenCalledWith(expect.objectContaining({ person: "p1" }));
     expect(lib.listAssets).toHaveBeenCalledWith(expect.objectContaining({ person: "p1" }));
   });
@@ -118,7 +123,7 @@ describe("a person's page", () => {
     await user.click(screen.getByRole("button", { name: "Select all" }));
     await user.click(screen.getByRole("button", { name: "Move to trash" }));
     expect(screen.getByRole("heading", { name: "Move 250 photos to trash?" })).toBeInTheDocument();
-    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Move to trash" }));
+    await user.click(within(screen.getByRole("dialog", { name: "Move 250 photos to trash?" })).getByRole("button", { name: "Move to trash" }));
     expect(await screen.findByText("250 moved to trash")).toBeInTheDocument();
     expect(api.trashAssets).toHaveBeenCalledWith({ scope: { person: "p1" }, except: [] });
   });
@@ -146,7 +151,9 @@ describe("a person's page", () => {
     const list = vi.spyOn(api, "listAlbums").mockResolvedValue({ items: [] });
     const user = userEvent.setup();
     renderAt();
-    await user.click(await screen.findByRole("button", { name: "Save as album" }));
+    await screen.findByRole("heading", { name: "Person A" });
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Save as album" }));
     const dialog = screen.getByRole("dialog", { name: "Save 3 photos as an album" });
     // It starts at the title (nothing to pick from), empty: the person's name is not offered as the album's title.
     const title = within(dialog).getByLabelText("Album title");
@@ -163,7 +170,8 @@ describe("a person's page", () => {
   it("links to the search with the person as a filter", async () => {
     vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 3));
     renderAt();
-    expect(await screen.findByRole("link", { name: "Search with filters" })).toHaveAttribute("href", "/search?people=p1");
+    await userEvent.click(await screen.findByRole("button", { name: "More" }));
+    expect(await screen.findByRole("menuitem", { name: "Search with filters" })).toHaveAttribute("href", "/search?people=p1");
   });
 
   it("says so for a person who is not there, and for the feature being off", async () => {
@@ -190,7 +198,7 @@ describe("a person's page", () => {
     expect(update).toHaveBeenCalledWith("p1", { name: "Person A" });
     expect(await screen.findByRole("heading", { name: "Person A" })).toBeInTheDocument();
     update.mockResolvedValue(person("p1", null, 3));
-    await userEvent.click(screen.getByRole("button", { name: "Rename" }));
+    await choose("Rename");
     await userEvent.clear(screen.getByLabelText("Name"));
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(update).toHaveBeenLastCalledWith("p1", { name: null });
@@ -201,7 +209,7 @@ describe("a person's page", () => {
     vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 3));
     const update = vi.spyOn(api, "updatePerson");
     renderAt();
-    await userEvent.click(await screen.findByRole("button", { name: "Rename" }));
+    await choose("Rename");
     const input = screen.getByLabelText("Name");
     expect(input).toHaveValue("Person A");
     await userEvent.type(input, " and more");
@@ -214,9 +222,11 @@ describe("a person's page", () => {
     vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 3));
     const update = vi.spyOn(api, "updatePerson").mockResolvedValue(person("p1", "Person A", 3, { hidden: true }));
     renderAt();
-    await userEvent.click(await screen.findByRole("button", { name: "Hide" }));
+    await choose("Hide");
     expect(update).toHaveBeenCalledWith("p1", { hidden: true });
-    expect(await screen.findByRole("button", { name: "Show" })).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "More" }));
+    expect(await screen.findByRole("menuitem", { name: "Show" })).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
     expect(screen.getByText(/Hidden/, { selector: "p" })).toBeInTheDocument();
   });
 
@@ -229,7 +239,7 @@ describe("a person's page", () => {
     await userEvent.click(open(1));
     await userEvent.click(open(3));
     await userEvent.click(screen.getByRole("button", { name: "Not this person" }));
-    const dialog = screen.getByRole("alertdialog", { name: "Not Person A?" });
+    const dialog = await screen.findByRole("dialog", { name: "Not Person A?" });
     expect(dialog).toHaveTextContent("taken out of 2 photos");
     await userEvent.click(within(dialog).getByRole("button", { name: "Not this person" }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith("p1", { asset_ids: ["id-1", "id-3"] }));
@@ -266,13 +276,13 @@ describe("a person's page", () => {
     });
     const merge = vi.spyOn(api, "mergePerson").mockResolvedValue({ into: "p2", faces: 3 });
     renderAt();
-    await userEvent.click(await screen.findByRole("button", { name: "Merge into…" }));
-    const select = await screen.findByLabelText("Merge into");
-    expect(within(select).queryByRole("option", { name: /Person A/ })).not.toBeInTheDocument();
-    // Only a named, shown person is a choice: not the hidden one, not the unnamed one.
-    await waitFor(() => expect(within(select).getAllByRole("option")).toHaveLength(1));
-    expect(within(select).queryByRole("option", { name: /Person C|Unnamed/ })).not.toBeInTheDocument();
-    await userEvent.selectOptions(select, "p2");
+    await screen.findByRole("heading", { name: "Person A" });
+    await choose("Merge into…");
+    const choices = await screen.findByRole("group", { name: "Merge into" });
+    // Only a named, shown person is a choice, never the person themselves: not the hidden one, not the unnamed one.
+    await waitFor(() => expect(within(choices).getAllByRole("radio")).toHaveLength(1));
+    expect(within(choices).queryByRole("radio", { name: /Person A|Person C|Unnamed/ })).not.toBeInTheDocument();
+    await userEvent.click(within(choices).getByRole("radio", { name: /Person B/ }));
     await userEvent.click(screen.getByRole("button", { name: "Merge" }));
     await waitFor(() => expect(merge).toHaveBeenCalledWith("p1", "p2"));
     // The page for the person merged into opens (the old page's toast goes with it).
@@ -297,8 +307,8 @@ describe("a person's page", () => {
     vi.spyOn(api, "getPerson").mockResolvedValue(person("p1", "Person A", 3));
     const del = vi.spyOn(api, "deletePerson").mockResolvedValue(undefined);
     renderAt();
-    await userEvent.click(await screen.findByRole("button", { name: "Delete person" }));
-    const dialog = screen.getByRole("alertdialog", { name: "Delete Person A?" });
+    await choose("Delete person");
+    const dialog = await screen.findByRole("dialog", { name: "Delete Person A?" });
     expect(del).not.toHaveBeenCalled();
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete person" }));
     expect(await screen.findByText("all people")).toBeInTheDocument();

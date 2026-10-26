@@ -1,21 +1,27 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { CheckSquare, Images, Merge, MoreHorizontal, Pencil, Play, Search, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError, type Tag } from "../api";
 import { useAuth } from "../auth";
-import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ConfirmSheet } from "../components/ConfirmSheet";
 import { Grid } from "../components/Grid";
 import { Lightbox } from "../components/Lightbox";
 import { NameDialog } from "../components/NameDialog";
+import { Empty, InlineError, Loading, PageProblem, useTitleCut } from "../components/pageKit";
 import { RateTools } from "../components/RateTools";
 import { ZipButton } from "../components/ZipButton";
 import { SelectionBar } from "../components/SelectionBar";
+import { FormError, inputClass, Modal, Note } from "../components/sheetForm";
 import { TagTools } from "../components/TagTools";
 import { useToast } from "../components/Toast";
 import { useSelection } from "../selection";
 import { similarUrl } from "../searchText";
+import { PageHeader } from "../shell/PageHeader";
 import { tagPhotos, tagSearchHref } from "../tagText";
 import { useAssetPages } from "../useAssetPages";
-import { SlideshowButton } from "../slideshow/SlideshowHost";
+import { Button, buttonVariants } from "../ui/Button";
+import { Menu, MenuItem, MenuSeparator } from "../ui/Menu";
+import { useSlideshow } from "../slideshow/SlideshowHost";
 import { scopeSource } from "../slideshow/sources";
 
 const PAGE = 60;
@@ -49,6 +55,7 @@ function TagView({ id }: { id: string }) {
     void load();
   }, [load]);
   const tag = tags?.find((t) => t.id === id) ?? null;
+  const titleCut = useTitleCut(tag?.name ?? "");
 
   const fetchPage = useCallback(
     async (cursor: string | null) => {
@@ -60,25 +67,38 @@ function TagView({ id }: { id: string }) {
   );
   if (problem) {
     return (
-      <div className="empty" role="alert">
-        <h1>Couldn’t load the tag</h1>
-        <p className="muted">{problem}</p>
-        <Link to="/tags" className="btn btn-primary">
-          All tags
-        </Link>
-      </div>
+      <PageProblem
+        title="Couldn’t load the tag"
+        message={problem}
+        back={{ to: "/tags", label: "Tags" }}
+        action={
+          <Button asChild variant="primary">
+            <Link to="/tags">All tags</Link>
+          </Button>
+        }
+      />
     );
   }
-  if (tags === null) return <p className="center muted" role="status">Loading the tag…</p>;
+  if (tags === null) {
+    return (
+      <>
+        <PageHeader title="Tag" back={{ to: "/tags", label: "Tags" }} />
+        <Loading>Loading the tag…</Loading>
+      </>
+    );
+  }
   if (!tag) {
     return (
-      <div className="empty" role="alert">
-        <h1>Tag not found</h1>
-        <p className="muted">It may have been renamed into another tag or deleted.</p>
-        <Link to="/tags" className="btn btn-primary">
-          All tags
-        </Link>
-      </div>
+      <PageProblem
+        title="Tag not found"
+        message="It may have been renamed into another tag or deleted."
+        back={{ to: "/tags", label: "Tags" }}
+        action={
+          <Button asChild variant="primary">
+            <Link to="/tags">All tags</Link>
+          </Button>
+        }
+      />
     );
   }
 
@@ -126,30 +146,62 @@ function TagView({ id }: { id: string }) {
   }
 
   return (
-    <div className="library tag-page">
-      <p className="small">
-        <Link to="/tags">‹ Tags</Link>
-      </p>
-      <div className="page-head album-head">
-        <div>
-          <h1 className="tag-title">{tag.name}</h1>
-          <p className="muted small">{tagPhotos(tag.count)}</p>
-        </div>
-        <div className="album-head-actions">
-          <button type="button" className="btn btn-quiet" onClick={() => setDialog("rename")}>
-            Rename
-          </button>
-          <button type="button" className="btn btn-quiet" onClick={() => setDialog("merge")} disabled={tags.length < 2}>
-            Merge into…
-          </button>
-          <Link to={tagSearchHref(tag.name)} className="btn btn-quiet">
-            Search with filters
-          </Link>
-          <button type="button" className="btn btn-quiet btn-danger-quiet" onClick={() => setDialog("delete")}>
-            Delete tag
-          </button>
-        </div>
-      </div>
+    <>
+      <PageHeader
+        title={tag.name}
+        subtitle={tagPhotos(tag.count)}
+        back={{ to: "/tags", label: "Tags" }}
+        actions={
+          <Menu
+            label="Tag"
+            trigger={
+              <Button size="icon" variant="ghost" aria-label="More">
+                <MoreHorizontal />
+              </Button>
+            }
+          >
+            <MenuItem
+              onSelect={() => {
+                setDialogError(null);
+                setDialog("rename");
+              }}
+            >
+              <Pencil />
+              Rename
+            </MenuItem>
+            <MenuItem
+              disabled={tags.length < 2}
+              onSelect={() => {
+                setDialogError(null);
+                setDialog("merge");
+              }}
+            >
+              <Merge />
+              Merge into…
+            </MenuItem>
+            <MenuItem asChild>
+              <Link to={tagSearchHref(tag.name)}>
+                <Search />
+                Search with filters
+              </Link>
+            </MenuItem>
+            <MenuSeparator />
+            <MenuItem
+              danger
+              onSelect={() => {
+                setDialogError(null);
+                setDialog("delete");
+              }}
+            >
+              <Trash2 />
+              Delete tag
+            </MenuItem>
+          </Menu>
+        }
+      />
+      {titleCut && (
+        <p className="mx-auto max-w-[96rem] px-4 pt-3 text-[1.25rem] leading-snug font-semibold tracking-tight text-pretty [overflow-wrap:anywhere] md:px-8">{tag.name}</p>
+      )}
       <TagPhotos key={tag.name} tag={tag} fetchPage={fetchPage} open={open} setOpen={setOpen} onChanged={load} />
       {dialog === "rename" && (
         <NameDialog
@@ -167,17 +219,13 @@ function TagView({ id }: { id: string }) {
         <MergeDialog from={tag} tags={tags} busy={busy} error={dialogError} onMerge={(t) => void merge(t)} onCancel={() => setDialog(null)} />
       )}
       {dialog === "delete" && (
-        <ConfirmDialog title={`Delete the tag “${tag.name}”?`} confirmLabel="Delete tag" danger busy={busy} onCancel={() => setDialog(null)} onConfirm={() => void remove()}>
+        <ConfirmSheet title={`Delete the tag “${tag.name}”?`} confirmLabel="Delete tag" danger busy={busy} onCancel={() => setDialog(null)} onConfirm={() => void remove()}>
           <p>It is taken off {tagPhotos(tag.count)}. The photos stay in your library.</p>
-          {dialogError && (
-            <p role="alert" className="form-error">
-              {dialogError}
-            </p>
-          )}
-        </ConfirmDialog>
+          {dialogError && <FormError>{dialogError}</FormError>}
+        </ConfirmSheet>
       )}
       {toast}
-    </div>
+    </>
   );
 }
 
@@ -195,6 +243,7 @@ function TagPhotos({
   onChanged: () => Promise<void>;
 }) {
   const navigate = useNavigate();
+  const slideshow = useSlideshow();
   const { setAnonymous } = useAuth();
   const { toast, show } = useToast();
   const { items, done, started, error, loadMore, sentinel, refreshItem, reset } = useAssetPages(fetchPage);
@@ -247,79 +296,86 @@ function TagPhotos({
     }
   }, [sel, tag.name, show, reset, onChanged, failure]);
 
-  if (!started) return <p className="center muted" role="status">Loading the photos…</p>;
+  if (!started) return <Loading>Loading the photos…</Loading>;
   return (
     <>
       {items.length === 0 ? (
-        <div className="empty">
-          <h2>No photos have this tag</h2>
-          <p>Select photos in your library and choose Tag to add it.</p>
-        </div>
+        <Empty icon={Images} title="No photos have this tag">
+          Select photos in your library and choose Tag to add it.
+        </Empty>
       ) : (
-        <div className="library-bar">
-          <button type="button" className="btn btn-quiet" aria-pressed={sel.selecting} onClick={() => sel.setSelecting(!sel.selecting)}>
+        <div className="mx-auto flex max-w-[96rem] flex-wrap items-center gap-2 px-4 py-3 md:px-8">
+          {slideshow && (
+            <Button variant="secondary" size="sm" onClick={() => slideshow.start(scopeSource({ search: { tags: tag.name } }, tag.name))}>
+              <Play />
+              Slideshow
+            </Button>
+          )}
+          <Button variant="secondary" size="sm" aria-pressed={sel.selecting} onClick={() => sel.setSelecting(!sel.selecting)}>
+            <CheckSquare />
             Select
-          </button>
-          <SlideshowButton source={() => scopeSource({ search: { tags: tag.name } }, tag.name)} />
+          </Button>
         </div>
       )}
       {sel.selecting && (
-        <SelectionBar count={sel.count} total={items.length} onSelectAll={sel.selectAll} onClear={sel.clear} onDone={() => sel.setSelecting(false)}>
-          <ZipButton
-            target={sel.ids}
-            disabled={sel.count === 0}
-            onStarted={(message) => show({ message })}
-            onError={(e) => failure(e, "Couldn’t download.")}
-          />
-          <RateTools
-            target={sel.ids}
-            count={sel.count}
-            disabled={sel.count === 0}
-            onDone={(rating, _n, message) => {
-              for (const id of sel.ids) refreshItem(id, { rating });
-              sel.setSelecting(false);
-              show({ message });
-            }}
-            onError={(e) => failure(e, "Couldn’t rate.")}
-          />
-          <TagTools
-            target={sel.ids}
-            count={sel.count}
-            disabled={sel.count === 0}
-            onDone={(message) => {
-              sel.setSelecting(false);
-              show({ message });
-              reset();
-              void onChanged();
-            }}
-          />
-          <button type="button" className="btn btn-primary" disabled={sel.count === 0} onClick={() => void untagSelected()}>
-            Remove this tag
-          </button>
-        </SelectionBar>
+        <div className="mx-auto max-w-[96rem] px-4 md:px-8">
+          <SelectionBar count={sel.count} total={items.length} onSelectAll={sel.selectAll} onClear={sel.clear} onDone={() => sel.setSelecting(false)}>
+            <ZipButton
+              className={buttonVariants({ variant: "quiet", size: "sm" })}
+              target={sel.ids}
+              disabled={sel.count === 0}
+              onStarted={(message) => show({ message })}
+              onError={(e) => failure(e, "Couldn’t download.")}
+            />
+            <RateTools
+              target={sel.ids}
+              count={sel.count}
+              disabled={sel.count === 0}
+              onDone={(rating, _n, message) => {
+                for (const id of sel.ids) refreshItem(id, { rating });
+                sel.setSelecting(false);
+                show({ message });
+              }}
+              onError={(e) => failure(e, "Couldn’t rate.")}
+            />
+            <TagTools
+              target={sel.ids}
+              count={sel.count}
+              disabled={sel.count === 0}
+              onDone={(message) => {
+                sel.setSelecting(false);
+                show({ message });
+                reset();
+                void onChanged();
+              }}
+            />
+            <Button variant="primary" size="sm" disabled={sel.count === 0} onClick={() => void untagSelected()}>
+              Remove this tag
+            </Button>
+          </SelectionBar>
+        </div>
       )}
       {items.length > 0 && (
-        <Grid
-          items={items}
-          onOpen={setOpen}
-          onThumbError={(i) => void api.getAsset(i).then((d) => refreshItem(i, { thumb_url: d.thumb_url, thumbhash: d.thumbhash }), () => undefined)}
-          selecting={sel.selecting}
-          selected={sel.selected}
-          onSelect={sel.select}
-          onLongPress={sel.begin}
-          onFavorite={(id, favorite) => void setFavorite(id, favorite)}
-        />
+        <div className="md:px-8">
+          <Grid
+            items={items}
+            onOpen={setOpen}
+            onThumbError={(i) => void api.getAsset(i).then((d) => refreshItem(i, { thumb_url: d.thumb_url, thumbhash: d.thumbhash }), () => undefined)}
+            selecting={sel.selecting}
+            selected={sel.selected}
+            onSelect={sel.select}
+            onLongPress={sel.begin}
+            onFavorite={(id, favorite) => void setFavorite(id, favorite)}
+          />
+        </div>
       )}
-      <div ref={sentinel} className="sentinel" aria-hidden="true" />
-      {error && (
-        <p className="center" role="alert">
-          {error}{" "}
-          <button type="button" className="btn btn-quiet" onClick={() => void loadMore()}>
-            Retry
-          </button>
+      <div ref={sentinel} className="h-px" aria-hidden="true" />
+      {error && <InlineError onRetry={() => void loadMore()}>{error}</InlineError>}
+      {!done && items.length > 0 && (
+        <p className="py-4 text-center text-sm text-muted" role="status">
+          Loading more…
         </p>
       )}
-      {!done && items.length > 0 && <p className="center muted small" role="status">Loading more…</p>}
       {open !== null && items.length > 0 && (
         <Lightbox
           items={items}
@@ -357,58 +413,77 @@ function MergeDialog({
   onMerge: (into: Tag) => void;
   onCancel: () => void;
 }) {
+  const id = useId();
   const others = tags.filter((t) => t.id !== from.id);
   const [into, setInto] = useState(others[0]?.id ?? "");
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onCancel();
-      }
-    }
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [onCancel]);
+  const [typed, setTyped] = useState("");
   const target = others.find((t) => t.id === into);
+  const q = typed.trim().toLowerCase();
+  const matches = others.filter((t) => !q || t.name.toLowerCase().includes(q));
+  // A library can hold thousands of tags: the list shows the first hundred, and typing narrows it. The chosen one stays on it.
+  const shown = [...(target && !matches.includes(target) ? [target] : []), ...matches].slice(0, 100);
   return (
-    <div className="modal-backdrop">
+    <Modal
+      onClose={onCancel}
+      title={`Merge “${from.name}” into…`}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" form={id} disabled={busy || !target}>
+            Merge
+          </Button>
+        </>
+      }
+    >
       <form
-        className="modal card"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="merge-title"
+        id={id}
+        className="flex flex-col gap-3"
         onSubmit={(e) => {
           e.preventDefault();
           if (target) onMerge(target);
         }}
       >
-        <h2 id="merge-title">Merge “{from.name}” into…</h2>
-        <label htmlFor="merge-into" className="sr-only">
-          Merge into
-        </label>
-        <select id="merge-into" className="text-input" value={into} onChange={(e) => setInto(e.target.value)} disabled={busy} autoFocus>
-          {others.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name} ({tagPhotos(t.count)})
-            </option>
-          ))}
-        </select>
-        <p className="muted small">Every photo with “{from.name}” gets the other tag, and “{from.name}” is deleted.</p>
-        {error && (
-          <p role="alert" className="form-error">
-            {error}
-          </p>
+        {others.length > 6 && (
+          <>
+            <label htmlFor={`${id}-find`} className="sr-only">
+              Find a tag
+            </label>
+            <input
+              id={`${id}-find`}
+              className={inputClass}
+              type="search"
+              placeholder="Find a tag"
+              value={typed}
+              maxLength={100}
+              onChange={(e) => setTyped(e.target.value)}
+            />
+          </>
         )}
-        <div className="modal-actions">
-          <button type="button" className="btn btn-quiet" onClick={onCancel} disabled={busy}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={busy || !target}>
-            Merge
-          </button>
-        </div>
+        <fieldset className="m-0 min-w-0 border-0 p-0" disabled={busy}>
+          <legend className="sr-only">Merge into</legend>
+          <div className="flex max-h-72 flex-col overflow-y-auto">
+            {shown.map((t) => (
+              <label key={t.id} className="flex min-h-12 cursor-pointer items-center gap-3 rounded-card px-1.5 hover:bg-surface has-[:checked]:bg-surface has-[:disabled]:cursor-default">
+                <input
+                  type="radio"
+                  name={`${id}-into`}
+                  className="size-5 shrink-0 accent-accent"
+                  checked={t.id === into}
+                  data-autofocus={t.id === into ? "" : undefined}
+                  onChange={() => setInto(t.id)}
+                />
+                <span className="min-w-0 flex-1 truncate text-[0.9375rem] [overflow-wrap:anywhere]">{t.name}</span>
+                <span className="shrink-0 text-[0.8125rem] text-muted">{tagPhotos(t.count)}</span>
+              </label>
+            ))}
+          </div>
+          {matches.length === 0 && <p className="py-2 text-sm text-muted">No tag has “{typed.trim()}” in its name.</p>}
+        </fieldset>
+        <Note>Every photo with “{from.name}” gets the other tag, and “{from.name}” is deleted.</Note>
+        {error && <FormError>{error}</FormError>}
       </form>
-    </div>
+    </Modal>
   );
 }

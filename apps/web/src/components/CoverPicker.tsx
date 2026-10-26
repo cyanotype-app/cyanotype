@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type CoverFace, type Person } from "../api";
 import { personLabel } from "../peopleText";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
 import { FaceCrop } from "./FaceCrop";
+import { FormError, Modal } from "./sheetForm";
 
 /** Faces per page of the picker. */
 const PAGE = 24;
@@ -46,37 +49,9 @@ export function CoverPicker({
   }, [load]);
   useEffect(() => {
     if (focusAt.current === null || !faces) return;
-    ref.current?.querySelectorAll<HTMLElement>(".cover-choice")[focusAt.current]?.focus();
+    ref.current?.querySelectorAll<HTMLElement>("[data-cover-choice]")[focusAt.current]?.focus();
     focusAt.current = null;
   }, [faces]);
-
-  // Focus goes in, and back to the button that opened the picker.
-  useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
-    ref.current?.querySelector<HTMLElement>("button")?.focus();
-    return () => prev?.focus?.();
-  }, []);
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onCancel();
-      } else if (e.key === "Tab" && ref.current) {
-        const f = [...ref.current.querySelectorAll<HTMLElement>("button:not(:disabled)")];
-        const [first, last] = [f[0], f[f.length - 1]];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last?.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first?.focus();
-        }
-      }
-    }
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [onCancel]);
 
   async function choose(face: CoverFace) {
     setBusy(true);
@@ -90,55 +65,67 @@ export function CoverPicker({
 
   const current = person.cover?.face_id;
   return (
-    <div className="modal-backdrop">
-      <div className="modal card modal-wide" role="dialog" aria-modal="true" aria-labelledby="cover-picker-title" ref={ref}>
-        <h2 id="cover-picker-title">Change cover of {personLabel(person)}</h2>
+    <Modal
+      onClose={onCancel}
+      title={`Change cover of ${personLabel(person)}`}
+      size="lg"
+      footer={
+        <Button variant="secondary" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Button>
+      }
+    >
+      <div ref={ref} className="flex flex-col gap-4">
         {faces === null && !error && (
-          <p className="muted" role="status">
+          <p className="text-sm text-muted" role="status">
             Loading the faces…
           </p>
         )}
-        {faces !== null && faces.length === 0 && <p className="muted">There are no faces to choose from yet.</p>}
+        {faces !== null && faces.length === 0 && <p className="text-sm text-muted">There are no faces to choose from yet.</p>}
         {faces !== null && faces.length > 0 && (
-          <ul className="cover-grid" aria-label="Faces">
+          <ul className="grid grid-cols-4 gap-3 sm:grid-cols-6" aria-label="Faces">
             {faces.map((f, i) => (
               <li key={f.face_id}>
                 <button
                   type="button"
-                  className="cover-choice"
+                  className={cn(
+                    "block w-full rounded-full p-0.5 transition-transform duration-150 ease-soft hover:scale-105 disabled:opacity-60",
+                    f.face_id === current && "ring-2 ring-accent",
+                  )}
+                  data-cover-choice=""
                   aria-pressed={f.face_id === current}
                   aria-label={`Face ${i + 1}${f.face_id === current ? ", the current cover" : ""}`}
                   disabled={busy}
                   onClick={() => void choose(f)}
                 >
-                  <FaceCrop url={f.preview_url} box={f.box} className="cover-choice-face" />
+                  <FaceCrop url={f.preview_url} box={f.box} />
                 </button>
               </li>
             ))}
           </ul>
         )}
         {error && (
-          <p role="alert" className="form-error">
-            {error}{" "}
-            <button type="button" className="btn btn-quiet" onClick={() => void load(faces && next ? next : null)}>
+          <div className="flex items-center gap-2">
+            <FormError>{error}</FormError>
+            <Button variant="quiet" size="sm" onClick={() => void load(faces && next ? next : null)}>
               Retry
-            </button>
-          </p>
+            </Button>
+          </div>
         )}
-        <div className="modal-actions">
-          {next && (
-            <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => {
-                focusAt.current = faces?.length ?? 0;
-                void load(next);
-              }}>
-              Show more
-            </button>
-          )}
-          <button type="button" className="btn btn-quiet" onClick={onCancel} disabled={busy}>
-            Cancel
-          </button>
-        </div>
+        {next && (
+          <Button
+            variant="secondary"
+            className="self-center"
+            disabled={busy}
+            onClick={() => {
+              focusAt.current = faces?.length ?? 0;
+              void load(next);
+            }}
+          >
+            Show more
+          </Button>
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }

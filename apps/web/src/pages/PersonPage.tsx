@@ -1,29 +1,35 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { CheckSquare, Eye, EyeOff, FolderPlus, Images, Merge, MoreHorizontal, Pencil, Play, Search, Trash2, TriangleAlert, UserRound } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError, isScope, type AssetListItem, type FaceSuggestion, type Person, type Scope, type Target } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
-import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ConfirmSheet } from "../components/ConfirmSheet";
 import { CoverPicker } from "../components/CoverPicker";
 import { ConfirmFaceDialog } from "../components/FaceChips";
-import { FaceCrop } from "../components/FaceCrop";
+import { BlankFace, FaceCrop } from "../components/FaceCrop";
 import { Lightbox } from "../components/Lightbox";
+import { Empty, Enter, InlineError, Loading, PageProblem, Rise, useTitleCut } from "../components/pageKit";
 import { RateTools } from "../components/RateTools";
 import { ZipButton } from "../components/ZipButton";
 import { SelectionBar } from "../components/SelectionBar";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
+import { FormError, inputClass, Modal, Note, TextInput } from "../components/sheetForm";
 import { TagTools } from "../components/TagTools";
 import { TimelineGrid } from "../components/TimelineGrid";
 import { useToast } from "../components/Toast";
-import { filterablePeople, mergedMessage, nameProblem, personLabel, photosWord, removedMessage, suggestionQuestion, ADD_A_NAME } from "../peopleText";
+import { ADD_A_NAME, FIND_A_PERSON, filterablePeople, matchingPeople, mergedMessage, nameProblem, personLabel, photosWord, removedMessage, suggestionQuestion } from "../peopleText";
 import { useSelection } from "../selection";
 import { similarUrl } from "../searchText";
+import { PageHeader } from "../shell/PageHeader";
 import { inOrder, runAround } from "../timeline";
 import { PAGE, useTimeline } from "../useTimeline";
 import { usePeopleEnabled } from "../usePeople";
 import { archiveMessage } from "../viewText";
+import { Button, buttonVariants } from "../ui/Button";
+import { Menu, MenuItem, MenuSeparator } from "../ui/Menu";
 import { NotFound } from "./NotFound";
-import { SlideshowButton } from "../slideshow/SlideshowHost";
+import { useSlideshow } from "../slideshow/SlideshowHost";
 import { scopeSource } from "../slideshow/sources";
 
 /** How often the person's counts are read again, to notice photos the worker has grouped meanwhile. */
@@ -38,9 +44,10 @@ export function PersonPage() {
   const enabled = usePeopleEnabled();
   if (enabled === null) {
     return (
-      <p className="center muted" role="status">
-        Loading…
-      </p>
+      <>
+        <PageHeader title="Person" back={{ to: "/people", label: "People" }} />
+        <Loading>Loading…</Loading>
+      </>
     );
   }
   return enabled ? <PersonView key={id} id={id} /> : <NotFound />;
@@ -63,6 +70,7 @@ function PersonView({ id }: { id: string }) {
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState<{ target: Target; count: number } | null>(null);
   const [version, setVersion] = useState(0);
+  const nameCut = useTitleCut(person ? personLabel(person) : "");
 
   const failure = useCallback(
     (e: unknown, what: string) => {
@@ -98,31 +106,38 @@ function PersonView({ id }: { id: string }) {
 
   if (problem) {
     return (
-      <div className="empty" role="alert">
-        <h1>Couldn’t load the person</h1>
-        <p className="muted">{problem}</p>
-        <Link to="/people" className="btn btn-primary">
-          All people
-        </Link>
-      </div>
+      <PageProblem
+        title="Couldn’t load the person"
+        message={problem}
+        back={{ to: "/people", label: "People" }}
+        action={
+          <Button asChild variant="primary">
+            <Link to="/people">All people</Link>
+          </Button>
+        }
+      />
     );
   }
   if (missing) {
     return (
-      <div className="empty" role="alert">
-        <h1>Person not found</h1>
-        <p className="muted">They may have been merged into someone else or deleted.</p>
-        <Link to="/people" className="btn btn-primary">
-          All people
-        </Link>
-      </div>
+      <PageProblem
+        title="Person not found"
+        message="They may have been merged into someone else or deleted."
+        back={{ to: "/people", label: "People" }}
+        action={
+          <Button asChild variant="primary">
+            <Link to="/people">All people</Link>
+          </Button>
+        }
+      />
     );
   }
   if (!person) {
     return (
-      <p className="center muted" role="status">
-        Loading the person…
-      </p>
+      <>
+        <PageHeader title="Person" back={{ to: "/people", label: "People" }} />
+        <Loading>Loading the person…</Loading>
+      </>
     );
   }
 
@@ -174,60 +189,75 @@ function PersonView({ id }: { id: string }) {
   }
 
   return (
-    <div className="library person-page">
-      <p className="small">
-        <Link to="/people">‹ People</Link>
-      </p>
-      <div className="page-head album-head person-head">
-        {person.cover ? (
-          <FaceCrop url={person.cover.preview_url} box={person.cover.box} className="person-head-face" />
-        ) : (
-          <span className="face-crop round person-head-face blank" aria-hidden="true" />
-        )}
-        <div className="person-head-text">
-          {renaming ? (
-            <RenameForm initial={person.name ?? ""} onSave={(n) => void saveName(n)} onCancel={() => setRenaming(false)} />
-          ) : (
-            <>
-              <h1 className="person-title">{personLabel(person)}</h1>
-              <p className="muted small">
-                {photosWord(person.photos)}
-                {person.hidden && " · Hidden"}
-              </p>
-            </>
-          )}
-        </div>
-        <div className="album-head-actions">
-          {!renaming && (
-            <button type="button" className="btn btn-quiet" onClick={() => setRenaming(true)}>
-              {person.name ? "Rename" : ADD_A_NAME}
-            </button>
-          )}
-          <button type="button" className="btn btn-quiet" disabled={person.faces === 0} onClick={() => setDialog("cover")}>
-            Change cover
-          </button>
-          <button type="button" className="btn btn-quiet" onClick={() => void toggleHidden()}>
-            {person.hidden ? "Show" : "Hide"}
-          </button>
-          <button
-            type="button"
-            className="btn btn-quiet"
-            disabled={person.photos === 0}
-            onClick={() => setSaving({ target: { scope: { person: id }, except: [] }, count: person.photos })}
+    <>
+      <PageHeader
+        title={personLabel(person)}
+        back={{ to: "/people", label: "People" }}
+        actions={
+          <Menu
+            label="Person"
+            trigger={
+              <Button size="icon" variant="ghost" aria-label="More">
+                <MoreHorizontal />
+              </Button>
+            }
           >
-            Save as album
-          </button>
-          <Link to={`/search?people=${encodeURIComponent(id)}`} className="btn btn-quiet">
-            Search with filters
-          </Link>
-          <button type="button" className="btn btn-quiet" onClick={() => setDialog("merge")}>
-            Merge into…
-          </button>
-          <button type="button" className="btn btn-quiet btn-danger-quiet" onClick={() => setDialog("delete")}>
-            Delete person
-          </button>
+            <MenuItem onSelect={() => setRenaming(true)}>
+              <Pencil />
+              {person.name ? "Rename" : ADD_A_NAME}
+            </MenuItem>
+            <MenuItem disabled={person.faces === 0} onSelect={() => setDialog("cover")}>
+              <UserRound />
+              Change cover
+            </MenuItem>
+            <MenuItem onSelect={() => void toggleHidden()}>
+              {person.hidden ? <Eye /> : <EyeOff />}
+              {person.hidden ? "Show" : "Hide"}
+            </MenuItem>
+            <MenuItem disabled={person.photos === 0} onSelect={() => setSaving({ target: { scope: { person: id }, except: [] }, count: person.photos })}>
+              <FolderPlus />
+              Save as album
+            </MenuItem>
+            <MenuItem asChild>
+              <Link to={`/search?people=${encodeURIComponent(id)}`}>
+                <Search />
+                Search with filters
+              </Link>
+            </MenuItem>
+            <MenuItem onSelect={() => setDialog("merge")}>
+              <Merge />
+              Merge into…
+            </MenuItem>
+            <MenuSeparator />
+            <MenuItem danger onSelect={() => setDialog("delete")}>
+              <Trash2 />
+              Delete person
+            </MenuItem>
+          </Menu>
+        }
+      />
+      <Enter className="mx-auto flex max-w-[96rem] items-center gap-4 px-4 pt-2 pb-3 md:gap-6 md:px-8">
+        <button
+          type="button"
+          className="size-24 shrink-0 rounded-full outline-offset-2 transition-transform duration-150 ease-soft hover:scale-[1.03] active:scale-[0.97] disabled:pointer-events-none md:size-28"
+          aria-label="Change cover"
+          disabled={person.faces === 0}
+          onClick={() => setDialog("cover")}
+        >
+          {person.cover ? <FaceCrop url={person.cover.preview_url} box={person.cover.box} /> : <BlankFace />}
+        </button>
+        <div className="flex min-w-0 flex-col items-start gap-2">
+          {nameCut && <p className="text-[1.25rem] leading-snug font-semibold tracking-tight text-pretty [overflow-wrap:anywhere]">{personLabel(person)}</p>}
+          <p className="text-[1.0625rem] font-semibold tracking-tight">{photosWord(person.photos)}</p>
+          {person.hidden && <p className="text-sm text-muted">Hidden from the People page and from photos</p>}
+          {!person.name?.trim() && (
+            <Button variant="primary" size="sm" onClick={() => setRenaming(true)}>
+              <Pencil />
+              {ADD_A_NAME}
+            </Button>
+          )}
         </div>
-      </div>
+      </Enter>
       <Suggestions
         key={`${id}-${version}`}
         person={person}
@@ -251,6 +281,7 @@ function PersonView({ id }: { id: string }) {
           setPerson(await api.updatePerson(id, { cover_face_id: faceId }));
         }}
       />
+      {renaming && <RenameSheet initial={person.name ?? ""} onSave={(n) => void saveName(n)} onCancel={() => setRenaming(false)} />}
       {saving !== null && (
         <AddToAlbumDialog
           mode="save"
@@ -267,24 +298,22 @@ function PersonView({ id }: { id: string }) {
       {dialog === "cover" && <CoverPicker person={person} onChoose={chooseCover} onCancel={() => setDialog(null)} />}
       {dialog === "merge" && <MergeDialog from={person} busy={busy} error={dialogError} onMerge={(p) => void merge(p)} onCancel={() => setDialog(null)} />}
       {dialog === "delete" && (
-        <ConfirmDialog title={`Delete ${personLabel(person)}?`} confirmLabel="Delete person" danger busy={busy} onCancel={() => setDialog(null)} onConfirm={() => void remove()}>
+        <ConfirmSheet title={`Delete ${personLabel(person)}?`} confirmLabel="Delete person" danger busy={busy} onCancel={() => setDialog(null)} onConfirm={() => void remove()}>
           <p>
             The person and their name go. The photos stay in your library, and their faces become unnamed again; they may be grouped into a new person
             later. To keep someone out of sight, hide them instead.
           </p>
-          {dialogError && (
-            <p role="alert" className="form-error">
-              {dialogError}
-            </p>
-          )}
-        </ConfirmDialog>
+          {dialogError && <FormError>{dialogError}</FormError>}
+        </ConfirmSheet>
       )}
       {toast}
-    </div>
+    </>
   );
 }
 
-function RenameForm({ initial, onSave, onCancel }: { initial: string; onSave: (name: string) => void; onCancel: () => void }) {
+/** Rename, or give a name: a sheet with one field. A blank name clears it. */
+function RenameSheet({ initial, onSave, onCancel }: { initial: string; onSave: (name: string) => void; onCancel: () => void }) {
+  const id = useId();
   const [value, setValue] = useState(initial);
   const [error, setError] = useState<string | null>(null);
   function submit(e: FormEvent) {
@@ -294,32 +323,40 @@ function RenameForm({ initial, onSave, onCancel }: { initial: string; onSave: (n
     else onSave(value);
   }
   return (
-    <form className="person-rename" onSubmit={submit} onKeyDown={(e) => e.key === "Escape" && onCancel()}>
-      <label htmlFor="person-name" className="sr-only">
-        Name
-      </label>
-      <input
-        id="person-name"
-        className="text-input"
-        placeholder="Name"
-        value={value}
-        maxLength={100}
-        autoFocus
-        onChange={(e) => setValue(e.target.value)}
-        aria-invalid={error ? true : undefined}
-      />
-      <button type="submit" className="btn btn-primary">
-        Save
-      </button>
-      <button type="button" className="btn btn-quiet" onClick={onCancel}>
-        Cancel
-      </button>
-      {error && (
-        <p role="alert" className="form-error">
-          {error}
-        </p>
-      )}
-    </form>
+    <Modal
+      onClose={onCancel}
+      title={initial.trim() ? "Rename" : ADD_A_NAME}
+      size="sm"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" form={id}>
+            Save
+          </Button>
+        </>
+      }
+    >
+      <form id={id} className="flex flex-col gap-3" onSubmit={submit}>
+        <label htmlFor={`${id}-name`} className="sr-only">
+          Name
+        </label>
+        <TextInput
+          id={`${id}-name`}
+          data-autofocus=""
+          placeholder="Name"
+          value={value}
+          maxLength={100}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setError(null);
+          }}
+          aria-invalid={error ? true : undefined}
+        />
+        {error && <FormError>{error}</FormError>}
+      </form>
+    </Modal>
   );
 }
 
@@ -382,23 +419,28 @@ function Suggestions({
   }
   if (items.length === 0) return null;
   return (
-    <section className="person-suggestions" aria-label="Suggestions">
-      <h2>{suggestionQuestion(person)}</h2>
-      <ul className="suggestion-list">
+    <section className="mx-auto max-w-[96rem] px-4 pt-3 pb-2 md:px-8" aria-label="Suggestions">
+      <h2 className="mb-3 text-[1.0625rem] font-semibold tracking-tight [overflow-wrap:anywhere]">{suggestionQuestion(person)}</h2>
+      <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-[repeat(auto-fill,minmax(9rem,1fr))]">
         {items.map((s) => (
-          <li key={s.face_id} className="suggestion">
-            <button type="button" className="suggestion-look" aria-label="See the whole photo" onClick={() => setLooking(s)}>
-              <FaceCrop url={s.preview_url} box={s.box} round={false} className="suggestion-face" />
+          <Rise key={s.face_id} className="flex flex-col gap-2 rounded-card bg-surface p-2">
+            <button
+              type="button"
+              className="block overflow-hidden rounded-[0.6rem] transition-transform duration-150 ease-soft active:scale-[0.98]"
+              aria-label="See the whole photo"
+              onClick={() => setLooking(s)}
+            >
+              <FaceCrop url={s.preview_url} box={s.box} round={false} />
             </button>
-            <span className="suggestion-actions">
-              <button type="button" className="btn btn-primary" aria-label={`Yes, this is ${personLabel(person)}`} onClick={() => void answer(s, true)}>
+            <span className="grid grid-cols-2 gap-1.5">
+              <Button variant="primary" size="sm" aria-label={`Yes, this is ${personLabel(person)}`} onClick={() => void answer(s, true)}>
                 Yes
-              </button>
-              <button type="button" className="btn btn-quiet" aria-label={`No, this is not ${personLabel(person)}`} onClick={() => void answer(s, false)}>
+              </Button>
+              <Button variant="secondary" size="sm" className="bg-card" aria-label={`No, this is not ${personLabel(person)}`} onClick={() => void answer(s, false)}>
                 No
-              </button>
+              </Button>
             </span>
-          </li>
+          </Rise>
         ))}
       </ul>
       {looking && (
@@ -447,6 +489,7 @@ function PersonPhotos({
   onSave: (target: Target, count: number) => void;
 }) {
   const navigate = useNavigate();
+  const slideshow = useSlideshow();
   const [open, setOpen] = useState<number | null>(null); // global index of the photo in the lightbox
   const [confirming, setConfirming] = useState<"not" | "trash" | null>(null);
   const [busy, setBusy] = useState(false);
@@ -732,117 +775,94 @@ function PersonPhotos({
     return () => document.removeEventListener("keydown", onKey);
   }, [open, confirming, addIds, shareTarget, sel]);
 
-  if (tl.status === "loading") {
-    return (
-      <p className="center muted" role="status">
-        Loading the photos…
-      </p>
-    );
-  }
+  if (tl.status === "loading") return <Loading>Loading the photos…</Loading>;
   if (tl.status === "error") {
     return (
-      <div className="empty" role="alert">
-        <h2>Couldn’t load the photos</h2>
-        <p className="muted">{tl.error}</p>
-        <button type="button" className="btn btn-primary" onClick={tl.retry}>
-          Try again
-        </button>
-      </div>
+      <Empty
+        icon={TriangleAlert}
+        title="Couldn’t load the photos"
+        action={
+          <Button variant="primary" onClick={tl.retry}>
+            Try again
+          </Button>
+        }
+      >
+        {tl.error}
+      </Empty>
     );
   }
+  const quiet = (label: string, onClick: () => void, opts: { disabled?: boolean; title?: string; aria?: string } = {}) => (
+    <Button variant="quiet" size="sm" disabled={opts.disabled} title={opts.title} aria-label={opts.aria} onClick={onClick}>
+      {label}
+    </Button>
+  );
   return (
     <>
       {index.total === 0 ? (
-        <div className="empty">
-          <h2>No photos</h2>
-          <p>Photos where {personLabel(person)} is found appear here.</p>
-        </div>
+        <Empty icon={Images} title="No photos">
+          Photos where {personLabel(person)} is found appear here.
+        </Empty>
       ) : (
-        <div className="library-bar">
-          <button type="button" className="btn btn-quiet" aria-pressed={sel.selecting} onClick={() => sel.setSelecting(!sel.selecting)}>
+        <div className="mx-auto flex max-w-[96rem] flex-wrap items-center gap-2 px-4 py-3 md:px-8">
+          {slideshow && (
+            <Button variant="secondary" size="sm" onClick={() => slideshow.start(scopeSource(scope, personLabel(person)))}>
+              <Play />
+              Slideshow
+            </Button>
+          )}
+          <Button variant="secondary" size="sm" aria-pressed={sel.selecting} onClick={() => sel.setSelecting(!sel.selecting)}>
+            <CheckSquare />
             Select
-          </button>
-          <SlideshowButton source={() => scopeSource(scope, personLabel(person))} />
+          </Button>
         </div>
       )}
       {sel.selecting && (
-        <SelectionBar count={sel.count} total={index.total} onSelectAll={sel.selectAll} onClear={sel.clear} onDone={() => sel.setSelecting(false)}>
-          <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || busy} onClick={() => void favoriteSelected()}>
-            {allSelectedFavorite ? "Unfavorite" : "Favorite"}
-          </button>
-          <ZipButton
-            target={sel.target(scope)}
-            disabled={sel.count === 0}
-            onStarted={(message) => show({ message })}
-            onError={(e) => failure(e, "Couldn’t download.")}
-          />
-          <RateTools
-            target={sel.target(scope)}
-            count={sel.count}
-            disabled={sel.count === 0 || busy}
-            onDone={(_r, _n, message) => {
-              sel.setSelecting(false);
-              void refresh();
-              show({ message });
-            }}
-            onError={(e) => failure(e, "Couldn’t rate.")}
-          />
-          <TagTools
-            target={sel.target(scope)}
-            count={sel.count}
-            disabled={sel.count === 0 || busy}
-            onDone={(message) => {
-              sel.setSelecting(false);
-              void refresh();
-              show({ message });
-            }}
-          />
-          <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || busy} onClick={() => void archiveSelected()}>
-            {archiving ? "Archive" : "Restore"}
-          </button>
-          <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || busy} aria-label="Hide photos" onClick={() => void hideSelected()}>
-            Hide
-          </button>
-          <button
-            type="button"
-            className="btn btn-quiet"
-            disabled={sel.count === 0 || busy}
-            onClick={() => setAddIds({ target: sel.target(scope), count: sel.count })}
-          >
-            Add to album
-          </button>
-          <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || busy} onClick={() => onSave(sel.target(scope), sel.count)}>
-            Save as album
-          </button>
-          <button
-            type="button"
-            className="btn btn-quiet"
-            disabled={sel.count === 0 || busy}
-            onClick={() => setShareTarget(shareTargetOf(sel.target(scope), sel.count))}
-          >
-            Share
-          </button>
-          <button type="button" className="btn btn-quiet" disabled={sel.count !== 1} onClick={() => void chooseCover()}>
-            Use as cover
-          </button>
-          <button
-            type="button"
-            className="btn btn-quiet"
-            disabled={sel.count === 0 || busy || sel.all}
-            title={sel.all ? "Choose the photos one by one to take them out" : undefined}
-            onClick={() => setConfirming("not")}
-          >
-            Not this person
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={sel.count === 0 || busy}
-            onClick={() => (sel.all ? setConfirming("trash") : void trashSelected())}
-          >
-            Move to trash
-          </button>
-        </SelectionBar>
+        <div className="mx-auto max-w-[96rem] px-4 md:px-8">
+          <SelectionBar count={sel.count} total={index.total} onSelectAll={sel.selectAll} onClear={sel.clear} onDone={() => sel.setSelecting(false)}>
+            {quiet(allSelectedFavorite ? "Unfavorite" : "Favorite", () => void favoriteSelected(), { disabled: sel.count === 0 || busy })}
+            <ZipButton
+              className={buttonVariants({ variant: "quiet", size: "sm" })}
+              target={sel.target(scope)}
+              disabled={sel.count === 0}
+              onStarted={(message) => show({ message })}
+              onError={(e) => failure(e, "Couldn’t download.")}
+            />
+            <RateTools
+              target={sel.target(scope)}
+              count={sel.count}
+              disabled={sel.count === 0 || busy}
+              onDone={(_r, _n, message) => {
+                sel.setSelecting(false);
+                void refresh();
+                show({ message });
+              }}
+              onError={(e) => failure(e, "Couldn’t rate.")}
+            />
+            <TagTools
+              target={sel.target(scope)}
+              count={sel.count}
+              disabled={sel.count === 0 || busy}
+              onDone={(message) => {
+                sel.setSelecting(false);
+                void refresh();
+                show({ message });
+              }}
+            />
+            {quiet(archiving ? "Archive" : "Restore", () => void archiveSelected(), { disabled: sel.count === 0 || busy })}
+            {quiet("Hide", () => void hideSelected(), { disabled: sel.count === 0 || busy, aria: "Hide photos" })}
+            {quiet("Add to album", () => setAddIds({ target: sel.target(scope), count: sel.count }), { disabled: sel.count === 0 || busy })}
+            {quiet("Save as album", () => onSave(sel.target(scope), sel.count), { disabled: sel.count === 0 || busy })}
+            {quiet("Share", () => setShareTarget(shareTargetOf(sel.target(scope), sel.count)), { disabled: sel.count === 0 || busy })}
+            {quiet("Use as cover", () => void chooseCover(), { disabled: sel.count !== 1 })}
+            {quiet("Not this person", () => setConfirming("not"), {
+              disabled: sel.count === 0 || busy || sel.all,
+              title: sel.all ? "Choose the photos one by one to take them out" : undefined,
+            })}
+            <Button variant="primary" size="sm" disabled={sel.count === 0 || busy} onClick={() => (sel.all ? setConfirming("trash") : void trashSelected())}>
+              Move to trash
+            </Button>
+          </SelectionBar>
+        </div>
       )}
       {index.total > 0 && (
         <TimelineGrid
@@ -859,20 +879,13 @@ function PersonPhotos({
         />
       )}
       {index.total > 0 && (
-        <p className="muted center small" role="status">
+        <p className="py-4 text-center text-sm text-muted" role="status">
           {photosWord(index.total)}
         </p>
       )}
-      {tl.error && (
-        <p className="center" role="alert">
-          {tl.error}{" "}
-          <button type="button" className="btn btn-quiet" onClick={tl.retry}>
-            Retry
-          </button>
-        </p>
-      )}
+      {tl.error && <InlineError onRetry={tl.retry}>{tl.error}</InlineError>}
       {confirming === "not" && (
-        <ConfirmDialog
+        <ConfirmSheet
           title={`Not ${personLabel(person)}?`}
           confirmLabel="Not this person"
           danger
@@ -884,10 +897,10 @@ function PersonPhotos({
             {personLabel(person)}’s face is taken out of {photosWord(sel.count)}. It will not be put back, or suggested, for this person. The photos stay in
             your library.
           </p>
-        </ConfirmDialog>
+        </ConfirmSheet>
       )}
       {confirming === "trash" && (
-        <ConfirmDialog
+        <ConfirmSheet
           title={`Move ${photosWord(sel.count)} to trash?`}
           confirmLabel="Move to trash"
           onCancel={() => setConfirming(null)}
@@ -897,7 +910,7 @@ function PersonPhotos({
           }}
         >
           <p>You can restore {sel.count === 1 ? "it" : "them"} from the trash.</p>
-        </ConfirmDialog>
+        </ConfirmSheet>
       )}
       {addIds !== null && (
         <AddToAlbumDialog
@@ -949,8 +962,10 @@ function MergeDialog({
   onMerge: (into: Person) => void;
   onCancel: () => void;
 }) {
+  const id = useId();
   const [others, setOthers] = useState<Person[] | null>(null);
   const [into, setInto] = useState("");
+  const [typed, setTyped] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
@@ -968,57 +983,75 @@ function MergeDialog({
       live = false;
     };
   }, [from.id]);
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onCancel();
-      }
-    }
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [onCancel]);
   const target = others?.find((p) => p.id === into);
+  const shown = matchingPeople(others ?? [], typed, [into]);
   return (
-    <div className="modal-backdrop">
+    <Modal
+      onClose={onCancel}
+      title={`Merge ${personLabel(from)} into…`}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" form={id} disabled={busy || !target}>
+            Merge
+          </Button>
+        </>
+      }
+    >
       <form
-        className="modal card"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="merge-person-title"
+        id={id}
+        className="flex flex-col gap-3"
         onSubmit={(e) => {
           e.preventDefault();
           if (target) onMerge(target);
         }}
       >
-        <h2 id="merge-person-title">Merge {personLabel(from)} into…</h2>
-        <label htmlFor="merge-person-into" className="sr-only">
-          Merge into
-        </label>
-        <select id="merge-person-into" className="text-input" value={into} onChange={(e) => setInto(e.target.value)} disabled={busy || !others?.length} autoFocus>
-          {(others ?? []).map((p) => (
-            <option key={p.id} value={p.id}>
-              {personLabel(p)} ({photosWord(p.photos)})
-            </option>
-          ))}
-        </select>
-        {others !== null && others.length === 0 && <p className="muted small">There is no named person to merge into. Name them first.</p>}
-        <p className="muted small">All of {personLabel(from)}’s photos go to the other person, and {personLabel(from)} is deleted. The other person keeps their name.</p>
-        {(error ?? loadError) && (
-          <p role="alert" className="form-error">
-            {error ?? loadError}
-          </p>
+        {others !== null && others.length > 6 && (
+          <>
+            <label htmlFor={`${id}-find`} className="sr-only">
+              {FIND_A_PERSON}
+            </label>
+            <input
+              id={`${id}-find`}
+              className={inputClass}
+              type="search"
+              placeholder={FIND_A_PERSON}
+              value={typed}
+              maxLength={100}
+              onChange={(e) => setTyped(e.target.value)}
+            />
+          </>
         )}
-        <div className="modal-actions">
-          <button type="button" className="btn btn-quiet" onClick={onCancel} disabled={busy}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={busy || !target}>
-            Merge
-          </button>
-        </div>
+        <fieldset className="m-0 min-w-0 border-0 p-0" disabled={busy || !others?.length}>
+          <legend className="sr-only">Merge into</legend>
+          <div className="flex max-h-72 flex-col overflow-y-auto">
+            {shown.map((p) => (
+              <label key={p.id} className="flex min-h-14 cursor-pointer items-center gap-3 rounded-card px-1.5 hover:bg-surface has-[:checked]:bg-surface has-[:disabled]:cursor-default">
+                <input
+                  type="radio"
+                  name={`${id}-into`}
+                  className="size-5 shrink-0 accent-accent"
+                  checked={p.id === into}
+                  data-autofocus={p.id === into ? "" : undefined}
+                  onChange={() => setInto(p.id)}
+                />
+                {p.cover ? <FaceCrop url={p.cover.preview_url} box={p.cover.box} className="size-11 shrink-0" /> : <BlankFace className="size-11 shrink-0" />}
+                <span className="min-w-0">
+                  <span className="block truncate text-[0.9375rem]">{personLabel(p)}</span>
+                  <span className="block text-[0.8125rem] text-muted">{photosWord(p.photos)}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        {others !== null && others.length === 0 && <Note>There is no named person to merge into. Name them first.</Note>}
+        <Note>
+          All of {personLabel(from)}’s photos go to the other person, and {personLabel(from)} is deleted. The other person keeps their name.
+        </Note>
+        {(error ?? loadError) && <FormError>{error ?? loadError}</FormError>}
       </form>
-    </div>
+    </Modal>
   );
 }

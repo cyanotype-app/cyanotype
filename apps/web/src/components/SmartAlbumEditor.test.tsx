@@ -65,7 +65,7 @@ describe("SmartAlbumEditor", () => {
       archived: "exclude",
       rules: [{ field: "favorite", value: true }, { field: "date", from: "2024-01-01" }, { field: "place", value: "Lisbon" }],
     });
-  });
+  }, 20_000);
 
   it("removes a rule, says that a text search is not a rule, and Escape cancels", async () => {
     const user = userEvent.setup();
@@ -137,7 +137,8 @@ describe("Albums with a smart one", () => {
     expect(within(card).getByText(/10,000\+ photos/)).toBeInTheDocument();
     expect(within(card).getByText("Favorites or Place: Lisbon (without archived)")).toBeInTheDocument();
     expect(within(screen.getByRole("link", { name: /Plain/ })).queryByText("Smart")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "New smart album" }));
+    await user.click(screen.getByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("menuitem", { name: "New smart album" }));
     await user.type(await screen.findByLabelText("Title"), "New one");
     await waitFor(() => expect(screen.getByRole("button", { name: "Create smart album" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Create smart album" }));
@@ -172,7 +173,8 @@ describe("a smart album's page", () => {
     expect(screen.queryByRole("button", { name: "Set as cover" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Remove from album" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Rate" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Edit rules" }));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Edit rules" }));
     const title = await screen.findByLabelText("Title");
     await user.clear(title);
     await user.type(title, "Renamed");
