@@ -136,6 +136,39 @@ test.describe("cli login redirect", () => {
     l.close();
   });
 
+  test("a scanned address fills in the code, keeps the question, and leaves no code in the address bar", async ({ page }) => {
+    const calls: string[] = [];
+    await setupApp(page);
+    await mockCli(page, calls, () => 1);
+    await page.goto("/activate#code=WDJB-MJHT");
+    await expect(page.getByLabel("Code")).toHaveValue("WDJB-MJHT");
+    await expect(page).not.toHaveURL(/WDJB/);
+    // Nothing was asked of the server until the person presses Continue, nor allowed until Allow.
+    expect(calls).toEqual([]);
+    await page.getByRole("button", { name: "Continue" }).click();
+    await expect(page.getByText(/Allow cyanotype CLI on a-really-long-hostname/)).toBeVisible();
+    expect(calls.map((c) => c.split(" ")[0])).toEqual(["/auth/cli/device/lookup"]);
+  });
+
+  test("a signed-out visitor with a scanned address signs in and finds the code still there", async ({ page }) => {
+    let signedIn = false;
+    await setupApp(page);
+    await mockCli(page, [], () => 1);
+    await page.route("**/auth/me", (r) =>
+      r.fulfill(signedIn ? json({ id: "u1", email: "alpha@example.com", role: "member" }) : json({ error: "unauthorized" }, 401)),
+    );
+    await page.route("**/auth/registration", (r) => r.fulfill(json({ mode: "invite", first_account: false, open: false, invite_required: true })));
+    await page.route("**/auth/login", (r) => {
+      signedIn = true;
+      return r.fulfill(json({ id: "u1" }));
+    });
+    await page.goto("/activate#code=WDJB-MJHT");
+    await page.getByLabel("Email").fill("alpha@example.com");
+    await page.getByLabel("Password").fill("correct horse battery");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.getByLabel("Code")).toHaveValue("WDJB-MJHT");
+  });
+
   test("a visitor who is signed out signs in and comes back to the same request", async ({ page }) => {
     const l = await listener();
     let signedIn = false;

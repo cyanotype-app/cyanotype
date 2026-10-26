@@ -1,4 +1,4 @@
-//! Signing the command line in through the browser (docs/import.md, "Logging in"), so a password is never typed into a
+//! Signing the command line in through the browser (docs/import.md, "Log in"), so a password is never typed into a
 //! terminal. Two flows end in the same place, an ordinary API key named `cyanotype CLI on <device>`:
 //!
 //!  * Loopback (the default): the CLI listens on `127.0.0.1:<port>`, opens `/cli/authorize` in the browser and the person
@@ -42,6 +42,17 @@ const MAX_INTERVAL_SECS: i32 = 60;
 const USER_CODE_ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ";
 const USER_CODE_LEN: usize = 8;
 const MAX_DEVICE_NAME: usize = 48;
+/// Most device requests that may be open (not yet expired, whatever their state) on the whole server. Starting one needs no
+/// account, so this bounds what anonymous callers can pile up; the per-IP rate limiter (10 a minute by default, shared with
+/// login) bounds one caller, and a request lives 10 minutes, so one address can hold at most ~100 of these. A household
+/// server has a handful open at once; 500 leaves room for a busy one and keeps the table small.
+const MAX_OPEN_DEVICE_CODES: i64 = 500;
+/// Most logins one account may have approved but not yet collected (device codes waiting for their poll, plus loopback
+/// codes not yet traded): each ends in an API key, so a stolen session cannot queue up a pile of keys, and a stuck script
+/// cannot approve in a loop. A person approves one at a time; 5 is slack for retries.
+const MAX_UNCOLLECTED_PER_USER: i64 = 5;
+/// How long the server asks a client to wait after refusing for a full queue.
+const BUSY_RETRY_SECS: u64 = 60;
 /// Lowest port a loopback redirect may use: below it a different (privileged, possibly shared) service answers.
 const MIN_PORT: u16 = 1024;
 
@@ -170,6 +181,46 @@ fn unknown_code() -> ApiError {
     }
 }
 
+/// 429 `too_many_login_requests`, with `Retry-After`; the CLI prints the message as it is.
+fn too_many(message: &str) -> ApiError {
+    ApiError::Limited {
+        status: StatusCode::TOO_MANY_REQUESTS,
+        code: "too_many_login_requests",
+        message: message.into(),
+        details: json!({}),
+        retry_after_secs: Some(BUSY_RETRY_SECS),
+    }
+}
+
+/// Drops what has outlived its use: loopback codes at their expiry, device requests five minutes after (so a late poll still
+/// hears "expired" rather than "invalid"). Every route that adds a row calls it, so there is no separate job.
+async fn purge_expired(db: &mut PgConnection) -> ApiResult<()> {
+    sqlx::query("DELETE FROM cli_auth_codes WHERE expires_at < now()")
+        .execute(&mut *db)
+        .await?;
+    sqlx::query("DELETE FROM cli_device_codes WHERE expires_at < now() - interval '5 minutes'")
+        .execute(&mut *db)
+        .await?;
+    Ok(())
+}
+
+/// Refuse when the account already has [`MAX_UNCOLLECTED_PER_USER`] approved logins nobody has collected yet.
+async fn ensure_approval_room(db: &mut PgConnection, user: Uuid) -> ApiResult<()> {
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM cli_auth_codes WHERE user_id = $1 AND expires_at > now())
+              + (SELECT count(*) FROM cli_device_codes WHERE user_id = $1 AND status = 'approved' AND expires_at > now())",
+    )
+    .bind(user)
+    .fetch_one(db)
+    .await?;
+    if n >= MAX_UNCOLLECTED_PER_USER {
+        return Err(too_many(
+            "Several logins for this account are already waiting to be collected. Wait a few minutes (they expire), then try again.",
+        ));
+    }
+    Ok(())
+}
+
 fn account_disabled() -> ApiError {
     ApiError::Limited {
         status: StatusCode::FORBIDDEN,
@@ -255,7 +306,9 @@ async fn authorize_check(
     Json(req): Json<AuthorizeReq>,
 ) -> ApiResult<Json<Value>> {
     let c = check_authorize(&req, true)?;
-    ensure_key_room(&mut *st.db.acquire().await?, user.id).await?;
+    let mut conn = st.db.acquire().await?;
+    ensure_key_room(&mut conn, user.id).await?;
+    ensure_approval_room(&mut conn, user.id).await?;
     Ok(Json(json!({"device": c.device, "scope": c.scope.as_str()})))
 }
 
@@ -267,9 +320,8 @@ async fn authorize_approve(
     let c = check_authorize(&req, true)?;
     let mut tx = st.db.begin().await?;
     ensure_key_room(&mut tx, user.id).await?;
-    sqlx::query("DELETE FROM cli_auth_codes WHERE expires_at < now()")
-        .execute(&mut *tx)
-        .await?;
+    purge_expired(&mut tx).await?;
+    ensure_approval_room(&mut tx, user.id).await?;
     let code = random_token();
     sqlx::query(
         "INSERT INTO cli_auth_codes (code_hash, user_id, code_challenge, redirect_uri, device_name, scope, expires_at)
@@ -406,9 +458,17 @@ struct DeviceStartReq {
 async fn device_start(State(st): State<AppState>, Json(req): Json<DeviceStartReq>) -> ApiResult<Json<Value>> {
     let device = sanitize_device(&req.device);
     let scope = scope_of(req.scope.as_deref())?;
-    sqlx::query("DELETE FROM cli_device_codes WHERE expires_at < now() - interval '5 minutes'")
-        .execute(&st.db)
+    let mut conn = st.db.acquire().await?;
+    purge_expired(&mut conn).await?;
+    let (open,): (i64,) = sqlx::query_as("SELECT count(*) FROM cli_device_codes WHERE expires_at > now()")
+        .fetch_one(&mut *conn)
         .await?;
+    if open >= MAX_OPEN_DEVICE_CODES {
+        return Err(too_many(
+            "The server has too many command-line logins open right now. Wait a few minutes and run `cyanotype login` again.",
+        ));
+    }
+    drop(conn);
     let device_code = random_token();
     // A user code that collides with a live one (1 in 2.5e10 per pair) is simply drawn again.
     for _ in 0..5 {
@@ -464,6 +524,7 @@ async fn device_lookup(
     let mut conn = st.db.acquire().await?;
     let (_, device, scope, expires_in) = pending_request(&mut conn, &req.user_code).await?;
     ensure_key_room(&mut conn, user.id).await?;
+    ensure_approval_room(&mut conn, user.id).await?;
     Ok(Json(
         json!({"device": device, "scope": scope, "expires_in": expires_in}),
     ))
@@ -474,6 +535,7 @@ async fn device_decide(user: SessionUser, st: AppState, req: UserCodeReq, approv
     let (id, device, scope, _) = pending_request(&mut tx, &req.user_code).await?;
     if approve {
         ensure_key_room(&mut tx, user.id).await?;
+        ensure_approval_room(&mut tx, user.id).await?;
     }
     let done = sqlx::query(
         "UPDATE cli_device_codes SET status = $2, user_id = $3 WHERE id = $1 AND status = 'pending' AND expires_at > now()",

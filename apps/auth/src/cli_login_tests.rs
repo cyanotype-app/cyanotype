@@ -442,3 +442,88 @@ async fn admins_see_an_accounts_keys_with_last_use_and_can_revoke_them() {
     assert_eq!(n, 1);
     t.teardown().await;
 }
+
+#[tokio::test]
+async fn anonymous_device_starts_stop_at_the_server_wide_cap_and_expired_rows_are_cleared() {
+    let Some(t) = TestDb::new().await else { return };
+    let app = open_app(t.pool.clone());
+    // A full house of open requests, and one that expired long ago.
+    sqlx::query(
+        "INSERT INTO cli_device_codes (device_code_hash, user_code_hash, device_name, scope, expires_at)
+         SELECT sha256(('d' || g)::bytea), sha256(('u' || g)::bytea), 'x', 'import', now() + interval '5 minutes'
+         FROM generate_series(1, 500) g",
+    )
+    .execute(&t.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO cli_device_codes (device_code_hash, user_code_hash, device_name, scope, expires_at)
+         VALUES (sha256('old-d'::bytea), sha256('old-u'::bytea), 'old', 'import', now() - interval '1 hour')",
+    )
+    .execute(&t.pool)
+    .await
+    .unwrap();
+    let res = app
+        .clone()
+        .oneshot(limited_call("POST", "/auth/cli/device", ("x-none", ""), Some(r#"{"device":"test-laptop"}"#)))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(res.headers().get("retry-after").and_then(|v| v.to_str().ok()), Some("60"));
+    let v = json_of(res).await;
+    assert_eq!(v["code"], "too_many_login_requests");
+    assert!(v["error"].as_str().unwrap().contains("cyanotype login"), "{v}");
+    // The expired row went with the attempt.
+    let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM cli_device_codes WHERE device_name = 'old'")
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+    // Room again once one expires.
+    sqlx::query("UPDATE cli_device_codes SET expires_at = now() - interval '1 minute' WHERE id = (SELECT id FROM cli_device_codes LIMIT 1)")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let _ = start_device(&app).await;
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn an_account_cannot_leave_more_than_five_approved_logins_uncollected() {
+    let Some(t) = TestDb::new().await else { return };
+    let app = open_app(t.pool.clone());
+    let alpha = register_cookie(&app, "alpha@example.com").await;
+    let bravo = register_cookie(&app, "bravo@example.com").await;
+
+    // Device flow: five approved codes nobody polled for.
+    let mut codes = Vec::new();
+    for _ in 0..6 {
+        codes.push(start_device(&app).await.1);
+    }
+    for c in &codes[..5] {
+        let (st, v) = send(&app, "POST", "/auth/cli/device/approve", ("cookie", &alpha), Some(&json!({"user_code": c}).to_string())).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+    }
+    let body = json!({"user_code": codes[5]}).to_string();
+    let (st, v) = send(&app, "POST", "/auth/cli/device/approve", ("cookie", &alpha), Some(&body)).await;
+    assert_eq!((st, v["code"].as_str()), (StatusCode::TOO_MANY_REQUESTS, Some("too_many_login_requests")));
+    let (st, _) = send(&app, "POST", "/auth/cli/device/lookup", ("cookie", &alpha), Some(&body)).await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "the page says so before asking");
+    // The loopback flow counts the same pile.
+    let (st, v) = send(&app, "POST", "/auth/cli/authorize/approve", ("cookie", &alpha), Some(&authorize_body(CALLBACK))).await;
+    assert_eq!((st, v["code"].as_str()), (StatusCode::TOO_MANY_REQUESTS, Some("too_many_login_requests")));
+    // Denying is still allowed, and another account is not affected.
+    let (st, _) = send(&app, "POST", "/auth/cli/device/deny", ("cookie", &alpha), Some(&body)).await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = send(&app, "POST", "/auth/cli/authorize/approve", ("cookie", &bravo), Some(&authorize_body(CALLBACK))).await;
+    assert_eq!(st, StatusCode::OK);
+
+    // One expiring makes room.
+    sqlx::query("UPDATE cli_device_codes SET expires_at = now() - interval '1 minute' WHERE id = (SELECT id FROM cli_device_codes WHERE status = 'approved' LIMIT 1)")
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let (st, v) = send(&app, "POST", "/auth/cli/authorize/approve", ("cookie", &alpha), Some(&authorize_body(CALLBACK))).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    t.teardown().await;
+}

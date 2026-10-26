@@ -5,15 +5,25 @@ import { useAuth } from "../auth";
 import { AuthForm } from "../components/AuthForm";
 import { Logo } from "../components/Logo";
 import { registrationKnownClosed } from "../registration";
+import { returnToOf } from "../returnTo";
 import { codeErrorText, codeToSend } from "../twoFactorText";
 
 export function Login() {
   const { state, refresh } = useAuth();
   const navigate = useNavigate();
-  const from = (useLocation().state as { from?: string } | null)?.from ?? "/library";
+  const returnTo = returnToOf(useLocation().state);
+  const from = returnTo ?? "/library";
+  // An account that must set up two-factor authentication goes there first, and is sent on to where it was headed.
+  const enrolState = returnTo ? { from: returnTo } : undefined;
   const [challenge, setChallenge] = useState<string | null>(null);
   if (state.status === "authenticated" && !challenge) {
-    return <Navigate to={state.user.mfa_enrol_required ? "/settings/security" : from} replace />;
+    return (
+      <Navigate
+        to={state.user.mfa_enrol_required ? "/settings/security" : from}
+        replace
+        state={state.user.mfa_enrol_required ? enrolState : undefined}
+      />
+    );
   }
 
   if (challenge) {
@@ -49,7 +59,10 @@ export function Login() {
           return;
         }
         await refresh();
-        navigate(res.mfa_enrol_required ? "/settings/security" : from, { replace: true });
+        navigate(res.mfa_enrol_required ? "/settings/security" : from, {
+          replace: true,
+          state: res.mfa_enrol_required ? enrolState : undefined,
+        });
       }}
       footer={
         registrationKnownClosed() ? (

@@ -6,7 +6,7 @@ import { ALLOW_QUESTION, ONLY_IF_YOU_STARTED_IT } from "../cliLoginText";
 import { SCOPE_HELP, SCOPE_LABEL } from "../twoFactorText";
 import { Logo } from "./Logo";
 
-/** The pages that approve a command-line login sit outside the app shell. Anonymous visitors sign in first and come back here. */
+/** The pages that approve a command-line login sit outside the app shell. Anonymous visitors sign in (and, when the server requires it, set up two-factor authentication) first and come back here. */
 export function CliPage({ title, children }: { title: string; children: (email: string) => ReactNode }) {
   const { state } = useAuth();
   const loc = useLocation();
@@ -16,10 +16,13 @@ export function CliPage({ title, children }: { title: string; children: (email: 
         Loading…
       </p>
     );
+  // The hash is kept: /activate#code=... must still have its code when the person is back from signing in.
+  const here = loc.pathname + loc.search + loc.hash;
   if (state.status === "anonymous") {
-    return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;
+    return <Navigate to="/login" replace state={{ from: here }} />;
   }
-  if (state.user.mfa_enrol_required) return <Navigate to="/settings/security" replace />;
+  // The administrator requires two-factor authentication and this account has none: enrol, then come back here.
+  if (state.user.mfa_enrol_required) return <Navigate to="/settings/security" replace state={{ from: here }} />;
   return (
     <div className="auth-page">
       <div className="card auth-card cli-card">

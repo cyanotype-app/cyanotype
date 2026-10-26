@@ -7,6 +7,7 @@ mod import;
 mod login;
 #[cfg(feature = "server-tools")]
 mod places;
+mod qr;
 #[cfg(feature = "server-tools")]
 mod reindex;
 mod release;
@@ -78,6 +79,9 @@ struct LoginArgs {
     /// over SSH and on a machine without a display.
     #[arg(long)]
     device: bool,
+    /// With the device-code login: do not draw the QR code of the activation address (it is only drawn in a terminal).
+    #[arg(long)]
+    no_qr: bool,
     /// Store this existing API key instead of signing in through the browser.
     #[arg(long)]
     api_key: Option<String>,
@@ -237,7 +241,7 @@ async fn login(a: LoginArgs) -> Result<()> {
             who = email;
         }
         None => {
-            let grant = login::login(&api::Api::new(&server, None)?, &server, &a.scope, a.device).await?;
+            let grant = login::login(&api::Api::new(&server, None)?, &server, &a.scope, a.device, !a.no_qr).await?;
             key = grant.key;
             who = grant.email;
         }

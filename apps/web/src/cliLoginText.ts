@@ -39,6 +39,13 @@ export function formatUserCode(raw: string): string {
   return letters.length > 4 ? `${letters.slice(0, 4)}-${letters.slice(4)}` : letters;
 }
 
+/** The code a scanned QR code carries: `/activate#code=WDJB-MJHT`. It is in the fragment, which the browser never sends to a server or a referrer. Empty unless it is a whole code. */
+export function codeFromHash(hash: string): string {
+  const raw = new URLSearchParams(hash.replace(/^#/, "")).get("code") ?? "";
+  const code = formatUserCode(raw);
+  return userCodeComplete(code) ? code : "";
+}
+
 export const userCodeComplete = (code: string): boolean => code.replace(/[^A-Za-z]/g, "").length === 8;
 
 export const ALLOW_QUESTION = (device: string): string => `Allow cyanotype CLI on ${device} to access your library?`;

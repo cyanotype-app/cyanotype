@@ -137,7 +137,7 @@ Auth: `POST /auth/register` / `POST /auth/login` set a session cookie; CLIs send
 Browser uploads are blocked on some S3 providers (no bucket CORS), so a library is loaded with the CLI:
 
 ```sh
-cyanotype login https://photos.example.com               # allow it in your browser -> stores an API key (mode 600); --device over SSH
+cyanotype login https://photos.example.com               # allow it in your browser -> stores an API key (mode 600); --device over SSH (prints a code and a QR code)
 cyanotype import --dry-run ~/Pictures                    # preview
 cyanotype import ~/Pictures                              # resumable; re-run to continue or to top up
 cyanotype status

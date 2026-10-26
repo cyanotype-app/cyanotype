@@ -106,7 +106,7 @@ function RequireAuth() {
   if (state.status === "anonymous") return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;
   // The administrator requires 2FA and this account has none: the server refuses everything else, so go and enrol.
   if (state.user.mfa_enrol_required && loc.pathname !== "/settings/security") {
-    return <Navigate to="/settings/security" replace />;
+    return <Navigate to="/settings/security" replace state={{ from: loc.pathname + loc.search }} />;
   }
   return (
     <UploadProvider>
