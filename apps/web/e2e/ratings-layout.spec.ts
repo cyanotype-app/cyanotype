@@ -58,14 +58,20 @@ for (const { width, scheme } of RUNS) {
       assets.forEach((a, i) => (a.rating = i % 6));
 
       // The library: select two photos and rate them.
-      await page.goto("/library");
+      await page.goto("/photos");
       await page.getByRole("button", { name: /Open IMG_00000/ }).first().waitFor();
       await check("library");
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_00000/ }).click();
       await page.getByRole("button", { name: /Select IMG_00001/ }).click();
       await check("library-select-rate");
-      await page.getByRole("button", { name: "Rate", exact: true }).click();
+      // "Rate" is on the selection bar on a wide screen, behind its "More" button on a phone.
+      const bar = page.getByRole("toolbar", { name: "Selection" });
+      if (await bar.getByRole("button", { name: "Rate", exact: true }).count()) await bar.getByRole("button", { name: "Rate", exact: true }).click();
+      else {
+        await bar.getByRole("button", { name: "More actions" }).click();
+        await page.getByRole("menuitem", { name: "Rate", exact: true }).click();
+      }
       const dialog = page.getByRole("dialog", { name: "Rate photos" });
       await dialog.waitFor();
       await check("rate-dialog");
@@ -89,7 +95,7 @@ for (const { width, scheme } of RUNS) {
       await check("lightbox-info-rating");
       await page.keyboard.press("Escape");
       await page.keyboard.press("Escape");
-      await expect(page).toHaveURL(/\/library/);
+      await expect(page).toHaveURL(/\/photos/);
 
       // The filter: the sheet with its counts and the chip it leaves behind.
       await page.goto("/search");

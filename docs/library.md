@@ -239,17 +239,38 @@ re-upload and restore, backfill idempotency, concurrent pairing. Web: badge, vie
   few hundred at most), however large the library is. Scrolling, selection, shift-range, select all, the lightbox and
   uploads work as before; a tile whose photo has not arrived yet is a grey placeholder, and photos arrive with their
   ThumbHash as before.
-- **Scrubber.** A thin rail on the right edge lists the years (and a tick per month) of the whole library. Drag the
-  handle (mouse, touch or pen) and a bubble names the month under it ("October 2022"); let go and the page shows that
-  month. Tap a year to go to its first month, tap anywhere else on the rail to go to that point. With the keyboard
-  the handle is a slider: Up/Down move a month, PageUp/PageDown a year, Home/End the ends. The rail is not shown for a
-  library that fits on a couple of screens. It is 26px wide (30px on touch screens) and leaves its own gutter, so it
-  never covers tiles.
+- **Full-width grid, two styles.** The grid fills the whole width of the page with narrow gutters (2px on a phone, 4px
+  on a desktop) and no gap at the right edge at any width. *Square* (the default) crops every photo to a square: 3 columns
+  on a 390px phone, 4 from 500px, then as many as fit (about 170px each); pinching with two fingers (or **Larger /
+  Smaller photos** in the view menu) adds or removes columns, kept in the browser. *Justified* lays photos in rows that
+  keep each photo's aspect ratio (cropped to 1:2 to 2.4:1) and fill the row exactly, aiming at 118px (phone) to 210px
+  (desktop) tall; a short last row of a day keeps that height instead of stretching. The choice is saved per user on the
+  server (`user_prefs.grid_style`, `GET|PUT /assets/prefs`, migration 0036, also in the recovery manifest's `prefs` line).
+  Photos show their ThumbHash at once and the picture fades in over it.
+- **Header.** The page is titled **Photos** (**Favorites**, **Recently added**, **Archive**, **Hidden** for those views)
+  with a **Select** button and one **View options** menu holding grid style, size, sort (date taken / date added), stacks
+  (stacked / every photo) and **Slideshow**. Upload is in the sidebar (and a **+** menu in the header on phones); files
+  can still be dropped anywhere on the page.
+- **Month headers.** A month header ("October 2026") stays pinned under the page's header while its part of the library
+  is on screen; day headers ("Wed, Oct 14") are quiet lines in the flow.
+- **Scrubber.** A thin rail on the right edge, over the photos. It appears while the page scrolls (or when the mouse nears
+  the edge) with the years and a tick per month; grab the handle (touch, mouse or pen) and a bubble names the month under
+  it ("October 2022"); let go and the page shows that month. With a mouse, tap a year to go to its first month, or anywhere
+  else on the rail to go to that point. With the keyboard the handle is a slider: Up/Down move a month, PageUp/PageDown a
+  year, Home/End the ends. The rail is not shown for a library that fits on a couple of screens, nor on a phone while
+  selecting.
+- **Selecting.** **Select** (or a long press on a tile on a touch screen) starts selecting; after a long press, dragging
+  the finger across tiles selects the run from the pressed tile to the one under the finger, in either direction. Tap
+  toggles a tile, Shift+click selects a range on a desktop. The selection bar covers the tab bar on a phone (count, Select
+  all / Clear / Done, then icon buttons with labels: Favorite, Album, Share, a "More" menu with the rest, and Trash); on a
+  desktop it floats as a pill at the bottom. Undo toasts are dark pills above the tab bar or the selection bar.
+- **Pull to refresh.** On a touch screen, pulling down at the very top of the page reads the timeline again with a small
+  spinner. The page's own overscroll is cancelled while pulling, so the browser's reload gesture does not also fire.
+- **Empty views** say so with an icon, a line, a hint and the way on (upload, or browse photos).
 - **Favorites.** A heart on each tile (on hover on desktop, always while favorited; on touch screens it only marks
   favorites, to avoid accidental taps), a heart in the photo viewer, and **Favorite / Unfavorite** in the selection bar
-  (it unfavorites when every selected photo is already a favorite). **Favorites** (`/favorites`, a tab next to **All
-  photos** at the top of the library, not a new top-bar button, so the phone nav keeps fitting at 320px) shows only
-  favorites in the same timeline. In that view a bulk Unfavorite removes the photos; a single heart keeps the tile
+  (it unfavorites when every selected photo is already a favorite). **Favorites** (`/favorites`, in the sidebar and on the
+  Collections page) shows only favorites in the same timeline. In that view a bulk Unfavorite removes the photos; a single heart keeps the tile
   until the page is reloaded so an accidental click can be undone. Albums have hearts too.
 - **Download.** The photo viewer's **Download** saves the original file under its original name. For a RAW + JPEG pair
   it opens a chooser with **Download JPEG** (or HEIC/AVIF) and **Download RAW** and the sizes. (This replaces the old
@@ -259,7 +280,9 @@ re-upload and restore, backfill idempotency, concurrent pairing. Web: badge, vie
 
 **Layout from counts.** `GET /assets/timeline` returns `{total, days: [{day, count}]}`, newest day first, for photos
 that are not trashed and not hidden RAW files (`?favorite=true` for favorites). From that the web app builds rows of
-fixed height: a month header (52px), a day header (34px) and `ceil(count / columns)` rows of square tiles per day.
+fixed height: a month header (44px), a day header (30px) and `ceil(count / columns)` rows of square tiles per day. (Justified rows
+depend on the photos' shapes: photos not loaded yet count as 3:2, and the page keeps the photo on screen put while the rows above
+it settle as their pages arrive.)
 Because every height is known, the page is exactly as tall as the library needs, and scrollbar and scrubber positions
 are stable before any photo is loaded. (The query selects only the timeline expression, so it is an index-only scan of
 `assets_timeline_idx`, or `assets_favorites_idx` for favorites; a test asserts the plan. About 50,000 photos over ten
@@ -267,8 +290,8 @@ years give a few thousand rows of JSON.)
 
 **Windowed virtualization.** `@tanstack/react-virtual` (pinned `3.14.13`) renders the visible rows plus 3 rows of
 overscan, with the page itself as the scroll container (a window virtualizer), so sticky bars, browser scroll
-restoration and touch scrolling are untouched. Columns follow the width (3 below 400px, 4 up to 600px, then as many
-tiles of at least 152px/192px as fit).
+restoration and touch scrolling are untouched. Columns follow the width (3 below 500px, 4 up to 600px, then about 170px
+each).
 
 **Photos by global index.** The position of a photo in the whole library (newest = 0) is the sum of the counts before
 its day plus its place within the day. The web app keeps loaded photos in a map keyed by that index. For the photos on
@@ -1358,7 +1381,7 @@ dismissals in the bucket.
 | `GET /assets/search?include_archived=false` | Leave archived photos out (the default keeps them). |
 | `GET /assets/memories?date=YYYY-MM-DD&all=true` | `{enabled, day, years: [{year, years_ago, count, items}]}`; the strip form is a few photos per year and empty when the strip is off; `all` is the page. |
 | `POST /assets/memories/dismiss {ids, dismissed?}` | "Not this one" (a burst goes along); `dismissed: false` takes it back. |
-| `GET\|PUT /assets/prefs` | `{memories_enabled, library_sort: "taken" \| "added", stacks_collapsed}`. |
+| `GET\|PUT /assets/prefs` | `{memories_enabled, library_sort: "taken" \| "added", stacks_collapsed, grid_style: "square" \| "justified"}`. |
 | Albums | `hidden_count` beside `photo_count`; the album's list leaves hidden photos out. |
 
 ## Tests
@@ -2112,6 +2135,7 @@ the stack, else its earliest photo, among the photos the view lists. Details:
 | `POST /assets/{id}/stack/remove` | Take the photo out of its stack (it stays out of automatic bursts). |
 | `DELETE /assets/{id}/stack` | Dissolve the photo's stack: `{count}`. |
 | `GET\|PUT /assets/prefs` | gains `stacks_collapsed` (default true). |
+| `GET\|PUT /assets/prefs` | gains `grid_style` (`square` default, or `justified`; migration 0036), also in the recovery manifest's `prefs` line. |
 
 The write routes need a `full` API key (like the other writes). Everything filters on `owner_id`: another account's photo is a `404`, and
 a stack never holds photos of two owners.

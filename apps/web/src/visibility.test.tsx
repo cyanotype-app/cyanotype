@@ -13,6 +13,8 @@ import { chipsOf, paramsFromUrl, urlFromParams } from "./searchText";
 import { fakeLibrary } from "./test/fakeLibrary";
 import { detail, item } from "./test/fixtures";
 import { UploadProvider } from "./upload/UploadProvider";
+import { UploadPickerProvider } from "./shell/UploadPicker";
+import { chooseView, pressBar } from "./test/bar";
 import { archiveMessage, emptyView, hasMemories, memoryCount, msUntil, unlockedUntil, viewTitle, yearsAgo } from "./viewText";
 
 beforeEach(() => {
@@ -28,7 +30,9 @@ const renderIn = (ui: React.ReactNode, path = "/library") =>
   render(
     <MemoryRouter initialEntries={[path]}>
       <AuthProvider>
-        <UploadProvider deps={{ api, hash: async () => "0".repeat(64) }}>{ui}</UploadProvider>
+        <UploadProvider deps={{ api, hash: async () => "0".repeat(64) }}>
+          <UploadPickerProvider>{ui}</UploadPickerProvider>
+        </UploadProvider>
       </AuthProvider>
     </MemoryRouter>,
   );
@@ -182,7 +186,7 @@ describe("On this day strip", () => {
 
   it("is hidden for good with Hide", async () => {
     vi.spyOn(api, "memories").mockResolvedValue({ enabled: true, day: "10-19", years });
-    const set = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: false, library_sort: "taken", stacks_collapsed: true });
+    const set = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: false, library_sort: "taken", stacks_collapsed: true, grid_style: "square" });
     renderIn(<MemoriesStrip />);
     await userEvent.click(await screen.findByRole("button", { name: "Hide On this day" }));
     expect(set).toHaveBeenCalledWith({ memories_enabled: false });
@@ -193,19 +197,22 @@ describe("On this day strip", () => {
 describe("Library: sort, archive and hide", () => {
   it("offers Date taken / Date added and remembers the choice", async () => {
     fakeLibrary([item(1), item(2)]);
-    const set = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: true, library_sort: "added", stacks_collapsed: true });
+    const set = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: true, library_sort: "added", stacks_collapsed: true, grid_style: "square" });
     renderIn(<Library />);
-    const taken = await screen.findByRole("button", { name: "Date taken" });
-    expect(taken).toHaveAttribute("aria-pressed", "true");
-    await userEvent.click(screen.getByRole("button", { name: "Date added" }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "View options" }));
+    expect(await screen.findByRole("menuitemradio", { name: "Date taken" })).toHaveAttribute("aria-checked", "true");
+    await user.keyboard("{Escape}");
+    await chooseView(user, "Date added");
     expect(set).toHaveBeenCalledWith({ library_sort: "added" });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Date added" })).toHaveAttribute("aria-pressed", "true"));
+    await user.click(screen.getByRole("button", { name: "View options" }));
+    await waitFor(() => expect(screen.getByRole("menuitemradio", { name: "Date added" })).toHaveAttribute("aria-checked", "true"));
     expect(api.listAssets).toHaveBeenLastCalledWith(expect.objectContaining({ sort: "added" }));
   });
 
   it("starts in the saved order", async () => {
     const lib = fakeLibrary([item(1)]);
-    vi.mocked(api.prefs).mockResolvedValue({ memories_enabled: true, library_sort: "added", stacks_collapsed: true });
+    vi.mocked(api.prefs).mockResolvedValue({ memories_enabled: true, library_sort: "added", stacks_collapsed: true, grid_style: "square" });
     renderIn(<Library />);
     await screen.findByAltText("photo-1.jpg");
     expect(lib.timeline).toHaveBeenCalledWith(expect.objectContaining({ sort: "added" }));
@@ -217,7 +224,9 @@ describe("Library: sort, archive and hide", () => {
     await screen.findByAltText("photo-1.jpg");
     expect(lib.timeline).toHaveBeenCalledWith(expect.objectContaining({ sort: "added" }));
     expect(screen.getByRole("heading", { name: "Recently added" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Date taken" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "View options" }));
+    expect(await screen.findByRole("menuitemradio", { name: "Square" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitemradio", { name: "Date taken" })).toBeNull();
   });
 
   it("archives the selection, takes it out of the grid and offers Undo", async () => {
@@ -227,7 +236,7 @@ describe("Library: sort, archive and hide", () => {
     await screen.findByAltText("photo-1.jpg");
     await user.click(screen.getByRole("button", { name: "Select" }));
     await user.click(screen.getByRole("button", { name: "Select photo-1.jpg" }));
-    await user.click(screen.getByRole("button", { name: "Archive" }));
+    await pressBar(user, "Archive");
     expect(api.archiveAssets).toHaveBeenCalledWith(["id-1"], true);
     expect(await screen.findByText("1 archived")).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByAltText("photo-1.jpg")).toBeNull());
@@ -244,7 +253,7 @@ describe("Library: sort, archive and hide", () => {
     await screen.findByAltText("photo-1.jpg");
     await user.click(screen.getByRole("button", { name: "Select" }));
     await user.click(screen.getByRole("button", { name: "Select all" }));
-    await user.click(screen.getByRole("button", { name: "Archive" }));
+    await pressBar(user, "Archive");
     expect(api.archiveAssets).toHaveBeenCalledWith({ scope: "library", except: [] }, true);
     await user.click(await screen.findByRole("button", { name: "Undo" }));
     expect(api.archiveAssets).toHaveBeenLastCalledWith(
@@ -260,7 +269,7 @@ describe("Library: sort, archive and hide", () => {
     await screen.findByAltText("photo-1.jpg");
     await user.click(screen.getByRole("button", { name: "Select" }));
     await user.click(screen.getByRole("button", { name: "Select photo-2.jpg" }));
-    await user.click(screen.getByRole("button", { name: "Hide" }));
+    await pressBar(user, "Hide");
     expect(api.hideAssets).toHaveBeenCalledWith(["id-2"], true);
     expect(await screen.findByText(/1 hidden\. Find it under More, Hidden\./)).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByAltText("photo-2.jpg")).toBeNull());
@@ -287,7 +296,7 @@ describe("Library: sort, archive and hide", () => {
     expect(screen.getByRole("heading", { name: "Archive" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Select" }));
     await user.click(screen.getByRole("button", { name: "Select photo-1.jpg" }));
-    await user.click(screen.getByRole("button", { name: "Restore" }));
+    await pressBar(user, "Restore");
     expect(api.archiveAssets).toHaveBeenCalledWith(["id-1"], false);
     expect(await screen.findByText("1 back in the library")).toBeInTheDocument();
   });
@@ -307,7 +316,7 @@ describe("Library: sort, archive and hide", () => {
     expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Select" }));
     await user.click(screen.getByRole("button", { name: "Select photo-1.jpg" }));
-    await user.click(screen.getByRole("button", { name: "Unhide" }));
+    await pressBar(user, "Unhide");
     expect(api.hideAssets).toHaveBeenCalledWith(["id-1"], false);
     expect(locked).not.toHaveBeenCalled();
   });
@@ -359,9 +368,9 @@ describe("Hidden page", () => {
 
   it("asks again when the ten minutes run out", async () => {
     fakeLibrary([item(1, { hidden: true })]);
-    vi.spyOn(api, "hiddenState").mockResolvedValue({ unlocked: true, expires_at: new Date(Date.now() + 150).toISOString() });
+    vi.spyOn(api, "hiddenState").mockResolvedValue({ unlocked: true, expires_at: new Date(Date.now() + 1500).toISOString() });
     renderIn(<HiddenPage />, "/hidden");
     expect(await screen.findByAltText("photo-1.jpg")).toBeInTheDocument();
-    expect(await screen.findByLabelText("Password", {}, { timeout: 2000 })).toBeInTheDocument();
+    expect(await screen.findByLabelText("Password", {}, { timeout: 5000 })).toBeInTheDocument();
   });
 });

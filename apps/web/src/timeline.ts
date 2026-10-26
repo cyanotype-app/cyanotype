@@ -4,8 +4,8 @@
 // tiles a fixed height, so the scrollbar and the scrubber are exact before any photo has been loaded.
 import type { AssetListItem, TimelineDay } from "./api";
 
-export const MONTH_HEADER_PX = 52;
-export const DAY_HEADER_PX = 34;
+export const MONTH_HEADER_PX = 44;
+export const DAY_HEADER_PX = 30;
 
 export interface TimelineIndex {
   days: readonly TimelineDay[];
@@ -64,17 +64,39 @@ export const dayLabel = (day: string): string => dayFmt.format(utcNoon(day));
 export const monthOf = (day: string) => day.slice(0, 7);
 export const yearOf = (day: string) => day.slice(0, 4);
 
+/** How the library's photos are laid out: square crops in equal columns, or rows that keep each photo's shape. */
+export type GridStyle = "square" | "justified";
+
 export interface Geometry {
   cols: number;
   /** Side of a (square) tile in px. */
   tile: number;
   gap: number;
+  /** Absent means square. */
+  style?: GridStyle;
+  /** Width of the grid in px (justified rows are built to fill it exactly). */
+  width?: number;
+  /** The height justified rows aim for, in px. */
+  rowH?: number;
 }
 
 export type Row =
   | { kind: "month"; key: string; top: number; height: number; month: string; label: string; count: number }
   | { kind: "day"; key: string; top: number; height: number; day: string; label: string }
-  | { kind: "tiles"; key: string; top: number; height: number; start: number; count: number };
+  | {
+      kind: "tiles";
+      key: string;
+      top: number;
+      /** The row with the gap under it. */
+      height: number;
+      start: number;
+      count: number;
+      /** Justified rows: the aspect ratio of each photo, and the height of the tiles (without the gap). */
+      ratios?: number[];
+      tileH?: number;
+      /** Justified rows: the photos fill the row's width (false for a short last row of a day, which keeps `rowH`). */
+      fill?: boolean;
+    };
 
 export interface MonthMark {
   month: string;
@@ -91,16 +113,90 @@ export interface MonthMark {
 
 export interface Layout {
   rows: Row[];
+  /** Indices (into `rows`) of the rows of tiles, in photo order. */
+  tileRows: number[];
   height: number;
   months: MonthMark[];
   geometry: Geometry;
 }
 
-/** Month header, then for each day a day header and ceil(count / cols) rows of tiles. Every height is known. */
-export function buildLayout(idx: TimelineIndex, g: Geometry): Layout {
+/** Aspect ratios outside this range are cropped to it in justified rows (a panorama would take the whole row). */
+const MIN_RATIO = 0.5;
+const MAX_RATIO = 2.4;
+/** What a photo whose size is not known (yet) is assumed to be: 3:2. */
+const DEFAULT_RATIO = 1.5;
+/** A short last row of a day is stretched to fill the width when that makes its tiles at most this much taller than `rowH`. */
+const MAX_STRETCH = 1.45;
+
+/** A photo's shape for the justified rows: width / height, within limits; `fallback` where unknown. */
+export function ratioOf(it: { width: number | null; height: number | null } | undefined, fallback = DEFAULT_RATIO): number {
+  if (!it || !it.width || !it.height) return fallback;
+  return Math.min(MAX_RATIO, Math.max(MIN_RATIO, it.width / it.height));
+}
+
+/**
+ * Split `n` photos of one day into justified rows: add photos until a row is full, then take whichever of "with" or "without"
+ * the last one makes the row's height closer to `rowH`. Each row is `[count, ratios, tileH, fill]`.
+ */
+export function justifiedRows(
+  n: number,
+  ratio: (k: number) => number,
+  width: number,
+  gap: number,
+  rowH: number,
+): { count: number; ratios: number[]; tileH: number; fill: boolean }[] {
+  const out: { count: number; ratios: number[]; tileH: number; fill: boolean }[] = [];
+  let k = 0;
+  while (k < n) {
+    const ratios: number[] = [];
+    let sum = 0;
+    let full = false;
+    while (k + ratios.length < n) {
+      const r = ratio(k + ratios.length);
+      ratios.push(r);
+      sum += r;
+      if (sum * rowH + gap * (ratios.length - 1) >= width) {
+        full = true;
+        break;
+      }
+    }
+    if (full && ratios.length > 1) {
+      const m = ratios.length;
+      const withLast = (width - gap * (m - 1)) / sum;
+      const withoutLast = (width - gap * (m - 2)) / (sum - ratios[m - 1]!);
+      if (Math.abs(withoutLast - rowH) < Math.abs(withLast - rowH)) {
+        sum -= ratios.pop()!;
+      }
+    }
+    const m = ratios.length;
+    const filled = (width - gap * (m - 1)) / sum;
+    if (full || filled <= rowH * MAX_STRETCH) {
+      out.push({ count: m, ratios, tileH: filled, fill: true });
+    } else {
+      out.push({ count: m, ratios, tileH: rowH, fill: false });
+    }
+    k += m;
+  }
+  return out;
+}
+
+/**
+ * Month header, then for each day a day header and its rows of tiles. Square rows have a fixed height, so the layout is exact
+ * from the counts alone. Justified rows depend on the photos' shapes: those that are loaded (`loaded`) use theirs, the rest
+ * the average of the loaded ones, and the heights settle as photos arrive.
+ */
+export function buildLayout(idx: TimelineIndex, g: Geometry, loaded?: Loaded): Layout {
   const rows: Row[] = [];
+  const tileRows: number[] = [];
   const months: MonthMark[] = [];
+  const justified = g.style === "justified" && !!g.width && !!g.rowH;
   const rowH = g.tile + g.gap;
+  let fallback = DEFAULT_RATIO;
+  if (justified && loaded && loaded.items.size > 0) {
+    let sum = 0;
+    for (const it of loaded.items.values()) sum += ratioOf(it);
+    fallback = sum / loaded.items.size;
+  }
   let top = 0;
   let month = "";
   for (let d = 0; d < idx.days.length; d++) {
@@ -117,19 +213,46 @@ export function buildLayout(idx: TimelineIndex, g: Geometry): Layout {
     }
     rows.push({ kind: "day", key: `d${day}`, top, height: DAY_HEADER_PX, day, label: dayLabel(day) });
     top += DAY_HEADER_PX;
+    const first = idx.starts[d]!;
+    if (justified) {
+      let at = first;
+      for (const r of justifiedRows(count, (k) => ratioOf(loaded?.items.get(first + k), fallback), g.width!, g.gap, g.rowH!)) {
+        const height = r.tileH + g.gap;
+        tileRows.push(rows.length);
+        rows.push({ kind: "tiles", key: `t${at}`, top, height, start: at, count: r.count, ratios: r.ratios, tileH: r.tileH, fill: r.fill });
+        top += height;
+        at += r.count;
+      }
+      continue;
+    }
     for (let off = 0; off < count; off += g.cols) {
+      tileRows.push(rows.length);
       rows.push({
         kind: "tiles",
-        key: `t${idx.starts[d]! + off}`,
+        key: `t${first + off}`,
         top,
         height: rowH,
-        start: idx.starts[d]! + off,
+        start: first + off,
         count: Math.min(g.cols, count - off),
       });
       top += rowH;
     }
   }
-  return { rows, height: top, months, geometry: g };
+  return { rows, tileRows, height: top, months, geometry: g };
+}
+
+/** The index (into `rows`) of the row of tiles that holds photo `photo`; -1 when there is none. */
+export function rowOfPhoto(layout: Layout, photo: number): number {
+  let lo = 0;
+  let hi = layout.tileRows.length - 1;
+  if (hi < 0) return -1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    const row = layout.rows[layout.tileRows[mid]!];
+    if (row?.kind === "tiles" && row.start <= photo) lo = mid;
+    else hi = mid - 1;
+  }
+  return layout.tileRows[lo]!;
 }
 
 /** Index of the row containing offset `y` (clamped). */
@@ -184,18 +307,27 @@ export function photoRange(layout: Layout, a: number, b: number): [number, numbe
   return from < 0 ? null : [from, to];
 }
 
-/** Columns, tile size and gap for a container `width` px wide. Mirrors the breakpoints of the old CSS grid. */
-export function gridGeometry(width: number): Geometry {
+/** Smallest and largest number of square columns the density setting can reach. */
+export const MIN_COLS = 2;
+export const MAX_COLS = 12;
+
+/**
+ * Columns, tile size and gap for a grid `width` px wide. Square: 3 columns on a phone, more as the screen widens; `density`
+ * (a pinch) adds or removes columns. Justified: the height the rows aim for (a pinch scales it). The tiles always fill the
+ * width exactly.
+ */
+export function gridGeometry(width: number, style: GridStyle = "square", density = 0): Geometry {
   const w = Math.max(1, Math.floor(width));
-  if (w <= 600) {
-    const cols = w >= 400 ? 4 : 3;
-    const gap = 2;
-    return { cols, gap, tile: (w - gap * (cols - 1)) / cols };
+  const phone = w <= 600;
+  const gap = phone ? 2 : 4;
+  if (style === "justified") {
+    const base = phone ? 118 : w >= 1100 ? 210 : 180;
+    const rowH = Math.max(70, Math.round(base * Math.pow(0.8, density)));
+    return { style, width: w, cols: Math.max(1, Math.round(w / rowH)), tile: rowH, gap, rowH };
   }
-  const gap = w >= 900 ? 6 : 4;
-  const min = w >= 900 ? 192 : 152;
-  const cols = Math.max(1, Math.floor((w + gap) / (min + gap)));
-  return { cols, gap, tile: (w - gap * (cols - 1)) / cols };
+  const natural = phone ? (w >= 500 ? 4 : 3) : Math.max(4, Math.round((w + gap) / (170 + gap)));
+  const cols = Math.min(MAX_COLS, Math.max(MIN_COLS, natural + density));
+  return { style, width: w, cols, gap, tile: (w - gap * (cols - 1)) / cols };
 }
 
 // ---- Loaded photos -----------------------------------------------------------------------------------------

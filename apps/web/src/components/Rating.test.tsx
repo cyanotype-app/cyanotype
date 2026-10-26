@@ -1,10 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { detail, item } from "../test/fixtures";
 import { Lightbox } from "./Lightbox";
 import { RateTools } from "./RateTools";
+import "../test/dialogs";
 import { RatingStars } from "./Stars";
 
 afterEach(() => vi.restoreAllMocks());
@@ -86,11 +87,11 @@ describe("RateTools", () => {
     render(<RateTools target={["a", "b", "c"]} count={3} onDone={onDone} onError={() => {}} />);
     await user.click(screen.getByRole("button", { name: "Rate" }));
     const dialog = screen.getByRole("dialog", { name: "Rate photos" });
-    expect(dialog).toHaveTextContent("Rate 3 photos");
+    expect(dialog).toHaveTextContent("3 photos");
     await user.click(screen.getByRole("button", { name: /4 stars/ }));
     expect(rate).toHaveBeenCalledWith(["a", "b", "c"], 4);
     await waitFor(() => expect(onDone).toHaveBeenCalledWith(4, 3, "3 photos rated 4 stars"));
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
   it("clears ratings, sends a whole-view scope as it is, and reports a failure", async () => {
@@ -107,7 +108,7 @@ describe("RateTools", () => {
     await user.click(screen.getByRole("button", { name: "Rate" }));
     await user.click(screen.getByRole("button", { name: /5 stars/ }));
     await waitFor(() => expect(onError).toHaveBeenCalledOnce());
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
   it("closes with Escape or Cancel and rates nothing", async () => {
@@ -115,10 +116,14 @@ describe("RateTools", () => {
     const rate = vi.spyOn(api, "rateAssets");
     render(<RateTools target={["a"]} count={1} onDone={() => {}} onError={() => {}} />);
     await user.click(screen.getByRole("button", { name: "Rate" }));
-    await user.keyboard("{Escape}");
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // Escape is the dialog's "cancel" event in a browser.
+    act(() => {
+      screen.getByRole("dialog").dispatchEvent(new Event("cancel", { cancelable: true }));
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "Rate" }));
     await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(rate).not.toHaveBeenCalled();
   });
 });

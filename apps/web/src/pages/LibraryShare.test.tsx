@@ -6,6 +6,8 @@ import { api } from "../api";
 import { AuthProvider } from "../auth";
 import { shareApi } from "../shareApi";
 import { UploadProvider } from "../upload/UploadProvider";
+import { UploadPickerProvider } from "../shell/UploadPicker";
+import "../test/dialogs";
 import { detail, item } from "../test/fixtures";
 import { fakeLibrary } from "../test/fakeLibrary";
 import { link } from "../test/shareFixtures";
@@ -23,7 +25,9 @@ const renderLibrary = () =>
     <MemoryRouter>
       <AuthProvider>
         <UploadProvider deps={{ api, hash: async () => "0".repeat(64) }}>
-          <Library />
+          <UploadPickerProvider>
+            <Library />
+          </UploadPickerProvider>
         </UploadProvider>
       </AuthProvider>
     </MemoryRouter>,

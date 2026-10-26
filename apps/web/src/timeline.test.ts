@@ -15,6 +15,7 @@ import {
   firstMissing,
   fractionOf,
   gridGeometry,
+  justifiedRows,
   MONTH_HEADER_PX,
   monthAt,
   monthLabel,
@@ -171,14 +172,33 @@ describe("layout", () => {
   it("is sized from the container width", () => {
     expect(gridGeometry(320)).toMatchObject({ cols: 3, gap: 2 });
     expect(gridGeometry(390)).toMatchObject({ cols: 3 });
-    expect(gridGeometry(400)).toMatchObject({ cols: 4 });
+    expect(gridGeometry(414)).toMatchObject({ cols: 3 });
+    expect(gridGeometry(520)).toMatchObject({ cols: 4 });
     expect(gridGeometry(600)).toMatchObject({ cols: 4 });
     expect(gridGeometry(768)).toMatchObject({ cols: 4, gap: 4 });
     const wide = gridGeometry(1280);
-    expect(wide.cols).toBe(6);
+    expect(wide.cols).toBe(7);
+    expect(gridGeometry(1032).cols).toBe(6);
     expect(wide.tile * wide.cols + wide.gap * (wide.cols - 1)).toBeCloseTo(1280);
     const narrow = gridGeometry(320);
     expect(narrow.tile * 3 + narrow.gap * 2).toBeCloseTo(320);
+  });
+
+  it("fills the width exactly at every width, with tight gutters", () => {
+    for (let w = 280; w <= 1920; w += 7) {
+      const g = gridGeometry(w);
+      expect(g.tile * g.cols + g.gap * (g.cols - 1)).toBeCloseTo(w);
+      expect(g.gap).toBe(w <= 600 ? 2 : 4);
+      expect(g.cols).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("changes the number of columns with the density, within limits", () => {
+    expect(gridGeometry(390, "square", 1).cols).toBe(4);
+    expect(gridGeometry(390, "square", -1).cols).toBe(2);
+    expect(gridGeometry(390, "square", -5).cols).toBe(2);
+    expect(gridGeometry(390, "square", 50).cols).toBe(12);
+    expect(gridGeometry(390, "justified", 1).rowH).toBeLessThan(gridGeometry(390, "justified").rowH!);
   });
 });
 
@@ -321,5 +341,49 @@ describe("scrubber mapping", () => {
   it("drops year labels that do not fit on a short track", () => {
     const marks = scrubMarks(layout, vh, 60);
     expect(marks.filter((m) => m.year).length).toBeLessThanOrEqual(4);
+  });
+});
+
+describe("justified rows", () => {
+  const ratios = (list: number[]) => (k: number) => list[k % list.length]!;
+
+  it("fills every full row exactly and keeps each photo's shape", () => {
+    for (const width of [320, 390, 768, 1032, 1600]) {
+      const gap = width <= 600 ? 2 : 4;
+      const rows = justifiedRows(60, ratios([1.5, 0.75, 1.33, 1, 1.78, 0.67, 2.1]), width, gap, 120);
+      expect(rows.reduce((n, r) => n + r.count, 0)).toBe(60);
+      for (const r of rows.filter((x) => x.fill)) {
+        const sum = r.ratios.reduce((a, b) => a + b, 0);
+        expect(sum * r.tileH + gap * (r.count - 1)).toBeCloseTo(width);
+        expect(r.tileH).toBeGreaterThan(120 * 0.6);
+        expect(r.tileH).toBeLessThan(120 * 1.6);
+      }
+    }
+  });
+
+  it("leaves a short last row at the target height instead of stretching it a long way", () => {
+    const rows = justifiedRows(2, ratios([1]), 1000, 4, 100);
+    expect(rows).toEqual([{ count: 2, ratios: [1, 1], tileH: 100, fill: false }]);
+    const few = justifiedRows(5, ratios([1]), 1000, 4, 100);
+    expect(few).toEqual([{ count: 5, ratios: [1, 1, 1, 1, 1], tileH: 100, fill: false }]);
+    // Nearly full: it fills.
+    const near = justifiedRows(9, ratios([1]), 1000, 4, 100);
+    expect(near).toHaveLength(1);
+    expect(near[0]).toMatchObject({ count: 9, fill: true });
+  });
+
+  it("builds a layout whose rows use the loaded photos' shapes and an estimate for the rest", () => {
+    const g = gridGeometry(390, "justified");
+    const index = buildIndex([{ day: "2026-10-14", count: 12 }]);
+    const wide = (i: number) => item(i, { id: `p${i}`, width: 1000, height: 4000 });
+    const estimated = buildLayout(index, g);
+    const loaded = buildLayout(index, g, { items: new Map(Array.from({ length: 12 }, (_, i) => [i, wide(i)])), cursors: new Map() });
+    const tiles = (l: typeof estimated) => l.rows.filter((r) => r.kind === "tiles");
+    expect(tiles(estimated).reduce((n, r) => n + (r.kind === "tiles" ? r.count : 0), 0)).toBe(12);
+    // Tall photos (cropped to 1:2): more per row than the 3:2 estimate.
+    expect(tiles(loaded)[0]).toMatchObject({ kind: "tiles" });
+    expect((tiles(loaded)[0] as { count: number }).count).toBeGreaterThan((tiles(estimated)[0] as { count: number }).count);
+    expect(loaded.height).toBeGreaterThan(0);
+    expect(loaded.rows.filter((r) => r.kind === "tiles").every((r) => r.kind === "tiles" && r.height > (r.tileH ?? 0))).toBe(true);
   });
 });

@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { AuthProvider } from "../auth";
 import { UploadProvider } from "../upload/UploadProvider";
+import { UploadPickerProvider } from "../shell/UploadPicker";
+import "../test/dialogs";
 import { album, detail, item } from "../test/fixtures";
 import { fakeLibrary } from "../test/fakeLibrary";
 import { Library } from "./Library";
@@ -26,7 +28,9 @@ const renderLibrary = () =>
     <MemoryRouter>
       <AuthProvider>
         <UploadProvider deps={{ api, hash: async () => "0".repeat(64) }}>
-          <Library />
+          <UploadPickerProvider>
+            <Library />
+          </UploadPickerProvider>
         </UploadProvider>
       </AuthProvider>
     </MemoryRouter>,

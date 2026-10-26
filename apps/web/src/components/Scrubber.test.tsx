@@ -15,14 +15,14 @@ const layoutOf = (months: number) =>
     { cols: 4, tile: 100, gap: 2 },
   );
 
-const TRACK = { top: 100, height: 630 }; // handle travel = 600
+const TRACK = { top: 100, height: 630 }; // the handle is 44 px tall: its travel is 586
 let scrollTo: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   scrollTo = vi.fn();
   vi.stubGlobal("scrollTo", scrollTo);
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    return this.classList.contains("scrubber")
+    return this.hasAttribute("data-scrubber")
       ? ({ ...TRACK, bottom: TRACK.top + TRACK.height, left: 0, right: 26, width: 26, x: 0, y: TRACK.top, toJSON() {} } as DOMRect)
       : new DOMRect(0, 0, 0, 0);
   });
@@ -36,7 +36,7 @@ afterEach(() => {
 describe("Scrubber", () => {
   it("lists the years of the library on the rail", () => {
     render(<Scrubber layout={layoutOf(72)} scrollMargin={0} />);
-    const years = Array.from(document.querySelectorAll(".scrub-year")).map((e) => e.textContent);
+    const years = Array.from(document.querySelectorAll("[data-year]")).map((e) => e.textContent);
     expect(years).toEqual(["2026", "2025", "2024", "2023", "2022", "2021"]);
     expect(screen.getByRole("slider", { name: /by date/i })).toHaveAttribute("aria-valuetext", "December 2026");
   });
@@ -51,17 +51,17 @@ describe("Scrubber", () => {
   it("scrolls the page while the handle is dragged and names the month under it", () => {
     const layout = layoutOf(72);
     render(<Scrubber layout={layout} scrollMargin={200} />);
-    const rail = document.querySelector(".scrubber")!;
+    const rail = document.querySelector("[data-scrubber]")!;
     const handle = screen.getByRole("slider");
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/^$/);
 
     // Half way down the rail (handle centre at the middle of its travel).
-    fireEvent.pointerDown(handle, { pointerId: 1, clientY: TRACK.top + 15 + 300, button: 0 });
+    fireEvent.pointerDown(handle, { pointerId: 1, clientY: TRACK.top + 22 + 293, button: 0 });
     const target = offsetOf(0.5, layout.height, window.innerHeight);
     expect(scrollTo).toHaveBeenLastCalledWith(0, expect.closeTo(target + 200, 0));
     const bubble = screen.getByRole("status");
     expect(bubble).toHaveTextContent("January 2024"); // half way through six years
-    expect(Number(/([\d.]+)px/.exec(handle.style.transform)![1])).toBeCloseTo(300, -1); // the handle follows the finger
+    expect(Number(/([\d.]+)px/.exec(handle.style.transform)![1])).toBeCloseTo(293, -1); // the handle follows the finger
 
     // To the bottom: the oldest month; to the top: the newest.
     fireEvent.pointerMove(rail, { pointerId: 1, clientY: 5000 });
@@ -72,13 +72,14 @@ describe("Scrubber", () => {
 
     // Letting go hides the label; the page stays where it is.
     fireEvent.pointerUp(rail, { pointerId: 1, clientY: -50 });
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/^$/);
   });
 
   it("jumps to exactly the top of a month when its year is tapped", () => {
     const layout = layoutOf(72);
     render(<Scrubber layout={layout} scrollMargin={200} />);
-    const y2023 = Array.from(document.querySelectorAll<HTMLElement>(".scrub-year")).find((e) => e.textContent === "2023")!;
+    fireEvent.focus(screen.getByRole("slider")); // awake
+    const y2023 = Array.from(document.querySelectorAll<HTMLElement>("[data-year]")).find((e) => e.textContent === "2023")!;
     const mark = layout.months.find((m) => m.month === y2023.dataset.month)!;
     fireEvent.pointerDown(y2023, { pointerId: 2, clientY: 400, button: 0 });
     fireEvent.pointerUp(y2023, { pointerId: 2, clientY: 400 });
@@ -89,12 +90,16 @@ describe("Scrubber", () => {
   it("jumps to the tapped point of the rail anywhere else", () => {
     const layout = layoutOf(72);
     render(<Scrubber layout={layout} scrollMargin={0} />);
-    const rail = document.querySelector(".scrubber")!;
-    fireEvent.pointerDown(rail, { pointerId: 3, clientY: TRACK.top + 15, button: 0 });
-    fireEvent.pointerUp(rail, { pointerId: 3, clientY: TRACK.top + 15 });
+    const rail = document.querySelector("[data-scrubber]")!;
+    fireEvent.pointerDown(rail, { pointerId: 3, clientY: TRACK.top + 22, button: 0 });
+    expect(scrollTo).not.toHaveBeenCalled(); // asleep: a touch at the edge of the page is not a jump
+    fireEvent.pointerUp(rail, { pointerId: 3, clientY: TRACK.top + 22 });
+    fireEvent.focus(screen.getByRole("slider"));
+    fireEvent.pointerDown(rail, { pointerId: 3, clientY: TRACK.top + 22, button: 0 });
+    fireEvent.pointerUp(rail, { pointerId: 3, clientY: TRACK.top + 22 });
     expect(scrollTo).toHaveBeenLastCalledWith(0, 0);
-    fireEvent.pointerDown(rail, { pointerId: 4, clientY: TRACK.top + 15 + 600, button: 0 });
-    fireEvent.pointerUp(rail, { pointerId: 4, clientY: TRACK.top + 15 + 600 });
+    fireEvent.pointerDown(rail, { pointerId: 4, clientY: TRACK.top + 22 + 586, button: 0 });
+    fireEvent.pointerUp(rail, { pointerId: 4, clientY: TRACK.top + 22 + 586 });
     expect(scrollTo).toHaveBeenLastCalledWith(0, expect.closeTo(layout.height - window.innerHeight, 0));
   });
 
