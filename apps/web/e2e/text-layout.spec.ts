@@ -6,6 +6,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { installLibrary, makeAssets, type FakeAsset } from "./fakeLibrary";
+import { keepViewerBarsShown, viewerSettled } from "./kit";
 
 const SHOT_DIR = process.env.SHOT_DIR;
 const RUNS: { width: number; scheme: "light" | "dark" }[] = [
@@ -58,16 +59,25 @@ async function mock(page: Page, assets: FakeAsset[], texts: Record<string, unkno
 function makeCheck(page: Page, prefix: string, problems: string[]) {
   return async (name: string) => {
     await page.waitForTimeout(200);
-    const r = await page.evaluate(() => {
-      const w = window.innerWidth;
-      const bad: string[] = [];
-      for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
-        const b = el.getBoundingClientRect();
-        if (b.width === 0 || el.closest(".text-body") || el.closest(".viewer-stage")) continue;
-        if (b.right > w + 0.5 || b.left < -0.5) bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} [${Math.round(b.left)}..${Math.round(b.right)}]`);
-      }
-      return { scroll: document.documentElement.scrollWidth, w, bad: bad.slice(0, 6) };
-    });
+    // The viewer grows from its tile and its side panel slides in: measure once they are still.
+    if (await page.locator(".viewer-stage").count()) await viewerSettled(page);
+    const measure = () =>
+      page.evaluate(() => {
+        const w = window.innerWidth;
+        const bad: string[] = [];
+        for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
+          const b = el.getBoundingClientRect();
+          if (b.width === 0 || el.closest(".text-body") || el.closest(".viewer-stage")) continue;
+          if (b.right > w + 0.5 || b.left < -0.5) bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} [${Math.round(b.left)}..${Math.round(b.right)}]`);
+        }
+        return { scroll: document.documentElement.scrollWidth, w, bad: bad.slice(0, 6) };
+      });
+    // A panel that is still sliding in is wider than its box for a moment: what counts is where it ends up.
+    let r = await measure();
+    for (let i = 0; i < 10 && r.bad.length; i++) {
+      await page.waitForTimeout(200);
+      r = await measure();
+    }
     if (r.scroll > r.w || r.bad.length) problems.push(`${name}: scrollWidth ${r.scroll} > ${r.w}; ${r.bad.join("; ")}`);
     if (SHOT_DIR) await page.screenshot({ path: join(SHOT_DIR, `${prefix}-${name}.png`) });
   };
@@ -80,6 +90,7 @@ for (const { width, scheme } of RUNS) {
     test("the Text panel: text, boxes, QR codes and the empty states fit", async ({ page }) => {
       test.setTimeout(60_000);
       if (SHOT_DIR) mkdirSync(SHOT_DIR, { recursive: true });
+      await keepViewerBarsShown(page);
       const problems: string[] = [];
       const check = makeCheck(page, `${width}${scheme === "dark" ? "-dark" : ""}-text`, problems);
       const assets = makeAssets(30);

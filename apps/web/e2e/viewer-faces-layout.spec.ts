@@ -449,12 +449,25 @@ for (const width of [320, 375, 414, 1280]) {
         await dialog.waitFor();
         const img = dialog.locator(".face-context-frame img");
         await expect.poll(async () => (await img.boundingBox())?.width ?? 0).toBeGreaterThan(40);
-        const i = (await img.boundingBox())!;
-        const b = (await dialog.getByTestId("face-context-box").boundingBox())!;
-        expect(Math.abs(b.x - (i.x + UNCLAIMED.box[0] * i.width))).toBeLessThan(1.5);
-        expect(Math.abs(b.y - (i.y + UNCLAIMED.box[1] * i.height))).toBeLessThan(1.5);
-        expect(Math.abs(b.width - UNCLAIMED.box[2] * i.width)).toBeLessThan(1.5);
-        expect(Math.abs(b.height - UNCLAIMED.box[3] * i.height)).toBeLessThan(1.5);
+        // The sheet slides in: read the picture and the outline in one evaluate, until they agree (it has stopped moving).
+        const frame = async () =>
+          page.evaluate(() => {
+            const im = document.querySelector('[role="dialog"] .face-context-frame img')!.getBoundingClientRect();
+            const bx = document.querySelector('[data-testid="face-context-box"]')!.getBoundingClientRect();
+            return { i: { x: im.x, y: im.y, width: im.width, height: im.height }, b: { x: bx.x, y: bx.y, width: bx.width, height: bx.height } };
+          });
+        await expect
+          .poll(async () => {
+            const { i, b } = await frame();
+            return Math.max(
+              Math.abs(b.x - (i.x + UNCLAIMED.box[0] * i.width)),
+              Math.abs(b.y - (i.y + UNCLAIMED.box[1] * i.height)),
+              Math.abs(b.width - UNCLAIMED.box[2] * i.width),
+              Math.abs(b.height - UNCLAIMED.box[3] * i.height),
+            );
+          })
+          .toBeLessThan(1.5);
+        const { i } = await frame();
         // The whole photo is shown (the picture is landscape, 3:2), not a crop.
         expect(Math.abs(i.width / i.height - 1.5)).toBeLessThan(0.02);
         const vp = page.viewportSize()!;

@@ -2,7 +2,8 @@
 // the "updating" note after a save, and an edited photo's download menu and Info row. Nothing may stick out sideways, the
 // handles must be touch targets, and a drag with a finger must move the crop. Set SHOT_DIR to save the screenshots.
 import { expect, test } from "@playwright/test";
-import { json, LONG_NAME, makeCheck, RUNS, setupApp, shotPrefix, viewportOf, type Handler } from "./kit";
+import { viewerSettled } from "./viewerKit";
+import { json, keepViewerBarsShown, LONG_NAME, makeCheck, RUNS, setupApp, shotPrefix, viewportOf, type Handler } from "./kit";
 
 for (const { width, scheme } of RUNS) {
   test.describe(`rotate and crop ${width}px ${scheme}`, () => {
@@ -12,6 +13,7 @@ for (const { width, scheme } of RUNS) {
       test.setTimeout(120_000);
       const problems: string[] = [];
       const check = makeCheck(page, shotPrefix("a5", width, scheme), problems);
+      await keepViewerBarsShown(page);
       const saved: Record<string, unknown>[] = [];
       let assets: Record<string, unknown>[] = [];
       // Photo a2 is edited by the test (the render takes two polls); a3 is edited from the start.
@@ -84,6 +86,7 @@ for (const { width, scheme } of RUNS) {
       await viewer.waitFor();
       const crop = viewer.getByRole("button", { name: "Rotate and crop", exact: true });
       await expect(crop).toBeEnabled();
+      await viewerSettled(page); // (the photo grows from its tile first)
       await check("viewer-crop-button");
 
       // The editor: turn with the key, show the crop handles, drag a corner, straighten, pick a shape.

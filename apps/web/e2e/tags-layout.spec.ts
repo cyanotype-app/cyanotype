@@ -68,7 +68,13 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: /Select IMG_00000/ }).click();
       await page.getByRole("button", { name: /Select IMG_00001/ }).click();
       await check("library-select-tag");
-      await page.getByRole("button", { name: "Tag", exact: true }).click();
+      // "Tag" is on the selection bar when there is room, else in its "More" menu.
+      const bar = page.getByRole("toolbar", { name: "Selection" });
+      if (await bar.getByRole("button", { name: "Tag", exact: true }).count()) await bar.getByRole("button", { name: "Tag", exact: true }).click();
+      else {
+        await bar.getByRole("button", { name: "More actions" }).click();
+        await page.getByRole("menuitem", { name: "Tag", exact: true }).click();
+      }
       const dialog = page.getByRole("dialog", { name: /Tag 2 photos/ });
       await dialog.waitFor();
       await dialog.getByRole("combobox", { name: "Add tags" }).fill("be");

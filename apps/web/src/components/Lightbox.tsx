@@ -586,9 +586,11 @@ export function Lightbox({
       if (e.key === "Escape") {
         // A menu or sheet handles its own Escape (and gives focus back); the panel closes first, the next Escape closes the viewer.
         const t = e.target as HTMLElement | null;
-        if (t?.closest('[role="menu"], dialog') ) return;
+        if (t?.closest('[role="menu"], dialog')) return;
         const over = t?.closest('[role="dialog"]') ?? null;
         if (over !== null && over !== dialogRef.current) return;
+        // Another sheet is open and focus is on the page behind it (the field it was on went away): its Escape is not the viewer's.
+        if (!info.open && !text.open && document.querySelector("dialog[open]")) return;
         e.preventDefault();
         if (info.open) closeInfo();
         else if (text.open) closeText();

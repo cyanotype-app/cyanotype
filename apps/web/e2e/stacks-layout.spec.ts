@@ -2,7 +2,7 @@
 // the buttons and `[` `]`, set the cover, take a photo out, unstack), "Stack" in the selection bar and the Stacked / Every
 // photo switch. Nothing may stick out sideways, and every button must be reachable. Set SHOT_DIR to save the screenshots.
 import { expect, test } from "@playwright/test";
-import { json, makeCheck, RUNS, setupApp, shotPrefix, viewportOf } from "./kit";
+import { json, keepViewerBarsShown, makeCheck, RUNS, setupApp, shotPrefix, viewportOf } from "./kit";
 import { pageOf, timelineOf, type FakeAsset } from "./fakeLibrary";
 
 for (const { width, scheme } of RUNS) {
@@ -13,6 +13,7 @@ for (const { width, scheme } of RUNS) {
       test.setTimeout(120_000);
       const problems: string[] = [];
       const check = makeCheck(page, shotPrefix("stacks", width, scheme), problems);
+      await keepViewerBarsShown(page);
       const calls: string[] = [];
       const lists: string[] = [];
       const assets = await setupApp(page, { count: 12 });
@@ -104,7 +105,8 @@ for (const { width, scheme } of RUNS) {
       await check("viewer");
       await dialog.getByRole("button", { name: "Previous photo in the stack" }).click();
       await expect(dialog.getByText("Photo 2 of 3 in this stack")).toBeVisible();
-      await expect(dialog.getByText("IMG_00003.jpg", { exact: true })).toBeVisible();
+      // The strip marks the photo on show.
+      await expect(dialog.getByRole("button", { name: "IMG_00003.jpg", exact: true })).toHaveAttribute("aria-current", "true");
       await page.keyboard.press("[");
       await expect(dialog.getByText("Photo 1 of 3 in this stack")).toBeVisible();
       await page.keyboard.press("]");

@@ -217,6 +217,9 @@ for (const { width, scheme } of RUNS) {
       await check("person-add-to-album");
       await add.getByLabel("Search albums").fill("pe");
       await check("person-add-to-album-search");
+      // In a search field the first Escape clears the text (the browser's own behaviour); the second closes the sheet.
+      await page.keyboard.press("Escape");
+      await expect(add.getByLabel("Search albums")).toHaveValue("");
       await page.keyboard.press("Escape");
       await add.waitFor({ state: "detached" });
       await page.getByRole("toolbar", { name: "Selection" }).getByRole("button", { name: "Save as album" }).click();

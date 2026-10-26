@@ -294,6 +294,7 @@ test.describe("slideshow behaviour", () => {
     // Started from a click: it went full screen at once.
     await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(true);
     await expect(button).toHaveAttribute("aria-pressed", "true");
+    await page.mouse.move(600, 300); // (the bars fade after a few quiet seconds, and a faded bar takes no click)
     await button.click();
     await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(false);
     await page.keyboard.press("Escape");
