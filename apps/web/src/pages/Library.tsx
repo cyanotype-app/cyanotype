@@ -633,7 +633,18 @@ function LibraryView({
     try {
       const r = await api.stackAssets(ids);
       void refresh();
-      show({ message: STACK_MESSAGES.stacked(r.size) });
+      // Undo puts every photo back as it was, also the stacks this one merged.
+      show({
+        message: STACK_MESSAGES.stacked(r.size),
+        action: {
+          label: "Undo",
+          onClick: () =>
+            void api.restoreStacking(r.previous).then(
+              () => void refresh(),
+              (e: unknown) => failure(e, "Couldn’t undo. The photos are still stacked."),
+            ),
+        },
+      });
     } catch (e) {
       failure(e, STACK_MESSAGES.failed);
     }

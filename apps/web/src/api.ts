@@ -449,6 +449,19 @@ export interface StackInfo {
   members?: string[];
 }
 
+/** A photo's stack before a stacking moved it: the stack it was in (`null` for none) and whether it was that stack's cover. */
+export interface StackedPrevious {
+  id: string;
+  stack_id: string | null;
+  stack_cover: boolean;
+}
+/** POST /assets/stacks: photos in the new stack, its cover, and what every moved photo was before (for Undo). */
+export interface Stacked {
+  size: number;
+  cover_id: string;
+  previous: StackedPrevious[];
+}
+
 /** GET /assets/{id}/stack: the photos of a stack in capture order, and which one is the cover. */
 export interface StackDetail {
   cover_id: string;
@@ -1683,7 +1696,10 @@ export const api = {
   getStack: (id: string) => request<StackDetail>(`/assets/${encodeURIComponent(id)}/stack`),
   /** Stack photos by hand: the first id is the cover; stacks the photos are already in join the new one. */
   stackAssets: (ids: string[]) =>
-    request<{ size: number; cover_id: string }>("/assets/stacks", json({ ids })),
+    request<Stacked>("/assets/stacks", json({ ids })),
+  /** Undo a stacking: every photo it moved goes back to the stack (or none) and cover flag it had (`previous` of the answer). */
+  restoreStacking: (previous: StackedPrevious[]) =>
+    request<{ count: number }>("/assets/stacks/restore", json({ items: previous })),
   /** Make `id` the cover of its stack. */
   setStackCover: (id: string) => request<{ cover_id: string }>(`/assets/${encodeURIComponent(id)}/stack/cover`, { method: "POST" }),
   /** Take `id` out of its stack (it stays out of automatic bursts). */
