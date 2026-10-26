@@ -52,6 +52,7 @@ comparing the table before and after):
 | "Not duplicates" dismissals | ✅ | ❌ not in the bucket: dismissed groups come back for review |
 | The On this day, sort and stacks settings (`user_prefs`) | ✅ | ✅ as of the newest manifest (one `prefs` line per user who has changed a setting; a user with none has the defaults; a row the user already has is not overwritten); `reindex` reports `user preferences` |
 | Memory dismissals (`assets.memory_dismissed`) | ✅ | ✅ as of the newest manifest (a dismissal rewrites it within about 30 seconds): put back with the photo's row; `reindex` reports `memories dismissed` |
+| Trips ("Recent places", `docs/library.md`, "Trips") | n/a | n/a: derived on every request from the photos' dates and places (nothing stored, no job); after a restore they follow once the photos' places are back (the `geocode` jobs) |
 | Albums and their members, covers | ✅ | ✅ as of the newest manifest |
 | RAW + JPEG pairs | ✅ | ✅ (manifest, and the worker re-pairs) |
 | Photo edits (date, location, caption, rotate/crop recipe) | ✅ | ✅ from `edits/`, as new as the last edit (a restored recipe is rendered again by the worker) |

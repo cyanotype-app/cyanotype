@@ -1377,6 +1377,57 @@ dismissals in the bucket.
   Archive and Hidden views, the password prompt, lock and expiry); `e2e/mobile-overflow.spec.ts` ("library views") at 320 to 1280 px,
   light and dark: strip, More menu, selection actions, viewer menu, memories, recent, archive, the unlock prompt with its error,
   the Hidden view, album counts, the search filter.
+# Trips ("Recent places")
+
+Trips are memories for the home page's "Recent places" row: a week in New York becomes **New York · October 2026**, made of
+that week's photos. Nothing is stored: like On this day they are **computed when asked** from the photos and their places
+(see "Map and places"), so a new import, a corrected date or a place update shows at the next request, and there is no job.
+
+## What counts as a trip
+
+- **Home** is the place with the most photo-days in the last 730 days, plus every place within 50 km of its centre (suburbs,
+  the next town). With fewer than 3 photo-days that carry a place, home is unknown and there are no trips. There is no
+  setting to override it (a user who moved sees the old home until the new one has more days, within a year or two).
+- A **day** is *away* when more of its photos that have a place are away from home than at home, a *home day* otherwise, and
+  neutral when none has a place: photos without GPS say nothing about where the day was spent.
+- A **trip** is a run of away days. One day without away photos may sit between two of them (a quiet day, or one whose photos
+  lost their GPS); a home day ends the run. It needs at least 8 photos in all (a one-day outing to a far city counts). It is
+  **ongoing** when it reaches yesterday or today, so it keeps growing as photos arrive.
+- **Photos without GPS** taken on a trip's days belong to it (phones drop GPS on some shots). **Which day** a photo is on is
+  its own local date: the zone the camera recorded (EXIF `OffsetTime*`) or the zone of an edit, UTC when unknown, as for On this
+  day. A photo without a capture time is never in a trip.
+- **Title**: the city when one city holds at least 60% of the trip's away photos, else the region (state) when one does,
+  else the country with the most ("Italy" for three cities). Then the dates: "October 2026", "Sep – Oct 2026",
+  "Dec 2025 – Jan 2026".
+- **Visibility** is the timeline's: never hidden, archived, trashed or dismissed ("Not this one") photos; a RAW + JPEG pair
+  once; with the user's stacks setting on, a stack counts once (its cover shows). The photos are the owner's own (shared
+  libraries are not memories either). The trips are off, and the answer empty, when the user turned memories off.
+- **Cover**: a processed photo of the trip away from home: a favorite first, then the best star rating, then the photo nearest
+  the middle of the trip.
+- Dismissing a whole trip is not offered: "Not this one" on photos (which also takes them out of On this day) shrinks it, and a
+  trip left with fewer than 8 photos disappears.
+
+## API (assets service, owner-scoped)
+
+| Request | Answer |
+|---|---|
+| `GET /assets/trips?date=YYYY-MM-DD&limit=12&before=YYYY-MM-DD` | `{enabled, trips: [{id, from, to, ongoing, title, date_label, place: {name, level: "city" \| "region" \| "country", city?, region?, country, country_code}, photos, cover_id, cover}], next_before}`, newest first. `date` is the user's today (UTC today when absent), `limit` 1 to 50, `before` returns the trips that ended before that day and `next_before` is its value for the next page (null on the last). `id` is `<from>_<to>`; `from` and `to` are local dates; `cover` is a list item (thumbnail fields) like the library's. |
+| `GET /assets?from=YYYY-MM-DD&to=YYYY-MM-DD&memories=true` | A trip's photos in the library's own list (same items, `limit`, `cursor`, stacks): photos whose local date is within the range (either bound may be omitted; photos without a capture time are left out then), and with `memories=true` without the dismissed ones. Its length is the trip's `photos`. |
+
+## How it stays fast
+
+One query reads the window as (local day, place) counts: an index range of `assets_timeline_idx` (about two years of one
+owner's photos, a heap read each for the place and zone columns), grouped to some thousand rows whatever the library size;
+home, runs and titles are arithmetic on those. Each trip returned then costs a count and a cover query, both a range of the same
+index (the range's bounds hold every local date that can fall in it, then the zone arithmetic runs on those rows only). No
+index was added; the cost is the heap reads of the window (not measured at 100,000 photos; On this day reads about a thousand rows).
+
+## Tests
+`routes/trips_tests.rs` (DB-backed): two users, a home city and three trips (one city, three cities of one country, one still
+going on), a GPS-less photo inside and one outside, hidden, dismissed and stacked photos, titles, ranges, counts, covers
+(favorite, rating), paging, the switch, isolation, recorded zones, no home; the library list's `from`/`to`/`memories`.
+Unit tests in `routes/trips.rs`: gaps, home days, minimum size, near towns, labels.
+
 # Text in photos
 
 What is written in a photo (a sign, a receipt, a screenshot, a page) is read on the server, found by search, shown in the viewer to
