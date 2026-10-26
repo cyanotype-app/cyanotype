@@ -55,6 +55,17 @@ describe("ShareDialog (create)", () => {
     expect(screen.getByRole("link", { name: "Shared links" })).toHaveAttribute("href", "/shared");
   });
 
+  it("shows the link as a QR code too, to open it on a phone", async () => {
+    vi.spyOn(shareApi, "create").mockResolvedValue(link(1, { token: "Q".repeat(32) }));
+    const user = userEvent.setup();
+    watchClipboard();
+    renderCreate({ kind: "photos", ids: ["a"] });
+    await user.click(screen.getByRole("button", { name: "Create link" }));
+    expect(await screen.findByRole("img", { name: "QR code of the link" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Copy link" }));
+    expect(writeText).toHaveBeenLastCalledWith(`${window.location.origin}/s/${"Q".repeat(32)}`);
+  });
+
   it("sends the chosen title, expiry preset and password, and warns about originals", async () => {
     const create = vi.spyOn(shareApi, "create").mockResolvedValue(link(1));
     const user = userEvent.setup();

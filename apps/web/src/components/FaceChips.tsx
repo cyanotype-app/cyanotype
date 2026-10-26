@@ -1,31 +1,11 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
 import { api, ApiError, type FaceBox, type Person, type PhotoFace } from "../api";
 import { filterablePeople, nameProblem, personLabel, photosWord, suggestionQuestion } from "../peopleText";
+import { Button } from "../ui/Button";
 import { FaceInPhoto } from "./FaceInPhoto";
+import { FormError, Modal, SelectBox, TextInput } from "./sheetForm";
 
 const NEW = "__new__";
-
-/** Escape cancels a face dialog (before the viewer or the page behind it hears it), and focus goes back to where it was on close. */
-function useDialogKeys(ref: { current: HTMLElement | null }, focus: string, onCancel: () => void) {
-  useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
-    ref.current?.querySelector<HTMLElement>(focus)?.focus();
-    return () => prev?.focus?.();
-    // The first focus is the dialog's own, once.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onCancel();
-      }
-    }
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [onCancel]);
-}
 
 /**
  * "Who is this?" for a face nobody has claimed: the photo with the face outlined (when its picture is known), then pick a person, or
@@ -50,7 +30,7 @@ export function AssignFaceDialog({
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const ref = useRef<HTMLFormElement>(null);
+  const form = useId();
 
   useEffect(() => {
     let live = true;
@@ -62,7 +42,6 @@ export function AssignFaceDialog({
       live = false;
     };
   }, []);
-  useDialogKeys(ref, "select", onCancel);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -92,29 +71,46 @@ export function AssignFaceDialog({
   }
 
   return (
-    <div className="modal-backdrop">
-      <form className="modal card" role="dialog" aria-modal="true" aria-labelledby="assign-face-title" ref={ref} onSubmit={(e) => void submit(e)}>
-        <h2 id="assign-face-title">Who is this?</h2>
+    <Modal
+      onClose={onCancel}
+      title="Who is this?"
+      size="sm"
+      footer={
+        <>
+          {onNotAFace && (
+            <Button variant="quiet" className="md:mr-auto" onClick={() => void notAFace()} disabled={busy}>
+              Not a face
+            </Button>
+          )}
+          <Button variant="secondary" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" form={form} disabled={busy || people === null}>
+            Save
+          </Button>
+        </>
+      }
+    >
+      <form id={form} className="flex flex-col gap-3" onSubmit={(e) => void submit(e)}>
         {previewUrl && <FaceInPhoto url={previewUrl} box={face.box} />}
-        <label htmlFor="assign-face-person" className="sr-only">
+        <label htmlFor={`${form}-person`} className="sr-only">
           Person
         </label>
-        <select id="assign-face-person" className="text-input" value={choice} onChange={(e) => setChoice(e.target.value)} disabled={busy || people === null}>
+        <SelectBox id={`${form}-person`} data-autofocus="" value={choice} onChange={(e) => setChoice(e.target.value)} disabled={busy || people === null}>
           <option value={NEW}>A new person</option>
           {(people ?? []).map((p) => (
             <option key={p.id} value={p.id}>
               {personLabel(p)} ({photosWord(p.photos)})
             </option>
           ))}
-        </select>
+        </SelectBox>
         {choice === NEW && (
           <>
-            <label htmlFor="assign-face-name" className="sr-only">
+            <label htmlFor={`${form}-name`} className="sr-only">
               Name (optional)
             </label>
-            <input
-              id="assign-face-name"
-              className="text-input"
+            <TextInput
+              id={`${form}-name`}
               placeholder="Name (optional)"
               value={name}
               maxLength={100}
@@ -123,26 +119,9 @@ export function AssignFaceDialog({
             />
           </>
         )}
-        {error && (
-          <p role="alert" className="form-error">
-            {error}
-          </p>
-        )}
-        <div className="modal-actions">
-          {onNotAFace && (
-            <button type="button" className="btn btn-quiet modal-actions-start" onClick={() => void notAFace()} disabled={busy}>
-              Not a face
-            </button>
-          )}
-          <button type="button" className="btn btn-quiet" onClick={onCancel} disabled={busy}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={busy || people === null}>
-            Save
-          </button>
-        </div>
+        {error && <FormError>{error}</FormError>}
       </form>
-    </div>
+    </Modal>
   );
 }
 
@@ -170,9 +149,7 @@ export function ConfirmFaceDialog({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
   const name = personLabel(person);
-  useDialogKeys(ref, "button.btn-primary", onCancel);
   async function answer(run: () => Promise<void>) {
     setBusy(true);
     setError(null);
@@ -184,27 +161,26 @@ export function ConfirmFaceDialog({
     }
   }
   return (
-    <div className="modal-backdrop">
-      <div className="modal card" role="dialog" aria-modal="true" aria-labelledby="confirm-face-title" ref={ref}>
-        <h2 id="confirm-face-title">{suggestionQuestion(person)}</h2>
-        <FaceInPhoto url={previewUrl} box={box} />
-        {error && (
-          <p role="alert" className="form-error">
-            {error}
-          </p>
-        )}
-        <div className="modal-actions">
-          <button type="button" className="btn btn-quiet modal-actions-start" disabled={busy} onClick={() => void answer(onNotAFace)}>
+    <Modal
+      onClose={onCancel}
+      title={suggestionQuestion(person)}
+      size="sm"
+      footer={
+        <>
+          <Button variant="quiet" className="md:mr-auto" disabled={busy} onClick={() => void answer(onNotAFace)}>
             Not a face
-          </button>
-          <button type="button" className="btn btn-quiet" aria-label={`No, this is not ${name}`} disabled={busy} onClick={() => void answer(onNo)}>
+          </Button>
+          <Button variant="secondary" aria-label={`No, this is not ${name}`} disabled={busy} onClick={() => void answer(onNo)}>
             No
-          </button>
-          <button type="button" className="btn btn-primary" aria-label={`Yes, this is ${name}`} disabled={busy} onClick={() => void answer(onYes)}>
+          </Button>
+          <Button variant="primary" data-autofocus="" aria-label={`Yes, this is ${name}`} disabled={busy} onClick={() => void answer(onYes)}>
             Yes
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </>
+      }
+    >
+      <FaceInPhoto url={previewUrl} box={box} />
+      {error && <FormError>{error}</FormError>}
+    </Modal>
   );
 }

@@ -127,7 +127,7 @@ describe("TagsPage", () => {
     expect(screen.getByText("9 photos")).toBeInTheDocument();
     await user.type(screen.getByRole("searchbox", { name: "Find a tag" }), "barb");
     expect(screen.queryByRole("link", { name: /Beach/ })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Most used" }));
+    await user.click(screen.getByRole("radio", { name: "Most used" }));
     await waitFor(() => expect(list).toHaveBeenLastCalledWith({ sort: "count", limit: 5000 }));
   });
 

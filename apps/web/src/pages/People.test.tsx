@@ -175,7 +175,7 @@ describe("the People page", () => {
       await pick(/^Person B/);
       await pick(/^Unnamed person/);
       await userEvent.click(within(screen.getByRole("toolbar", { name: "Selection" })).getByRole("button", { name: "Delete" }));
-      const dialog = screen.getByRole("alertdialog", { name: "Delete 2 people?" });
+      const dialog = screen.getByRole("dialog", { name: "Delete 2 people?" });
       expect(within(dialog).getByText(/The photos stay in your library/)).toBeInTheDocument();
       expect(bulk).not.toHaveBeenCalled();
       await userEvent.click(within(dialog).getByRole("button", { name: "Delete people" }));

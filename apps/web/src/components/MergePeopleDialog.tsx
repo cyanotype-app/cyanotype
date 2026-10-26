@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent } from "react";
 import type { Person } from "../api";
 import { isNamed, nameProblem, personLabel, photosWord } from "../peopleText";
-import { FaceCrop } from "./FaceCrop";
+import { Button } from "../ui/Button";
+import { BlankFace, FaceCrop } from "./FaceCrop";
+import { FormError, Modal, Note, TextInput } from "./sheetForm";
 
 /** The person to keep by default: the named one with the most photos, else the one with the most photos. */
 export const defaultSurvivor = (people: readonly Person[]): Person | undefined =>
@@ -25,27 +27,10 @@ export function MergePeopleDialog({
   onMerge: (into: Person, name: string | undefined) => void;
   onCancel: () => void;
 }) {
+  const id = useId();
   const [into, setInto] = useState(() => defaultSurvivor(people)?.id ?? "");
   const [name, setName] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
-  const ref = useRef<HTMLFormElement>(null);
-
-  useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
-    ref.current?.querySelector<HTMLElement>("input[type=radio]:checked")?.focus();
-    return () => prev?.focus?.();
-  }, []);
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onCancel();
-      }
-    }
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [onCancel]);
 
   const target = people.find((p) => p.id === into);
   function submit(e: FormEvent) {
@@ -56,32 +41,52 @@ export function MergePeopleDialog({
     onMerge(target, name.trim() === "" ? undefined : name.trim());
   }
   return (
-    <div className="modal-backdrop">
-      <form className="modal card" role="dialog" aria-modal="true" aria-labelledby="merge-people-title" ref={ref} onSubmit={submit}>
-        <h2 id="merge-people-title">Merge {people.length} people into one?</h2>
-        <fieldset className="merge-keep" disabled={busy}>
-          <legend>Keep this person</legend>
-          {people.map((p) => (
-            <label key={p.id} className="merge-keep-row">
-              <input type="radio" name="merge-keep" value={p.id} checked={p.id === into} onChange={() => setInto(p.id)} />
-              {p.cover ? (
-                <FaceCrop url={p.cover.preview_url} box={p.cover.box} className="merge-keep-face" />
-              ) : (
-                <span className="face-crop round merge-keep-face blank" aria-hidden="true" />
-              )}
-              <span className="merge-keep-text">
-                <span className="merge-keep-name">{personLabel(p)}</span>
-                <span className="muted small">{photosWord(p.photos)}</span>
-              </span>
-            </label>
-          ))}
+    <Modal
+      onClose={onCancel}
+      title={`Merge ${people.length} people into one?`}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" form={id} disabled={busy || !target}>
+            Merge
+          </Button>
+        </>
+      }
+    >
+      <form id={id} className="flex flex-col gap-4" onSubmit={submit}>
+        <fieldset className="m-0 min-w-0 border-0 p-0" disabled={busy}>
+          <legend className="mb-1.5 p-0 text-[0.8125rem] font-medium text-muted">Keep this person</legend>
+          <div className="flex flex-col">
+            {people.map((p) => (
+              <label
+                key={p.id}
+                className="flex min-h-14 cursor-pointer items-center gap-3 rounded-card px-1.5 hover:bg-surface has-[:checked]:bg-surface has-[:disabled]:cursor-default"
+              >
+                <input
+                  type="radio"
+                  name={`${id}-keep`}
+                  value={p.id}
+                  className="size-5 shrink-0 accent-accent"
+                  checked={p.id === into}
+                  data-autofocus={p.id === into ? "" : undefined}
+                  onChange={() => setInto(p.id)}
+                />
+                {p.cover ? <FaceCrop url={p.cover.preview_url} box={p.cover.box} className="size-11 shrink-0" /> : <BlankFace className="size-11 shrink-0" />}
+                <span className="min-w-0">
+                  <span className="block truncate text-[0.9375rem]">{personLabel(p)}</span>
+                  <span className="block text-[0.8125rem] text-muted">{photosWord(p.photos)}</span>
+                </span>
+              </label>
+            ))}
+          </div>
         </fieldset>
-        <label htmlFor="merge-people-name" className="sr-only">
+        <label htmlFor={`${id}-name`} className="sr-only">
           Name (optional)
         </label>
-        <input
-          id="merge-people-name"
-          className="text-input"
+        <TextInput
+          id={`${id}-name`}
           placeholder="Name (optional)"
           value={name}
           maxLength={100}
@@ -91,24 +96,12 @@ export function MergePeopleDialog({
             setProblem(null);
           }}
         />
-        <p className="muted small">
+        <Note>
           The photos of the others go to {target ? personLabel(target) : "the person you keep"}, and the others are deleted. Their name stays; if they have
           none, the first name among the others is used. A name typed here replaces it.
-        </p>
-        {(problem ?? error) && (
-          <p role="alert" className="form-error">
-            {problem ?? error}
-          </p>
-        )}
-        <div className="modal-actions">
-          <button type="button" className="btn btn-quiet" onClick={onCancel} disabled={busy}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={busy || !target}>
-            Merge
-          </button>
-        </div>
+        </Note>
+        {(problem ?? error) && <FormError>{problem ?? error}</FormError>}
       </form>
-    </div>
+    </Modal>
   );
 }

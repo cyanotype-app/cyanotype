@@ -98,15 +98,17 @@ Albums are named, owner-scoped collections of photos. An album references photos
 
 ## What the user sees
 
-- **Albums** (top bar, `/albums`): cards with cover, title, photo count and date range, most recently updated first,
-  and **New album**.
-- An album page (`/albums/:id`) shows the title and description (**Edit**), the photos in the library grid and
-  lightbox, **Select** (**Remove from album**, **Set as cover** with exactly one photo selected), **Add photos** (a
-  picker over the whole library using the same selection bar) and **Delete album** (confirmation: the photos stay in
-  the library).
-- **Add to album** in the library's selection bar and in the lightbox opens a dialog with a searchable album list and
-  **New album** (creates it with the photos). A toast says "Added N to <album>"; photos already in the album are not
-  counted. The lightbox lists the albums the current photo is in.
+- **Albums** (Collections, the sidebar, `/albums`): a grid of cards with a square cover, title, photo count and date range,
+  most recently updated first (two columns on a phone, five or so on a wide screen), a small **Smart** or **Shared** badge
+  (an album with a live link) on the cover, and a **+** in the header with **New album** and **New smart album**.
+- An album page (`/albums/:id`) shows the cover wide and soft, then the count, date range and description, with **Share** and
+  **Add photos** in the header and a **⋯** menu: **Edit details** (title and description), **Choose cover** and **Delete album**
+  (confirmation: the photos stay in the library). Under the cover: **Slideshow**, **Download** and **Select** (**Remove from
+  album**, **Set as cover** with exactly one photo selected). **Add photos** is a sheet over the whole library with the same
+  selection (Select all, Clear, Add N).
+- **Add to album** in the library's selection bar and in the lightbox opens a sheet with a search field, **New album** first and
+  the albums below it, the most recently updated first (creates the album with the photos). A toast says "Added N to <album>";
+  photos already in the album are not counted. The lightbox lists the albums the current photo is in.
 
 ## API (assets service, owner-scoped)
 
@@ -555,8 +557,8 @@ A share link gives anyone who has it a read-only view of an album or of a handfu
 
 - **Share** in the library's selection bar, on an album page (the whole album, or the selected photos), and in the
   photo viewer. The dialog asks for an optional title, an expiry (1 day, 1 week, 1 month, never), an optional password
-  and the download policy, then shows the link and copies it.
-- **Shared links** (`/shared`, reached from the Albums page so the top bar keeps its four buttons at 320 px) lists every
+  and the download policy (a sheet), then shows the link with a QR code, and copies it.
+- **Shared links** (`/shared`, in Collections and the sidebar) lists every
   link with what it shares, its state (expired, password, originals), views and its address, with **Copy link**,
   **Open**, **Edit** (title, expiry, password, downloads) and **Revoke** (confirmation).
 - An **album link** follows the album live: photos added later appear, trashed photos disappear (and come back when
@@ -1622,9 +1624,9 @@ page, a search filter, tag words in text search, and keywords imported from the 
   tags* and *Remove tags*: chips plus a field with autocomplete (Enter or a comma adds a name, Backspace takes the last chip back). In
   the viewer's Info panel a *Tags* row shows the photo's tags (a dashed outline marks one that was **imported** from the file), an *x*
   on each removes it, *Add tag* opens the same field.
-- **Tags view** (*More*, *Tags*): every tag with its photo count, A to Z or most used, with a filter box. A tag opens its **tag page**: the
-  photos (select, rate, tag, *Remove this tag*), *Rename*, *Merge into...* (another tag; every photo gets that one and this one goes),
-  *Delete tag* (taken off its photos, the photos stay). Renaming to a name another tag has says so and points at Merge.
+- **Tags view** (Collections, the sidebar, `/tags`): every tag with its photo count, A to Z or most used, with a filter box. A tag opens its
+  **tag page**: the photos (select, rate, tag, *Remove this tag*), and in the **⋯** menu *Rename*, *Merge into...* (another tag; every photo gets
+  that one and this one goes), *Search with filters* and *Delete tag* (taken off its photos, the photos stay). Renaming to a name another tag has says so and points at Merge.
 - **Search.** *Tags* in the filter sheet (existing tags only, with autocomplete) and, with two or more, *All of them* or *Any of them*. A chip
   (*Tags: beach and sunset*), `tags=beach,sunset&tag_mode=any` in the address. Text search also finds a photo by the words of its tags:
   they lead the results exactly as caption words do (every word must be in the caption or in a tag).
@@ -1696,14 +1698,14 @@ a photo that starts to match appears and one that stops disappears, in the album
 
 ## What the user sees
 
-- *Albums*, *New smart album*: a title, **match all / any** over a list of rules, *Include archived photos*, and a **live preview** (how many photos
+- *Albums*, **+**, *New smart album* (a sheet): a title, **match all / any** over a list of rules, *Include archived photos*, and a **live preview** (how many photos
   match right now and eight of them). Rules: *Date range*, *Place*, *Camera*, *Lens*, *File type*, *Favorites*, *Rating* (N stars and up), *Tags*
   (with all / any), *Location* (has or has none), *Text in the photo* (has or has none), *Caption contains*, and with People on *People* (all of the chosen
   people are in the photo, `docs/faces.md`). Place, camera and lens suggest what the library has.
 - **A text query is not a rule**, and the editor says why: a semantic search such as "dog on the beach" ranks by a model, so the album's contents
   would change without a photo changing. The caption rule (a plain substring) and the tag rule are stable.
 - In *Albums* a smart album has a **Smart** badge, its rules in words and its live count (`10,000+` for a big one). Its page says *Smart*, shows the
-  rules and has **Edit rules** in place of *Add photos*; selecting photos there offers Rate, Tag, Share and the rest, but no *Set as cover* or
+  rules and has **Edit rules** (in the **⋯** menu) in place of *Add photos*; selecting photos there offers Rate, Tag, Share and the rest, but no *Set as cover* or
   *Remove from album* (the cover is the newest match). A smart album is not offered in *Add to album* or as the album filter of a search.
 - **Sharing** works like any album link: the visitor sees what the rules match when they look (the newest 10,000), never a hidden photo, and the
   owner's link list counts the same.

@@ -1,9 +1,14 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Copy } from "lucide-react";
+import { useId, useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, isScope, type Target, type ScopeTarget } from "../api";
 import { photoCount } from "../albumText";
 import { shareApi, type ShareLink } from "../shareApi";
 import { EXPIRY_PRESETS, copyText, expiryFromPreset, expiryText, shareUrl, type ExpiryPreset } from "../shareText";
+import { Button } from "../ui/Button";
+import { Switch } from "../ui/Controls";
+import { QrCode } from "./QrCode";
+import { CheckRow, Field, FormError, Modal, Note, SelectBox, TextInput } from "./sheetForm";
 
 /**
  * What a new link shares: a whole album (followed live), these photos (a fixed set), or, for "Select all", a view
@@ -23,28 +28,6 @@ const photosIn = (t: ShareTarget) => (t.kind === "photos" ? t.ids.length : t.kin
 
 /** The most photos one link can hold (the server's bulk limit). */
 export const MAX_SHARE_PHOTOS = 1000;
-
-function useModal(onClose: () => void) {
-  const ref = useRef<HTMLFormElement>(null);
-  useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
-    ref.current?.querySelector<HTMLElement>("input, select")?.focus();
-    return () => prev?.focus?.();
-  }, []);
-  // Capture so Escape never also closes the lightbox or clears a selection underneath.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onClose();
-      }
-    }
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [onClose]);
-  return ref;
-}
 
 interface FieldsProps {
   idPrefix: string;
@@ -67,63 +50,47 @@ interface FieldsProps {
 
 function Fields(p: FieldsProps) {
   return (
-    <div className="share-fields">
-      <label htmlFor={`${p.idPrefix}-title`}>Title (optional)</label>
-      <input
-        id={`${p.idPrefix}-title`}
-        className="text-input"
-        value={p.title}
-        maxLength={200}
-        placeholder={p.titlePlaceholder}
-        onChange={(e) => p.onTitle(e.target.value)}
-        disabled={p.busy}
-      />
-      {p.expiry}
-      <label htmlFor={`${p.idPrefix}-password`}>{p.passwordLabel}</label>
-      <input
-        id={`${p.idPrefix}-password`}
-        className="text-input"
-        type="password"
-        autoComplete="new-password"
-        value={p.password}
-        maxLength={200}
-        onChange={(e) => p.onPassword(e.target.value)}
-        disabled={p.busy}
-      />
-      {p.passwordHint && <p className="muted small share-hint">{p.passwordHint}</p>}
-      {p.extra}
-      <label className="share-check">
-        <input
-          type="checkbox"
-          checked={p.allowDownload}
-          onChange={(e) => p.onAllowDownload(e.target.checked)}
+    <div className="flex flex-col gap-4">
+      <Field label="Title (optional)" htmlFor={`${p.idPrefix}-title`}>
+        <TextInput
+          id={`${p.idPrefix}-title`}
+          data-autofocus=""
+          value={p.title}
+          maxLength={200}
+          placeholder={p.titlePlaceholder}
+          onChange={(e) => p.onTitle(e.target.value)}
           disabled={p.busy}
         />
-        <span>Allow downloads</span>
-      </label>
-      {p.allowDownload && (
-        <>
-          <label className="share-check">
-            <input
-              type="checkbox"
-              checked={p.includeOriginals}
-              onChange={(e) => p.onIncludeOriginals(e.target.checked)}
-              disabled={p.busy}
-            />
-            <span>Include originals (contains location)</span>
-          </label>
-          {p.includeOriginals ? (
-            <p className="share-warning" role="note">
-              Originals keep their GPS location and camera details, so anyone with the link can see where the photos
-              were taken. RAW and HEIC files can only be shared this way.
-            </p>
-          ) : (
-            <p className="muted small share-hint">
-              Visitors download a JPEG copy without location or camera details. RAW and HEIC photos are not offered.
-            </p>
-          )}
-        </>
-      )}
+      </Field>
+      {p.expiry}
+      <Field label={p.passwordLabel} htmlFor={`${p.idPrefix}-password`} hint={p.passwordHint}>
+        <TextInput
+          id={`${p.idPrefix}-password`}
+          type="password"
+          autoComplete="new-password"
+          value={p.password}
+          maxLength={200}
+          onChange={(e) => p.onPassword(e.target.value)}
+          disabled={p.busy}
+        />
+      </Field>
+      {p.extra}
+      {/* (Radix adds a hidden checkbox beside a switch inside a form; nothing here reads it, and it would sit outside the sheet.) */}
+      <div className="flex flex-col divide-y divide-line [&_input[aria-hidden=true]]:hidden">
+        <Switch checked={p.allowDownload} onChange={p.onAllowDownload} disabled={p.busy} label="Allow downloads" />
+        {p.allowDownload && (
+          <Switch checked={p.includeOriginals} onChange={p.onIncludeOriginals} disabled={p.busy} label="Include originals (contains location)" />
+        )}
+      </div>
+      {p.allowDownload &&
+        (p.includeOriginals ? (
+          <p className="rounded-card bg-surface p-3 text-sm text-danger" role="note">
+            Originals keep their GPS location and camera details, so anyone with the link can see where the photos
+            were taken. RAW and HEIC files can only be shared this way.
+          </p>
+        ) : (
+          <Note>Visitors download a JPEG copy without location or camera details. RAW and HEIC photos are not offered.</Note>
+        ))}
     </div>
   );
 }
@@ -132,7 +99,7 @@ function errorText(e: unknown, fallback: string): string {
   return e instanceof ApiError || e instanceof Error ? e.message : fallback;
 }
 
-/** Create a link to an album or to the selected photos, then show it with a copy button. */
+/** Create a link to an album or to the selected photos, then show it with a copy button and a QR code. */
 export function ShareDialog({
   target,
   onClose,
@@ -143,7 +110,6 @@ export function ShareDialog({
   onCreated?: (share: ShareLink) => void;
 }) {
   const id = useId();
-  const ref = useModal(onClose);
   const [title, setTitle] = useState("");
   const [preset, setPreset] = useState<ExpiryPreset>("never");
   const [password, setPassword] = useState("");
@@ -189,61 +155,63 @@ export function ShareDialog({
   if (created) {
     const url = shareUrl(created.token);
     return (
-      <div className="modal-backdrop">
-        <form
-          className="modal card share-dialog"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby={`${id}-head`}
-          ref={ref}
-          onSubmit={(e) => {
-            e.preventDefault();
-            onClose();
-          }}
-        >
-          <h2 id={`${id}-head`}>Link created</h2>
+      <Modal
+        onClose={onClose}
+        title="Link created"
+        size="sm"
+        footer={
+          <>
+            <Button asChild variant="quiet" className="md:mr-auto">
+              <Link to="/shared" onClick={onClose}>
+                Shared links
+              </Link>
+            </Button>
+            <Button variant="secondary" onClick={() => void copyText(url).then((ok) => setCopied(ok ? "yes" : "no"))}>
+              <Copy />
+              Copy link
+            </Button>
+            <Button variant="primary" onClick={onClose} data-autofocus="">
+              Done
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
           <label htmlFor={`${id}-url`} className="sr-only">
             Share link
           </label>
-          <input
-            id={`${id}-url`}
-            className="text-input share-url"
-            readOnly
-            value={url}
-            onFocus={(e) => e.currentTarget.select()}
-          />
-          <p className="muted small share-hint" role="status">
+          <TextInput id={`${id}-url`} readOnly value={url} onFocus={(e) => e.currentTarget.select()} />
+          <div className="mx-auto w-44 rounded-card bg-white p-0 [&_svg]:m-0 [&_svg]:w-full [&_svg]:rounded-card [&_svg]:border-0">
+            <QrCode text={url} label="QR code of the link" />
+          </div>
+          <Note role="status">
             {copied === "yes" ? "Copied to the clipboard. " : copied === "no" ? "Copy the link above. " : ""}
             Anyone with it can view {created.kind === "album" ? "the album" : photoCount(created.item_count)}
             {created.has_password ? ", after entering the password" : ""}. {expiryText(created.expires_at)}.
-          </p>
-          <div className="modal-actions">
-            <Link to="/shared" className="btn btn-quiet" onClick={onClose}>
-              Shared links
-            </Link>
-            <button
-              type="button"
-              className="btn btn-quiet"
-              onClick={() => void copyText(url).then((ok) => setCopied(ok ? "yes" : "no"))}
-            >
-              Copy link
-            </button>
-            <button type="submit" className="btn btn-primary">
-              Done
-            </button>
-          </div>
-        </form>
-      </div>
+          </Note>
+        </div>
+      </Modal>
     );
   }
 
   return (
-    <div className="modal-backdrop">
-      <form className="modal card share-dialog" role="dialog" aria-modal="true" aria-labelledby={`${id}-head`} ref={ref} onSubmit={(e) => void submit(e)}>
-        <h2 id={`${id}-head`}>Share {what}</h2>
-        {target.kind === "album" && (
-          <p className="muted small share-hint">Photos you add to the album later appear on the link.</p>
-        )}
+    <Modal
+      onClose={onClose}
+      title={`Share ${what}`}
+      size="md"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" form={id} disabled={busy || tooMany}>
+            Create link
+          </Button>
+        </>
+      }
+    >
+      <form id={id} className="flex flex-col gap-4" onSubmit={(e) => void submit(e)}>
+        {target.kind === "album" && <Note>Photos you add to the album later appear on the link.</Note>}
         <Fields
           idPrefix={id}
           busy={busy}
@@ -251,22 +219,15 @@ export function ShareDialog({
           title={title}
           onTitle={setTitle}
           expiry={
-            <>
-              <label htmlFor={`${id}-expiry`}>Link expires</label>
-              <select
-                id={`${id}-expiry`}
-                className="text-input"
-                value={preset}
-                onChange={(e) => setPreset(e.target.value as ExpiryPreset)}
-                disabled={busy}
-              >
+            <Field label="Link expires" htmlFor={`${id}-expiry`}>
+              <SelectBox id={`${id}-expiry`} value={preset} onChange={(e) => setPreset(e.target.value as ExpiryPreset)} disabled={busy}>
                 {EXPIRY_PRESETS.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.label}
                   </option>
                 ))}
-              </select>
-            </>
+              </SelectBox>
+            </Field>
           }
           password={password}
           onPassword={setPassword}
@@ -278,25 +239,11 @@ export function ShareDialog({
           onIncludeOriginals={setIncludeOriginals}
         />
         {tooMany && (
-          <p role="alert" className="form-error">
-            A link holds up to {MAX_SHARE_PHOTOS} photos. Put them in an album and share the album instead.
-          </p>
+          <FormError>A link holds up to {MAX_SHARE_PHOTOS} photos. Put them in an album and share the album instead.</FormError>
         )}
-        {error && (
-          <p role="alert" className="form-error">
-            {error}
-          </p>
-        )}
-        <div className="modal-actions">
-          <button type="button" className="btn btn-quiet" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={busy || tooMany}>
-            Create link
-          </button>
-        </div>
+        {error && <FormError>{error}</FormError>}
       </form>
-    </div>
+    </Modal>
   );
 }
 
@@ -313,7 +260,6 @@ export function EditShareDialog({
   onSaved: (share: ShareLink) => void;
 }) {
   const id = useId();
-  const ref = useModal(onClose);
   const [title, setTitle] = useState(share.title ?? "");
   const [expiry, setExpiry] = useState<EditExpiry>("keep");
   const [password, setPassword] = useState("");
@@ -344,9 +290,22 @@ export function EditShareDialog({
   }
 
   return (
-    <div className="modal-backdrop">
-      <form className="modal card share-dialog" role="dialog" aria-modal="true" aria-labelledby={`${id}-head`} ref={ref} onSubmit={(e) => void submit(e)}>
-        <h2 id={`${id}-head`}>Edit link</h2>
+    <Modal
+      onClose={onClose}
+      title="Edit link"
+      size="md"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" form={id} disabled={busy}>
+            Save
+          </Button>
+        </>
+      }
+    >
+      <form id={id} className="flex flex-col gap-4" onSubmit={(e) => void submit(e)}>
         <Fields
           idPrefix={id}
           busy={busy}
@@ -354,23 +313,16 @@ export function EditShareDialog({
           title={title}
           onTitle={setTitle}
           expiry={
-            <>
-              <label htmlFor={`${id}-expiry`}>Link expires</label>
-              <select
-                id={`${id}-expiry`}
-                className="text-input"
-                value={expiry}
-                onChange={(e) => setExpiry(e.target.value as EditExpiry)}
-                disabled={busy}
-              >
+            <Field label="Link expires" htmlFor={`${id}-expiry`}>
+              <SelectBox id={`${id}-expiry`} value={expiry} onChange={(e) => setExpiry(e.target.value as EditExpiry)} disabled={busy}>
                 <option value="keep">Keep: {expiryText(share.expires_at)}</option>
                 {EXPIRY_PRESETS.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.id === "never" ? "Never" : `${p.label} from now`}
                   </option>
                 ))}
-              </select>
-            </>
+              </SelectBox>
+            </Field>
           }
           password={password}
           onPassword={(v) => {
@@ -385,18 +337,16 @@ export function EditShareDialog({
           }
           extra={
             share.has_password && (
-              <label className="share-check">
-                <input
-                  type="checkbox"
-                  checked={removePassword}
-                  onChange={(e) => {
-                    setRemovePassword(e.target.checked);
-                    if (e.target.checked) setPassword("");
-                  }}
-                  disabled={busy}
-                />
-                <span>Remove the password</span>
-              </label>
+              <CheckRow
+                checked={removePassword}
+                onChange={(on) => {
+                  setRemovePassword(on);
+                  if (on) setPassword("");
+                }}
+                disabled={busy}
+              >
+                Remove the password
+              </CheckRow>
             )
           }
           allowDownload={allowDownload}
@@ -404,20 +354,8 @@ export function EditShareDialog({
           includeOriginals={includeOriginals}
           onIncludeOriginals={setIncludeOriginals}
         />
-        {error && (
-          <p role="alert" className="form-error">
-            {error}
-          </p>
-        )}
-        <div className="modal-actions">
-          <button type="button" className="btn btn-quiet" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={busy}>
-            Save
-          </button>
-        </div>
+        {error && <FormError>{error}</FormError>}
       </form>
-    </div>
+    </Modal>
   );
 }
