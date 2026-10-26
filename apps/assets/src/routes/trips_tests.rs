@@ -18,6 +18,12 @@ const FLORENCE: Spot = ("Florence", "Tuscany", "Italy", "IT", 43.77, 11.25);
 const VENICE: Spot = ("Venice", "Veneto", "Italy", "IT", 45.44, 12.33);
 const MADRID: Spot = ("Madrid", "Madrid", "Spain", "ES", 40.42, -3.70);
 const BERLIN: Spot = ("Berlin", "Berlin", "Germany", "DE", 52.52, 13.40);
+const HOUSTON: Spot = ("Houston", "Texas", "United States", "US", 29.76, -95.37);
+const MEXICO_CITY: Spot = ("Mexico City", "Mexico City", "Mexico", "MX", 19.43, -99.13);
+const SAN_DIEGO: Spot = ("San Diego", "California", "United States", "US", 32.72, -117.16);
+const TIJUANA: Spot = ("Tijuana", "Baja California", "Mexico", "MX", 32.51, -117.04);
+const NEW_YORK: Spot = ("New York", "New York", "United States", "US", 40.71, -74.01);
+const LOS_ANGELES: Spot = ("Los Angeles", "California", "United States", "US", 34.05, -118.24);
 const LONDON: Spot = ("London", "England", "United Kingdom", "GB", 51.51, -0.13);
 
 /// A processed photo taken at `taken` (UTC, no zone recorded) at `spot` (None: no GPS).
@@ -265,6 +271,83 @@ async fn trips_are_found_titled_counted_and_covered() {
     let off = trips(&app, &ka, "").await;
     assert_eq!(off["enabled"], false);
     assert!(off["trips"].as_array().unwrap().is_empty());
+
+    t.teardown().await;
+}
+
+/// (id, place name) of the trips, oldest first.
+fn spans(v: &Value) -> Vec<(String, String)> {
+    let mut out: Vec<_> = v["trips"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            (
+                t["id"].as_str().unwrap().to_string(),
+                t["place"]["name"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    out.reverse();
+    out
+}
+
+#[tokio::test]
+async fn a_run_of_away_days_is_cut_into_legs_by_place() {
+    let Some(t) = TestDb::new().await else { return };
+    let (alpha, ka) = user(&t.pool, "alpha@example.com").await;
+    let app = app(&t.pool);
+    home(&t.pool, alpha).await;
+    let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+
+    // Houston for three days, straight on to Mexico City for four: two trips, no home day between.
+    for d in ["2026-09-04", "2026-09-05", "2026-09-06"] {
+        day(&t.pool, alpha, "houston", d, Some(HOUSTON), 4).await;
+    }
+    for d in ["2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10"] {
+        day(&t.pool, alpha, "mexico", d, Some(MEXICO_CITY), 4).await;
+    }
+    // Rome, Florence and Venice over six days: one country, one trip.
+    for (d, spot) in [
+        ("2026-09-22", ROME),
+        ("2026-09-23", ROME),
+        ("2026-09-24", FLORENCE),
+        ("2026-09-25", FLORENCE),
+        ("2026-09-26", VENICE),
+        ("2026-09-27", VENICE),
+    ] {
+        day(&t.pool, alpha, "italy", d, Some(spot), 3).await;
+    }
+    // Five days in San Diego with three photos in Tijuana on the third: one trip.
+    for (d, spot, n) in [
+        ("2026-10-04", SAN_DIEGO, 4),
+        ("2026-10-05", SAN_DIEGO, 4),
+        ("2026-10-06", TIJUANA, 3),
+        ("2026-10-07", SAN_DIEGO, 4),
+        ("2026-10-08", SAN_DIEGO, 4),
+    ] {
+        day(&t.pool, alpha, "diego", d, Some(spot), n).await;
+    }
+    // New York, then Los Angeles the next day: the same country but 3900 km apart, two trips.
+    day(&t.pool, alpha, "ny", "2026-10-12", Some(NEW_YORK), 9).await;
+    day(&t.pool, alpha, "la", "2026-10-13", Some(LOS_ANGELES), 9).await;
+
+    let v = trips(&app, &ka, "").await;
+    assert_eq!(
+        spans(&v),
+        [
+            pair("2026-09-04_2026-09-06", "Houston"),
+            pair("2026-09-07_2026-09-10", "Mexico City"),
+            pair("2026-09-22_2026-09-27", "Italy"),
+            pair("2026-10-04_2026-10-08", "San Diego"),
+            pair("2026-10-12_2026-10-12", "New York"),
+            pair("2026-10-13_2026-10-13", "Los Angeles"),
+        ],
+        "{v}"
+    );
+    assert_eq!(titles(&v)[5], "Houston · September 2026");
+    assert_eq!(v["trips"][5]["photos"], 12);
+    assert_eq!(v["trips"][2]["photos"], 19);
 
     t.teardown().await;
 }

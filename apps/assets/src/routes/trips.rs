@@ -15,9 +15,13 @@
 //! too (suburbs, the next town). A day is *away* when more of its placed photos are away than at home, *home* otherwise, and
 //! neutral when none has a place (photos without GPS say nothing about where the day was spent).
 //!
-//! **A trip** is a run of away days with at most [`GAP_DAYS`] day without any away photos between two of them and no home day
-//! in the gap, holding at least [`MIN_PHOTOS`] photos (every photo of its days: GPS-less ones count, they are the same trip).
-//! It is *ongoing* when it reaches yesterday or today: it keeps growing as photos come in.
+//! **A run** is away days with at most [`GAP_DAYS`] day without any away photos between two of them and no home day in the
+//! gap. **A trip** is a *leg* of a run: a run is cut where the dominant country of a day differs from the leg's, or its
+//! photos are more than [`LEG_KM`] from the leg's centre so far (a week in Houston, then Mexico City, are two trips; days
+//! without placed away photos stay in the leg they are in). A leg under [`MIN_PHOTOS`] photos joins the leg before it (the
+//! one after it when first), then neighbours of the same country and within [`LEG_KM`] merge again (a border hop in a
+//! stay is not a trip). A leg holding at least [`MIN_PHOTOS`] photos is a trip (every photo of its days: GPS-less ones
+//! count, they are the same trip). It is *ongoing* when it reaches yesterday or today: it keeps growing as photos come in.
 //!
 //! **Title**: the most specific place that holds at least [`DOMINANT`] of the away photos: the city, else the region, else the
 //! country with the most (so "Italy" for a tour of three cities). Then the month label.
@@ -53,6 +57,8 @@ const MIN_HOME_DAYS: usize = 3;
 const GAP_DAYS: i64 = 1;
 /// A trip holds at least this many photos.
 const MIN_PHOTOS: i64 = 8;
+/// A day this far from the centre of the leg so far (or in another country) starts a new leg of the run.
+const LEG_KM: f64 = 400.0;
 /// The share of the away photos a place needs to name the trip.
 const DOMINANT: f64 = 0.6;
 const DEFAULT_LIMIT: usize = 12;
@@ -310,6 +316,113 @@ struct Day {
     total: i64,
     /// Away photos by place key.
     places: HashMap<String, i64>,
+    /// Away photos by country (code, else name).
+    countries: HashMap<String, i64>,
+    /// Sum of the away photos' coordinates, weighted by count.
+    lat: f64,
+    lon: f64,
+    weight: f64,
+}
+
+/// A stretch of a run of away days that is one place: it becomes a trip.
+struct Leg {
+    from: Date,
+    to: Date,
+    photos: i64,
+    countries: HashMap<String, i64>,
+    lat: f64,
+    lon: f64,
+    weight: f64,
+}
+
+impl Leg {
+    fn new(date: Date, d: &Day) -> Leg {
+        let mut leg = Leg {
+            from: date,
+            to: date,
+            photos: 0,
+            countries: HashMap::new(),
+            lat: 0.0,
+            lon: 0.0,
+            weight: 0.0,
+        };
+        leg.add(date, d);
+        leg
+    }
+
+    fn add(&mut self, date: Date, d: &Day) {
+        self.to = date;
+        self.photos += d.total;
+        for (c, n) in &d.countries {
+            *self.countries.entry(c.clone()).or_default() += n;
+        }
+        self.lat += d.lat;
+        self.lon += d.lon;
+        self.weight += d.weight;
+    }
+
+    fn absorb(&mut self, o: Leg) {
+        self.from = self.from.min(o.from);
+        self.to = self.to.max(o.to);
+        self.photos += o.photos;
+        for (c, n) in o.countries {
+            *self.countries.entry(c).or_default() += n;
+        }
+        self.lat += o.lat;
+        self.lon += o.lon;
+        self.weight += o.weight;
+    }
+
+    fn centre(&self) -> Option<(f64, f64)> {
+        (self.weight > 0.0).then(|| (self.lat / self.weight, self.lon / self.weight))
+    }
+
+    fn country(&self) -> Option<&String> {
+        dominant_country(&self.countries)
+    }
+
+    /// Whether a day or leg of that country and centre is the same place as this leg: the same dominant country, and centres
+    /// within [`LEG_KM`] when both are known.
+    fn same_place(&self, country: Option<&String>, centre: Option<(f64, f64)>) -> bool {
+        self.country() == country && !matches!((self.centre(), centre), (Some(a), Some(b)) if km_between(a, b) > LEG_KM)
+    }
+}
+
+/// The country with the most photos (the first by name on a tie).
+fn dominant_country(m: &HashMap<String, i64>) -> Option<&String> {
+    m.iter().max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0))).map(|(c, _)| c)
+}
+
+/// The days of a run (`from..=to`) cut into legs, see the module doc.
+fn legs(days: &std::collections::BTreeMap<Date, Day>, from: Date, to: Date) -> Vec<Leg> {
+    let mut legs: Vec<Leg> = Vec::new();
+    for (&date, d) in days.range(from..=to) {
+        let centre = (d.weight > 0.0).then(|| (d.lat / d.weight, d.lon / d.weight));
+        match legs.last_mut() {
+            // No away photos: the day stays where it is.
+            Some(leg) if d.countries.is_empty() => leg.add(date, d),
+            Some(leg) if leg.same_place(dominant_country(&d.countries), centre) => leg.add(date, d),
+            _ => legs.push(Leg::new(date, d)),
+        }
+    }
+    // Small legs join a neighbour, then neighbours that are the same place join each other.
+    while legs.len() > 1
+        && let Some(i) = legs.iter().position(|l| l.photos < MIN_PHOTOS)
+    {
+        let small = legs.remove(i);
+        legs[i.saturating_sub(1)].absorb(small);
+    }
+    let mut i = 1;
+    while i < legs.len() {
+        if legs[i - 1].same_place(legs[i].country(), legs[i].centre()) {
+            let next = legs.remove(i);
+            legs[i - 1].absorb(next);
+            i = 1;
+        } else {
+            i += 1;
+        }
+    }
+    legs
 }
 
 /// The trips in the rows (a window of (day, place) counts), newest first. Pure: the arithmetic of the module doc.
@@ -348,6 +461,15 @@ fn detect(rows: &[DayPlace], today: Date) -> Vec<Found> {
             Some(k) => {
                 d.away += r.n;
                 *d.places.entry(k).or_default() += r.n;
+                if let Some(c) = r.cc.as_ref().or(r.country.as_ref()) {
+                    *d.countries.entry(c.clone()).or_default() += r.n;
+                }
+                if let (Some(lat), Some(lon)) = (r.lat, r.lon) {
+                    let w = r.n as f64;
+                    d.lat += lat * w;
+                    d.lon += lon * w;
+                    d.weight += w;
+                }
             }
             None => {}
         }
@@ -370,7 +492,11 @@ fn detect(rows: &[DayPlace], today: Date) -> Vec<Found> {
     }
 
     let mut out = Vec::new();
-    for (from, to) in runs {
+    for (from, to) in runs
+        .into_iter()
+        .flat_map(|(from, to)| legs(&days, from, to))
+        .map(|l| (l.from, l.to))
+    {
         let (mut photos, mut away) = (0, HashMap::<String, i64>::new());
         for (_, d) in days.range(from..=to) {
             photos += d.total;
@@ -592,6 +718,8 @@ mod tests {
         }
     }
 
+    type Spot = (&'static str, &'static str, &'static str, f64, f64);
+
     const HOME: (&str, &str, &str, f64, f64) = ("Home", "Reg", "US", 40.0, -74.0);
     const NEAR: (&str, &str, &str, f64, f64) = ("Nearby", "Reg", "US", 40.1, -74.1);
     const FAR: (&str, &str, &str, f64, f64) = ("Far", "Other", "US", 42.0, -71.0);
@@ -636,6 +764,60 @@ mod tests {
             ]
         );
         assert_eq!(trips[2].photos, 12);
+    }
+
+    #[test]
+    fn a_run_is_cut_into_legs_by_country_and_distance() {
+        const HOUSTON: (&str, &str, &str, f64, f64) = ("Houston", "TX", "US", 29.76, -95.37);
+        const AUSTIN: (&str, &str, &str, f64, f64) = ("Austin", "TX", "US", 30.27, -97.74);
+        const MEXICO: (&str, &str, &str, f64, f64) = ("Mexico City", "CDMX", "MX", 19.43, -99.13);
+        const TIJUANA: (&str, &str, &str, f64, f64) = ("Tijuana", "BC", "MX", 32.51, -117.04);
+        const SAN_DIEGO: (&str, &str, &str, f64, f64) = ("San Diego", "CA", "US", 32.72, -117.16);
+        let spans = |rows: &[DayPlace]| -> Vec<(Date, Date)> {
+            let mut t = detect(rows, date!(2026 - 12 - 31));
+            t.reverse();
+            t.iter().map(|t| (t.from, t.to)).collect()
+        };
+        let stay = |spots: &[(i64, Spot, i64)]| {
+            let mut rows = home_days();
+            rows.extend(
+                spots
+                    .iter()
+                    .map(|&(d, spot, n)| at(date!(2026 - 10 - 01) + Duration::days(d - 1), Some(spot), n)),
+            );
+            rows
+        };
+        // Houston, then Mexico City, back to back: two trips.
+        let rows = stay(&[(10, HOUSTON, 5), (11, HOUSTON, 5), (12, MEXICO, 5), (13, MEXICO, 5)]);
+        assert_eq!(
+            spans(&rows),
+            [
+                (date!(2026 - 10 - 10), date!(2026 - 10 - 11)),
+                (date!(2026 - 10 - 12), date!(2026 - 10 - 13))
+            ]
+        );
+        // Houston and Austin are in one country and 235 km apart: one trip.
+        assert_eq!(spans(&stay(&[(10, HOUSTON, 5), (11, AUSTIN, 5)])).len(), 1);
+        // A short hop to Tijuana inside a San Diego stay: one trip. A first leg that is too small joins the next one.
+        let rows = stay(&[
+            (10, SAN_DIEGO, 5),
+            (11, SAN_DIEGO, 5),
+            (12, TIJUANA, 3),
+            (13, SAN_DIEGO, 5),
+        ]);
+        assert_eq!(spans(&rows), [(date!(2026 - 10 - 10), date!(2026 - 10 - 13))]);
+        let rows = stay(&[(10, TIJUANA, 3), (11, SAN_DIEGO, 5), (12, SAN_DIEGO, 5)]);
+        assert_eq!(spans(&rows), [(date!(2026 - 10 - 10), date!(2026 - 10 - 12))]);
+        // A day without place stays in the leg it follows.
+        let mut rows = stay(&[(10, HOUSTON, 8), (12, MEXICO, 8)]);
+        rows.push(at(date!(2026 - 10 - 11), None, 2));
+        assert_eq!(
+            spans(&rows),
+            [
+                (date!(2026 - 10 - 10), date!(2026 - 10 - 11)),
+                (date!(2026 - 10 - 12), date!(2026 - 10 - 12))
+            ]
+        );
     }
 
     #[test]

@@ -1445,8 +1445,14 @@ that week's photos. Nothing is stored: like On this day they are **computed when
   setting to override it (a user who moved sees the old home until the new one has more days, within a year or two).
 - A **day** is *away* when more of its photos that have a place are away from home than at home, a *home day* otherwise, and
   neutral when none has a place: photos without GPS say nothing about where the day was spent.
-- A **trip** is a run of away days. One day without away photos may sit between two of them (a quiet day, or one whose photos
-  lost their GPS); a home day ends the run. It needs at least 8 photos in all (a one-day outing to a far city counts). It is
+- A **run** is away days in a row. One day without away photos may sit between two of them (a quiet day, or one whose photos
+  lost their GPS); a home day ends the run.
+- A **trip** is a **leg** of a run, so a trip to Houston and straight on to Mexico City is two trips. A run is cut where a day's
+  main country (the one with most of its away photos) differs from the leg's, or where the day's away photos are more than
+  400 km from the leg's centre so far; a day without placed away photos stays in the leg it is in, and a day with photos in
+  both places goes with the place that has most. A leg with fewer than 8 photos joins the leg before it (the one after it
+  when first), then neighbouring legs in the same country within 400 km merge again, so a short hop over a border in the
+  middle of a stay leaves one trip. A trip needs at least 8 photos in all (a one-day outing to a far city counts). It is
   **ongoing** when it reaches yesterday or today, so it keeps growing as photos arrive.
 - **Photos without GPS** taken on a trip's days belong to it (phones drop GPS on some shots). **Which day** a photo is on is
   its own local date: the zone the camera recorded (EXIF `OffsetTime*`) or the zone of an edit, UTC when unknown, as for On this
