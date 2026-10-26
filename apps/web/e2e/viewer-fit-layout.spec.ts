@@ -54,7 +54,7 @@ async function expectFits(page: Page, label: string, sel?: Parameters<typeof mea
       const next = await measure(page, sel);
       const same = JSON.stringify(next.img) === JSON.stringify(m.img) && JSON.stringify(next.stage) === JSON.stringify(m.stage);
       m = next;
-      return same && !!next.img;
+      return same && !!next.img && next.img.w > 0 && next.img.h > 0;
     }, { message: label })
     .toBe(true);
   const { img, stage, vw, vh } = m;
