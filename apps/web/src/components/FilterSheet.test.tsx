@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { Facets } from "../api";
@@ -44,7 +44,7 @@ describe("FilterSheet", () => {
     await userEvent.selectOptions(screen.getByLabelText("Place"), "Lisbon");
     await userEvent.selectOptions(screen.getByLabelText("Location"), "true");
     await userEvent.selectOptions(screen.getByLabelText("Album"), "album-1");
-    await userEvent.click(screen.getByRole("checkbox", { name: /Favorites only \(7\)/ }));
+    await userEvent.click(screen.getByRole("switch", { name: /Favorites only \(7\)/ }));
     await userEvent.click(screen.getByRole("radio", { name: "RAW" }));
     expect(onApply).not.toHaveBeenCalled(); // nothing is applied until "Show photos"
     await userEvent.click(screen.getByRole("button", { name: "Show photos" }));
@@ -81,11 +81,29 @@ describe("FilterSheet", () => {
     expect(onApply).toHaveBeenCalledWith({});
   });
 
+  it("starts from the filters in force each time it opens, not from an abandoned edit", async () => {
+    const view = render(<FilterSheet value={{ camera: "Canon EOS R5" }} onApply={() => undefined} onClose={() => undefined} load={load} />);
+    await userEvent.selectOptions(await screen.findByLabelText("Camera"), "Apple iPhone 15");
+    view.rerender(<FilterSheet open={false} value={{ camera: "Canon EOS R5" }} onApply={() => undefined} onClose={() => undefined} load={load} />);
+    view.rerender(<FilterSheet open value={{ camera: "Canon EOS R5" }} onApply={() => undefined} onClose={() => undefined} load={load} />);
+    await waitFor(() => expect(screen.getByLabelText("Camera")).toHaveValue("Canon EOS R5"));
+  });
+
+  it("includes archived photos unless switched off", async () => {
+    const onApply = vi.fn();
+    render(<FilterSheet value={{}} onApply={onApply} onClose={() => undefined} load={load} />);
+    const sw = screen.getByRole("switch", { name: "Include archived" });
+    expect(sw).toBeChecked();
+    await userEvent.click(sw);
+    await userEvent.click(screen.getByRole("button", { name: "Show photos" }));
+    expect(onApply).toHaveBeenCalledWith({ include_archived: false });
+  });
+
   it("closes on Escape and on Cancel, applying nothing", async () => {
     const onClose = vi.fn();
     const onApply = vi.fn();
     render(<FilterSheet value={{}} onApply={onApply} onClose={onClose} load={load} />);
-    await userEvent.keyboard("{Escape}");
+    fireEvent(screen.getByRole("dialog", { name: "Filters" }), new Event("cancel", { cancelable: true })); // what Escape does to a dialog
     expect(onClose).toHaveBeenCalledTimes(1);
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(onClose).toHaveBeenCalledTimes(2);

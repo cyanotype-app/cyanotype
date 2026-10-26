@@ -678,9 +678,14 @@ search model").
 
 ## What the user sees
 
-- A **search field** in the library header, next to All photos / Favorites / Map. On a phone it is an icon at the end of
-  that row that expands into a full-width field (the tabs step aside, a back arrow closes it), so the row never holds more
-  than three tabs and one icon, and fits 320 px. Recent searches (kept in this browser only) drop down under the field.
+- **Search is a page of its own** (the Search tab on a phone, the sidebar on a desktop; **Ctrl+K** or **⌘K** from anywhere
+  in the app opens it with the field focused). Its title bar holds a large, always-visible search field and a **Filters**
+  button; the active filters sit under the field as removable chips. Before anything is typed the page suggests: this
+  browser's recent searches (clearable), the owner's named people (face crops), the library's most common places, one-tap
+  kinds of photo (Favorites, 5 stars, Text in photo, On the map, RAW, HEIC: only those the library has any of) and date
+  shortcuts (Last 7 days, This month, Last year, a year the library has). Every suggestion is a link to a search URL that
+  already existed, so deep links keep working. While text is typed, the recent searches that continue it drop down under
+  the field. The field takes focus when the page opens with nothing searched.
 - **Enter** goes to `/search?q=...`: results in the library's own grid (lightbox, favorites, select, add to album, share,
   trash all work), best match first, "N matches". A text query always has *some* ranking, so the search **cuts the list where
   the matches stop**: it shows the **strong matches** (the photos the model is sure about and that are close to the best one),
@@ -1121,7 +1126,7 @@ ways that are unknown (real recall with the real model on a real library is not 
   time once open, Select all with members) and the burst states of `e2e/mobile-overflow.spec.ts`.
 - Web: `searchText.test.ts`, `SearchBar.test.tsx`, `FilterSheet.test.tsx`, `Search.test.tsx` (the weaker tier button, no close
   matches, More like this (chip, filters beside it, select-all of the loaded photos, the not-indexed state), parsed chips and removing one, select-all over a parsed filter-only search, the re-index note), and
-  `e2e/mobile-overflow.spec.ts` (bar collapsed and expanded, recent searches, results, selection, the filter sheet with
+  `e2e/search-layout.spec.ts` (the empty page's suggestions, typing, results, selection, the filter sheet with
   long names, chips, parsed chips with a very long place, the weaker tier offered and shown, no close matches, no results,
   indexing, re-indexing, unavailable, intro, and the similar-photos page with its chip, weaker tier, lightbox button and not-indexed state) at 320 to 1280 px, light and dark.
 
