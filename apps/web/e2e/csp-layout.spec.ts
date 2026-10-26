@@ -130,7 +130,7 @@ test("every page works under the gateway's Content-Security-Policy", async ({ pa
   // Map: MapLibre, its worker, PMTiles range reads and glyphs
   await page.goto("/map");
   await page.getByText("Photos in view").first().waitFor();
-  await page.locator(".map-thumb, .map-bubble, .map-notice[role=alert]").first().waitFor({ timeout: 20_000 });
+  await page.locator("[data-marker], [data-map-notice][role=alert]").first().waitFor({ timeout: 20_000 });
   await page.waitForTimeout(1500);
   expect(await page.locator(".map-canvas canvas, canvas.maplibregl-canvas").count()).toBeGreaterThan(0);
 

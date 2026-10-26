@@ -32,6 +32,7 @@ import { SearchPage } from "./pages/Search";
 import { Sessions } from "./pages/Sessions";
 import { SettingsLayout } from "./pages/SettingsLayout";
 import { TagPage } from "./pages/TagPage";
+import { TripPage } from "./pages/TripPage";
 import { TagsPage } from "./pages/Tags";
 import { SharedLinks } from "./pages/SharedLinks";
 import { Storage } from "./pages/Storage";
@@ -70,6 +71,7 @@ export function App() {
         <Route path="/hidden" element={<HiddenPage />} />
         <Route path="/memories" element={<MemoriesPage />} />
         <Route path="/map" element={<MapPage />} />
+        <Route path="/trips/:id" element={<TripPage />} />
         <Route path="/search" element={<SearchPage />} />
         <Route path="/duplicates" element={<Duplicates />} />
         <Route path="/tags" element={<TagsPage />} />
@@ -119,7 +121,7 @@ function RequireAuth() {
     <SlideshowProvider>
     <UploadPickerProvider>
       <AppShell>
-        <main>
+        <main className="p-0">
           <Outlet />
         </main>
       </AppShell>

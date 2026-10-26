@@ -1,14 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { CircleCheck, Eye, EyeOff, MoreHorizontal } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { SlideshowButton } from "../slideshow/SlideshowHost";
+import { SlideshowItem } from "../collections/SlideshowItem";
 import { itemsSource } from "../slideshow/sources";
 import { api, ApiError, type AssetListItem, type Memories } from "../api";
 import { useAuth } from "../auth";
 import { Grid } from "../components/Grid";
 import { Lightbox } from "../components/Lightbox";
-import { LibraryTabs } from "../components/LibraryTabs";
 import { SelectionBar } from "../components/SelectionBar";
 import { useToast } from "../components/Toast";
+import { PageHeader } from "../shell/PageHeader";
+import { Button } from "../ui/Button";
+import { Menu, MenuItem } from "../ui/Menu";
 import { similarUrl } from "../searchText";
 import { memoryCount, yearsAgo } from "../viewText";
 
@@ -74,88 +77,125 @@ export function MemoriesPage() {
     }
   };
 
+  const back = { to: "/", label: "Collections" };
   if (error && !data)
     return (
-      <div className="empty" role="alert">
-        <h1>Couldn’t load On this day</h1>
-        <p className="muted">{error}</p>
-        <button type="button" className="btn btn-primary" onClick={() => void load()}>
-          Try again
-        </button>
-      </div>
+      <>
+        <PageHeader title="On this day" back={back} />
+        <Message title="Couldn’t load On this day" body={error} alert>
+          <Button variant="primary" onClick={() => void load()}>
+            Try again
+          </Button>
+        </Message>
+      </>
     );
-  if (!data) return <p className="center muted" role="status">Loading…</p>;
+  if (!data)
+    return (
+      <>
+        <PageHeader title="On this day" back={back} />
+        <div className="[display:grid] grid-cols-3 gap-0.5 px-0.5 pt-4 md:grid-cols-6 md:px-6" role="status" aria-label="Loading">
+          {Array.from({ length: 12 }, (_, i) => (
+            <div key={i} className="aspect-square animate-pulse bg-surface" />
+          ))}
+        </div>
+      </>
+    );
 
   let offset = 0;
   return (
-    <div className="library memories-page">
-      <LibraryTabs />
-      <div className="page-head">
-        <div>
-          <h1 className="view-title">On this day</h1>
-          <p className="muted small">Photos taken on this date in earlier years.</p>
-        </div>
-        {flat.length > 0 && (
-          <div className="album-head-actions">
-            <SlideshowButton source={() => itemsSource(flat, "On this day")} />
-            <button type="button" className="btn btn-quiet" aria-pressed={selecting} onClick={() => setSelecting(!selecting)}>
-              Select
-            </button>
-          </div>
+    <>
+      <PageHeader
+        title="On this day"
+        subtitle="Photos taken on this date in earlier years"
+        back={back}
+        actions={
+          <>
+            {flat.length > 0 && (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Select"
+                aria-pressed={selecting}
+                className={selecting ? "bg-surface text-accent" : undefined}
+                onClick={() => setSelecting(!selecting)}
+              >
+                <CircleCheck />
+              </Button>
+            )}
+            <Menu
+              label="On this day options"
+              trigger={
+                <Button variant="ghost" size="icon" aria-label="More">
+                  <MoreHorizontal />
+                </Button>
+              }
+            >
+              {flat.length > 0 && <SlideshowItem source={() => itemsSource(flat, "On this day")} />}
+              <MenuItem onSelect={() => void toggleStrip(!data.enabled)}>
+                {data.enabled ? <EyeOff /> : <Eye />}
+                {data.enabled ? "Hide from Collections" : "Show in Collections"}
+              </MenuItem>
+            </Menu>
+          </>
+        }
+      />
+      <div className="pb-10">
+        {!data.enabled && (
+          <p className="mx-4 mt-3 rounded-card bg-surface px-4 py-3 text-sm text-muted md:mx-8" role="status">
+            On this day is hidden from Collections. Use the menu to show it again.
+          </p>
+        )}
+        {selecting && (
+          <SelectionBar
+            count={picked.size}
+            total={flat.length}
+            onSelectAll={() => setPicked(new Set(flat.map((i) => i.id)))}
+            onClear={() => setPicked(new Set())}
+            onDone={() => {
+              setSelecting(false);
+              setPicked(new Set());
+            }}
+          >
+            <Button variant="primary" disabled={picked.size === 0} onClick={() => void dismiss()}>
+              Not this one
+            </Button>
+          </SelectionBar>
+        )}
+        {data.years.length === 0 ? (
+          <Message title="Nothing for today" body="Photos taken on today’s date in earlier years will show up here." />
+        ) : (
+          data.years.map((y) => {
+            const start = offset;
+            offset += y.items.length;
+            return (
+              <section key={y.year} id={`y${y.year}`} aria-label={yearsAgo(y.years_ago)} className="scroll-mt-28 pt-5">
+                <h2 className="mb-2 flex items-baseline gap-2 px-4 text-[1.0625rem] font-semibold tracking-tight md:px-8">
+                  {yearsAgo(y.years_ago)}
+                  <span className="text-sm font-normal text-muted">
+                    {y.year} · {memoryCount(y.count)}
+                  </span>
+                </h2>
+                <div className="px-0.5 md:px-6">
+                  <Grid<AssetListItem>
+                    items={y.items}
+                    onOpen={(i) => setOpen(start + i)}
+                    onThumbError={refreshThumb}
+                    selecting={selecting}
+                    selected={picked}
+                    onSelect={(id) =>
+                      setPicked((p) => {
+                        const n = new Set(p);
+                        if (!n.delete(id)) n.add(id);
+                        return n;
+                      })
+                    }
+                  />
+                </div>
+              </section>
+            );
+          })
         )}
       </div>
-      <label className="sheet-check memories-switch">
-        <input type="checkbox" checked={data.enabled} onChange={(e) => void toggleStrip(e.target.checked)} />
-        <span>Show On this day at the top of the library</span>
-      </label>
-      {selecting && (
-        <SelectionBar
-          count={picked.size}
-          total={flat.length}
-          onSelectAll={() => setPicked(new Set(flat.map((i) => i.id)))}
-          onClear={() => setPicked(new Set())}
-          onDone={() => {
-            setSelecting(false);
-            setPicked(new Set());
-          }}
-        >
-          <button type="button" className="btn btn-primary" disabled={picked.size === 0} onClick={() => void dismiss()}>
-            Not this one
-          </button>
-        </SelectionBar>
-      )}
-      {data.years.length === 0 ? (
-        <div className="empty">
-          <h2>Nothing for today</h2>
-          <p>Photos taken on today’s date in earlier years will show up here.</p>
-        </div>
-      ) : (
-        data.years.map((y) => {
-          const start = offset;
-          offset += y.items.length;
-          return (
-            <section key={y.year} id={`y${y.year}`} className="memory-year" aria-label={yearsAgo(y.years_ago)}>
-              <h2>
-                {yearsAgo(y.years_ago)} <span className="muted small">{y.year} · {memoryCount(y.count)}</span>
-              </h2>
-              <Grid<AssetListItem>
-                items={y.items}
-                onOpen={(i) => setOpen(start + i)}
-                onThumbError={refreshThumb}
-                selecting={selecting}
-                selected={picked}
-                onSelect={(id) =>
-                  setPicked((p) => {
-                    const n = new Set(p);
-                    if (!n.delete(id)) n.add(id);
-                    return n;
-                  })
-                }
-              />
-            </section>
-          );
-        })
-      )}
       {open !== null && flat[open] && (
         <Lightbox
           items={flat}
@@ -168,6 +208,16 @@ export function MemoriesPage() {
         />
       )}
       {toast}
+    </>
+  );
+}
+
+function Message({ title, body, alert, children }: { title: string; body: string; alert?: boolean; children?: ReactNode }) {
+  return (
+    <div className="mx-auto flex max-w-sm flex-col items-center gap-3 px-6 py-20 text-center" role={alert ? "alert" : undefined}>
+      <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+      <p className="text-[0.9375rem] text-muted">{body}</p>
+      {children}
     </div>
   );
 }

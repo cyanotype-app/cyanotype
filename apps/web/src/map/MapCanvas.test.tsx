@@ -120,11 +120,11 @@ describe("MapCanvas", () => {
     expect(onViewport).toHaveBeenCalledWith({ bounds: { west: -20, south: 30, east: 40, north: 60 }, zoom: 3.4 });
     expect(h.state.markers).toHaveLength(2);
     // A photo is a thumbnail button that opens it; a cluster is a count bubble that fits its photos.
-    const photo = document.querySelector<HTMLElement>(".map-thumb")!;
+    const photo = document.querySelector<HTMLElement>("[data-marker=photo]")!;
     expect(photo.querySelector("img")).toHaveAttribute("src", "https://s3.test/t.webp");
     photo.click();
     expect(onOpenPhoto).toHaveBeenCalledWith("p1");
-    const bubble = document.querySelector<HTMLElement>(".map-bubble")!;
+    const bubble = document.querySelector<HTMLElement>("[data-marker=cluster]")!;
     expect(bubble.textContent).toBe("12");
     bubble.click();
     expect(map.calls.find(([n]) => n === "fitBounds")?.[1]).toEqual([
@@ -144,7 +144,7 @@ describe("MapCanvas", () => {
     );
     await waitFor(() => expect(h.state.maps).toHaveLength(1));
     
-    document.querySelector<HTMLElement>(".map-bubble")!.click();
+    document.querySelector<HTMLElement>("[data-marker=cluster]")!.click();
     expect(h.state.maps[0]!.calls.find(([n]) => n === "easeTo")?.[1]).toMatchObject({ center: [6, 5], zoom: 14 });
     const first = h.state.markers[0]!;
     rerender(
