@@ -60,6 +60,7 @@ import { cn } from "../ui/cn";
 import { Menu, MenuItem, MenuLabel, MenuSeparator } from "../ui/Menu";
 import { MenuRadioGroup, MenuRadioItem } from "../ui/MenuRadio";
 import { Sheet } from "../ui/Sheet";
+import { useDesktop } from "../ui/useMedia";
 import { PAGE, useTimeline } from "../useTimeline";
 import { filesFromDrop } from "../upload/files";
 import { useSlideshow } from "../slideshow/SlideshowHost";
@@ -106,8 +107,6 @@ export function Library(props: LibraryProps) {
       {...props}
       sort={sort}
       stacks={stacks}
-      gridStyle={prefs.grid_style}
-      onGridStyle={(g) => void update({ grid_style: g })}
       onSort={plain ? (s) => void update({ library_sort: s }) : undefined}
       onStacks={plain ? (collapsed) => void update({ stacks_collapsed: collapsed }) : undefined}
     />
@@ -123,15 +122,11 @@ function LibraryView({
   subbar,
   sort,
   stacks,
-  gridStyle,
-  onGridStyle,
   onSort,
   onStacks,
 }: LibraryProps & {
   sort: "taken" | "added";
   stacks?: "collapsed" | "expanded";
-  gridStyle: GridStyle;
-  onGridStyle: (g: GridStyle) => void;
   onSort?: (s: "taken" | "added") => void;
   onStacks?: (collapsed: boolean) => void;
 }) {
@@ -148,6 +143,8 @@ function LibraryView({
   const slideshow = useSlideshow();
   const [rateOpen, setRateOpen] = useState(false);
   const [tagOpen, setTagOpen] = useState(false);
+  // Rows that keep each photo's shape on a desktop, square crops on a phone.
+  const gridStyle: GridStyle = useDesktop() ? "justified" : "square";
   const [density, setDensity] = useDensity(gridStyle);
   const [confirmTrash, setConfirmTrash] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -885,11 +882,7 @@ function LibraryView({
                 </Button>
               }
             >
-              <MenuLabel>Grid</MenuLabel>
-              <MenuRadioGroup label="Grid style" value={gridStyle} onValueChange={onGridStyle}>
-                <MenuRadioItem value="square">Square</MenuRadioItem>
-                <MenuRadioItem value="justified">Justified</MenuRadioItem>
-              </MenuRadioGroup>
+              <MenuLabel>Size</MenuLabel>
               <MenuItem onSelect={() => setDensity(-1)}>
                 <ZoomIn />
                 Larger photos

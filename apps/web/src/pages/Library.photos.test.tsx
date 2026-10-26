@@ -7,7 +7,7 @@ import { AuthProvider } from "../auth";
 import { UploadPickerProvider } from "../shell/UploadPicker";
 import { SlideshowProvider } from "../slideshow/SlideshowHost";
 import { fakeLibrary } from "../test/fakeLibrary";
-import { chooseView, pressBar } from "../test/bar";
+import { pressBar } from "../test/bar";
 import { detail, item } from "../test/fixtures";
 import { UploadProvider } from "../upload/UploadProvider";
 import { Library } from "./Library";
@@ -66,14 +66,13 @@ describe("the Photos page header", () => {
     expect(screen.getByRole("button", { name: "Upload" })).toBeInTheDocument();
   });
 
-  it("keeps every view setting in one menu: grid style, size, sort, stacks and the slideshow", async () => {
+  it("keeps every view setting in one menu: size, sort, stacks and the slideshow", async () => {
     fakeLibrary(photos);
     const user = userEvent.setup();
     renderLibrary();
     await user.click(await screen.findByRole("button", { name: "View options" }));
     const menu = await screen.findByRole("menu");
-    expect(within(menu).getByRole("menuitemradio", { name: "Square" })).toHaveAttribute("aria-checked", "true");
-    expect(within(menu).getByRole("menuitemradio", { name: "Justified" })).toBeInTheDocument();
+    expect(within(menu).queryByRole("menuitemradio", { name: "Justified" })).toBeNull(); // the screen size picks the layout
     expect(within(menu).getByRole("menuitem", { name: "Larger photos" })).toBeInTheDocument();
     expect(within(menu).getByRole("menuitem", { name: "Smaller photos" })).toBeInTheDocument();
     expect(within(menu).getByRole("menuitemradio", { name: "Date taken" })).toHaveAttribute("aria-checked", "true");
@@ -89,28 +88,31 @@ describe("the Photos page header", () => {
     renderLibrary({ favorites: true }, "/favorites");
     expect(await screen.findByRole("heading", { level: 1, name: "Favorites" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "View options" }));
-    expect(await screen.findByRole("menuitemradio", { name: "Justified" })).toBeInTheDocument();
+    expect(await screen.findByRole("menuitem", { name: "Larger photos" })).toBeInTheDocument();
     expect(screen.queryByRole("menuitemradio", { name: "Date added" })).toBeNull(); // the sort is the library's
     expect(screen.queryByRole("menuitemradio", { name: "Every photo" })).toBeNull();
   });
 });
 
-describe("grid style", () => {
-  it("starts in the style saved on the server and saves a change there", async () => {
+describe("grid layout", () => {
+  it("is square crops on a phone", async () => {
     fakeLibrary(photos);
-    vi.mocked(api.prefs).mockResolvedValue({ memories_enabled: true, library_sort: "taken", stacks_collapsed: true, grid_style: "justified" });
-    const set = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: true, library_sort: "taken", stacks_collapsed: true, grid_style: "square" });
-    const user = userEvent.setup();
     renderLibrary();
     await screen.findByAltText("photo-1.jpg");
-    expect(columns()).toContain("fr"); // rows that keep each photo's shape and fill the width
-    await user.click(screen.getByRole("button", { name: "View options" }));
-    expect(await screen.findByRole("menuitemradio", { name: "Justified" })).toHaveAttribute("aria-checked", "true");
-    await user.keyboard("{Escape}");
+    expect(columns()).toMatch(/^repeat\(\d+, minmax\(0, 1fr\)\)$/); // equal columns
+  });
 
-    await chooseView(user, "Square");
-    expect(set).toHaveBeenCalledWith({ grid_style: "square" });
-    await waitFor(() => expect(columns()).toMatch(/^repeat\(\d+, minmax\(0, 1fr\)\)$/)); // equal columns
+  it("is rows that keep each photo's shape on a desktop", async () => {
+    vi.stubGlobal("matchMedia", (q: string) => ({
+      matches: q === "(min-width: 48rem)",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    fakeLibrary(photos);
+    renderLibrary();
+    await screen.findByAltText("photo-1.jpg");
+    await waitFor(() => expect(columns()).not.toMatch(/^repeat/));
+    expect(columns()).toContain("fr"); // fills the width
   });
 
   it("changes the size of the tiles from the menu and remembers it in the browser", async () => {

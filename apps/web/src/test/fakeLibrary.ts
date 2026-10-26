@@ -100,7 +100,7 @@ export function fakeLibrary(initial: AssetListItem[]): FakeLibrary {
     return { count };
   });
   // The per-user switches and the strip: defaults, and nothing for today.
-  vi.spyOn(api, "prefs").mockResolvedValue({ memories_enabled: true, library_sort: "taken", stacks_collapsed: true, grid_style: "square" });
+  vi.spyOn(api, "prefs").mockResolvedValue({ memories_enabled: true, library_sort: "taken", stacks_collapsed: true });
   vi.spyOn(api, "memories").mockResolvedValue({ enabled: true, day: "01-01", years: [] });
   vi.spyOn(api, "archiveAssets").mockImplementation(async (target, archived) => {
     const rows = pick(target, lib.photos);

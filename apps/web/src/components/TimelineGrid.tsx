@@ -2,6 +2,7 @@ import { defaultRangeExtractor, useWindowVirtualizer, type Range } from "@tansta
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { AssetListItem } from "../api";
 import { cn } from "../ui/cn";
+import { useDesktop } from "../ui/useMedia";
 import {
   buildLayout,
   dayTop,
@@ -45,7 +46,7 @@ interface Props {
   onFavorite: (id: string, favorite: boolean) => void;
   /** Scroll to this day (`YYYY-MM-DD`) once when it is given or changes (a link from a photo's details). */
   jumpToDay?: string | null;
-  /** Square crops (the default) or rows that keep each photo's shape. */
+  /** Square crops or rows that keep each photo's shape; by default justified on a desktop and square on a phone. */
   gridStyle?: GridStyle;
   /** Columns to add (square) or shrink the rows by (justified); a pinch asks for a step through `onDensity`. */
   density?: number;
@@ -74,10 +75,12 @@ export function TimelineGrid({
   onDragEnd,
   onFavorite,
   jumpToDay,
-  gridStyle = "square",
+  gridStyle: style,
   density = 0,
   onDensity,
 }: Props) {
+  const desktop = useDesktop();
+  const gridStyle = style ?? (desktop ? "justified" : "square");
   const listRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(() => (typeof window === "undefined" ? 1024 : window.innerWidth));
   const [scrollMargin, setScrollMargin] = useState(0);

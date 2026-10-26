@@ -55,7 +55,7 @@ const open = async (user: ReturnType<typeof userEvent.setup>) => {
 describe("stacks in the library", () => {
   it("shows a stack as one tile with its size and the toggle that lists every photo", async () => {
     const lib = fakeLibrary([item(1), stackTile(), item(5)]);
-    const setPrefs = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: true, library_sort: "taken", stacks_collapsed: false, grid_style: "square" });
+    const setPrefs = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: true, library_sort: "taken", stacks_collapsed: false });
     const user = userEvent.setup();
     renderLibrary();
     const tile = await screen.findByRole("button", { name: "Open photo-2.jpg, stack of 3 photos" });

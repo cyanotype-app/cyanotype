@@ -108,7 +108,7 @@ pub struct AssetLine {
     pub memory_dismissed: Option<bool>,
 }
 
-/// A user's switches (`user_prefs`, migrations 0020, 0033 and 0036). One line per user that has a row; a user who never changed one
+/// A user's switches (`user_prefs`, migrations 0020 and 0033). One line per user that has a row; a user who never changed one
 /// has none and gets the defaults. A field the line lacks keeps the default.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PrefsLine {
@@ -119,9 +119,6 @@ pub struct PrefsLine {
     pub library_sort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stacks_collapsed: Option<bool>,
-    /// `square` or `justified` (migration 0036).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grid_style: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -422,8 +419,7 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
 
     if let Some(p) = sqlx::query(
         "SELECT (to_jsonb(p) ->> 'memories_enabled')::boolean AS memories_enabled, to_jsonb(p) ->> 'library_sort' AS library_sort,
-                (to_jsonb(p) ->> 'stacks_collapsed')::boolean AS stacks_collapsed,
-                to_jsonb(p) ->> 'grid_style' AS grid_style
+                (to_jsonb(p) ->> 'stacks_collapsed')::boolean AS stacks_collapsed
          FROM user_prefs p WHERE p.user_id = $1",
     )
     .bind(user)
@@ -435,7 +431,6 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
             memories_enabled: p.try_get("memories_enabled")?,
             library_sort: p.try_get("library_sort")?,
             stacks_collapsed: p.try_get("stacks_collapsed")?,
-            grid_style: p.try_get("grid_style")?,
         }));
     }
 

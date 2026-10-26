@@ -1358,8 +1358,6 @@ export interface Prefs {
   library_sort: "taken" | "added";
   /** Stacks show as one tile in the timeline (default); off lists every photo. */
   stacks_collapsed: boolean;
-  /** How the photo grid is laid out: square crops (default) or rows that keep each photo's shape. */
-  grid_style: "square" | "justified";
 }
 
 /** Whether this session has the Hidden view open (GET /auth/hidden). */

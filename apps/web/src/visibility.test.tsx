@@ -186,7 +186,7 @@ describe("On this day strip", () => {
 
   it("is hidden for good with Hide", async () => {
     vi.spyOn(api, "memories").mockResolvedValue({ enabled: true, day: "10-19", years });
-    const set = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: false, library_sort: "taken", stacks_collapsed: true, grid_style: "square" });
+    const set = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: false, library_sort: "taken", stacks_collapsed: true });
     renderIn(<MemoriesStrip />);
     await userEvent.click(await screen.findByRole("button", { name: "Hide On this day" }));
     expect(set).toHaveBeenCalledWith({ memories_enabled: false });
@@ -197,7 +197,7 @@ describe("On this day strip", () => {
 describe("Library: sort, archive and hide", () => {
   it("offers Date taken / Date added and remembers the choice", async () => {
     fakeLibrary([item(1), item(2)]);
-    const set = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: true, library_sort: "added", stacks_collapsed: true, grid_style: "square" });
+    const set = vi.spyOn(api, "setPrefs").mockResolvedValue({ memories_enabled: true, library_sort: "added", stacks_collapsed: true });
     renderIn(<Library />);
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "View options" }));
@@ -212,7 +212,7 @@ describe("Library: sort, archive and hide", () => {
 
   it("starts in the saved order", async () => {
     const lib = fakeLibrary([item(1)]);
-    vi.mocked(api.prefs).mockResolvedValue({ memories_enabled: true, library_sort: "added", stacks_collapsed: true, grid_style: "square" });
+    vi.mocked(api.prefs).mockResolvedValue({ memories_enabled: true, library_sort: "added", stacks_collapsed: true });
     renderIn(<Library />);
     await screen.findByAltText("photo-1.jpg");
     expect(lib.timeline).toHaveBeenCalledWith(expect.objectContaining({ sort: "added" }));
@@ -225,7 +225,7 @@ describe("Library: sort, archive and hide", () => {
     expect(lib.timeline).toHaveBeenCalledWith(expect.objectContaining({ sort: "added" }));
     expect(screen.getByRole("heading", { name: "Recently added" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "View options" }));
-    expect(await screen.findByRole("menuitemradio", { name: "Square" })).toBeInTheDocument();
+    expect(await screen.findByRole("menuitem", { name: "Larger photos" })).toBeInTheDocument();
     expect(screen.queryByRole("menuitemradio", { name: "Date taken" })).toBeNull();
   });
 

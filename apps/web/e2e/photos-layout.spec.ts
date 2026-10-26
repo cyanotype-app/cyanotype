@@ -1,8 +1,9 @@
-// The Photos page at phone and desktop widths: the grid fills the full width in both styles (no gap at the right edge), the
+// The Photos page at phone and desktop widths: square crops on a phone, justified rows on a desktop, filling the full width
+// (no gap at the right edge), the
 // header's Select button and view menu, the selection bar, and the empty states. Nothing may stick out sideways. Set SHOT_DIR
 // to save the screenshots.
 import { expect, test, type Page } from "@playwright/test";
-import { json, makeCheck, RUNS, setupApp, shotPrefix, viewportOf, type Handler } from "./kit";
+import { makeCheck, RUNS, setupApp, shotPrefix, viewportOf } from "./kit";
 
 /** Every full row of tiles starts at the left edge of the page and ends at its right edge. */
 async function expectFilled(page: Page, label: string) {
@@ -31,28 +32,16 @@ async function expectFilled(page: Page, label: string) {
   }
 }
 
-const prefsHandler = (state: { grid_style: string; puts: object[] }): Handler => (route, url, method) => {
-  if (url.pathname !== "/assets/prefs") return false;
-  if (method === "PUT") {
-    const body = route.request().postDataJSON() as { grid_style?: string };
-    state.puts.push(body);
-    if (body.grid_style) state.grid_style = body.grid_style;
-  }
-  void route.fulfill(json({ memories_enabled: false, library_sort: "taken", stacks_collapsed: true, grid_style: state.grid_style }));
-  return true;
-};
-
 for (const { width, scheme } of RUNS) {
   test.describe(`photos ${width}px ${scheme}`, () => {
     test.use({ colorScheme: scheme, viewport: viewportOf(width), hasTouch: width < 600 });
     const desktop = width >= 768;
 
-    test("the grid fills the width in both styles, and the header menu switches them", async ({ page }) => {
+    test("the grid fills the width: squares on a phone, justified rows on a desktop", async ({ page }) => {
       test.setTimeout(120_000);
       const problems: string[] = [];
       const check = makeCheck(page, shotPrefix("photos", width, scheme), problems);
-      const state = { grid_style: "square", puts: [] as object[] };
-      const assets = await setupApp(page, { count: 90, handlers: [prefsHandler(state)] });
+      const assets = await setupApp(page, { count: 90 });
       // Portraits, squares and wide ones, so the justified rows have something to fit.
       assets.forEach((a, i) => {
         const shapes = [[4000, 3000], [3000, 4000], [4000, 2250], [3000, 3000], [4000, 3000], [2000, 3000]] as const;
@@ -66,23 +55,26 @@ for (const { width, scheme } of RUNS) {
       // Old rows of buttons are gone: no pills, no big upload buttons on the page.
       await expect(page.getByRole("link", { name: "All photos" })).toHaveCount(0);
       await expect(page.getByRole("button", { name: "Upload folder" })).toHaveCount(0);
-      const cols = await page.evaluate(() => getComputedStyle(document.querySelector("[data-row=tiles]")!).gridTemplateColumns.split(" ").length);
-      if (width === 390) expect(cols).toBe(3);
-      await expectFilled(page, "square");
-      await check("square");
+      const style = desktop ? "justified" : "square";
+      // Square rows are equal columns; justified ones are as wide as each photo's shape asks.
+      const equal = await page.evaluate(() => {
+        const cols = getComputedStyle(document.querySelector("[data-row=tiles]")!).gridTemplateColumns.split(" ").map(parseFloat);
+        return { n: cols.length, same: Math.max(...cols) - Math.min(...cols) < 0.5 };
+      });
+      expect(equal.same, `${style}: equal columns`).toBe(!desktop);
+      if (width === 390) expect(equal.n).toBe(3);
+      await expectFilled(page, style);
+      await check(style);
 
-      // The view menu: grid style, sort, stacks, slideshow stay reachable.
+      // The view menu: size, sort, stacks, slideshow stay reachable; the screen picks the layout.
       await page.getByRole("button", { name: "View options" }).click();
       const menu = page.getByRole("menu");
-      await expect(menu.getByRole("menuitemradio", { name: "Square" })).toHaveAttribute("aria-checked", "true");
+      await expect(menu.getByRole("menuitemradio", { name: "Justified" })).toHaveCount(0);
+      await expect(menu.getByRole("menuitem", { name: "Larger photos" })).toBeVisible();
       await expect(menu.getByRole("menuitemradio", { name: "Date taken" })).toBeVisible();
       await expect(menu.getByRole("menuitemradio", { name: "Stacked" })).toBeVisible();
       await check("view-menu");
-      await menu.getByRole("menuitemradio", { name: "Justified" }).click();
-      await expect.poll(() => state.puts).toEqual([{ grid_style: "justified" }]);
-      await expect(page.getByRole("button", { name: /Open IMG_00000/ })).toBeVisible();
-      await expectFilled(page, "justified");
-      await check("justified");
+      await page.keyboard.press("Escape");
 
       // Scrolled: the month header stays pinned under the page's header.
       await page.evaluate(() => window.scrollTo(0, 700));
@@ -91,7 +83,7 @@ for (const { width, scheme } of RUNS) {
       await expect(pinned).toHaveCount(1);
       const hdr = await page.evaluate(() => document.querySelector("header.sticky")!.getBoundingClientRect().height);
       expect(Math.abs((await pinned.boundingBox())!.y - hdr)).toBeLessThan(1.5);
-      await check("justified-scrolled");
+      await check(`${style}-scrolled`);
       await page.evaluate(() => window.scrollTo(0, 0));
 
       expect(problems, problems.join("\n")).toEqual([]);

@@ -29,17 +29,6 @@ export function DisplaySettings() {
               ]}
             />
           </Row>
-          <Row label="Layout" detail="Square tiles, or rows that keep each photo's shape.">
-            <Segmented
-              label="Layout"
-              value={prefs.grid_style}
-              onChange={(v) => void update({ grid_style: v })}
-              options={[
-                { value: "square", label: "Square" },
-                { value: "justified", label: "Justified" },
-              ]}
-            />
-          </Row>
         </Group>
       </Section>
 
