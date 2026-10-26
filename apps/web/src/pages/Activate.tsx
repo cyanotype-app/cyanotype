@@ -1,8 +1,12 @@
-import { useEffect, useId, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useLocation } from "react-router-dom";
 import { api, type ApiKeyScope, type CliRequest } from "../api";
 import { codeFromHash, formatUserCode, userCodeComplete } from "../cliLoginText";
+import { LinkButton } from "../components/AuthShell";
 import { CliConsent, CliPage } from "../components/CliConsent";
+import { Field, FormError, inputClass, Mono, Notice } from "../settings/kit";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
 
 /**
  * `/activate`: approve a command-line login from any device (the device-code flow, for SSH sessions and machines without a
@@ -20,7 +24,6 @@ type View =
   | { step: "done"; allowed: boolean; device: string };
 
 function ActivateSteps({ email }: { email: string }) {
-  const id = useId();
   const [view, setView] = useState<View>({ step: "enter" });
   // A scanned QR code opens /activate#code=...: the code is filled in, and the person still presses Continue and then Allow.
   const { hash } = useLocation();
@@ -60,16 +63,16 @@ function ActivateSteps({ email }: { email: string }) {
 
   if (view.step === "done")
     return (
-      <p role="status">
+      <Notice tone="ok" role="status">
         {view.allowed
           ? `Allowed. The command line on ${view.device} is signing in; you can close this tab.`
           : `Denied. ${view.device} was not allowed. You can close this tab.`}
-      </p>
+      </Notice>
     );
   if (view.step === "ask") {
     const { req, code: typed } = view;
     return (
-      <>
+      <div className="flex flex-col gap-4">
         <CliConsent
           device={req.device}
           scope={req.scope as ApiKeyScope}
@@ -79,39 +82,39 @@ function ActivateSteps({ email }: { email: string }) {
           onAllow={() => void decide(true, req, typed)}
           onDeny={() => void decide(false, req, typed)}
         />
-        <p className="auth-footer muted">
-          <button type="button" className="link-button" onClick={() => setView({ step: "enter" })}>
-            Enter a different code
-          </button>
+        <p className="text-center text-sm">
+          <LinkButton onClick={() => setView({ step: "enter" })}>Enter a different code</LinkButton>
         </p>
-      </>
+      </div>
     );
   }
   return (
-    <form onSubmit={lookup}>
-      <p className="muted">Enter the code your terminal printed after you ran <code>cyanotype login</code>.</p>
-      <label htmlFor={id}>Code</label>
-      <input
-        id={id}
-        name="code"
-        className="user-code-input"
-        value={code}
-        onChange={(e) => setCode(formatUserCode(e.target.value))}
-        autoFocus
-        required
-        autoComplete="off"
-        autoCapitalize="characters"
-        spellCheck={false}
-        maxLength={9}
-        placeholder="WDJB-MJHT"
-        aria-describedby={`${id}-err`}
-      />
-      <div id={`${id}-err`} role="alert" className="form-error">
-        {error}
-      </div>
-      <button type="submit" className="btn btn-primary" disabled={busy || !userCodeComplete(code)}>
+    <form onSubmit={lookup} className="flex flex-col gap-4">
+      <p className="text-sm text-muted">
+        Enter the code your terminal printed after you ran <Mono>cyanotype login</Mono>.
+      </p>
+      <Field label="Code">
+        {(p) => (
+          <input
+            {...p}
+            name="code"
+            className={cn(inputClass, "h-14 text-center font-mono text-xl tracking-[0.18em] uppercase placeholder:tracking-[0.18em] md:text-xl")}
+            value={code}
+            onChange={(e) => setCode(formatUserCode(e.target.value))}
+            autoFocus
+            required
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            maxLength={9}
+            placeholder="WDJB-MJHT"
+          />
+        )}
+      </Field>
+      <FormError>{error}</FormError>
+      <Button type="submit" variant="primary" size="lg" disabled={busy || !userCodeComplete(code)}>
         {busy ? "Please wait…" : "Continue"}
-      </button>
+      </Button>
     </form>
   );
 }

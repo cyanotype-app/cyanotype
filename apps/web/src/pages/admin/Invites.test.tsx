@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, type Invite, type IssuedInvite, type Me } from "../../api";
 import { AuthProvider } from "../../auth";
 import { AdminLayout } from "./AdminLayout";
@@ -22,9 +22,9 @@ const invite = (n: number, over: Partial<Invite> = {}): Invite => ({
 });
 const issued = (inv: Invite, token = "t0k3n"): IssuedInvite => ({ invite: inv, token, path: `/register?invite=${token}` });
 
-beforeEach(() => {
-  vi.spyOn(window, "confirm").mockReturnValue(true);
-});
+const sure = async (user: ReturnType<typeof userEvent.setup>, name: string) =>
+  user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name }));
+
 afterEach(() => vi.restoreAllMocks());
 
 describe("Invites page", () => {
@@ -98,20 +98,22 @@ describe("Invites page", () => {
     const user = userEvent.setup();
     render(<Invites />);
     await user.click(await screen.findByRole("button", { name: "Show link again" }));
-    expect(window.confirm).toHaveBeenCalled();
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("the old link stops working");
+    await sure(user, "Make a new link");
     expect(reissue).toHaveBeenCalledWith("i1");
     expect(await screen.findByText(`${window.location.origin}/register?invite=NEWTOKEN`)).toBeInTheDocument();
   });
 
   it("does nothing when the confirmation is declined", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(false);
     vi.spyOn(api, "listInvites").mockResolvedValue({ items: [invite(1)] });
     const reissue = vi.spyOn(api, "reissueInvite");
     const revoke = vi.spyOn(api, "revokeInvite");
     const user = userEvent.setup();
     render(<Invites />);
     await user.click(await screen.findByRole("button", { name: "Show link again" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
     await user.click(screen.getByRole("button", { name: "Revoke" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
     expect(reissue).not.toHaveBeenCalled();
     expect(revoke).not.toHaveBeenCalled();
   });
@@ -125,6 +127,7 @@ describe("Invites page", () => {
     const user = userEvent.setup();
     render(<Invites />);
     await user.click(await screen.findByRole("button", { name: "Revoke" }));
+    await sure(user, "Revoke");
     expect(revoke).toHaveBeenCalledWith("i1");
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Revoke" })).not.toBeInTheDocument());
@@ -136,6 +139,7 @@ describe("Invites page", () => {
     const user = userEvent.setup();
     render(<Invites />);
     await user.click(await screen.findByRole("button", { name: "Revoke" }));
+    await sure(user, "Revoke");
     expect(await screen.findByText("this invite was already used")).toBeInTheDocument();
   });
 });
@@ -160,7 +164,9 @@ describe("AdminLayout", () => {
   it("shows the invites to an admin", async () => {
     renderAt({ id: "u", email: "a@b.co", role: "admin" });
     expect(await screen.findByRole("heading", { name: "Invites" })).toBeInTheDocument();
-    expect(screen.getByRole("navigation", { name: "Administration" })).toBeInTheDocument();
+    // jsdom has no wide screen: the phone layout, with the section as its own page and a way back.
+    expect(screen.getByRole("heading", { level: 1, name: "Invites" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Administration/ })).toHaveAttribute("href", "/admin");
   });
 
   it("shows a member the page-not-found page, and never asks for the invites", async () => {

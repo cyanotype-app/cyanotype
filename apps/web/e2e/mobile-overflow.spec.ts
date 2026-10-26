@@ -834,7 +834,7 @@ for (const { width, scheme } of RUNS) {
 
       // Upload tray (the mocked check endpoint refuses, so every file shows as failed)
       await open("/library", /Open IMG_1000/);
-      await page.locator('input[aria-label="Choose photos"]').setInputFiles([
+      await page.locator('input[aria-label="Choose photos"]').first().setInputFiles([
         { name: LONG_NAME, mimeType: "image/jpeg", buffer: Buffer.from("x") },
         { name: "second.jpg", mimeType: "image/jpeg", buffer: Buffer.from("y") },
       ]);
@@ -845,7 +845,7 @@ for (const { width, scheme } of RUNS) {
       await check("upload-tray-collapsed");
 
       // Trash
-      await open("/trash", "Trash");
+      await open("/trash", /Select IMG_1000/);
       await page.getByRole("button", { name: /Select IMG_1000/ }).waitFor();
       await check("trash");
       await page.getByRole("button", { name: /Select IMG_1001/ }).click();
@@ -853,7 +853,8 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: "Delete forever" }).click();
       await check("dialog-delete-forever");
       await page.getByRole("button", { name: "Cancel" }).click();
-      await page.getByRole("button", { name: "Empty trash" }).click();
+      await page.getByRole("button", { name: "More" }).click();
+      await page.getByRole("menuitem", { name: "Empty trash" }).click();
       await check("dialog-empty-trash");
       await page.getByRole("button", { name: "Cancel" }).click();
 
@@ -1236,7 +1237,7 @@ for (const { width, scheme } of RUNS) {
       await mockUsage(page);
       bucketTask = null;
       memberView = false;
-      await page.goto("/admin");
+      await page.goto("/admin/accounts");
       await page.getByRole("heading", { name: "Accounts", exact: true }).waitFor();
       await page.getByText(LONG_EMAIL).first().waitFor();
       await check("accounts");
@@ -1299,7 +1300,7 @@ for (const { width, scheme } of RUNS) {
       );
       await page.goto("/library");
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
-      await page.locator('input[aria-label="Choose photos"]').setInputFiles([
+      await page.locator('input[aria-label="Choose photos"]').first().setInputFiles([
         { name: LONG_NAME, mimeType: "image/jpeg", buffer: Buffer.from("x") },
         { name: "second.jpg", mimeType: "image/jpeg", buffer: Buffer.from("y") },
         { name: "third.jpg", mimeType: "image/jpeg", buffer: Buffer.from("z") },

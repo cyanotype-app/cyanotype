@@ -3,6 +3,9 @@ import { api, type IntegrityFinding, type IntegrityKind, type IntegritySummary }
 import { bytesLabel } from "../../adminText";
 import { actedLine, actionsFor, coverageLine, findingTitle, KIND_LABEL, KINDS, runLine, shortHash, type FindingAction } from "../../integrityText";
 import { ago } from "../../storageText";
+import { Card, FormError, Mono, inputClass } from "../../settings/kit";
+import { Button } from "../../ui/Button";
+import { cn } from "../../ui/cn";
 
 const POLL_MS = 3_000;
 
@@ -88,57 +91,56 @@ export function IntegrityCard() {
   }
 
   return (
-    <section className="health-card" aria-labelledby="integrity-title">
-      <h3 id="integrity-title">Storage integrity</h3>
-      <p className="muted small">
+    <Card id="integrity-title" title="Storage integrity">
+      <p className="text-muted">
         Compares the library with the bucket every night: missing originals, objects no photo points at, files that no longer match
         their checksum. Missing thumbnails are made again by themselves.
       </p>
-      <div role="alert" className="form-error">
-        {error}
-      </div>
+      <FormError>{error}</FormError>
       {sum && (
         <>
-          <p className={`small ${sum.last_run?.state === "failed" ? "health-bad" : ""}`} role="status">
+          <p className={cn(sum.last_run?.state === "failed" && "text-danger")} role="status">
             {runLine(sum.last_run)}
           </p>
-          <p className="muted small">{coverageLine(sum.coverage)}</p>
-          <div className="invite-actions">
-            <button type="button" className="btn btn-quiet" disabled={busy || running} onClick={() => void runNow()}>
+          <p className="text-[0.8125rem] text-muted">{coverageLine(sum.coverage)}</p>
+          <div>
+            <Button size="sm" disabled={busy || running} onClick={() => void runNow()}>
               {running ? "Checking…" : "Run check now"}
-            </button>
+            </Button>
           </div>
-          <div className="integrity-counts" role="group" aria-label="Show findings of a kind">
-            <button type="button" className={`btn ${kind === undefined ? "btn-primary" : "btn-quiet"}`} aria-pressed={kind === undefined} onClick={() => setKind(undefined)}>
-              All ({(KINDS.reduce((n, k) => n + sum.open[k], 0)).toLocaleString("en-US")})
-            </button>
+          <div className="flex flex-wrap gap-2" role="group" aria-label="Show findings of a kind">
+            <Button size="sm" variant={kind === undefined ? "primary" : "secondary"} aria-pressed={kind === undefined} onClick={() => setKind(undefined)}>
+              All ({KINDS.reduce((n, k) => n + sum.open[k], 0).toLocaleString("en-US")})
+            </Button>
             {KINDS.map((k) => (
-              <button key={k} type="button" className={`btn ${kind === k ? "btn-primary" : "btn-quiet"}`} aria-pressed={kind === k} onClick={() => setKind(k)}>
+              <Button key={k} size="sm" variant={kind === k ? "primary" : "secondary"} aria-pressed={kind === k} onClick={() => setKind(k)}>
                 {KIND_LABEL[k]} ({sum.open[k].toLocaleString("en-US")})
-              </button>
+              </Button>
             ))}
           </div>
-          {sum.acknowledged > 0 && <p className="muted small">{sum.acknowledged.toLocaleString("en-US")} marked lost or left as they are.</p>}
+          {sum.acknowledged > 0 && <p className="text-[0.8125rem] text-muted">{sum.acknowledged.toLocaleString("en-US")} marked lost or left as they are.</p>}
         </>
       )}
       {items.length === 0 ? (
-        sum && <p className="small">No open findings.</p>
+        sum && <p>No open findings.</p>
       ) : (
-        <ul className="integrity-list" aria-label="Findings">
+        <ul className="divide-y divide-line rounded-xl bg-surface" aria-label="Findings">
           {items.map((f) => (
             <Finding key={f.id} f={f} onAct={act} />
           ))}
         </ul>
       )}
       {next !== null && (
-        <button type="button" className="btn btn-quiet" onClick={() => void loadList(next)}>
-          Show more
-        </button>
+        <div>
+          <Button size="sm" onClick={() => void loadList(next)}>
+            Show more
+          </Button>
+        </div>
       )}
-      <p className="small" role="status">
+      <p role="status" className="empty:hidden">
         {note}
       </p>
-    </section>
+    </Card>
   );
 }
 
@@ -160,43 +162,57 @@ function Finding({ f, onAct }: { f: IntegrityFinding; onAct: (f: IntegrityFindin
   }
 
   return (
-    <li>
-      <strong>{findingTitle(f)}</strong>
-      <code className="integrity-key">{f.key}</code>
-      <span className="muted small">
+    <li className="flex flex-col gap-1.5 p-3.5">
+      <strong className="font-medium">{findingTitle(f)}</strong>
+      <code className="font-mono text-[0.8125rem] break-all text-muted">{f.key}</code>
+      <span className="text-[0.8125rem] break-words text-muted">
         {f.owner_email ?? "no such account"} · seen {ago(f.last_seen_at)}
       </span>
       {f.kind === "checksum_mismatch" && d.reason === "hash" && (
-        <div className="small">
-          Stored <code>{shortHash(d.expected_sha256)}</code>, found <code>{shortHash(d.actual_sha256)}</code>
+        <div>
+          Stored <Mono>{shortHash(d.expected_sha256)}</Mono>, found <Mono>{shortHash(d.actual_sha256)}</Mono>
         </div>
       )}
-      {f.kind === "untracked_object" && d.size_bytes != null && <div className="muted small">{bytesLabel(d.size_bytes)}</div>}
-      {f.kind !== "untracked_object" && d.previous_versions === 0 && <div className="muted small">The bucket holds no earlier version.</div>}
-      <div className="invite-actions">
+      {f.kind === "untracked_object" && d.size_bytes != null && <div className="text-[0.8125rem] text-muted">{bytesLabel(d.size_bytes)}</div>}
+      {f.kind !== "untracked_object" && d.previous_versions === 0 && <div className="text-[0.8125rem] text-muted">The bucket holds no earlier version.</div>}
+      <div className="mt-1 flex flex-wrap gap-2">
         {actionsFor(f).map((a) => (
-          <button
+          <Button
             key={a.action}
-            type="button"
-            className={`btn ${a.danger ? "btn-danger" : "btn-quiet"}`}
+            size="sm"
+            className="h-auto min-h-8 py-1.5 whitespace-normal"
+            variant={a.danger ? "danger" : "secondary"}
             disabled={busy}
             onClick={() => (a.danger ? setConfirming(a) : void go(a))}
           >
             {a.label}
-          </button>
+          </Button>
         ))}
       </div>
       {confirming && (
-        <div className="integrity-confirm" role="group" aria-label="Confirm deleting the object">
-          <p className="small">This deletes every version of the object for good. Type delete to confirm.</p>
-          <input aria-label="Type delete to confirm" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" />
-          <div className="invite-actions">
-            <button type="button" className="btn btn-quiet" onClick={() => { setConfirming(null); setTyped(""); }}>
+        <div className="mt-2 flex flex-col gap-3 rounded-xl bg-card p-3 ring-1 ring-line" role="group" aria-label="Confirm deleting the object">
+          <p>This deletes every version of the object for good. Type delete to confirm.</p>
+          <input
+            className={inputClass}
+            aria-label="Type delete to confirm"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            autoComplete="off"
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="quiet"
+              onClick={() => {
+                setConfirming(null);
+                setTyped("");
+              }}
+            >
               Cancel
-            </button>
-            <button type="button" className="btn btn-danger" disabled={busy || typed.trim().toLowerCase() !== "delete"} onClick={() => void go(confirming, "delete")}>
+            </Button>
+            <Button size="sm" variant="danger" disabled={busy || typed.trim().toLowerCase() !== "delete"} onClick={() => void go(confirming, "delete")}>
               Delete for good
-            </button>
+            </Button>
           </div>
         </div>
       )}

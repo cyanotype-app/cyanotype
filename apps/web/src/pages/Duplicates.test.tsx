@@ -105,7 +105,7 @@ describe("Duplicates page", () => {
     renderPage();
     await screen.findByText("Group 1 · 2 photos");
     const groups = screen.getByRole("list", { name: "Duplicate groups" });
-    const [one, two] = within(groups).getAllByRole("listitem", { hidden: false }).filter((li) => li.classList.contains("dup-group"));
+    const [one, two] = Array.from(groups.children) as HTMLElement[];
     await user.click(within(one!).getAllByRole("radio")[1]!);
     await user.click(within(one!).getByRole("button", { name: /Keep selected/ }));
     expect(keep).toHaveBeenCalledWith("g1", "id-2");
@@ -150,7 +150,8 @@ describe("Duplicates page", () => {
     await user.click(await screen.findByRole("button", { name: "Show more groups" }));
     expect(spy).toHaveBeenLastCalledWith({ cursor: "c1", limit: 20 });
     expect(await screen.findByText("Group 2 · 2 photos")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Check every account" }));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Check every account" }));
     expect(all).toHaveBeenCalled();
     expect(await screen.findByText("Checking 3 accounts.")).toBeInTheDocument();
   });

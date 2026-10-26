@@ -50,10 +50,10 @@ async function setup(page: Page, opts: { extra?: Handler[] } = {}) {
   return { assets, server: slide.state, violations };
 }
 
-const layers = (page: Page) => page.locator(".frame .slide-layer");
+const layers = (page: Page) => page.locator("[data-frame] .slide-layer");
 const waitPicture = (page: Page) =>
   page.waitForFunction(() => {
-    const img = Array.from(document.querySelectorAll<HTMLImageElement>(".frame .slide-photo")).at(-1);
+    const img = Array.from(document.querySelectorAll<HTMLImageElement>("[data-frame] .slide-photo")).at(-1);
     return !!img && img.complete && img.naturalWidth > 0;
   });
 const srcOf = (page: Page) => layers(page).last().locator(".slide-photo").getAttribute("src");
@@ -77,7 +77,7 @@ for (const { name, width, height } of SCREENS) {
       await page.waitForTimeout(1000);
 
       for (let i = 0; i < 4; i++) {
-        const b = (await pictureBox(page, ".frame"))!;
+        const b = (await pictureBox(page, "[data-frame]"))!;
         const tol = 1.5;
         expect(b.left).toBeGreaterThanOrEqual(-tol);
         expect(b.top).toBeGreaterThanOrEqual(-tol);
@@ -86,7 +86,7 @@ for (const { name, width, height } of SCREENS) {
         expect(Math.abs(b.w - b.vw) <= tol || Math.abs(b.h - b.vh) <= tol, `fills the screen (${Math.round(b.w)}x${Math.round(b.h)} in ${b.vw}x${b.vh})`).toBe(true);
         // Behind it: the same picture, covering the whole screen, blurred and darkened.
         const bg = await page.evaluate(() => {
-          const el = Array.from(document.querySelectorAll<HTMLImageElement>(".frame .slide-backdrop")).at(-1)!;
+          const el = Array.from(document.querySelectorAll<HTMLImageElement>("[data-frame] .slide-backdrop")).at(-1)!;
           const r = el.getBoundingClientRect();
           const cs = getComputedStyle(el);
           return { covers: r.left <= 0 && r.top <= 0 && r.right >= innerWidth && r.bottom >= innerHeight, filter: cs.filter, fit: cs.objectFit, src: el.getAttribute("src") };
@@ -98,11 +98,11 @@ for (const { name, width, height } of SCREENS) {
         expect(bg.src).toBe(b.src);
         await check(`frame-${i}`);
         // The overlays stay on screen, over the lower edge.
-        const info = await page.locator(".frame-info").boundingBox();
+        const info = await page.locator("[data-frame-info]").boundingBox();
         expect(info!.x).toBeGreaterThanOrEqual(0);
         expect(info!.x + info!.width).toBeLessThanOrEqual(width + 0.5);
         expect(info!.y + info!.height).toBeLessThanOrEqual(height + 0.5);
-        await expect(page.locator(".frame-time")).toBeVisible();
+        await expect(page.locator("[data-frame-time]")).toBeVisible();
         const before = await srcOf(page);
         await expect.poll(() => srcOf(page), { timeout: 9000 }).not.toBe(before);
         await waitPicture(page);
@@ -110,8 +110,8 @@ for (const { name, width, height } of SCREENS) {
       }
       expect(await page.evaluate(() => (window as unknown as { __wake: { requested: number } }).__wake.requested)).toBeGreaterThan(0);
       // Never more than two photos (each with its blurred copy) in the page, however long it runs.
-      expect(await page.locator(".frame img").count()).toBeLessThanOrEqual(4);
-      expect(await page.locator(".frame-menu").count()).toBe(0);
+      expect(await page.locator("[data-frame] img").count()).toBeLessThanOrEqual(4);
+      expect(await page.locator("[data-frame-menu]").count()).toBe(0);
       expect(violations, "CSP violations").toEqual([]);
       expect(problems, problems.join("\n")).toEqual([]);
     });
@@ -137,7 +137,7 @@ test.describe("frame behaviour", () => {
     await expect(menu).toBeHidden({ timeout: 14_000 });
     await page.touchscreen.tap(500, 300);
     await menu.getByRole("button", { name: "Exit the frame" }).click();
-    await expect(page).toHaveURL(/\/library$/);
+    await expect(page).toHaveURL(/\/photos$/);
     expect(problems, problems.join("\n")).toEqual([]);
   });
 
@@ -153,11 +153,11 @@ test.describe("frame behaviour", () => {
     // Whatever happened to the photos loaded ahead, a photo is on screen all the time.
     for (let i = 0; i < 4; i++) {
       expect(await layers(page).count()).toBeGreaterThan(0);
-      expect(await pictureBox(page, ".frame")).not.toBeNull();
+      expect(await pictureBox(page, "[data-frame]")).not.toBeNull();
       await page.waitForTimeout(2500);
     }
     await expect(page.getByText("Offline. Trying again…").first()).toBeVisible({ timeout: 30_000 });
-    expect(await pictureBox(page, ".frame")).not.toBeNull();
+    expect(await pictureBox(page, "[data-frame]")).not.toBeNull();
     const shown = await srcOf(page);
     expect(shown).toBeTruthy();
     // No sign-in screen, no blank page.

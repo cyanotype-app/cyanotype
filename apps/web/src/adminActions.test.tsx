@@ -59,7 +59,6 @@ describe("AccountActions", () => {
       .mockResolvedValueOnce({ items: [key] })
       .mockResolvedValue({ items: [] });
     const revoke = vi.spyOn(api, "revokeAccountApiKey").mockResolvedValue(undefined);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     const changed = setup(account());
     await open(user);
@@ -67,6 +66,7 @@ describe("AccountActions", () => {
     expect(await screen.findByText("cyanotype CLI on test-laptop")).toBeInTheDocument();
     expect(screen.getByText(/last used never/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Revoke cyanotype CLI on test-laptop" }));
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Revoke" }));
     await waitFor(() => expect(revoke).toHaveBeenCalledWith("u2", "k1"));
     expect(await screen.findByText("No API keys.")).toBeInTheDocument();
     expect(list).toHaveBeenCalledTimes(2);

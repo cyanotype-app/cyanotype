@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import { api, ApiError, type ApiKeyScope, type CliRequest } from "../api";
 import { BAD_REDIRECT, authorizeParams, isLoopbackRedirect, nav } from "../cliLoginText";
 import { CliConsent, CliPage } from "../components/CliConsent";
+import { Loading, Mono, Notice } from "../settings/kit";
 
 /**
  * `/cli/authorize`: where `cyanotype login` sends the browser. The command line listens on a port of this computer and
@@ -66,24 +67,23 @@ function Authorize({ search, email }: { search: string; email: string }) {
     }
   }
 
-  if (view.step === "checking")
-    return (
-      <p className="muted" role="status">
-        Checking the request…
-      </p>
-    );
+  if (view.step === "checking") return <Loading>Checking the request…</Loading>;
   if (view.step === "invalid")
     return (
-      <div role="alert">
-        <p>{view.message}</p>
-        <p className="muted small">Run <code>cyanotype login</code> again to get a new link.</p>
+      <div className="flex flex-col gap-3">
+        <Notice tone="warn" role="alert">
+          {view.message}
+        </Notice>
+        <p className="text-sm text-muted">
+          Run <Mono>cyanotype login</Mono> again to get a new link.
+        </p>
       </div>
     );
   if (view.step === "done")
     return (
-      <p role="status">
+      <Notice tone="ok" role="status">
         {view.allowed ? "Allowed. You can close this tab and go back to your terminal." : "Denied. Nothing was allowed. You can close this tab."}
-      </p>
+      </Notice>
     );
   return (
     <CliConsent
