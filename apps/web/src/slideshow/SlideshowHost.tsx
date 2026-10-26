@@ -1,8 +1,10 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 import type { SlideSource } from "./deck";
+import { Button } from "../ui/Button";
 import { enterFullscreen } from "./device";
 import { PlayIcon } from "./icons";
 import { Slideshow } from "./Slideshow";
+import "../viewer.css";
 
 interface Host {
   /** Start a slideshow of `source`. Call it from a click or key handler: that is what lets the browser go full screen. */
@@ -45,9 +47,9 @@ export function SlideshowButton({
   const host = useSlideshow();
   if (!host) return null;
   return (
-    <button type="button" className="btn btn-quiet slideshow-start" disabled={disabled} onClick={() => host.start(source())}>
+    <Button variant="ghost" className="max-md:size-10 max-md:px-0" disabled={disabled} onClick={() => host.start(source())}>
       <PlayIcon />
-      <span>{label}</span>
-    </button>
+      <span className="max-md:sr-only">{label}</span>
+    </Button>
   );
 }

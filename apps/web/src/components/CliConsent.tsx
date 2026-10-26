@@ -4,7 +4,9 @@ import type { ApiKeyScope } from "../api";
 import { useAuth } from "../auth";
 import { ALLOW_QUESTION, ONLY_IF_YOU_STARTED_IT } from "../cliLoginText";
 import { SCOPE_HELP, SCOPE_LABEL } from "../twoFactorText";
-import { Logo } from "./Logo";
+import { FormError, Loading, Notice } from "../settings/kit";
+import { Button } from "../ui/Button";
+import { AuthShell } from "./AuthShell";
 
 /** The pages that approve a command-line login sit outside the app shell. Anonymous visitors sign in (and, when the server requires it, set up two-factor authentication) first and come back here. */
 export function CliPage({ title, children }: { title: string; children: (email: string) => ReactNode }) {
@@ -12,9 +14,9 @@ export function CliPage({ title, children }: { title: string; children: (email: 
   const loc = useLocation();
   if (state.status === "loading")
     return (
-      <p className="center muted" role="status">
-        Loading…
-      </p>
+      <main className="flex min-h-dvh items-center justify-center bg-bg">
+        <Loading />
+      </main>
     );
   // The hash is kept: /activate#code=... must still have its code when the person is back from signing in.
   const here = loc.pathname + loc.search + loc.hash;
@@ -24,15 +26,9 @@ export function CliPage({ title, children }: { title: string; children: (email: 
   // The administrator requires two-factor authentication and this account has none: enrol, then come back here.
   if (state.user.mfa_enrol_required) return <Navigate to="/settings/security" replace state={{ from: here }} />;
   return (
-    <div className="auth-page">
-      <div className="card auth-card cli-card">
-        <div className="auth-brand">
-          <Logo size={44} />
-          <h1>{title}</h1>
-        </div>
-        {children(state.user.email)}
-      </div>
-    </div>
+    <AuthShell title={title} wide>
+      {children(state.user.email)}
+    </AuthShell>
   );
 }
 
@@ -49,31 +45,35 @@ interface ConsentProps {
 /** The question itself: which device, what it may do, who is answering, and the two buttons. */
 export function CliConsent({ device, scope, email, busy, error, onAllow, onDeny }: ConsentProps) {
   return (
-    <section aria-label="Allow the command line">
-      <p className="cli-question">{ALLOW_QUESTION(device)}</p>
-      <dl className="cli-facts">
-        <dt>Device</dt>
-        <dd>{device}</dd>
-        <dt>Access</dt>
-        <dd>
-          <strong>{SCOPE_LABEL[scope] ?? scope}</strong>
-          <span className="muted small"> {SCOPE_HELP[scope] ?? ""}</span>
-        </dd>
-        <dt>Account</dt>
-        <dd>{email}</dd>
+    <section aria-label="Allow the command line" className="flex flex-col gap-5">
+      <p className="text-[1.0625rem] leading-snug font-semibold">{ALLOW_QUESTION(device)}</p>
+      <dl className="divide-y divide-line overflow-hidden rounded-card bg-surface text-[0.9375rem]">
+        <div className="flex flex-col gap-0.5 px-4 py-2.5 min-[420px]:flex-row min-[420px]:gap-4">
+          <dt className="w-20 shrink-0 text-muted">Device</dt>
+          <dd className="min-w-0 break-words">{device}</dd>
+        </div>
+        <div className="flex flex-col gap-0.5 px-4 py-2.5 min-[420px]:flex-row min-[420px]:gap-4">
+          <dt className="w-20 shrink-0 text-muted">Access</dt>
+          <dd className="min-w-0">
+            <strong className="font-semibold">{SCOPE_LABEL[scope] ?? scope}</strong>
+            <span className="block text-[0.8125rem] text-muted">{SCOPE_HELP[scope] ?? ""}</span>
+          </dd>
+        </div>
+        <div className="flex flex-col gap-0.5 px-4 py-2.5 min-[420px]:flex-row min-[420px]:gap-4">
+          <dt className="w-20 shrink-0 text-muted">Account</dt>
+          <dd className="min-w-0 break-all">{email}</dd>
+        </div>
       </dl>
-      <p className="notice">{ONLY_IF_YOU_STARTED_IT}</p>
-      <div className="cli-actions">
-        <button type="button" className="btn btn-primary" disabled={busy} onClick={onAllow}>
+      <Notice>{ONLY_IF_YOU_STARTED_IT}</Notice>
+      <div className="flex flex-col gap-2">
+        <Button variant="primary" size="lg" disabled={busy} onClick={onAllow}>
           Allow
-        </button>
-        <button type="button" className="btn btn-quiet" disabled={busy} onClick={onDeny}>
+        </Button>
+        <Button size="lg" disabled={busy} onClick={onDeny}>
           Deny
-        </button>
+        </Button>
       </div>
-      <div role="alert" className="form-error">
-        {error}
-      </div>
+      <FormError>{error}</FormError>
     </section>
   );
 }

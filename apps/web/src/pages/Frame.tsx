@@ -14,6 +14,9 @@ import {
   type FrameSource,
 } from "../frameConfig";
 import { Logo } from "../components/Logo";
+import { SelectBox } from "../settings/kit";
+import { Button } from "../ui/Button";
+import { Switch } from "../ui/Controls";
 import { SlideshowController } from "../slideshow/controller";
 import { scopeSource } from "../slideshow/sources";
 import { enterFullscreen, exitFullscreen, fullscreenSupported, isFullscreen, useWakeLock } from "../slideshow/device";
@@ -86,10 +89,10 @@ function useSessionProbe(anonymous: boolean, refresh: () => Promise<void>): "che
 
 function FrameMessage({ title, text, children }: { title: string; text: string; children?: React.ReactNode }) {
   return (
-    <main className="frame-message">
+    <main className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-bg px-6 py-10 text-center text-fg">
       <Logo size={40} />
-      <h1>{title}</h1>
-      <p className="muted" role="status">
+      <h1 className="text-[1.5rem] leading-[1.2] font-bold tracking-[-0.02em]">{title}</h1>
+      <p className="max-w-md text-[0.9375rem] text-muted" role="status">
         {text}
       </p>
       {children}
@@ -101,9 +104,11 @@ function FrameMessage({ title, text, children }: { title: string; text: string; 
 function FrameSignIn({ from }: { from: string }) {
   return (
     <FrameMessage title="Sign in again" text="This device is no longer signed in, so the frame cannot show your photos.">
-      <Link className="btn btn-primary" to="/login" state={{ from }}>
-        Sign in
-      </Link>
+      <Button variant="primary" size="lg" asChild>
+        <Link to="/login" state={{ from }}>
+          Sign in
+        </Link>
+      </Button>
     </FrameMessage>
   );
 }
@@ -135,8 +140,8 @@ function FrameSetup({ initial }: { initial: FrameConfig | null }) {
     source === "album" ? (albumId ? { kind: "album", id: albumId } : null) : { kind: source };
   const config: FrameConfig | null = chosen ? { source: chosen, interval, clock, caption } : null;
 
-  function start(e: FormEvent) {
-    e.preventDefault();
+  function start(e?: FormEvent) {
+    e?.preventDefault();
     if (!config) return;
     saveFrameConfig(config);
     // Full screen needs this click; a tablet in kiosk mode already is.
@@ -144,83 +149,81 @@ function FrameSetup({ initial }: { initial: FrameConfig | null }) {
     navigate(`/frame?${frameParams(config)}`, { replace: true });
   }
 
+  const choice = (value: FrameSource["kind"], label: string) => (
+    <label className="flex min-h-12 cursor-pointer items-center gap-3 px-4 text-[0.9375rem]">
+      <input type="radio" name="source" className="size-5 shrink-0 accent-accent" checked={source === value} onChange={() => setSource(value)} />
+      <span>{label}</span>
+    </label>
+  );
+
   return (
-    <main className="frame-setup">
-      <header>
+    <main className="mx-auto w-full max-w-lg px-4 pt-8 pb-14 text-fg">
+      <header className="flex items-center gap-3">
         <Logo size={32} />
-        <h1>Photo frame</h1>
+        <h1 className="text-[1.75rem] leading-[1.2] font-bold tracking-[-0.02em]">Photo frame</h1>
       </header>
-      <p className="muted">Show random photos, one after another, on a screen that stays on. Photos in the trash, hidden photos and (from a whole album) archived ones are never shown.</p>
-      <form onSubmit={start}>
-        <fieldset>
-          <legend>What to show</legend>
-          <label className="frame-choice">
-            <input type="radio" name="source" checked={source === "library"} onChange={() => setSource("library")} />
-            <span>My whole library</span>
-          </label>
-          <label className="frame-choice">
-            <input type="radio" name="source" checked={source === "favorites"} onChange={() => setSource("favorites")} />
-            <span>My favorites</span>
-          </label>
-          <label className="frame-choice">
-            <input type="radio" name="source" checked={source === "album"} onChange={() => setSource("album")} />
-            <span>One album</span>
-          </label>
-          {source === "album" && (
-            <div className="frame-album">
-              {failed ? (
-                <p className="muted" role="alert">
-                  Could not load your albums.
-                </p>
-              ) : albums === null ? (
-                <p className="muted" role="status">
-                  Loading albums…
-                </p>
-              ) : albums.length === 0 ? (
-                <p className="muted">You have no albums yet.</p>
-              ) : (
-                <select aria-label="Album" value={albumId} onChange={(e) => setAlbumId(e.target.value)}>
-                  <option value="">Choose an album</option>
-                  {albums.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.title}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-          )}
+      <p className="mt-3 text-sm text-muted">
+        Show random photos, one after another, on a screen that stays on. Photos in the trash, hidden photos and (from a whole album) archived ones are never shown.
+      </p>
+      <div className="mt-6 flex flex-col gap-6">
+        <fieldset className="min-w-0">
+          <legend className="mb-2 text-[1.0625rem] font-semibold tracking-tight">What to show</legend>
+          <div className="divide-y divide-line overflow-hidden rounded-card bg-card ring-1 ring-line">
+            {choice("library", "My whole library")}
+            {choice("favorites", "My favorites")}
+            {choice("album", "One album")}
+            {source === "album" && (
+              <div className="px-4 py-3">
+                {failed ? (
+                  <p className="text-sm text-muted" role="alert">
+                    Could not load your albums.
+                  </p>
+                ) : albums === null ? (
+                  <p className="text-sm text-muted" role="status">
+                    Loading albums…
+                  </p>
+                ) : albums.length === 0 ? (
+                  <p className="text-sm text-muted">You have no albums yet.</p>
+                ) : (
+                  <SelectBox aria-label="Album" value={albumId} onChange={(e) => setAlbumId(e.target.value)}>
+                    <option value="">Choose an album</option>
+                    {albums.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.title}
+                      </option>
+                    ))}
+                  </SelectBox>
+                )}
+              </div>
+            )}
+          </div>
         </fieldset>
-        <label className="frame-field">
+        <label className="flex flex-col gap-1.5 text-sm font-medium">
           <span>Change the photo every</span>
-          <select value={interval} onChange={(e) => setIntervalSeconds(Number(e.target.value))}>
+          <SelectBox value={interval} onChange={(e) => setIntervalSeconds(Number(e.target.value))}>
             {[...new Set<number>([...INTERVALS, interval])].sort((a, b) => a - b).map((s) => (
               <option key={s} value={s}>
                 {intervalLabel(s)}
               </option>
             ))}
-          </select>
+          </SelectBox>
         </label>
-        <label className="frame-check">
-          <input type="checkbox" checked={clock} onChange={(e) => setClock(e.target.checked)} />
-          <span>Show the time and date</span>
-        </label>
-        <label className="frame-check">
-          <input type="checkbox" checked={caption} onChange={(e) => setCaption(e.target.checked)} />
-          <span>Show photo captions</span>
-        </label>
-        <div className="frame-actions">
-          <button type="submit" className="btn btn-primary" disabled={!config}>
-            Start the frame
-          </button>
-          <Link className="btn btn-quiet" to="/library">
-            Back to my library
-          </Link>
+        <div className="divide-y divide-line overflow-hidden rounded-card bg-card px-4 ring-1 ring-line">
+          <Switch label="Show the time and date" checked={clock} onChange={setClock} />
+          <Switch label="Show photo captions" checked={caption} onChange={setCaption} />
         </div>
-      </form>
+        <div className="flex flex-col gap-2 min-[420px]:flex-row">
+          <Button variant="primary" size="lg" disabled={!config} onClick={() => start()}>
+            Start the frame
+          </Button>
+          <Button variant="quiet" size="lg" asChild>
+            <Link to="/photos">Back to my library</Link>
+          </Button>
+        </div>
+      </div>
       {config && (
-        <p className="muted small frame-address">
-          To start here every time, open <code>{`/frame?${frameParams(config)}`}</code> on the tablet and bookmark it.
+        <p className="mt-6 text-[0.8125rem] text-muted">
+          To start here every time, open <code className="font-mono break-all">{`/frame?${frameParams(config)}`}</code> on the tablet and bookmark it.
         </p>
       )}
     </main>
@@ -308,58 +311,73 @@ function FrameShow({ config }: { config: FrameConfig }) {
 
   const { slide } = state;
   return (
-    <div className="frame" onClick={() => (menu ? undefined : openMenu())}>
+    <div
+      data-frame=""
+      className="fixed inset-0 cursor-none overflow-hidden bg-black text-white select-none [-webkit-tap-highlight-color:transparent]"
+      onClick={() => (menu ? undefined : openMenu())}
+    >
       <SlideStage slide={slide} outgoing={state.outgoing} fade={state.fade} backdrop="blur" />
       {(config.clock || (config.caption && slide?.caption)) && (
-        <div className="frame-info">
+        <div
+          data-frame-info=""
+          className="pointer-events-none absolute inset-x-0 bottom-0 z-[2] flex flex-wrap items-end justify-between gap-x-6 gap-y-2 pt-12 pr-[max(1.5rem,env(safe-area-inset-right))] pb-[max(1.25rem,env(safe-area-inset-bottom))] pl-[max(1.5rem,env(safe-area-inset-left))] [text-shadow:0_1px_10px_rgb(0_0_0/0.7)]"
+        >
           {config.clock && <FrameClock />}
-          {config.caption && slide?.caption && <p className="frame-caption">{slide.caption}</p>}
+          {config.caption && slide?.caption && (
+            <p data-frame-caption="" className="m-0 ml-auto max-w-full text-right text-[clamp(1rem,2.6vmin,1.6rem)] [overflow-wrap:anywhere]">
+              {slide.caption}
+            </p>
+          )}
         </div>
       )}
       {state.trouble && (
-        <p className="frame-offline" role="status">
+        <p
+          className="absolute top-[max(0.75rem,env(safe-area-inset-top))] right-[max(0.75rem,env(safe-area-inset-right))] z-[2] m-0 rounded-full bg-black/60 px-3 py-1 text-[0.8rem] opacity-85"
+          role="status"
+        >
           Offline. Trying again…
         </p>
       )}
       {state.status === "loading" && !slide && !state.trouble && (
-        <p className="frame-centered" role="status">
+        <p className="absolute top-1/2 left-1/2 z-[2] m-0 w-[min(30rem,calc(100%-2rem))] -translate-x-1/2 -translate-y-1/2 text-center" role="status">
           Loading…
         </p>
       )}
       {state.status === "empty" && (
-        <div className="frame-centered" role="status">
-          <h1>No photos to show</h1>
-          <p className="muted">Nothing here is ready to display yet.</p>
+        <div className="absolute top-1/2 left-1/2 z-[2] w-[min(30rem,calc(100%-2rem))] -translate-x-1/2 -translate-y-1/2 text-center" role="status">
+          <h1 className="mb-2 text-2xl font-bold">No photos to show</h1>
+          <p className="text-white/70">Nothing here is ready to display yet.</p>
         </div>
       )}
       {menu && (
         <div
-          className="frame-menu"
+          data-frame-menu=""
+          className="absolute top-1/2 left-1/2 z-[5] grid grid-cols-1 w-[min(20rem,calc(100%-2rem))] -translate-x-1/2 -translate-y-1/2 cursor-auto gap-2.5 rounded-sheet bg-[rgb(8_18_26/0.95)] p-4 shadow-float"
           role="dialog"
           aria-label="Photo frame menu"
           onClick={(e) => e.stopPropagation()}
         >
-          <button type="button" ref={first} className="btn btn-glass" onClick={() => navigate("/frame?setup", { replace: true })}>
+          <Button variant="overlay" size="lg" ref={first} onClick={() => navigate("/frame?setup", { replace: true })}>
             Change what is shown
-          </button>
+          </Button>
           {fullscreenSupported() && (
-            <button type="button" className="btn btn-glass" onClick={() => void (isFullscreen() ? exitFullscreen() : enterFullscreen())}>
+            <Button variant="overlay" size="lg" onClick={() => void (isFullscreen() ? exitFullscreen() : enterFullscreen())}>
               Full screen
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
-            className="btn btn-glass"
+          <Button
+            variant="overlay"
+            size="lg"
             onClick={() => {
               void exitFullscreen();
-              navigate("/library");
+              navigate("/photos");
             }}
           >
             Exit the frame
-          </button>
-          <button type="button" className="btn btn-glass" onClick={closeMenu}>
+          </Button>
+          <Button variant="overlay" size="lg" onClick={closeMenu}>
             Close
-          </button>
+          </Button>
         </div>
       )}
       <div className="sr-only" role="status" aria-live="polite">
@@ -384,11 +402,11 @@ function FrameClock() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return (
-    <div className="frame-clock" aria-label="Time and date">
-      <time dateTime={now.toISOString()} className="frame-time">
+    <div data-frame-clock="" className="grid grid-cols-1 leading-[1.1]" aria-label="Time and date">
+      <time dateTime={now.toISOString()} data-frame-time="" className="text-[clamp(2rem,7vmin,5rem)] font-light tabular-nums">
         {new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(now)}
       </time>
-      <span className="frame-date">
+      <span className="text-[clamp(0.9rem,2.4vmin,1.5rem)] opacity-90">
         {new Intl.DateTimeFormat(undefined, { weekday: "long", month: "long", day: "numeric" }).format(now)}
       </span>
     </div>

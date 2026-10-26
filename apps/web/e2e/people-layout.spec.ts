@@ -10,8 +10,14 @@ import { json, makeCheck, RUNS, setupApp, shotPrefix, viewportOf, type Handler }
 async function expectBoxOnFace(dialog: Locator, box: [number, number, number, number]) {
   const img = dialog.locator(".face-context-frame img");
   await expect.poll(async () => (await img.boundingBox())?.width ?? 0).toBeGreaterThan(20);
-  const i = (await img.boundingBox())!;
-  const b = (await dialog.getByTestId("face-context-box").boundingBox())!;
+  // The sheet slides in: both rectangles are read in one go, so they are of the same moment.
+  const { i, b } = await dialog.evaluate((el) => {
+    const r = (e: Element | null) => {
+      const x = e!.getBoundingClientRect();
+      return { x: x.x, y: x.y, width: x.width, height: x.height };
+    };
+    return { i: r(el.querySelector(".face-context-frame img")), b: r(el.querySelector("[data-testid=face-context-box]")) };
+  });
   const tol = 1.5;
   expect(Math.abs(b.x - (i.x + box[0] * i.width)), "box left").toBeLessThan(tol);
   expect(Math.abs(b.y - (i.y + box[1] * i.height)), "box top").toBeLessThan(tol);
@@ -93,6 +99,21 @@ for (const { width, scheme } of RUNS) {
             void route.fulfill(json({ ...page, items: page.items.map((a) => ({ ...a, rating: 0, archived: false, hidden: false, edited: false })) }));
             return true;
           }
+          if (p === "/assets/albums" && method === "GET") {
+            const album = (id: string, title: string, count: number, thumb: number) => ({
+              id,
+              title,
+              description: null,
+              photo_count: count,
+              cover: { id: `a${thumb}`, thumbhash: null, thumb_url: `/fixture-thumbs/${thumb}.svg` },
+              first_at: "2024-01-01T00:00:00Z",
+              last_at: "2024-06-30T00:00:00Z",
+              created_at: "2024-01-01T00:00:00Z",
+              updated_at: "2024-01-01T00:00:00Z",
+            });
+            void route.fulfill(json({ items: [album("l1", LONG, 30, 1), album("l2", "Pets", 12, 2), album("l3", "Garden", 7, 3), { ...album("l4", "Empty one", 0, 4), cover: null }] }));
+            return true;
+          }
           if (p === "/assets/albums" && method === "POST") {
             calls.push({ method, path: p, body: route.request().postDataJSON() });
             void route.fulfill(json({ id: "al1", title: "Holiday", description: null, photo_count: 0, cover: null, first_at: null, last_at: null, created_at: "", updated_at: "" }, 201));
@@ -134,15 +155,8 @@ for (const { width, scheme } of RUNS) {
         route.fulfill(json({ ...assets[2], albums: [], original_url: assets[2]!.thumb_url, preview_url: assets[2]!.thumb_url, tags: [] })),
       );
 
-      // The way in: the More menu of the library.
-      await page.goto("/library");
-      await page.getByRole("button", { name: /Open IMG_00000/ }).first().waitFor();
-      await page.getByLabel("More views").click();
-      await page.getByRole("link", { name: "People", exact: true }).waitFor();
-      await check("more-menu");
-      await page.getByRole("link", { name: "People", exact: true }).click();
-
       // The People page.
+      await page.goto("/people");
       await page.getByRole("list", { name: "People", exact: true }).waitFor();
       await page.getByRole("link", { name: /^Unnamed person, 7 photos/ }).waitFor();
       await check("people");
@@ -157,7 +171,10 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: /Open IMG_00000/ }).waitFor();
       await page.getByRole("heading", { level: 2, name: /2026/ }).first().waitFor();
       await check("person");
-      await page.getByRole("button", { name: "Rename" }).click();
+      await check("person-menu-closed");
+      await page.getByRole("button", { name: "More" }).click();
+      await check("person-menu");
+      await page.getByRole("menuitem", { name: "Rename" }).click();
       await page.getByLabel("Name", { exact: true }).fill("Person One");
       await check("person-rename");
       await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -181,9 +198,10 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: /Select IMG_00001/ }).click();
       await check("person-select");
       await page.getByRole("button", { name: "Not this person" }).click();
-      await page.getByRole("alertdialog").waitFor();
+      const notThis = page.getByRole("dialog", { name: /^Not / });
+      await notThis.waitFor();
       await check("person-not-this-person");
-      await page.getByRole("alertdialog").getByRole("button", { name: "Not this person" }).click();
+      await notThis.getByRole("button", { name: "Not this person" }).click();
       await page.getByText(/^Took 2 photos out of/).waitFor();
       expect(calls.at(-1)?.body).toEqual({ asset_ids: ["a0", "a1"] });
       await check("person-removed-toast");
@@ -193,6 +211,17 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: "Select all" }).click();
       await page.getByText("12 selected").waitFor();
       await check("person-select-all");
+      await page.getByRole("toolbar", { name: "Selection" }).getByRole("button", { name: "Add to album" }).click();
+      const add = page.getByRole("dialog", { name: "Add 12 photos to album" });
+      await add.getByRole("button", { name: /Pets/ }).waitFor();
+      await check("person-add-to-album");
+      await add.getByLabel("Search albums").fill("pe");
+      await check("person-add-to-album-search");
+      // In a search field the first Escape clears the text (the browser's own behaviour); the second closes the sheet.
+      await page.keyboard.press("Escape");
+      await expect(add.getByLabel("Search albums")).toHaveValue("");
+      await page.keyboard.press("Escape");
+      await add.waitFor({ state: "detached" });
       await page.getByRole("toolbar", { name: "Selection" }).getByRole("button", { name: "Save as album" }).click();
       const save = page.getByRole("dialog", { name: "Save 12 photos as an album" });
       await save.waitFor();
@@ -205,14 +234,20 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: "Done" }).click();
 
       // Merge and delete dialogs.
-      await page.getByRole("button", { name: "Merge into…" }).click();
+      await page.getByRole("button", { name: "More" }).click();
+      await page.getByRole("menuitem", { name: "Merge into…" }).click();
       await page.getByRole("dialog", { name: /Merge/ }).waitFor();
-      await page.getByLabel("Merge into").waitFor();
+      await page.getByRole("group", { name: "Merge into" }).waitFor();
       await check("person-merge");
       await page.keyboard.press("Escape");
-      await page.getByRole("button", { name: "Delete person" }).click();
-      await page.getByRole("alertdialog").waitFor();
+      await page.getByRole("button", { name: "More" }).click();
+      await page.getByRole("menuitem", { name: "Delete person" }).click();
+      await page.getByRole("dialog", { name: /^Delete / }).waitFor();
       await check("person-delete");
+      await page.keyboard.press("Escape");
+      await page.getByRole("button", { name: "Change cover" }).click();
+      await page.getByRole("dialog", { name: /^Change cover/ }).waitFor();
+      await check("person-cover");
       await page.keyboard.press("Escape");
 
       // The viewer: the faces on the photo (a click on one nobody named asks "Who is this?"), and the named people in Info.
@@ -232,7 +267,7 @@ for (const { width, scheme } of RUNS) {
       await page.keyboard.press("Escape");
       await who.waitFor({ state: "detached" });
       await page.keyboard.press("i");
-      const panel = page.getByRole("complementary", { name: "Photo details" });
+      const panel = page.locator("#details-panel");
       await panel.getByRole("link", { name: LONG }).waitFor();
       await expect(panel.getByText("Unknown face")).toHaveCount(0);
       await expect(panel.getByRole("link", { name: "Unnamed person" })).toHaveCount(0);

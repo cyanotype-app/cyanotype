@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { api, type Tag } from "../api";
+import { cn } from "../ui/cn";
+import { TagChip } from "./TagChip";
 import { MAX_TAGS_AT_ONCE, nameProblem, suggest, tagPhotos, tidy, withName } from "../tagText";
 
 interface Props {
@@ -85,23 +87,23 @@ export function TagInput({ value, onChange, label, placeholder, existingOnly = f
   }
 
   return (
-    <div className="tag-input">
-      <label htmlFor={`${id}-field`} className="tag-input-label">
+    <div className="relative">
+      <label htmlFor={`${id}-field`} className="mb-1.5 block text-sm font-medium">
         {label}
       </label>
-      <div className="tag-input-box" onClick={() => input.current?.focus()}>
+      <div
+        className="flex min-h-11 flex-wrap items-center gap-1.5 rounded-card border border-line bg-bg px-2.5 py-1.5 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/25"
+        onClick={() => input.current?.focus()}
+      >
         {value.map((n) => (
-          <span key={n.toLowerCase()} className="tag-chip">
-            <span className="tag-chip-name">{n}</span>
-            <button type="button" className="tag-chip-x" aria-label={`Remove ${n}`} disabled={disabled} onClick={() => onChange(value.filter((x) => x !== n))}>
-              ×
-            </button>
-          </span>
+          <TagChip key={n.toLowerCase()} removeLabel={`Remove ${n}`} disabled={disabled} onRemove={() => onChange(value.filter((x) => x !== n))}>
+            {n}
+          </TagChip>
         ))}
         <input
           id={`${id}-field`}
           ref={input}
-          className="tag-input-field"
+          className="min-w-[8ch] flex-1 bg-transparent py-1 text-base outline-none placeholder:text-muted focus-visible:outline-none"
           role="combobox"
           aria-expanded={open && shown.length > 0}
           aria-controls={listId}
@@ -159,28 +161,33 @@ export function TagInput({ value, onChange, label, placeholder, existingOnly = f
         />
       </div>
       {open && shown.length > 0 && (
-        <ul className="tag-suggestions" id={listId} role="listbox" aria-label={`${label}: suggestions`}>
+        <ul
+          className="absolute inset-x-0 top-full z-10 mt-1 max-h-56 overflow-y-auto rounded-card border border-line bg-card p-1 shadow-float"
+          id={listId}
+          role="listbox"
+          aria-label={`${label}: suggestions`}
+        >
           {shown.map((t, i) => (
             <li
               key={t.id}
               id={`${id}-opt-${i}`}
               role="option"
               aria-selected={i === active}
-              className={`tag-suggestion${i === active ? " active" : ""}`}
+              className={cn("flex min-h-10 cursor-pointer items-center justify-between gap-3 rounded-lg px-2.5 text-[0.9375rem]", i === active && "bg-surface")}
               // Mouse down, not click: the field loses focus first and would close the list.
               onMouseDown={(e) => {
                 e.preventDefault();
                 void add(t.name);
               }}
             >
-              <span className="tag-suggestion-name">{t.name}</span>
-              <span className="muted small">{tagPhotos(t.count)}</span>
+              <span className="min-w-0 [overflow-wrap:anywhere]">{t.name}</span>
+              <span className="shrink-0 text-xs text-muted">{tagPhotos(t.count)}</span>
             </li>
           ))}
         </ul>
       )}
       {problem && (
-        <p role="alert" className="form-error small">
+        <p role="alert" className="mt-1.5 text-sm text-danger">
           {problem}
         </p>
       )}

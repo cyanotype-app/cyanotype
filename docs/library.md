@@ -98,15 +98,17 @@ Albums are named, owner-scoped collections of photos. An album references photos
 
 ## What the user sees
 
-- **Albums** (top bar, `/albums`): cards with cover, title, photo count and date range, most recently updated first,
-  and **New album**.
-- An album page (`/albums/:id`) shows the title and description (**Edit**), the photos in the library grid and
-  lightbox, **Select** (**Remove from album**, **Set as cover** with exactly one photo selected), **Add photos** (a
-  picker over the whole library using the same selection bar) and **Delete album** (confirmation: the photos stay in
-  the library).
-- **Add to album** in the library's selection bar and in the lightbox opens a dialog with a searchable album list and
-  **New album** (creates it with the photos). A toast says "Added N to <album>"; photos already in the album are not
-  counted. The lightbox lists the albums the current photo is in.
+- **Albums** (Collections, the sidebar, `/albums`): a grid of cards with a square cover, title, photo count and date range,
+  most recently updated first (two columns on a phone, five or so on a wide screen), a small **Smart** or **Shared** badge
+  (an album with a live link) on the cover, and a **+** in the header with **New album** and **New smart album**.
+- An album page (`/albums/:id`) shows the cover wide and soft, then the count, date range and description, with **Share** and
+  **Add photos** in the header and a **⋯** menu: **Edit details** (title and description), **Choose cover** and **Delete album**
+  (confirmation: the photos stay in the library). Under the cover: **Slideshow**, **Download** and **Select** (**Remove from
+  album**, **Set as cover** with exactly one photo selected). **Add photos** is a sheet over the whole library with the same
+  selection (Select all, Clear, Add N).
+- **Add to album** in the library's selection bar and in the lightbox opens a sheet with a search field, **New album** first and
+  the albums below it, the most recently updated first (creates the album with the photos). A toast says "Added N to <album>";
+  photos already in the album are not counted. The lightbox lists the albums the current photo is in.
 
 ## API (assets service, owner-scoped)
 
@@ -239,17 +241,38 @@ re-upload and restore, backfill idempotency, concurrent pairing. Web: badge, vie
   few hundred at most), however large the library is. Scrolling, selection, shift-range, select all, the lightbox and
   uploads work as before; a tile whose photo has not arrived yet is a grey placeholder, and photos arrive with their
   ThumbHash as before.
-- **Scrubber.** A thin rail on the right edge lists the years (and a tick per month) of the whole library. Drag the
-  handle (mouse, touch or pen) and a bubble names the month under it ("October 2022"); let go and the page shows that
-  month. Tap a year to go to its first month, tap anywhere else on the rail to go to that point. With the keyboard
-  the handle is a slider: Up/Down move a month, PageUp/PageDown a year, Home/End the ends. The rail is not shown for a
-  library that fits on a couple of screens. It is 26px wide (30px on touch screens) and leaves its own gutter, so it
-  never covers tiles.
+- **Full-width grid, two styles.** The grid fills the whole width of the page with narrow gutters (2px on a phone, 4px
+  on a desktop) and no gap at the right edge at any width. *Square* (the default) crops every photo to a square: 3 columns
+  on a 390px phone, 4 from 500px, then as many as fit (about 170px each); pinching with two fingers (or **Larger /
+  Smaller photos** in the view menu) adds or removes columns, kept in the browser. *Justified* lays photos in rows that
+  keep each photo's aspect ratio (cropped to 1:2 to 2.4:1) and fill the row exactly, aiming at 118px (phone) to 210px
+  (desktop) tall; a short last row of a day keeps that height instead of stretching. The choice is saved per user on the
+  server (`user_prefs.grid_style`, `GET|PUT /assets/prefs`, migration 0036, also in the recovery manifest's `prefs` line).
+  Photos show their ThumbHash at once and the picture fades in over it.
+- **Header.** The page is titled **Photos** (**Favorites**, **Recently added**, **Archive**, **Hidden** for those views)
+  with a **Select** button and one **View options** menu holding grid style, size, sort (date taken / date added), stacks
+  (stacked / every photo) and **Slideshow**. Upload is in the sidebar (and a **+** menu in the header on phones); files
+  can still be dropped anywhere on the page.
+- **Month headers.** A month header ("October 2026") stays pinned under the page's header while its part of the library
+  is on screen; day headers ("Wed, Oct 14") are quiet lines in the flow.
+- **Scrubber.** A thin rail on the right edge, over the photos. It appears while the page scrolls (or when the mouse nears
+  the edge) with the years and a tick per month; grab the handle (touch, mouse or pen) and a bubble names the month under
+  it ("October 2022"); let go and the page shows that month. With a mouse, tap a year to go to its first month, or anywhere
+  else on the rail to go to that point. With the keyboard the handle is a slider: Up/Down move a month, PageUp/PageDown a
+  year, Home/End the ends. The rail is not shown for a library that fits on a couple of screens, nor on a phone while
+  selecting.
+- **Selecting.** **Select** (or a long press on a tile on a touch screen) starts selecting; after a long press, dragging
+  the finger across tiles selects the run from the pressed tile to the one under the finger, in either direction. Tap
+  toggles a tile, Shift+click selects a range on a desktop. The selection bar covers the tab bar on a phone (count, Select
+  all / Clear / Done, then icon buttons with labels: Favorite, Album, Share, a "More" menu with the rest, and Trash); on a
+  desktop it floats as a pill at the bottom. Undo toasts are dark pills above the tab bar or the selection bar.
+- **Pull to refresh.** On a touch screen, pulling down at the very top of the page reads the timeline again with a small
+  spinner. The page's own overscroll is cancelled while pulling, so the browser's reload gesture does not also fire.
+- **Empty views** say so with an icon, a line, a hint and the way on (upload, or browse photos).
 - **Favorites.** A heart on each tile (on hover on desktop, always while favorited; on touch screens it only marks
   favorites, to avoid accidental taps), a heart in the photo viewer, and **Favorite / Unfavorite** in the selection bar
-  (it unfavorites when every selected photo is already a favorite). **Favorites** (`/favorites`, a tab next to **All
-  photos** at the top of the library, not a new top-bar button, so the phone nav keeps fitting at 320px) shows only
-  favorites in the same timeline. In that view a bulk Unfavorite removes the photos; a single heart keeps the tile
+  (it unfavorites when every selected photo is already a favorite). **Favorites** (`/favorites`, in the sidebar and on the
+  Collections page) shows only favorites in the same timeline. In that view a bulk Unfavorite removes the photos; a single heart keeps the tile
   until the page is reloaded so an accidental click can be undone. Albums have hearts too.
 - **Download.** The photo viewer's **Download** saves the original file under its original name. For a RAW + JPEG pair
   it opens a chooser with **Download JPEG** (or HEIC/AVIF) and **Download RAW** and the sizes. (This replaces the old
@@ -259,7 +282,9 @@ re-upload and restore, backfill idempotency, concurrent pairing. Web: badge, vie
 
 **Layout from counts.** `GET /assets/timeline` returns `{total, days: [{day, count}]}`, newest day first, for photos
 that are not trashed and not hidden RAW files (`?favorite=true` for favorites). From that the web app builds rows of
-fixed height: a month header (52px), a day header (34px) and `ceil(count / columns)` rows of square tiles per day.
+fixed height: a month header (44px), a day header (30px) and `ceil(count / columns)` rows of square tiles per day. (Justified rows
+depend on the photos' shapes: photos not loaded yet count as 3:2, and the page keeps the photo on screen put while the rows above
+it settle as their pages arrive.)
 Because every height is known, the page is exactly as tall as the library needs, and scrollbar and scrubber positions
 are stable before any photo is loaded. (The query selects only the timeline expression, so it is an index-only scan of
 `assets_timeline_idx`, or `assets_favorites_idx` for favorites; a test asserts the plan. About 50,000 photos over ten
@@ -267,8 +292,8 @@ years give a few thousand rows of JSON.)
 
 **Windowed virtualization.** `@tanstack/react-virtual` (pinned `3.14.13`) renders the visible rows plus 3 rows of
 overscan, with the page itself as the scroll container (a window virtualizer), so sticky bars, browser scroll
-restoration and touch scrolling are untouched. Columns follow the width (3 below 400px, 4 up to 600px, then as many
-tiles of at least 152px/192px as fit).
+restoration and touch scrolling are untouched. Columns follow the width (3 below 500px, 4 up to 600px, then about 170px
+each).
 
 **Photos by global index.** The position of a photo in the whole library (newest = 0) is the sum of the counts before
 its day plus its place within the day. The web app keeps loaded photos in a map keyed by that index. For the photos on
@@ -433,11 +458,12 @@ and 1280 px.
 
 ## What the user sees
 
-- **Map** is the third tab beside "All photos" and "Favorites" (`/map`; three pills fit at 320 px, so the top bar
-  gained no button). It shows the user's geotagged photos on a map: a single photo is a round thumbnail, photos that
+- **Places** (`/map`; the sidebar's "Places", and "Map" on the Collections page's Recent places) is the map filling the page under a
+  frosted header. It shows the user's geotagged photos: a single photo is a round thumbnail, photos that
   are close together are a count bubble. Tapping a bubble zooms to the photos in it; tapping a thumbnail opens the
   photo in the same lightbox as the library (favorite, download, add to album, trash with undo).
-- Under the map on a phone, beside it on a wide screen, a list shows the photos in the part of the map on screen,
+- On a phone a sheet over the map's bottom (folded to the count, dragged to half or full height; the map stays usable behind it), on a
+  wide screen a panel at the map's right, lists the photos in the part of the map on screen,
   newest first, loading more as you scroll. Panning or zooming starts the list again for the new area.
 - Hidden RAW files and trashed photos are not on the map, exactly as in the library.
 - The lightbox caption shows where a photo was taken ("Paris, Île-de-France, France") once the worker has looked it up.
@@ -531,8 +557,8 @@ A share link gives anyone who has it a read-only view of an album or of a handfu
 
 - **Share** in the library's selection bar, on an album page (the whole album, or the selected photos), and in the
   photo viewer. The dialog asks for an optional title, an expiry (1 day, 1 week, 1 month, never), an optional password
-  and the download policy, then shows the link and copies it.
-- **Shared links** (`/shared`, reached from the Albums page so the top bar keeps its four buttons at 320 px) lists every
+  and the download policy (a sheet), then shows the link with a QR code, and copies it.
+- **Shared links** (`/shared`, in Collections and the sidebar) lists every
   link with what it shares, its state (expired, password, originals), views and its address, with **Copy link**,
   **Open**, **Edit** (title, expiry, password, downloads) and **Revoke** (confirmation).
 - An **album link** follows the album live: photos added later appear, trashed photos disappear (and come back when
@@ -652,9 +678,14 @@ search model").
 
 ## What the user sees
 
-- A **search field** in the library header, next to All photos / Favorites / Map. On a phone it is an icon at the end of
-  that row that expands into a full-width field (the tabs step aside, a back arrow closes it), so the row never holds more
-  than three tabs and one icon, and fits 320 px. Recent searches (kept in this browser only) drop down under the field.
+- **Search is a page of its own** (the Search tab on a phone, the sidebar on a desktop; **Ctrl+K** or **⌘K** from anywhere
+  in the app opens it with the field focused). Its title bar holds a large, always-visible search field and a **Filters**
+  button; the active filters sit under the field as removable chips. Before anything is typed the page suggests: this
+  browser's recent searches (clearable), the owner's named people (face crops), the library's most common places, one-tap
+  kinds of photo (Favorites, 5 stars, Text in photo, On the map, RAW, HEIC: only those the library has any of) and date
+  shortcuts (Last 7 days, This month, Last year, a year the library has). Every suggestion is a link to a search URL that
+  already existed, so deep links keep working. While text is typed, the recent searches that continue it drop down under
+  the field. The field takes focus when the page opens with nothing searched.
 - **Enter** goes to `/search?q=...`: results in the library's own grid (lightbox, favorites, select, add to album, share,
   trash all work), best match first, "N matches". A text query always has *some* ranking, so the search **cuts the list where
   the matches stop**: it shows the **strong matches** (the photos the model is sure about and that are close to the best one),
@@ -1095,9 +1126,31 @@ ways that are unknown (real recall with the real model on a real library is not 
   time once open, Select all with members) and the burst states of `e2e/mobile-overflow.spec.ts`.
 - Web: `searchText.test.ts`, `SearchBar.test.tsx`, `FilterSheet.test.tsx`, `Search.test.tsx` (the weaker tier button, no close
   matches, More like this (chip, filters beside it, select-all of the loaded photos, the not-indexed state), parsed chips and removing one, select-all over a parsed filter-only search, the re-index note), and
-  `e2e/mobile-overflow.spec.ts` (bar collapsed and expanded, recent searches, results, selection, the filter sheet with
+  `e2e/search-layout.spec.ts` (the empty page's suggestions, typing, results, selection, the filter sheet with
   long names, chips, parsed chips with a very long place, the weaker tier offered and shown, no close matches, no results,
   indexing, re-indexing, unavailable, intro, and the similar-photos page with its chip, weaker tier, lightbox button and not-indexed state) at 320 to 1280 px, light and dark.
+
+# The photo viewer
+
+An immersive, black viewer: the photo is as large as it can be, and the bars float over it and fade out after about three
+seconds without a touch, a mouse move or a key (never while a panel, a menu or an editor is open, or while the keyboard is
+on one of the buttons). A tap on the photo (touch) or any mouse move brings them back.
+
+- **Top bar:** back (Escape), the photo's day and, under it, its place (or its time), `Edited` and its position (`3 / 120`),
+  and **More** (add to album, play from here, similar photos, text in photo, download, archive, hide). On a desktop the icon
+  buttons sit here too; on a phone they are the **bottom bar**: favorite, info, share, rotate and crop, move to trash. Under
+  the photo (above the bar) come its caption, the RAW + JPEG pair with *Unpair*, the stack strip and the stars.
+- **On a phone:** drag sideways to page (the next photo follows the finger, with the real preview of the neighbour, and
+  settles with a spring; at either end it gives way a third of the drag and springs back), drag down to close (the photo
+  shrinks and the backdrop fades with the finger), drag up for the info, pinch and double tap to zoom (a drag pans a zoomed
+  photo and never pages). **On a desktop:** arrows and hover arrows at the sides, Escape, the keys `+` `-` `z`, ctrl + wheel or a
+  trackpad pinch to zoom.
+- **Opening and closing:** the photo grows out of its tile in the grid and shrinks back into it (the grid marks tiles with
+  `data-asset-id`; `ui/sharedTile.ts` finds one). With no tile on screen, or when the device asks for less motion, the viewer
+  only fades.
+- **Keys:** `i` info, `t` text, `s` slideshow, `e` / `r` / `c` rotate and crop, `0`-`5` stars, `[` `]` through a stack, Delete.
+- Editing a date, a place or a caption, adding a tag, the text panel and the rating sheet are sheets (a dialog on a desktop);
+  rotate and crop is a full-screen editor with its tools in a column on a desktop. The slideshow has the same look.
 
 # Photo details
 
@@ -1107,12 +1160,13 @@ imported long ago need no reprocessing** and there is no migration.
 
 ## What the user sees
 
-- **Open it** with the Info button in the lightbox's bar, the `i` key, or (on a phone) **a swipe up on the photo**. On a wide
-  screen it is a column beside the photo; on a narrow one the photo moves up and the details sit under it (a header with a
-  grip: drag it down, or tap *Close info*, to put it away). It stays open while paging with the arrows, and shows the next
-  photo's details. **Escape** closes the panel first (a second one closes the lightbox); the browser's **Back** button (or a
-  phone's back gesture) does the same, through one history entry that the panel takes when it opens and gives back when it
-  closes (also when the lightbox closes with it open, or a link in it is followed).
+- **Open it** with the Info button, the `i` key, or (on a phone) **a swipe up on the photo**. On a wide screen it is a column
+  at the right that makes the photo's area narrower (the photo is never covered); on a phone it is a bottom sheet (drag it
+  down, or press Escape, to put it away). The rows are grouped (when and where, tags, people and albums, camera, the file) and
+  are edited where they were before. It stays open while paging with the arrows (a phone's sheet covers the photo: close it to
+  page), and shows the next photo's details. **Escape** closes the panel first (a second one closes the lightbox); the
+  browser's **Back** button (or a phone's back gesture) does the same, through one history entry that the panel takes when it
+  opens and gives back when it closes (also when the lightbox closes with it open, or a link in it is followed).
 - **Rows, only when the photo has the information:**
   - *Date*: weekday, date and time in the photo's own time zone when EXIF recorded one (`UTC+02:00`), otherwise "Time zone
     unknown" (the time is then the camera's clock as it was written). A photo with no capture time says its date is the
@@ -1282,9 +1336,10 @@ the server, in every query that can return a photo; the web app only decides wha
   it was, as in the trash). Archived photos leave the timeline, the map and memories, and stay in albums, Favorites, search (with an
   "Archived" badge) and the *Archive* view, where *Restore* puts them back. Search has an **Include archived** filter, on by default
   (off shows a "Without archived" chip).
-- **On this day.** A strip at the top of All photos, one card per earlier year ("3 years ago", with the count); a tap opens the page
-  with all of them, a section per year. *Select* there, then *Not this one*, takes photos out of memories (with Undo); the strip has
-  *Hide* (turn it off; the page has the switch to turn it on again). Nothing for today: **no strip at all**.
+- **On this day.** The first row of the Collections page (the home page): one large card per earlier year ("3 years ago", with the
+  count), followed by the recent trips; a tap opens the page with all of them, a section per year. *Select* there, then *Not this
+  one*, takes photos out of memories (with Undo); the page's ⋯ menu turns the row off ("Hide from Collections") and on again.
+  Nothing for today (and no recent trip): **no row at all**.
 - **Recently added.** *More*, *Recently added*: the library by **upload time**, with day headers of the day of upload. The header of
   All photos has a **Date taken | Date added** toggle, remembered per user. (Which import batch a photo came from is not shown: nothing
   records a batch, and grouping by upload time would only guess.)
@@ -1358,7 +1413,7 @@ dismissals in the bucket.
 | `GET /assets/search?include_archived=false` | Leave archived photos out (the default keeps them). |
 | `GET /assets/memories?date=YYYY-MM-DD&all=true` | `{enabled, day, years: [{year, years_ago, count, items}]}`; the strip form is a few photos per year and empty when the strip is off; `all` is the page. |
 | `POST /assets/memories/dismiss {ids, dismissed?}` | "Not this one" (a burst goes along); `dismissed: false` takes it back. |
-| `GET\|PUT /assets/prefs` | `{memories_enabled, library_sort: "taken" \| "added", stacks_collapsed}`. |
+| `GET\|PUT /assets/prefs` | `{memories_enabled, library_sort: "taken" \| "added", stacks_collapsed, grid_style: "square" \| "justified"}`. |
 | Albums | `hidden_count` beside `photo_count`; the album's list leaves hidden photos out. |
 
 ## Tests
@@ -1413,6 +1468,13 @@ that week's photos. Nothing is stored: like On this day they are **computed when
 |---|---|
 | `GET /assets/trips?date=YYYY-MM-DD&limit=12&before=YYYY-MM-DD` | `{enabled, trips: [{id, from, to, ongoing, title, date_label, place: {name, level: "city" \| "region" \| "country", city?, region?, country, country_code}, photos, cover_id, cover}], next_before}`, newest first. `date` is the user's today (UTC today when absent), `limit` 1 to 50, `before` returns the trips that ended before that day and `next_before` is its value for the next page (null on the last). `id` is `<from>_<to>`; `from` and `to` are local dates; `cover` is a list item (thumbnail fields) like the library's. |
 | `GET /assets?from=YYYY-MM-DD&to=YYYY-MM-DD&memories=true` | A trip's photos in the library's own list (same items, `limit`, `cursor`, stacks): photos whose local date is within the range (either bound may be omitted; photos without a capture time are left out then), and with `memories=true` without the dismissed ones. Its length is the trip's `photos`. |
+
+## Where they show
+
+The Collections page (`/`) has them twice: the trips that are going on or ended within six weeks as large cards in the Memories row (after
+the On this day cards), and all of the recent ones (12) in the **Recent places** row with a "Map" link to Places. A card opens
+`/trips/<id>`: a page titled with the place, the date range and the photo count, listing `GET /assets?from=&to=&memories=true` and a
+way back to Collections; a link opened cold fetches the trip with `before` the day after its end. With memories off, there are none.
 
 ## How it stays fast
 
@@ -1567,9 +1629,9 @@ page, a search filter, tag words in text search, and keywords imported from the 
   tags* and *Remove tags*: chips plus a field with autocomplete (Enter or a comma adds a name, Backspace takes the last chip back). In
   the viewer's Info panel a *Tags* row shows the photo's tags (a dashed outline marks one that was **imported** from the file), an *x*
   on each removes it, *Add tag* opens the same field.
-- **Tags view** (*More*, *Tags*): every tag with its photo count, A to Z or most used, with a filter box. A tag opens its **tag page**: the
-  photos (select, rate, tag, *Remove this tag*), *Rename*, *Merge into...* (another tag; every photo gets that one and this one goes),
-  *Delete tag* (taken off its photos, the photos stay). Renaming to a name another tag has says so and points at Merge.
+- **Tags view** (Collections, the sidebar, `/tags`): every tag with its photo count, A to Z or most used, with a filter box. A tag opens its
+  **tag page**: the photos (select, rate, tag, *Remove this tag*), and in the **⋯** menu *Rename*, *Merge into...* (another tag; every photo gets
+  that one and this one goes), *Search with filters* and *Delete tag* (taken off its photos, the photos stay). Renaming to a name another tag has says so and points at Merge.
 - **Search.** *Tags* in the filter sheet (existing tags only, with autocomplete) and, with two or more, *All of them* or *Any of them*. A chip
   (*Tags: beach and sunset*), `tags=beach,sunset&tag_mode=any` in the address. Text search also finds a photo by the words of its tags:
   they lead the results exactly as caption words do (every word must be in the caption or in a tag).
@@ -1641,14 +1703,14 @@ a photo that starts to match appears and one that stops disappears, in the album
 
 ## What the user sees
 
-- *Albums*, *New smart album*: a title, **match all / any** over a list of rules, *Include archived photos*, and a **live preview** (how many photos
+- *Albums*, **+**, *New smart album* (a sheet): a title, **match all / any** over a list of rules, *Include archived photos*, and a **live preview** (how many photos
   match right now and eight of them). Rules: *Date range*, *Place*, *Camera*, *Lens*, *File type*, *Favorites*, *Rating* (N stars and up), *Tags*
   (with all / any), *Location* (has or has none), *Text in the photo* (has or has none), *Caption contains*, and with People on *People* (all of the chosen
   people are in the photo, `docs/faces.md`). Place, camera and lens suggest what the library has.
 - **A text query is not a rule**, and the editor says why: a semantic search such as "dog on the beach" ranks by a model, so the album's contents
   would change without a photo changing. The caption rule (a plain substring) and the tag rule are stable.
 - In *Albums* a smart album has a **Smart** badge, its rules in words and its live count (`10,000+` for a big one). Its page says *Smart*, shows the
-  rules and has **Edit rules** in place of *Add photos*; selecting photos there offers Rate, Tag, Share and the rest, but no *Set as cover* or
+  rules and has **Edit rules** (in the **⋯** menu) in place of *Add photos*; selecting photos there offers Rate, Tag, Share and the rest, but no *Set as cover* or
   *Remove from album* (the cover is the newest match). A smart album is not offered in *Add to album* or as the album filter of a search.
 - **Sharing** works like any album link: the visitor sees what the rules match when they look (the newest 10,000), never a hidden photo, and the
   owner's link list counts the same.
@@ -2112,6 +2174,7 @@ the stack, else its earliest photo, among the photos the view lists. Details:
 | `POST /assets/{id}/stack/remove` | Take the photo out of its stack (it stays out of automatic bursts). |
 | `DELETE /assets/{id}/stack` | Dissolve the photo's stack: `{count}`. |
 | `GET\|PUT /assets/prefs` | gains `stacks_collapsed` (default true). |
+| `GET\|PUT /assets/prefs` | gains `grid_style` (`square` default, or `justified`; migration 0036), also in the recovery manifest's `prefs` line. |
 
 The write routes need a `full` API key (like the other writes). Everything filters on `owner_id`: another account's photo is a `404`, and
 a stack never holds photos of two owners.

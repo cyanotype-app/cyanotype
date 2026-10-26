@@ -121,6 +121,28 @@ describe("useSelection", () => {
     expect(result.current.ids).toEqual([]);
   });
 
+  it("a long press then a drag selects the run of tiles under the finger, both ways, and keeps what was selected before", () => {
+    const { result } = renderHook(() => useSelection(order));
+    act(() => result.current.dragStart("b"));
+    expect([result.current.ids, result.current.selecting]).toEqual([["b"], true]);
+    act(() => result.current.dragOver("d"));
+    expect(result.current.ids).toEqual(["b", "c", "d"]);
+    act(() => result.current.dragOver("c")); // the finger came back: the run shrinks
+    expect(result.current.ids).toEqual(["b", "c"]);
+    act(() => result.current.dragOver("a")); // and past the first tile, the other way
+    expect(result.current.ids).toEqual(["a", "b"]);
+    act(() => result.current.dragEnd());
+    act(() => result.current.dragOver("e")); // after the finger is lifted nothing moves
+    expect(result.current.ids).toEqual(["a", "b"]);
+
+    // Another long press adds to the selection instead of replacing it.
+    act(() => result.current.dragStart("e"));
+    expect(result.current.ids).toEqual(["a", "b", "e"]);
+    act(() => result.current.dragOver("d"));
+    expect(result.current.ids).toEqual(["a", "b", "d", "e"]);
+    act(() => result.current.dragEnd());
+  });
+
   it("drops items that disappear from the list", () => {
     let current = order;
     const { result, rerender } = renderHook(() => useSelection(current));

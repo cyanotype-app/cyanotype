@@ -1,6 +1,10 @@
-import { useEffect, useId, useState } from "react";
+import { ChevronDown } from "lucide-react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { api, type AccountApiKey, type AdminAccount, type ResetLink, type SessionInfo } from "../api";
 import { SCOPE_LABEL } from "../twoFactorText";
+import { FormError, inputClass, Loading, Mono, SecretBox, StatusNote } from "../settings/kit";
+import { Button } from "../ui/Button";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 type Panel = null | "reset" | "sessions" | "keys" | "delete";
 
@@ -45,86 +49,90 @@ export function AccountActions({ account: a, meId, onChanged }: Props) {
 
   if (deleting) {
     return (
-      <p className="small muted" role="status">
+      <p className="text-sm text-muted" role="status">
         Being deleted: its photos and data are being removed in the background.
       </p>
     );
   }
 
   return (
-    <details className="account-manage">
-      <summary aria-label={`Manage ${a.email}`}>Manage</summary>
-      {a.deletion === "failed" && (
-        <p className="small health-bad" role="status">
-          The last attempt to delete this account failed: {a.deletion_error ?? "unknown error"}. Delete it again to retry.
-        </p>
-      )}
-      <div className="invite-actions">
-        {!mine && (
-          <button
-            type="button"
-            className="btn btn-quiet"
+    <details className="group">
+      <summary
+        aria-label={`Manage ${a.email}`}
+        className="inline-flex h-8 cursor-pointer list-none items-center gap-1 rounded-full bg-surface px-3 text-[0.8125rem] font-medium select-none marker:hidden hover:bg-line/70 [&::-webkit-details-marker]:hidden"
+      >
+        Manage
+        <ChevronDown className="size-4 text-muted transition-transform duration-200 group-open:rotate-180" aria-hidden="true" />
+      </summary>
+      <div className="mt-3 flex flex-col gap-3">
+        {a.deletion === "failed" && (
+          <p className="text-sm text-danger" role="status">
+            The last attempt to delete this account failed: {a.deletion_error ?? "unknown error"}. Delete it again to retry.
+          </p>
+        )}
+        <div className="flex flex-wrap gap-2">
+          {!mine && (
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={() =>
+                void run(
+                  () => (disabled ? api.enableAccount(a.id) : api.disableAccount(a.id)),
+                  disabled ? "Enabled. It can sign in again and its API keys work." : "Disabled. It is signed out and cannot sign in until you enable it.",
+                )
+              }
+            >
+              {disabled ? "Enable account" : "Disable account"}
+            </Button>
+          )}
+          <Button size="sm" disabled={busy} onClick={() => toggle("reset")} aria-expanded={panel === "reset"}>
+            Reset password
+          </Button>
+          <Button
+            size="sm"
             disabled={busy}
             onClick={() =>
               void run(
-                () => (disabled ? api.enableAccount(a.id) : api.disableAccount(a.id)),
-                disabled ? "Enabled. It can sign in again and its API keys work." : "Disabled. It is signed out and cannot sign in until you enable it.",
+                () => api.setAccountRole(a.id, a.role === "admin" ? "member" : "admin"),
+                a.role === "admin" ? "No longer an administrator." : "Now an administrator.",
               )
             }
           >
-            {disabled ? "Enable account" : "Disable account"}
-          </button>
-        )}
-        <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => toggle("reset")} aria-expanded={panel === "reset"}>
-          Reset password
-        </button>
-        <button
-          type="button"
-          className="btn btn-quiet"
-          disabled={busy}
-          onClick={() =>
-            void run(
-              () => api.setAccountRole(a.id, a.role === "admin" ? "member" : "admin"),
-              a.role === "admin" ? "No longer an administrator." : "Now an administrator.",
-            )
-          }
-        >
-          {a.role === "admin" ? "Remove admin" : "Make admin"}
-        </button>
-        <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => toggle("sessions")} aria-expanded={panel === "sessions"}>
-          Sessions
-        </button>
-        <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => toggle("keys")} aria-expanded={panel === "keys"}>
-          API keys
-        </button>
-        {!mine && (
-          <button type="button" className="btn btn-danger-quiet" disabled={busy} onClick={() => toggle("delete")} aria-expanded={panel === "delete"}>
-            Delete account…
-          </button>
+            {a.role === "admin" ? "Remove admin" : "Make admin"}
+          </Button>
+          <Button size="sm" disabled={busy} onClick={() => toggle("sessions")} aria-expanded={panel === "sessions"}>
+            Sessions
+          </Button>
+          <Button size="sm" disabled={busy} onClick={() => toggle("keys")} aria-expanded={panel === "keys"}>
+            API keys
+          </Button>
+          {!mine && (
+            <Button size="sm" variant="quiet" className="text-danger" disabled={busy} onClick={() => toggle("delete")} aria-expanded={panel === "delete"}>
+              Delete account…
+            </Button>
+          )}
+        </div>
+        <FormError>{error}</FormError>
+        <StatusNote>{note}</StatusNote>
+        {panel === "reset" && <ResetPanel account={a} />}
+        {panel === "sessions" && <SessionsPanel account={a} />}
+        {panel === "keys" && <KeysPanel account={a} onChanged={onChanged} />}
+        {panel === "delete" && (
+          <DeletePanel
+            account={a}
+            onDone={async () => {
+              setPanel(null);
+              await onChanged();
+            }}
+          />
         )}
       </div>
-      <div role="alert" className="form-error">
-        {error}
-      </div>
-      {note && (
-        <p className="small" role="status">
-          {note}
-        </p>
-      )}
-      {panel === "reset" && <ResetPanel account={a} />}
-      {panel === "sessions" && <SessionsPanel account={a} />}
-      {panel === "keys" && <KeysPanel account={a} onChanged={onChanged} />}
-      {panel === "delete" && (
-        <DeletePanel
-          account={a}
-          onDone={async () => {
-            setPanel(null);
-            await onChanged();
-          }}
-        />
-      )}
     </details>
   );
+}
+
+function PanelBox({ children }: { children: ReactNode }) {
+  return <div className="flex flex-col gap-3 rounded-card bg-surface p-4 text-sm [overflow-wrap:anywhere]">{children}</div>;
 }
 
 function ResetPanel({ account: a }: { account: AdminAccount }) {
@@ -156,28 +164,32 @@ function ResetPanel({ account: a }: { account: AdminAccount }) {
   }
 
   return (
-    <div className="account-panel">
-      <p className="small muted">
-        Makes a one-time link that lets {a.email} choose a new password, and signs them out everywhere when it is used. It works for
-        24 hours. Send it to them yourself; the server sends no email. A new link replaces an older one.
+    <PanelBox>
+      <p className="text-muted">
+        Makes a one-time link that lets {a.email} choose a new password, and signs them out everywhere when it is used. It works for 24
+        hours. Send it to them yourself; the server sends no email. A new link replaces an older one.
       </p>
       {!link ? (
-        <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void make()}>
-          Make a reset link
-        </button>
-      ) : (
-        <div className="new-key" aria-label="Reset link">
-          <strong>Copy this link now. It is not shown again.</strong>
-          <code>{url}</code>
-          <button type="button" className="btn btn-primary" onClick={() => void copy()}>
-            {copied ? "Copied" : "Copy link"}
-          </button>
+        <div>
+          <Button variant="primary" disabled={busy} onClick={() => void make()}>
+            Make a reset link
+          </Button>
         </div>
+      ) : (
+        <SecretBox
+          label="Reset link"
+          title="Copy this link now. It is not shown again."
+          actions={
+            <Button variant="primary" onClick={() => void copy()}>
+              {copied ? "Copied" : "Copy link"}
+            </Button>
+          }
+        >
+          {url}
+        </SecretBox>
       )}
-      <div role="alert" className="form-error">
-        {error}
-      </div>
-    </div>
+      <FormError>{error}</FormError>
+    </PanelBox>
   );
 }
 
@@ -212,32 +224,30 @@ function SessionsPanel({ account: a }: { account: AdminAccount }) {
   }
 
   return (
-    <div className="account-panel">
+    <PanelBox>
       {items === null ? (
-        <p className="muted small" role="status">
-          Loading…
-        </p>
+        !error && <Loading />
       ) : items.length === 0 ? (
-        <p className="small">No active sessions.</p>
+        <p>No active sessions.</p>
       ) : (
-        <ul className="session-list small">
+        <ul className="flex flex-col gap-1">
           {items.map((s) => (
             <li key={s.id}>
               Signed in {when(s.created_at)}
-              <span className="muted"> · expires {when(s.expires_at)}</span>
+              <span className="text-muted"> · expires {when(s.expires_at)}</span>
             </li>
           ))}
         </ul>
       )}
       {items !== null && items.length > 0 && (
-        <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => void signOut()}>
-          Sign out everywhere
-        </button>
+        <div>
+          <Button size="sm" disabled={busy} onClick={() => void signOut()}>
+            Sign out everywhere
+          </Button>
+        </div>
       )}
-      <div role="alert" className="form-error">
-        {error}
-      </div>
-    </div>
+      <FormError>{error}</FormError>
+    </PanelBox>
   );
 }
 
@@ -247,6 +257,7 @@ function KeysPanel({ account: a, onChanged }: { account: AdminAccount; onChanged
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [tick, setTick] = useState(0);
+  const [revoking, setRevoking] = useState<AccountApiKey | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -260,7 +271,7 @@ function KeysPanel({ account: a, onChanged }: { account: AdminAccount; onChanged
   }, [a.id, tick]);
 
   async function revoke(k: AccountApiKey) {
-    if (!window.confirm(`Revoke "${k.name}"? Anything using it stops working.`)) return;
+    setRevoking(null);
     setBusy(true);
     setError(null);
     try {
@@ -275,34 +286,41 @@ function KeysPanel({ account: a, onChanged }: { account: AdminAccount; onChanged
   }
 
   return (
-    <div className="account-panel">
+    <PanelBox>
       {items === null ? (
-        <p className="muted small" role="status">
-          Loading…
-        </p>
+        !error && <Loading />
       ) : items.length === 0 ? (
-        <p className="small">No API keys.</p>
+        <p>No API keys.</p>
       ) : (
-        <ul className="key-list small">
+        <ul className="flex flex-col gap-3">
           {items.map((k) => (
-            <li key={k.id}>
-              <div>
-                <strong>{k.name}</strong> <code>{k.prefix}…</code>
-                <div className="muted">
+            <li key={k.id} className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <div className="min-w-0 flex-1 basis-48">
+                <strong className="font-medium">{k.name}</strong> <Mono>{k.prefix}…</Mono>
+                <div className="text-muted">
                   {SCOPE_LABEL[k.scope] ?? k.scope} · created {when(k.created_at)} · last used {k.last_used_at ? when(k.last_used_at) : "never"}
                 </div>
               </div>
-              <button type="button" className="btn btn-quiet" disabled={busy} aria-label={`Revoke ${k.name}`} onClick={() => void revoke(k)}>
+              <Button size="sm" disabled={busy} aria-label={`Revoke ${k.name}`} onClick={() => setRevoking(k)}>
                 Revoke
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
       )}
-      <div role="alert" className="form-error">
-        {error}
-      </div>
-    </div>
+      <FormError>{error}</FormError>
+      {revoking && (
+        <ConfirmDialog
+          title={`Revoke “${revoking.name}”?`}
+          confirmLabel="Revoke"
+          danger
+          onCancel={() => setRevoking(null)}
+          onConfirm={() => void revoke(revoking)}
+        >
+          <p>Anything using it stops working.</p>
+        </ConfirmDialog>
+      )}
+    </PanelBox>
   );
 }
 
@@ -326,30 +344,33 @@ function DeletePanel({ account: a, onDone }: { account: AdminAccount; onDone: ()
   }
 
   return (
-    <div className="account-panel account-delete">
+    <PanelBox>
       <p>
-        <strong>This permanently deletes {a.email}</strong> and everything they stored: every photo and its thumbnails (every version
-        in the bucket), albums, share links, API keys and sessions. It cannot be undone. The account is disabled and signed out at
-        once and the rest is removed in the background.
+        <strong>This permanently deletes {a.email}</strong> and everything they stored: every photo and its thumbnails (every version in
+        the bucket), albums, share links, API keys and sessions. It cannot be undone. The account is disabled and signed out at once and
+        the rest is removed in the background.
       </p>
-      <label htmlFor={id}>Type the email address to confirm</label>
-      <input
-        id={id}
-        value={typed}
-        autoComplete="off"
-        autoCapitalize="none"
-        spellCheck={false}
-        placeholder={a.email}
-        onChange={(e) => setTyped(e.target.value)}
-      />
-      <div className="invite-actions">
-        <button type="button" className="btn btn-danger" disabled={!matches || busy} onClick={() => void remove()}>
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor={id} className="font-medium">
+          Type the email address to confirm
+        </label>
+        <input
+          id={id}
+          className={inputClass}
+          value={typed}
+          autoComplete="off"
+          autoCapitalize="none"
+          spellCheck={false}
+          placeholder={a.email}
+          onChange={(e) => setTyped(e.target.value)}
+        />
+      </div>
+      <div>
+        <Button variant="danger" disabled={!matches || busy} onClick={() => void remove()}>
           Delete account permanently
-        </button>
+        </Button>
       </div>
-      <div role="alert" className="form-error">
-        {error}
-      </div>
-    </div>
+      <FormError>{error}</FormError>
+    </PanelBox>
   );
 }

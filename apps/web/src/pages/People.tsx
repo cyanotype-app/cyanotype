@@ -1,13 +1,19 @@
+import { Check, CheckSquare, ChevronRight, Users } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError, type Person } from "../api";
 import { useAuth } from "../auth";
-import { ConfirmDialog } from "../components/ConfirmDialog";
-import { FaceCrop } from "../components/FaceCrop";
+import { ConfirmSheet } from "../components/ConfirmSheet";
+import { BlankFace, FaceCrop } from "../components/FaceCrop";
 import { MergePeopleDialog } from "../components/MergePeopleDialog";
+import { Empty, InlineError, Loading, Rise } from "../components/pageKit";
+import { FormError } from "../components/sheetForm";
 import { SelectionBar } from "../components/SelectionBar";
 import { useToast } from "../components/Toast";
 import { ADD_A_NAME, badgeText, bulkMessage, cardLabel, pendingLabel, peopleWord, personLabel, photosWord, splitPeople } from "../peopleText";
+import { PageHeader } from "../shell/PageHeader";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
 import { usePeopleEnabled } from "../usePeople";
 import { NotFound } from "./NotFound";
 
@@ -22,55 +28,71 @@ interface Picking {
  * One person: a round face, the name (or "Add a name") and how many photos. The whole card opens the person's page; while selecting it
  * selects the person instead. A named person with "Is this X?" suggestions waiting wears a small count in the corner.
  */
-export function PersonCard({ person, picking }: { person: Person; picking?: Picking }) {
+export function PersonCard({ person, picking, index = 0 }: { person: Person; picking?: Picking; index?: number }) {
   const pending = person.pending ?? 0;
-  const face = person.cover ? (
-    <FaceCrop url={person.cover.preview_url} box={person.cover.box} className="person-card-face" />
-  ) : (
-    <span className="face-crop round person-card-face blank" aria-hidden="true" />
-  );
+  const named = !!person.name?.trim();
+  const on = picking?.selected.has(person.id) ?? false;
   const body = (
     <>
-      <span className="person-card-picture">
-        {face}
+      <span className={cn("relative mx-auto block w-full max-w-36 rounded-full transition-[box-shadow,transform] duration-150 ease-soft group-active:scale-[0.97]", on && "ring-[3px] ring-accent ring-offset-2 ring-offset-bg")}>
+        {person.cover ? <FaceCrop url={person.cover.preview_url} box={person.cover.box} /> : <BlankFace />}
         {pending > 0 && (
-          <span className="person-card-badge" aria-hidden="true" title={pendingLabel(pending)}>
+          <span
+            data-badge="" className="absolute -top-0.5 -right-0.5 flex min-w-5 items-center justify-center rounded-full bg-accent px-1.5 text-[0.6875rem] leading-5 font-semibold text-on-accent ring-2 ring-bg"
+            aria-hidden="true"
+            title={pendingLabel(pending)}
+          >
             {badgeText(pending)}
           </span>
         )}
-        {picking?.selecting && <span className="person-card-check" aria-hidden="true" />}
+        {picking?.selecting && (
+          <span
+            className={cn(
+              "absolute bottom-0.5 left-0.5 flex size-6 items-center justify-center rounded-full ring-2 ring-white/90",
+              on ? "bg-accent text-on-accent" : "bg-black/35 text-transparent backdrop-blur-sm",
+            )}
+            aria-hidden="true"
+          >
+            <Check className="size-3.5" strokeWidth={3} />
+          </span>
+        )}
       </span>
-      <span className={`person-card-name${person.name?.trim() ? "" : " muted"}`}>{person.name?.trim() || ADD_A_NAME}</span>
-      <span className="person-card-count muted small">{photosWord(person.photos)}</span>
+      <span className={cn("mt-2 block truncate px-1 text-center text-[0.9375rem] leading-tight font-medium", !named && "font-normal text-muted")}>
+        {person.name?.trim() || ADD_A_NAME}
+      </span>
+      <span className="block text-center text-[0.8125rem] text-muted">{photosWord(person.photos)}</span>
     </>
   );
+  const cls = "group block w-full rounded-card px-1 pt-1 pb-1.5 text-fg no-underline outline-offset-2";
   if (picking?.selecting) {
-    const on = picking.selected.has(person.id);
     return (
-      <li>
-        <button type="button" className={`person-card${on ? " selected" : ""}`} aria-pressed={on} aria-label={cardLabel(person)} onClick={() => picking.toggle(person.id)}>
+      <Rise index={index}>
+        <button type="button" className={cls} aria-pressed={on} aria-label={cardLabel(person)} onClick={() => picking.toggle(person.id)}>
           {body}
         </button>
-      </li>
+      </Rise>
     );
   }
   return (
-    <li>
-      <Link to={`/people/${person.id}`} className="person-card" aria-label={cardLabel(person)}>
+    <Rise index={index}>
+      <Link to={`/people/${person.id}`} className={cls} aria-label={cardLabel(person)}>
         {body}
       </Link>
-    </li>
+    </Rise>
   );
 }
+
+const gridClass = "grid grid-cols-3 gap-x-2 gap-y-4 sm:grid-cols-4 md:grid-cols-[repeat(auto-fill,minmax(8.5rem,1fr))] md:gap-x-4 md:gap-y-6";
 
 /** The people found in the owner's photos: named people, then the unnamed ones (to name), then the hidden ones in a collapsed section. */
 export function PeoplePage() {
   const enabled = usePeopleEnabled();
   if (enabled === null) {
     return (
-      <p className="center muted" role="status">
-        Loading…
-      </p>
+      <>
+        <PageHeader title="People" />
+        <Loading>Loading…</Loading>
+      </>
     );
   }
   return enabled ? <PeopleList /> : <NotFound />;
@@ -163,127 +185,121 @@ function PeopleList() {
   const anyShown = chosen.some((p) => !p.hidden);
   const anyHidden = chosen.some((p) => p.hidden);
   const picking: Picking = { selecting, selected, toggle };
+  const some = people !== null && people.length > 0;
 
   return (
-    <div className="people-page">
-      <div className="page-head">
-        <div>
-          <h1>People</h1>
-          {people !== null && people.length > 0 && <p className="muted small">{peopleWord(named.length + unnamed.length)}</p>}
-        </div>
-        {people !== null && people.length > 0 && (
-          <button
-            type="button"
-            className="btn btn-quiet"
-            aria-pressed={selecting}
-            onClick={() => {
-              if (selecting) leaveSelecting();
-              else {
-                setSelecting(true);
-                setHiddenOpen(true);
-              }
-            }}
-          >
-            Select
-          </button>
-        )}
-      </div>
-      {selecting && (
-        <SelectionBar
-          count={selected.size}
-          total={all.length}
-          emptyLabel="Select people"
-          onSelectAll={() => setSelected(new Set(all.map((p) => p.id)))}
-          onClear={() => setSelected(new Set())}
-          onDone={leaveSelecting}
-        >
-          <button
-            type="button"
-            className="btn btn-quiet"
-            disabled={chosen.length < 2 || busy}
-            title={chosen.length < 2 ? "Select two or more people to merge" : undefined}
-            onClick={() => {
-              setDialogError(null);
-              setDialog("merge");
-            }}
-          >
-            Merge
-          </button>
-          {(anyShown || chosen.length === 0) && (
-            <button
-              type="button"
-              className="btn btn-quiet"
-              disabled={!anyShown || busy}
-              onClick={() => void run({ action: "hide", ids }, bulkMessage.hide(ids.length))}
+    <>
+      <PageHeader
+        title="People"
+        subtitle={some ? peopleWord(named.length + unnamed.length) : undefined}
+        actions={
+          some && (
+            <Button
+              size="icon"
+              variant={selecting ? "secondary" : "ghost"}
+              aria-label="Select"
+              aria-pressed={selecting}
+              onClick={() => {
+                if (selecting) leaveSelecting();
+                else {
+                  setSelecting(true);
+                  setHiddenOpen(true);
+                }
+              }}
             >
-              Hide
-            </button>
-          )}
-          {anyHidden && (
-            <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => void run({ action: "show", ids }, bulkMessage.show(ids.length))}>
-              Show
-            </button>
-          )}
-          <button
-            type="button"
-            className="btn btn-quiet btn-danger-quiet"
-            disabled={chosen.length === 0 || busy}
-            onClick={() => {
-              setDialogError(null);
-              setDialog("delete");
-            }}
+              <CheckSquare />
+            </Button>
+          )
+        }
+      />
+      <div className="mx-auto max-w-[96rem] px-4 pt-2 pb-10 md:px-8">
+        {selecting && (
+          <SelectionBar
+            count={selected.size}
+            total={all.length}
+            emptyLabel="Select people"
+            onSelectAll={() => setSelected(new Set(all.map((p) => p.id)))}
+            onClear={() => setSelected(new Set())}
+            onDone={leaveSelecting}
           >
-            Delete
-          </button>
-        </SelectionBar>
-      )}
-      {error && (
-        <p className="center" role="alert">
-          {error}
-        </p>
-      )}
-      {!error && people === null && (
-        <p className="center muted" role="status">
-          Loading your people…
-        </p>
-      )}
-      {people !== null && people.length === 0 && (
-        <div className="empty">
-          <h2>No people yet</h2>
-          <p>
+            <Button
+              variant="quiet"
+              size="sm"
+              disabled={chosen.length < 2 || busy}
+              title={chosen.length < 2 ? "Select two or more people to merge" : undefined}
+              onClick={() => {
+                setDialogError(null);
+                setDialog("merge");
+              }}
+            >
+              Merge
+            </Button>
+            {(anyShown || chosen.length === 0) && (
+              <Button variant="quiet" size="sm" disabled={!anyShown || busy} onClick={() => void run({ action: "hide", ids }, bulkMessage.hide(ids.length))}>
+                Hide
+              </Button>
+            )}
+            {anyHidden && (
+              <Button variant="quiet" size="sm" disabled={busy} onClick={() => void run({ action: "show", ids }, bulkMessage.show(ids.length))}>
+                Show
+              </Button>
+            )}
+            <Button
+              variant="quiet"
+              size="sm"
+              className="text-danger hover:text-danger"
+              disabled={chosen.length === 0 || busy}
+              onClick={() => {
+                setDialogError(null);
+                setDialog("delete");
+              }}
+            >
+              Delete
+            </Button>
+          </SelectionBar>
+        )}
+        {error && <InlineError>{error}</InlineError>}
+        {!error && people === null && <Loading>Loading your people…</Loading>}
+        {people !== null && people.length === 0 && (
+          <Empty icon={Users} title="No people yet">
             Faces are found in the background, and a person appears once three photos show the same face. Only you can see this page; nothing here is
             shared.
-          </p>
-        </div>
-      )}
-      {named.length > 0 && (
-        <ul className="people-grid" aria-label="People">
-          {named.map((p) => (
-            <PersonCard key={p.id} person={p} picking={picking} />
-          ))}
-        </ul>
-      )}
-      {unnamed.length > 0 && (
-        <section className="people-unnamed" aria-labelledby="people-unnamed-title">
-          <h2 id="people-unnamed-title">Unnamed ({unnamed.length})</h2>
-          <p className="muted small">Open a person to give them a name. Only named people can be found in search.</p>
-          <ul className="people-grid" aria-label="Unnamed people">
-            {unnamed.map((p) => (
-              <PersonCard key={p.id} person={p} picking={picking} />
+          </Empty>
+        )}
+        {named.length > 0 && (
+          <ul className={cn(gridClass, "pt-3")} aria-label="People">
+            {named.map((p, i) => (
+              <PersonCard key={p.id} person={p} picking={picking} index={i} />
             ))}
           </ul>
-        </section>
-      )}
-      {hidden.length > 0 && (
-        <details className="people-hidden" open={hiddenOpen} onToggle={(e) => setHiddenOpen(e.currentTarget.open)}>
-          <summary>Hidden people ({hidden.length})</summary>
-          <ul className="people-grid" aria-label="Hidden people">
-            {hidden.map((p) => (
-              <PersonCard key={p.id} person={p} picking={picking} />
-            ))}
-          </ul>
-        </details>
-      )}
+        )}
+        {unnamed.length > 0 && (
+          <section className="mt-10" aria-labelledby="people-unnamed-title">
+            <h2 id="people-unnamed-title" className="text-[1.0625rem] font-semibold tracking-tight">
+              Unnamed ({unnamed.length})
+            </h2>
+            <p className="mt-0.5 text-sm text-muted">Open a person to give them a name. Only named people can be found in search.</p>
+            <ul className={cn(gridClass, "pt-3")} aria-label="Unnamed people">
+              {unnamed.map((p, i) => (
+                <PersonCard key={p.id} person={p} picking={picking} index={i} />
+              ))}
+            </ul>
+          </section>
+        )}
+        {hidden.length > 0 && (
+          <details data-hidden-people="" className="group/hidden mt-10" open={hiddenOpen} onToggle={(e) => setHiddenOpen(e.currentTarget.open)}>
+            <summary className="flex h-11 cursor-pointer list-none items-center gap-1.5 rounded-full text-[1.0625rem] font-semibold tracking-tight select-none [&::-webkit-details-marker]:hidden">
+              <ChevronRight className="size-4 text-muted transition-transform duration-200 group-open/hidden:rotate-90" aria-hidden="true" />
+              Hidden people ({hidden.length})
+            </summary>
+            <ul className={cn(gridClass, "pt-3")} aria-label="Hidden people">
+              {hidden.map((p, i) => (
+                <PersonCard key={p.id} person={p} picking={picking} index={i} />
+              ))}
+            </ul>
+          </details>
+        )}
+      </div>
       {dialog === "merge" && (
         <MergePeopleDialog
           people={chosen}
@@ -299,7 +315,7 @@ function PeopleList() {
         />
       )}
       {dialog === "delete" && (
-        <ConfirmDialog
+        <ConfirmSheet
           title={chosen.length === 1 ? `Delete ${personLabel(chosen[0]!)}?` : `Delete ${peopleWord(chosen.length)}?`}
           confirmLabel={chosen.length === 1 ? "Delete person" : "Delete people"}
           danger
@@ -311,14 +327,10 @@ function PeopleList() {
             {chosen.length === 1 ? "The person and their name go" : "The people and their names go"}. The photos stay in your library, and their faces become
             unnamed again; they may be grouped into new people later. To keep someone out of sight, hide them instead.
           </p>
-          {dialogError && (
-            <p role="alert" className="form-error">
-              {dialogError}
-            </p>
-          )}
-        </ConfirmDialog>
+          {dialogError && <FormError>{dialogError}</FormError>}
+        </ConfirmSheet>
       )}
       {toast}
-    </div>
+    </>
   );
 }

@@ -1,20 +1,26 @@
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
+import { Clock, Search, X } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { cn } from "../ui/cn";
 import { paramsFromUrl, clearRecent, loadRecent, pushRecent, suggestionsFor, urlFromParams } from "../searchText";
 
+/** Navigation state that asks the Search page to focus its field (the shortcut and the tab bar set it). */
+export const FOCUS_SEARCH = { focusSearch: true } as const;
+
 /**
- * The search field in the library header. On a wide screen it is a field next to the tabs; on a phone it is an icon at
- * the end of the tab row that expands into a full-width field (taking the row over, with a back button) so the tabs
- * and the field never have to share 320 px. Submitting goes to `/search?q=...`, keeping the filters already chosen
- * there; recent searches (this browser only) drop down under the field.
+ * The search field of the Search page: large and always visible, with `children` (the Filters button) beside it.
+ * Submitting goes to `/search?q=...`, keeping the filters already chosen there. While something is typed, the recent
+ * searches that continue it drop down under the field; `recentsInPage` says the page itself lists them (the empty
+ * search), so an empty field does not drop the same list down on top of it.
+ *
+ * The field takes focus when the page opens with nothing searched yet (a phone's tab, a desktop visit) and whenever
+ * the page is asked to (`FOCUS_SEARCH` in the navigation state, from the keyboard shortcut).
  */
-export function SearchBar({ onOpenChange }: { onOpenChange?: (open: boolean) => void }) {
+export function SearchBar({ recentsInPage, children }: { recentsInPage: boolean; children?: ReactNode }) {
   const navigate = useNavigate();
   const loc = useLocation();
-  const onSearchPage = loc.pathname === "/search";
   const current = useMemo(() => paramsFromUrl(new URLSearchParams(loc.search)), [loc.search]);
-  const [typed, setTyped] = useState(onSearchPage ? (current.q ?? "") : "");
-  const [open, setOpen] = useState(onSearchPage); // phone: field shown instead of the tabs
+  const [typed, setTyped] = useState(current.q ?? "");
   const [focused, setFocused] = useState(false);
   const [recent, setRecent] = useState<string[]>(() => loadRecent());
   const input = useRef<HTMLInputElement>(null);
@@ -23,20 +29,31 @@ export function SearchBar({ onOpenChange }: { onOpenChange?: (open: boolean) => 
   const blurTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(blurTimer.current), []);
   const listId = useId();
+  const inputId = `${listId}-input`;
 
   // The page's own query (back button, a chip, a recent search) is what the field shows.
-  const urlQuery = onSearchPage ? (current.q ?? "") : "";
+  const urlQuery = current.q ?? "";
   useEffect(() => setTyped(urlQuery), [urlQuery]);
+
+  // Focus on arrival at an empty search, and when asked to (a new history entry carries the request).
+  const nothingSearched = Object.keys(current).length === 0;
+  const asked = (loc.state as { focusSearch?: boolean } | null)?.focusSearch === true;
+  const arrived = useRef(true);
   useEffect(() => {
-    if (onSearchPage) setOpen(true);
-  }, [onSearchPage]);
-  useEffect(() => onOpenChange?.(open), [open, onOpenChange]);
+    const first = arrived.current;
+    arrived.current = false;
+    if (asked || (first && nothingSearched)) {
+      input.current?.focus();
+      if (asked) input.current?.select();
+    }
+    // Only a new visit or a new request: typing and filtering change the address but must not steal focus back.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loc.key]);
 
   function go(q: string) {
     const text = q.trim();
     if (text) setRecent(pushRecent(text));
-    const keep = onSearchPage ? current : {};
-    const params = { ...keep, q: text || undefined };
+    const params = { ...current, q: text || undefined };
     if (!text) delete params.q;
     const qs = urlFromParams(params);
     navigate(qs ? `/search?${qs}` : "/search");
@@ -49,52 +66,27 @@ export function SearchBar({ onOpenChange }: { onOpenChange?: (open: boolean) => 
     go(typed);
   }
 
-  function expand() {
-    setOpen(true);
-    // After the field is rendered visible.
-    requestAnimationFrame(() => input.current?.focus());
-  }
-
-  function collapse() {
-    setOpen(false);
-    setFocused(false);
-    // Leaving an empty search page by closing the field returns to the library.
-    if (onSearchPage && !current.q && Object.keys(current).length === 0) navigate("/library");
-  }
-
   const suggestions = suggestionsFor(typed, recent);
-  const showList = focused && suggestions.length > 0;
+  const showList = focused && suggestions.length > 0 && !(typed.trim() === "" && recentsInPage);
 
   return (
-    <div className="search" data-open={open}>
-      <button
-        type="button"
-        className="search-toggle"
-        aria-label="Search photos"
-        aria-expanded={open}
-        onClick={expand}
-      >
-        <SearchIcon />
-      </button>
-      <form className="search-form" role="search" onSubmit={submit}>
-        <button type="button" className="search-back" aria-label="Close search" onClick={collapse}>
-          <BackIcon />
-        </button>
-        <label htmlFor={`${listId}-input`} className="sr-only">
+    <div className="flex items-center gap-2">
+      <form className="relative min-w-0 flex-1" role="search" onSubmit={submit}>
+        <label htmlFor={inputId} className="sr-only">
           Search photos
         </label>
-        <div className="search-field">
-          <SearchIcon />
+        <div className="flex h-12 items-center gap-2.5 rounded-full bg-surface px-4 transition-shadow focus-within:ring-2 focus-within:ring-accent">
+          <Search className="size-5 shrink-0 text-muted" aria-hidden="true" />
           <input
-            id={`${listId}-input`}
+            id={inputId}
             ref={input}
-            className="search-input"
+            className="h-full min-w-0 flex-1 appearance-none bg-transparent text-base text-fg outline-none placeholder:text-muted [&::-webkit-search-cancel-button]:appearance-none"
             type="search"
             enterKeyHint="search"
             autoComplete="off"
             spellCheck={false}
             maxLength={200}
-            placeholder="Search: dog on the beach"
+            placeholder="Photos, places, people, text"
             value={typed}
             role="combobox"
             aria-expanded={showList}
@@ -112,72 +104,96 @@ export function SearchBar({ onOpenChange }: { onOpenChange?: (open: boolean) => 
             }}
             onKeyDown={(e) => {
               if (e.key === "Escape") {
-                if (typed) setTyped(urlQuery);
+                if (typed !== urlQuery) setTyped(urlQuery);
                 else input.current?.blur();
               }
             }}
           />
+          {typed && (
+            <button
+              type="button"
+              aria-label="Clear search text"
+              className="-mr-2 inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted hover:bg-line/60 hover:text-fg"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                setTyped("");
+                input.current?.focus();
+              }}
+            >
+              <X className="size-4" aria-hidden="true" />
+            </button>
+          )}
         </div>
-        {showList && (
-          <ul className="search-recent" id={listId} role="listbox" aria-label="Recent searches">
-            {suggestions.map((r) => (
-              <li key={r} role="option" aria-selected="false">
+        {/* (always in the document: the input's aria-controls points at it) */}
+        <ul
+          id={listId}
+          role="listbox"
+          aria-label="Recent searches"
+          className={cn(
+            "absolute inset-x-0 top-full z-20 mt-2 overflow-hidden rounded-card bg-card py-1 shadow-float ring-1 ring-line",
+            !showList && "hidden",
+          )}
+        >
+          {showList && (
+            <>
+              {suggestions.map((r) => (
+                <li key={r} role="option" aria-selected="false">
+                  <button
+                    type="button"
+                    className="flex h-11 w-full items-center gap-3 px-4 text-left text-[0.9375rem] hover:bg-surface"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setTyped(r);
+                      go(r);
+                    }}
+                  >
+                    <Clock className="size-4 shrink-0 text-muted" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 truncate">{r}</span>
+                  </button>
+                </li>
+              ))}
+              <li role="presentation" className="border-t border-line">
                 <button
                   type="button"
-                  className="search-recent-item"
+                  className="h-11 w-full px-4 text-left text-sm text-muted hover:bg-surface hover:text-fg"
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => {
-                    setTyped(r);
-                    go(r);
+                    clearRecent();
+                    setRecent([]);
                   }}
                 >
-                  <ClockIcon />
-                  <span>{r}</span>
+                  Clear recent searches
                 </button>
               </li>
-            ))}
-            <li role="presentation">
-              <button
-                type="button"
-                className="search-recent-clear"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  clearRecent();
-                  setRecent([]);
-                }}
-              >
-                Clear recent searches
-              </button>
-            </li>
-          </ul>
-        )}
+            </>
+          )}
+        </ul>
       </form>
+      {children}
     </div>
   );
 }
 
-function SearchIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-      <circle cx="10.5" cy="10.5" r="6.5" />
-      <path d="m15.5 15.5 5 5" />
-    </svg>
-  );
-}
-
-function BackIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="m15 5-7 7 7 7" />
-    </svg>
-  );
-}
-
-function ClockIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="8.5" />
-      <path d="M12 7.5V12l3 2" />
-    </svg>
-  );
+/**
+ * Ctrl+K (⌘K on a Mac) from anywhere in the app: go to Search with the field focused and its text selected. A plain
+ * shortcut rather than a command palette: the Search page already is the palette (recent searches, people, places,
+ * dates and filters on one screen), so a second popup that answers the same question would only be a second place to
+ * keep in step. Ctrl+K is not a typing key, so it works inside text fields too. On the Search page it only moves focus
+ * (the results stay); elsewhere it opens an empty search.
+ */
+export function SearchShortcut() {
+  const navigate = useNavigate();
+  const loc = useLocation();
+  const here = loc.pathname === "/search" ? loc.pathname + loc.search : null;
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        navigate(here ?? "/search", { state: FOCUS_SEARCH, replace: here !== null });
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [navigate, here]);
+  return null;
 }

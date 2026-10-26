@@ -68,7 +68,13 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: /Select IMG_00000/ }).click();
       await page.getByRole("button", { name: /Select IMG_00001/ }).click();
       await check("library-select-tag");
-      await page.getByRole("button", { name: "Tag", exact: true }).click();
+      // "Tag" is on the selection bar when there is room, else in its "More" menu.
+      const bar = page.getByRole("toolbar", { name: "Selection" });
+      if (await bar.getByRole("button", { name: "Tag", exact: true }).count()) await bar.getByRole("button", { name: "Tag", exact: true }).click();
+      else {
+        await bar.getByRole("button", { name: "More actions" }).click();
+        await page.getByRole("menuitem", { name: "Tag", exact: true }).click();
+      }
       const dialog = page.getByRole("dialog", { name: /Tag 2 photos/ });
       await dialog.waitFor();
       await dialog.getByRole("combobox", { name: "Add tags" }).fill("be");
@@ -86,7 +92,7 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: /Open IMG_00002/ }).first().click();
       await page.getByRole("dialog", { name: "IMG_00002.jpg" }).waitFor();
       await page.keyboard.press("i");
-      const panel = page.getByRole("complementary", { name: "Photo details" });
+      const panel = page.locator("#details-panel");
       await panel.getByRole("button", { name: "Add tag" }).waitFor();
       await check("lightbox-info-tags");
       await panel.getByRole("button", { name: "Add tag" }).click();
@@ -100,12 +106,20 @@ for (const { width, scheme } of RUNS) {
       await page.goto("/tags/t1");
       await page.getByRole("heading", { name: LONG }).waitFor();
       await check("tag-page");
-      await page.getByRole("button", { name: "Merge into…" }).click();
+      await page.getByRole("button", { name: "More" }).click();
+      await check("tag-menu");
+      await page.getByRole("menuitem", { name: "Merge into…" }).click();
       await page.getByRole("dialog", { name: /Merge/ }).waitFor();
       await check("tag-merge-dialog");
       await page.keyboard.press("Escape");
-      await page.getByRole("button", { name: "Delete tag" }).click();
-      await page.getByRole("alertdialog").waitFor();
+      await page.getByRole("button", { name: "More" }).click();
+      await page.getByRole("menuitem", { name: "Rename" }).click();
+      await page.getByRole("dialog", { name: "Rename tag" }).waitFor();
+      await check("tag-rename-dialog");
+      await page.keyboard.press("Escape");
+      await page.getByRole("button", { name: "More" }).click();
+      await page.getByRole("menuitem", { name: "Delete tag" }).click();
+      await page.getByRole("dialog", { name: /^Delete the tag/ }).waitFor();
       await check("tag-delete-dialog");
       await page.keyboard.press("Escape");
 

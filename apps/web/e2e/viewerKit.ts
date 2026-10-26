@@ -1,7 +1,9 @@
 // Shared by the viewer's fit and zoom specs: test photos of known shapes served as SVG (so a 1440 px preview costs
 // nothing), and the detail answers that point the viewer at them.
 import type { Page } from "@playwright/test";
-import { json, setupApp } from "./kit";
+import { json, setupApp, viewerSettled } from "./kit";
+
+export { viewerSettled };
 
 export interface Shape {
   name: string;
@@ -92,10 +94,11 @@ export async function openPhoto(page: Page, index = 0) {
   const viewer = page.getByRole("dialog");
   await viewer.waitFor();
   // The preview (not the thumbnail shown while it loads), laid out in the box its own shape gives it.
-  await viewer.locator(".lightbox-photo img.loaded.sized[src*='fixture-preview']").waitFor();
+  await viewer.locator(".viewer-photo.current img.loaded.sized[src*='fixture-preview']").waitFor();
   await page.waitForFunction(() => {
-    const i = document.querySelector<HTMLImageElement>(".lightbox-photo img");
+    const i = document.querySelector<HTMLImageElement>(".viewer-photo.current img");
     return !!i && i.naturalWidth >= 960 && i.style.getPropertyValue("--ar") !== "";
   });
+  await viewerSettled(page);
   return viewer;
 }

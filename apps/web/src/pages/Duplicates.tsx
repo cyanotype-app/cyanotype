@@ -8,6 +8,12 @@ import { keepLabel, keptMessage, metadataLine, resolutionLine, scanLine, sizeLin
 import { RatingStars } from "../components/Stars";
 import { HeartIcon } from "../components/Tile";
 import { placeholderUrl } from "../thumbhash";
+import { Ellipsis, ScanSearch, Users } from "lucide-react";
+import { Empty, Loading } from "../settings/kit";
+import { PageHeader } from "../shell/PageHeader";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
+import { Menu, MenuItem } from "../ui/Menu";
 
 /** How often the page looks again while a check is waiting or running. */
 const POLL_MS = 3000;
@@ -143,128 +149,157 @@ export function Duplicates() {
   };
 
   return (
-    <div className="duplicates">
-      <div className="page-head">
-        <h1>Duplicates</h1>
-        <div className="page-head-actions">
-          {admin && (
-            <button type="button" className="btn btn-quiet" onClick={() => void findAll()}>
-              Check every account
-            </button>
-          )}
-          <button type="button" className="btn btn-primary" onClick={() => void find()} disabled={checking}>
-            {checking ? "Checking…" : "Find duplicates"}
-          </button>
-        </div>
-      </div>
-      <p className="muted small dup-status" role="status">
-        {scanLine(scan)}
-      </p>
-      {error && (
-        <p className="center" role="alert">
-          {error}
+    <>
+      <PageHeader
+        title="Duplicates"
+        actions={
+          <>
+            {admin && (
+              <Menu
+                label="More"
+                trigger={
+                  <Button variant="ghost" size="icon" aria-label="More">
+                    <Ellipsis />
+                  </Button>
+                }
+              >
+                <MenuItem onSelect={() => void findAll()}>
+                  <Users />
+                  Check every account
+                </MenuItem>
+              </Menu>
+            )}
+            <Button variant="ghost" size="icon" aria-label={checking ? "Checking…" : "Find duplicates"} disabled={checking} onClick={() => void find()}>
+              <ScanSearch className={checking ? "animate-pulse" : undefined} />
+            </Button>
+          </>
+        }
+      />
+      <div className="px-4 pb-10 md:px-8">
+        <p className="min-h-5 text-sm text-muted" role="status">
+          {scanLine(scan)}
         </p>
-      )}
-      {!error && groups === null && (
-        <p className="center muted" role="status">
-          Loading…
-        </p>
-      )}
-      {groups !== null && groups.length === 0 && !checking && (
-        <div className="empty">
-          <h2>{scan?.state === "never" ? "Nothing checked yet" : "No duplicates to review"}</h2>
-          <p>
-            Photos that are the same picture twice, such as a resized or re-saved copy, show up here after a check. Bursts are not
-            duplicates: they stay together in the library. <Link to="/library">Back to the library</Link>
+        {error && (
+          <p className="py-6 text-center text-sm" role="alert">
+            {error}
           </p>
-        </div>
-      )}
-      {groups !== null && groups.length > 0 && (
-        <p className="muted small">
-          {total.toLocaleString("en-US")} {total === 1 ? "group" : "groups"} to review. The suggested photo has the most pixels, then the most
-          metadata.
-        </p>
-      )}
-      <ul className="dup-groups" aria-label="Duplicate groups">
-        {(groups ?? []).map((g, gi) => {
-          const selected = chosen[g.id] ?? g.members.find((m) => m.best)?.id ?? g.members[0]!.id;
-          return (
-            <li key={g.id} className="dup-group card">
-              <h2 className="dup-title">
-                Group {gi + 1} · {g.members.length} photos
-              </h2>
-              <ul className="dup-members">
-                {g.members.map((m, mi) => {
-                  const bg = placeholderUrl(m.thumbhash);
-                  const date = new Date(m.sort_time);
-                  return (
-                    <li key={m.id} className={`dup-member${selected === m.id ? " selected" : ""}`}>
-                      <button
-                        type="button"
-                        className="dup-thumb"
-                        style={bg ? { backgroundImage: `url(${bg})` } : undefined}
-                        aria-label={`Look at ${m.original_name}`}
-                        onClick={() => setLooking({ group: g, index: mi })}
-                      >
-                        {m.thumb_url && <img src={m.thumb_url} alt="" loading="lazy" />}
-                      </button>
-                      <label className="dup-pick">
-                        <input type="radio" name={`keep-${g.id}`} checked={selected === m.id} onChange={() => setChosen((c) => ({ ...c, [g.id]: m.id }))} />
-                        <span>
-                          Keep this one
-                          {m.best && <span className="badge dup-best">Suggested</span>}
-                        </span>
-                      </label>
-                      <p className="dup-name">{m.original_name}</p>
-                      <dl className="dup-facts">
-                        <div>
-                          <dt>Resolution</dt>
-                          <dd>{resolutionLine(m.width, m.height)}</dd>
-                        </div>
-                        <div>
-                          <dt>Size</dt>
-                          <dd>{sizeLine(m, g.members)}</dd>
-                        </div>
-                        <div>
-                          <dt>Date</dt>
-                          <dd>{Number.isNaN(date.getTime()) ? "Unknown" : date.toLocaleString()}</dd>
-                        </div>
-                        <div>
-                          <dt>Metadata</dt>
-                          <dd>{metadataLine(m)}</dd>
-                        </div>
-                      </dl>
-                      <p className="dup-marks">
-                        {m.favorite && (
-                          <span className="dup-heart" role="img" aria-label="Favorite">
-                            <HeartIcon filled />
+        )}
+        {!error && groups === null && <Loading />}
+        {groups !== null && groups.length === 0 && !checking && (
+          <Empty title={scan?.state === "never" ? "Nothing checked yet" : "No duplicates to review"}>
+            <p>
+              Photos that are the same picture twice, such as a resized or re-saved copy, show up here after a check. Bursts are not
+              duplicates: they stay together in the library.
+            </p>
+            <p className="mt-3">
+              <Link to="/photos" className="text-accent">
+                Back to the library
+              </Link>
+            </p>
+          </Empty>
+        )}
+        {groups !== null && groups.length > 0 && (
+          <p className="mt-1 text-sm text-muted">
+            {total.toLocaleString("en-US")} {total === 1 ? "group" : "groups"} to review. The suggested photo has the most pixels, then the
+            most metadata.
+          </p>
+        )}
+        <ul className="mt-4 flex flex-col gap-5" aria-label="Duplicate groups">
+          {(groups ?? []).map((g, gi) => {
+            const selected = chosen[g.id] ?? g.members.find((m) => m.best)?.id ?? g.members[0]!.id;
+            return (
+              <li key={g.id} className="rounded-card bg-card p-4 ring-1 ring-line md:p-5">
+                <h2 className="text-[1.0625rem] font-semibold tracking-tight">
+                  Group {gi + 1} · {g.members.length} photos
+                </h2>
+                <ul className={cn("mt-3 grid gap-3", g.members.length === 2 ? "grid-cols-2" : "grid-cols-2 md:grid-cols-3 lg:grid-cols-4")}>
+                  {g.members.map((m, mi) => {
+                    const bg = placeholderUrl(m.thumbhash);
+                    const date = new Date(m.sort_time);
+                    const on = selected === m.id;
+                    return (
+                      <li key={m.id} className="flex min-w-0 flex-col gap-2">
+                        <button
+                          type="button"
+                          className={cn(
+                            "relative aspect-square w-full overflow-hidden rounded-tile bg-surface bg-cover transition-shadow duration-150",
+                            on ? "ring-2 ring-accent ring-offset-2 ring-offset-card" : "ring-0",
+                          )}
+                          style={bg ? { backgroundImage: `url(${bg})` } : undefined}
+                          aria-label={`Look at ${m.original_name}`}
+                          onClick={() => setLooking({ group: g, index: mi })}
+                        >
+                          {m.thumb_url && <img src={m.thumb_url} alt="" loading="lazy" className="size-full object-cover" />}
+                          {(m.favorite || (m.rating ?? 0) > 0) && (
+                            <span className="absolute bottom-1.5 left-1.5 flex items-center gap-1.5 rounded-full bg-black/45 px-2 py-1 text-white backdrop-blur-sm">
+                              {m.favorite && (
+                                <span className="inline-block size-4" role="img" aria-label="Favorite">
+                                  <HeartIcon filled />
+                                </span>
+                              )}
+                              {(m.rating ?? 0) > 0 && <RatingStars value={m.rating} />}
+                            </span>
+                          )}
+                        </button>
+                        <label className="flex cursor-pointer items-start gap-2 text-[0.9375rem]">
+                          <input
+                            type="radio"
+                            className="mt-1 size-4 shrink-0 accent-accent"
+                            name={`keep-${g.id}`}
+                            checked={on}
+                            onChange={() => setChosen((c) => ({ ...c, [g.id]: m.id }))}
+                          />
+                          <span className="min-w-0">
+                            Keep this one
+                            {m.best && (
+                              <span className="ml-1.5 inline-flex h-5 items-center rounded-full bg-accent/12 px-2 align-middle text-xs font-medium text-accent">
+                                Suggested
+                              </span>
+                            )}
                           </span>
-                        )}
-                        {(m.rating ?? 0) > 0 && <RatingStars value={m.rating} />}
-                      </p>
-                    </li>
-                  );
-                })}
-              </ul>
-              <div className="dup-actions">
-                <button type="button" className="btn btn-quiet" disabled={busy === g.id} onClick={() => void dismiss(g)}>
-                  Not duplicates
-                </button>
-                <button type="button" className="btn btn-primary" disabled={busy === g.id} onClick={() => void keep(g)}>
-                  {keepLabel(g.members.length - 1)}
-                </button>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-      {cursor && (
-        <p className="center">
-          <button type="button" className="btn btn-quiet" onClick={() => void more()} disabled={loadingMore}>
-            {loadingMore ? "Loading…" : "Show more groups"}
-          </button>
-        </p>
-      )}
+                        </label>
+                        <p className="truncate text-[0.8125rem] text-muted" title={m.original_name}>
+                          {m.original_name}
+                        </p>
+                        <dl className="grid grid-cols-1 gap-y-1.5 text-[0.8125rem]">
+                          {(
+                            [
+                              ["Resolution", resolutionLine(m.width, m.height)],
+                              ["Size", sizeLine(m, g.members)],
+                              ["Date", Number.isNaN(date.getTime()) ? "Unknown" : date.toLocaleString()],
+                              ["Metadata", metadataLine(m)],
+                            ] as const
+                          ).map(([k, v]) => (
+                            <div key={k} className="min-w-0">
+                              <dt className="text-xs text-muted">{k}</dt>
+                              <dd className="break-words">{v}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <div className="mt-4 flex flex-col-reverse gap-2 min-[480px]:flex-row min-[480px]:justify-end">
+                  <Button disabled={busy === g.id} onClick={() => void dismiss(g)}>
+                    Not duplicates
+                  </Button>
+                  <Button variant="primary" disabled={busy === g.id} onClick={() => void keep(g)}>
+                    {keepLabel(g.members.length - 1)}
+                  </Button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+        {cursor && (
+          <div className="mt-5 flex justify-center">
+            <Button onClick={() => void more()} disabled={loadingMore}>
+              {loadingMore ? "Loading…" : "Show more groups"}
+            </Button>
+          </div>
+        )}
+      </div>
       {looking && (
         <Lightbox
           items={looking.group.members}
@@ -276,6 +311,6 @@ export function Duplicates() {
         />
       )}
       {toast}
-    </div>
+    </>
   );
 }

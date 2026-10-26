@@ -108,14 +108,17 @@ describe("MapPage", () => {
     setup({ overview: response([]) });
     expect(await screen.findByText(/no photos with a location yet/i)).toBeInTheDocument();
     expect(screen.queryByTestId("map")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Map" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Places" })).toBeInTheDocument();
   });
 
-  it("shows the library tabs with the Map tab, and credits the data sources", async () => {
+  it("has the Places header, credits the data sources and folds the photo panel with its handle", async () => {
     setup();
     expect(await screen.findByTestId("map")).toBeInTheDocument();
-    const tabs = screen.getByRole("navigation", { name: "Library views" });
-    expect(within(tabs).getAllByRole("link").map((a) => a.textContent)).toEqual(["All photos", "Favorites", "Map"]);
+    expect(screen.getByRole("heading", { level: 1, name: "Places" })).toBeInTheDocument();
+    const handle = screen.getByRole("button", { name: "Show photos in view" });
+    expect(handle).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(handle);
+    expect(screen.getByRole("button", { name: "Fold photos in view" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("link", { name: "OpenStreetMap contributors" })).toHaveAttribute("href", expect.stringContaining("openstreetmap.org"));
     expect(screen.getByRole("link", { name: "Protomaps" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "GeoNames" })).toBeInTheDocument();
@@ -212,7 +215,7 @@ describe("MapPage", () => {
     expect(await tile(1)).toBeInTheDocument();
   });
 
-  it("shows an error with the page's tabs when the overview cannot be loaded", async () => {
+  it("shows an error under the header when the overview cannot be loaded", async () => {
     vi.spyOn(api, "tiles").mockResolvedValue({ world: true, detail: false });
     vi.spyOn(api, "mapClusters").mockRejectedValue(new Error("boom"));
     render(

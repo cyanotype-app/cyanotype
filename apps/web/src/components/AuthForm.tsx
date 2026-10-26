@@ -1,5 +1,7 @@
-import { useId, useState, type FormEvent, type ReactNode } from "react";
-import { Logo } from "./Logo";
+import { useState, type FormEvent, type ReactNode } from "react";
+import { Field, FormError, inputClass } from "../settings/kit";
+import { Button } from "../ui/Button";
+import { AuthShell } from "./AuthShell";
 
 interface Props {
   title: string;
@@ -16,7 +18,6 @@ interface Props {
 }
 
 export function AuthForm({ title, submitLabel, passwordAutocomplete, onSubmit, footer, notice, hint, extra }: Props) {
-  const id = useId();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -35,52 +36,45 @@ export function AuthForm({ title, submitLabel, passwordAutocomplete, onSubmit, f
   }
 
   return (
-    <div className="auth-page">
-      <div className="card auth-card">
-        <div className="auth-brand">
-          <Logo size={44} />
-          <h1>{title}</h1>
-        </div>
-        {notice}
-        <form onSubmit={submit} noValidate={false}>
-          <label htmlFor={`${id}-email`}>Email</label>
-          <input
-            id={`${id}-email`}
-            type="email"
-            name="email"
-            autoComplete="username"
-            required
-            autoFocus
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-          <label htmlFor={`${id}-password`}>Password</label>
-          <input
-            id={`${id}-password`}
-            type="password"
-            name="password"
-            autoComplete={passwordAutocomplete}
-            required
-            minLength={passwordAutocomplete === "new-password" ? 8 : undefined}
-            aria-describedby={hint ? `${id}-hint` : undefined}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          {hint && (
-            <p id={`${id}-hint`} className="muted small">
-              {hint}
-            </p>
+    <AuthShell title={title} footer={footer}>
+      {notice && <div className="mb-5 flex flex-col gap-3">{notice}</div>}
+      <form onSubmit={submit} className="flex flex-col gap-4">
+        <Field label="Email">
+          {(p) => (
+            <input
+              {...p}
+              className={inputClass}
+              type="email"
+              name="email"
+              autoComplete="username"
+              required
+              autoFocus
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
           )}
-          {extra}
-          <div role="alert" className="form-error">
-            {error}
-          </div>
-          <button type="submit" className="btn btn-primary" disabled={busy}>
-            {busy ? "Please wait…" : submitLabel}
-          </button>
-        </form>
-        <p className="auth-footer muted">{footer}</p>
-      </div>
-    </div>
+        </Field>
+        <Field label="Password" hint={hint}>
+          {(p) => (
+            <input
+              {...p}
+              className={inputClass}
+              type="password"
+              name="password"
+              autoComplete={passwordAutocomplete}
+              required
+              minLength={passwordAutocomplete === "new-password" ? 8 : undefined}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          )}
+        </Field>
+        {extra}
+        <FormError>{error}</FormError>
+        <Button type="submit" variant="primary" size="lg" className="w-full" disabled={busy}>
+          {busy ? "Please wait…" : submitLabel}
+        </Button>
+      </form>
+    </AuthShell>
   );
 }

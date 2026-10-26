@@ -148,7 +148,7 @@ describe("rotate and crop in the viewer", () => {
     mount();
     await waitFor(() => expect(cropButton()).toBeEnabled());
     await user.keyboard("i");
-    const panel = await screen.findByRole("complementary", { name: "Photo details" });
+    const panel = await screen.findByRole("dialog", { name: "Info" });
     await waitFor(() => expect(within(panel).getByText("Picture")).toBeInTheDocument());
     expect(within(panel).getByText("Not edited")).toBeInTheDocument();
     await user.click(within(panel).getByRole("button", { name: "Rotate and crop the picture" }));
@@ -167,11 +167,11 @@ describe("downloading the edited photo", () => {
     const user = userEvent.setup();
     const status = vi.spyOn(api, "editedStatus").mockResolvedValueOnce("pending").mockResolvedValueOnce("pending").mockResolvedValue("ready");
     mount({ items: [item(1, { edited: true }), item(2)] });
-    await user.click(screen.getByRole("button", { name: "Download" }));
-    const menu = document.getElementById("lightbox-downloads")!;
-    expect(within(menu).getByRole("link", { name: /Download original/ })).toHaveAttribute("href", "/assets/id-1/download");
-    await user.click(within(menu).getByRole("button", { name: "Download edited (JPEG)" }));
-    expect(within(menu).getByRole("button", { name: /Preparing/ })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("menuitem", { name: /Download original/ })).toHaveAttribute("href", "/assets/id-1/download");
+    await user.click(screen.getByRole("menuitem", { name: "Download edited (JPEG)" }));
+    // The menu closes; the viewer says the photo is being prepared.
+    expect(await screen.findByRole("status")).toHaveTextContent("Preparing the edited photo");
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/assets/id-1/download/edited"));
     expect(status).toHaveBeenCalledTimes(3);
   });
@@ -180,14 +180,16 @@ describe("downloading the edited photo", () => {
     const user = userEvent.setup();
     vi.spyOn(api, "editedStatus").mockRejectedValue(new Error("this photo has no rotate or crop to apply"));
     mount({ items: [item(1, { edited: true }), item(2)] });
-    await user.click(screen.getByRole("button", { name: "Download" }));
-    await user.click(screen.getByRole("button", { name: "Download edited (JPEG)" }));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Download edited (JPEG)" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("no rotate or crop");
     expect(assign).not.toHaveBeenCalled();
   });
 
-  it("a photo that is not edited downloads as before", () => {
+  it("a photo that is not edited downloads as before", async () => {
+    const user = userEvent.setup();
     mount();
-    expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute("href", "/assets/id-1/download");
+    await user.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("menuitem", { name: "Download" })).toHaveAttribute("href", "/assets/id-1/download");
   });
 });

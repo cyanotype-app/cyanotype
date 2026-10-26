@@ -1,10 +1,15 @@
-import { useId, useMemo, useRef, useState, type DragEvent } from "react";
+import { useMemo, useRef, useState, type DragEvent } from "react";
 import { Link } from "react-router-dom";
+import { FolderUp } from "lucide-react";
 import { api } from "../api";
 import { filesFromDrop } from "../upload/files";
 import { useUploads } from "../upload/UploadProvider";
 import { planFiles, previewOf, uploadSet, type Options } from "../takeout";
 import type { TakeoutPlan } from "../api";
+import { Block, FormError, Group, Section } from "../settings/kit";
+import { Button } from "../ui/Button";
+import { Switch } from "../ui/Controls";
+import { cn } from "../ui/cn";
 
 type Phase = "idle" | "planning" | "ready" | "started";
 
@@ -13,8 +18,6 @@ const count = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString(
 /** Settings > Google Photos: import an unzipped Google Takeout folder with its metadata, from the browser. */
 export function TakeoutImport() {
   const { queue } = useUploads();
-  const favId = useId();
-  const albumId = useId();
   const input = useRef<HTMLInputElement>(null);
   const [phase, setPhase] = useState<Phase>("idle");
   const [files, setFiles] = useState<File[]>([]);
@@ -68,18 +71,20 @@ export function TakeoutImport() {
   }
 
   return (
-    <div className="settings takeout">
-      <h1>Moving from Google Photos</h1>
-      <p className="muted">
+    <div>
+      <p className="text-sm text-muted">
         Bring your library over with its dates, places, captions, favorites and albums. Request an export at{" "}
-        <strong>takeout.google.com</strong> (only <em>Google Photos</em>, as .zip files), download and{" "}
-        <strong>unzip all of them into one folder</strong>, then choose that folder here. Nothing is uploaded until you
-        confirm.
+        <strong className="font-semibold text-fg">takeout.google.com</strong> (only <em>Google Photos</em>, as .zip files), download and{" "}
+        <strong className="font-semibold text-fg">unzip all of them into one folder</strong>, then choose that folder here. Nothing is
+        uploaded until you confirm.
       </p>
 
       {phase === "idle" || phase === "planning" ? (
         <div
-          className={`dropzone${over ? " over" : ""}`}
+          className={cn(
+            "mt-5 flex flex-col items-center gap-3 rounded-card px-6 py-10 text-center transition-colors duration-150",
+            over ? "bg-accent/10 ring-2 ring-accent" : "bg-card ring-1 ring-line",
+          )}
           onDragOver={(e) => {
             e.preventDefault();
             setOver(true);
@@ -87,7 +92,8 @@ export function TakeoutImport() {
           onDragLeave={() => setOver(false)}
           onDrop={onDrop}
         >
-          <p>Drop the Takeout folder here</p>
+          <FolderUp className="size-8 text-muted" aria-hidden="true" />
+          <p className="text-[0.9375rem]">Drop the Takeout folder here</p>
           <input
             ref={input}
             type="file"
@@ -97,107 +103,91 @@ export function TakeoutImport() {
             {...{ webkitdirectory: "" }}
             onChange={(e) => void choose(Array.from(e.target.files ?? []))}
           />
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={phase === "planning"}
-            onClick={() => input.current?.click()}
-          >
+          <Button variant="primary" disabled={phase === "planning"} onClick={() => input.current?.click()}>
             {phase === "planning" ? "Reading the folder…" : "Choose the Takeout folder"}
-          </button>
+          </Button>
         </div>
       ) : null}
 
-      <div role="alert" className="form-error">
-        {error}
+      <div className="mt-3">
+        <FormError>{error}</FormError>
       </div>
 
       {phase === "ready" && preview && (
-        <section className="preview" aria-label="What will be imported">
-          <h2>{count(preview.photos, "photo")} to import</h2>
-          <ul>
-            <li>
+        <section aria-label="What will be imported" className="mt-5">
+          <h2 className="text-[1.0625rem] font-semibold tracking-tight">{count(preview.photos, "photo")} to import</h2>
+          <Group as="ul" className="mt-3 text-[0.9375rem]">
+            <li className="px-4 py-3">
               {count(preview.withSidecar, "photo")} with their Google Photos details (date, place, caption, favorite)
             </li>
-            <li>
+            <li className="px-4 py-3">
               {count(preview.withoutSidecar, "photo")} without a details file: imported as they are
               {preview.edited > 0 && `, ${count(preview.edited, "edited copy", "edited copies")} sharing their original's`}
             </li>
-            <li>
+            <li className="px-4 py-3">
               {count(preview.albums.length, "album")} from named folders
               {preview.albums.length > 0 && (
-                <ul className="album-names">
+                <ul className="mt-2 flex flex-col gap-1 text-[0.8125rem]">
                   {preview.albums.slice(0, 8).map((a) => (
                     <li key={a.name}>
-                      <span className="album-name">{a.name}</span> <span className="muted">({count(a.photos, "photo")})</span>
+                      <span className="font-medium">{a.name}</span> <span className="text-muted">({count(a.photos, "photo")})</span>
                     </li>
                   ))}
-                  {preview.albums.length > 8 && <li className="muted">and {preview.albums.length - 8} more</li>}
+                  {preview.albums.length > 8 && <li className="text-muted">and {preview.albums.length - 8} more</li>}
                 </ul>
               )}
             </li>
-            <li className="muted">
+            <li className="px-4 py-3 text-muted">
               Skipped: {count(preview.videos, "video")} (Cyanotype does not import video)
               {preview.trashed > 0 && `, ${count(preview.trashed, "photo")} in Google Photos' trash`}
               {preview.other > 0 && `, ${count(preview.other, "other file")}`}
             </li>
-          </ul>
+          </Group>
 
-          <fieldset className="options">
-            <legend>Options</legend>
-            <label htmlFor={favId} className="check">
-              <input
-                id={favId}
-                type="checkbox"
-                checked={opts.favorites}
-                onChange={(e) => setOpts({ ...opts, favorites: e.target.checked })}
-              />{" "}
-              Import favorites
-            </label>
-            <label htmlFor={albumId} className="check">
-              <input
-                id={albumId}
-                type="checkbox"
-                checked={opts.albums}
-                onChange={(e) => setOpts({ ...opts, albums: e.target.checked })}
-              />{" "}
-              Create albums from folders
-            </label>
-          </fieldset>
-          <p className="muted small">
-            Photos already in your library are not uploaded again: they just get their details. You can run this again
-            safely, and undo any date, place or caption with "Revert to original".
+          <Section title="Options" className="mt-6">
+            <Group>
+              <Block>
+                <Switch label="Import favorites" checked={opts.favorites} onChange={(on) => setOpts({ ...opts, favorites: on })} />
+              </Block>
+              <Block>
+                <Switch label="Create albums from folders" checked={opts.albums} onChange={(on) => setOpts({ ...opts, albums: on })} />
+              </Block>
+            </Group>
+          </Section>
+          <p className="mt-3 text-[0.8125rem] text-muted">
+            Photos already in your library are not uploaded again: they just get their details. You can run this again safely, and undo any
+            date, place or caption with &quot;Revert to original&quot;.
           </p>
-          <div className="actions">
-            <button type="button" className="btn btn-primary" disabled={preview.photos === 0} onClick={start}>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <Button variant="primary" disabled={preview.photos === 0} onClick={start}>
               Import {count(preview.photos, "photo")}
-            </button>
-            <button type="button" className="btn btn-quiet" onClick={reset}>
+            </Button>
+            <Button variant="quiet" onClick={reset}>
               Choose another folder
-            </button>
+            </Button>
           </div>
         </section>
       )}
 
       {phase === "started" && (
-        <section className="preview" role="status" aria-label="Import started">
-          <h2>Importing {count(queued, "photo")}</h2>
-          <p>
-            Progress is in the box at the bottom of the page, and you can keep using Cyanotype meanwhile. Keep this tab open
-            while photos upload. Dates, places, captions, favorites and albums are added by the server once each photo is
-            processed, so they do not depend on this tab.
+        <section role="status" aria-label="Import started" className="mt-5 rounded-card bg-card p-5 ring-1 ring-line">
+          <h2 className="text-[1.0625rem] font-semibold tracking-tight">Importing {count(queued, "photo")}</h2>
+          <p className="mt-2 text-[0.9375rem]">
+            Progress is in the box at the bottom of the page, and you can keep using Cyanotype meanwhile. Keep this tab open while photos
+            upload. Dates, places, captions, favorites and albums are added by the server once each photo is processed, so they do not
+            depend on this tab.
           </p>
-          <p className="muted small">
-            If you close the tab early, choose the same folder again: photos that arrived are not uploaded twice, and they
-            still get their details.
+          <p className="mt-2 text-[0.8125rem] text-muted">
+            If you close the tab early, choose the same folder again: photos that arrived are not uploaded twice, and they still get their
+            details.
           </p>
-          <div className="actions">
-            <Link className="btn btn-primary" to="/library">
-              Go to the library
-            </Link>
-            <button type="button" className="btn btn-quiet" onClick={reset}>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button variant="primary" asChild>
+              <Link to="/photos">Go to the library</Link>
+            </Button>
+            <Button variant="quiet" onClick={reset}>
               Import another folder
-            </button>
+            </Button>
           </div>
         </section>
       )}

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type SessionInfo } from "../api";
 import { useAuthOptional } from "../auth";
+import { FormError, Group, Loading, Row, Section, StatusNote } from "../settings/kit";
+import { Button } from "../ui/Button";
 
 const when = (iso: string) => new Date(iso).toLocaleString();
 
@@ -44,56 +46,47 @@ export function Sessions() {
 
   const others = items?.filter((s) => !s.current).length ?? 0;
   return (
-    <div className="settings">
-      <h1>Sessions</h1>
-      <p className="muted">Each browser you signed in on is a session; it lasts 30 days. End the ones you do not recognise.</p>
-      <div role="alert" className="form-error">
-        {error}
+    <div>
+      <p className="text-sm text-muted">Each browser you signed in on is a session; it lasts 30 days. End the ones you do not recognise.</p>
+      <div className="mt-3 flex flex-col gap-2">
+        <FormError>{error}</FormError>
+        <StatusNote>{note}</StatusNote>
       </div>
-      {note && (
-        <p className="small" role="status">
-          {note}
-        </p>
-      )}
       {items === null ? (
-        !error && (
-          <p className="muted" role="status">
-            Loading…
-          </p>
-        )
+        !error && <Loading />
       ) : (
         <>
-          <ul className="key-list">
-            {items.map((s) => (
-              <li key={s.id}>
-                <div>
-                  <strong>{s.current ? "This browser" : "Another browser"}</strong>
-                  <div className="muted small">
-                    Signed in {when(s.created_at)} · expires {when(s.expires_at)}
-                  </div>
-                </div>
-                {!s.current && (
-                  <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => void run(() => api.revokeSession(s.id), "Signed out.")}>
-                    Sign out
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-          <div className="invite-actions">
+          <Section className="mt-4">
+            <Group as="ul">
+              {items.map((s) => (
+                <Row
+                  as="li"
+                  key={s.id}
+                  label={<strong className="font-medium">{s.current ? "This browser" : "Another browser"}</strong>}
+                  detail={
+                    <>
+                      Signed in {when(s.created_at)} · expires {when(s.expires_at)}
+                    </>
+                  }
+                >
+                  {!s.current && (
+                    <Button size="sm" disabled={busy} onClick={() => void run(() => api.revokeSession(s.id), "Signed out.")}>
+                      Sign out
+                    </Button>
+                  )}
+                </Row>
+              ))}
+            </Group>
+          </Section>
+          <div className="mt-5 flex flex-wrap gap-2">
             {others > 0 && (
-              <button
-                type="button"
-                className="btn btn-quiet"
-                disabled={busy}
-                onClick={() => void run(() => api.revokeOtherSessions(), "Signed out everywhere else.")}
-              >
+              <Button disabled={busy} onClick={() => void run(() => api.revokeOtherSessions(), "Signed out everywhere else.")}>
                 Sign out the others
-              </button>
+              </Button>
             )}
-            <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => void run(() => api.revokeAllSessions(), "", true)}>
+            <Button variant="quiet" disabled={busy} onClick={() => void run(() => api.revokeAllSessions(), "", true)}>
               Sign out everywhere
-            </button>
+            </Button>
           </div>
         </>
       )}

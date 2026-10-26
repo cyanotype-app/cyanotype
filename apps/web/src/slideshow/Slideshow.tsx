@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { ChevronLeft } from "lucide-react";
 import { useAuthOptional } from "../auth";
+import { inputClass } from "../components/viewerFields";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
 import { SlideshowController } from "./controller";
 import type { SlideSource } from "./deck";
 import { exitFullscreen, isFullscreen, prefersReducedMotion, useFullscreen, useReducedMotion, useWakeLock } from "./device";
@@ -195,80 +199,83 @@ export function Slideshow({ source, onClose }: { source: SlideSource; onClose: (
   const { slide } = state;
   const counter = state.position > 0 ? `${state.position}${state.total ? ` / ${state.total}` : ""}` : "";
 
+  const bar = cn("absolute inset-x-0 z-[2] flex items-center justify-between gap-2 px-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))] transition-opacity duration-300", idle && "pointer-events-none opacity-0");
+  const card = "absolute top-1/2 left-1/2 z-[4] w-[min(22rem,calc(100%-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-sheet bg-card p-6 text-center text-fg shadow-float";
+
   return (
     <div
       ref={root}
-      className={`slideshow${idle ? " idle" : ""}`}
+      className={cn("slideshow fixed inset-0 z-[45] overflow-hidden bg-black text-white outline-none select-none", idle && "idle cursor-none")}
       role="dialog"
       aria-modal="true"
       aria-label={`Slideshow: ${source.title}`}
       tabIndex={-1}
       onPointerMove={onPointerMove}
     >
-      <div className="slideshow-stage" onPointerDown={onStageDown} onPointerUp={onStageUp} onClick={onStageClick}>
+      <div className="absolute inset-0 touch-pan-y" onPointerDown={onStageDown} onPointerUp={onStageUp} onClick={onStageClick}>
         <SlideStage slide={slide} outgoing={state.outgoing} fade={state.fade} />
       </div>
       <div className="sr-only" role="status" aria-live="polite">
         {state.announce}
       </div>
 
-      <div className="slideshow-bar slideshow-top" ref={bars}>
-        <button type="button" className="btn btn-glass" onClick={close} aria-keyshortcuts="Escape">
-          Close
-        </button>
-        <span className="slideshow-count" aria-hidden="true">
+      <div className={cn(bar, "top-0 pt-[max(0.75rem,env(safe-area-inset-top))]")} data-slideshow-bar="top" ref={bars}>
+        <Button variant="overlay" size="icon" onClick={close} aria-label="Close" aria-keyshortcuts="Escape">
+          <ChevronLeft aria-hidden="true" />
+        </Button>
+        <span className="rounded-full bg-black/35 px-3.5 py-1.5 text-sm tabular-nums backdrop-blur-md" aria-hidden="true">
           {counter}
         </span>
         {fs.supported ? (
-          <button
-            type="button"
-            className="btn btn-glass slideshow-fs"
+          <Button
+            variant="overlay"
+            size="icon"
             aria-pressed={fs.active}
             aria-keyshortcuts="f"
             aria-label={fs.active ? "Exit full screen" : "Full screen"}
             onClick={fs.toggle}
           >
             {fs.active ? <CollapseIcon /> : <ExpandIcon />}
-          </button>
+          </Button>
         ) : (
-          <span />
+          <span className="size-10" />
         )}
       </div>
-      <div className="slideshow-bar slideshow-bottom">
-        <div className="slideshow-transport">
-          <button type="button" className="btn btn-glass" aria-label="Previous photo" aria-keyshortcuts="ArrowLeft" onClick={() => ctl?.prev()}>
+      <div className={cn(bar, "bottom-0 justify-center pb-[max(0.75rem,env(safe-area-inset-bottom))]")} data-slideshow-bar="bottom">
+        <div className="flex items-center gap-2">
+          <Button variant="overlay" size="icon" aria-label="Previous photo" aria-keyshortcuts="ArrowLeft" onClick={() => ctl?.prev()}>
             <PrevIcon />
-          </button>
-          <button
-            type="button"
-            className="btn btn-glass slideshow-play"
-            aria-label={playing ? "Pause" : "Play"}
-            aria-keyshortcuts="Space"
-            onClick={() => ctl?.toggle()}
-          >
+          </Button>
+          <Button variant="overlay" className="size-14" aria-label={playing ? "Pause" : "Play"} aria-keyshortcuts="Space" onClick={() => ctl?.toggle()}>
             {playing ? <PauseIcon /> : <PlayIcon />}
-          </button>
-          <button type="button" className="btn btn-glass" aria-label="Next photo" aria-keyshortcuts="ArrowRight" onClick={() => ctl?.next()}>
+          </Button>
+          <Button variant="overlay" size="icon" aria-label="Next photo" aria-keyshortcuts="ArrowRight" onClick={() => ctl?.next()}>
             <NextIcon />
-          </button>
+          </Button>
         </div>
-        <button
-          type="button"
-          className={`btn btn-glass slideshow-gear${settingsOpen ? " on" : ""}`}
+        <Button
+          variant="overlay"
+          size="icon"
+          className={cn("absolute right-[max(1rem,env(safe-area-inset-right))]", settingsOpen && "bg-white/30")}
           aria-label="Slideshow settings"
           aria-expanded={settingsOpen}
           aria-controls="slideshow-settings"
           onClick={() => setSettingsOpen((o) => !o)}
         >
           <GearIcon />
-        </button>
+        </Button>
       </div>
 
       {settingsOpen && (
-        <div id="slideshow-settings" className="slideshow-settings" role="group" aria-label="Slideshow settings">
-          <label>
+        <div
+          id="slideshow-settings"
+          className="absolute right-[max(1rem,env(safe-area-inset-right))] bottom-[calc(5rem+env(safe-area-inset-bottom))] z-[3] grid grid-cols-1 w-[min(20rem,calc(100%-2rem))] gap-4 rounded-card bg-card p-4 text-fg shadow-float"
+          role="group"
+          aria-label="Slideshow settings"
+        >
+          <label className="grid grid-cols-1 gap-1.5 text-sm font-medium">
             <span>Time per photo</span>
-            <select value={settings.duration} onChange={(e) => setSettings({ ...settings, duration: Number(e.target.value) })}>
+            <select className={cn(inputClass, "font-normal")} value={settings.duration} onChange={(e) => setSettings({ ...settings, duration: Number(e.target.value) })}>
               {DURATIONS.map((d) => (
                 <option key={d} value={d}>
                   {d} seconds
@@ -276,9 +283,9 @@ export function Slideshow({ source, onClose }: { source: SlideSource; onClose: (
               ))}
             </select>
           </label>
-          <label>
+          <label className="grid grid-cols-1 gap-1.5 text-sm font-medium">
             <span>Order</span>
-            <select value={settings.order} onChange={(e) => setSettings({ ...settings, order: e.target.value as SlideshowSettings["order"] })}>
+            <select className={cn(inputClass, "font-normal")} value={settings.order} onChange={(e) => setSettings({ ...settings, order: e.target.value as SlideshowSettings["order"] })}>
               {ORDERS.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
@@ -286,9 +293,10 @@ export function Slideshow({ source, onClose }: { source: SlideSource; onClose: (
               ))}
             </select>
           </label>
-          <label>
+          <label className="grid grid-cols-1 gap-1.5 text-sm font-medium">
             <span>Transition</span>
             <select
+              className={cn(inputClass, "font-normal")}
               value={reduced ? "none" : settings.transition}
               disabled={reduced}
               onChange={(e) => setSettings({ ...settings, transition: e.target.value as SlideshowSettings["transition"] })}
@@ -297,60 +305,59 @@ export function Slideshow({ source, onClose }: { source: SlideSource; onClose: (
               <option value="none">None</option>
             </select>
           </label>
-          {reduced && <p className="muted small">Your device asks for less motion, so photos change without a fade.</p>}
-          <label className="slideshow-check">
-            <input type="checkbox" checked={settings.loop} onChange={(e) => setSettings({ ...settings, loop: e.target.checked })} />
+          {reduced && <p className="m-0 text-sm text-muted">Your device asks for less motion, so photos change without a fade.</p>}
+          <label className="flex items-center gap-3 text-[0.9375rem]">
+            <input type="checkbox" className="size-5 accent-accent" checked={settings.loop} onChange={(e) => setSettings({ ...settings, loop: e.target.checked })} />
             <span>Start again at the end</span>
           </label>
         </div>
       )}
 
       {state.trouble && (
-        <p className="slideshow-note" role="status">
+        <p className="absolute top-[calc(4.5rem+env(safe-area-inset-top))] left-1/2 z-[2] m-0 max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-full bg-black/55 px-3.5 py-1.5 text-center text-sm backdrop-blur-md" role="status">
           Can’t reach the server. Trying again…
         </p>
       )}
       {state.status === "loading" && !slide && !state.trouble && (
-        <p className="slideshow-note slideshow-centered" role="status">
+        <p className="absolute top-1/2 left-1/2 z-[2] m-0 -translate-x-1/2 -translate-y-1/2 rounded-full bg-black/55 px-3.5 py-1.5 text-center text-sm backdrop-blur-md" role="status">
           Loading…
         </p>
       )}
       {state.status === "empty" && (
-        <div className="slideshow-card" role="status">
-          <h2>No photos to show</h2>
-          <p className="muted">There is nothing here yet, or none of it is ready to display.</p>
-          <button type="button" className="btn btn-primary" onClick={close}>
+        <div className={card} role="status">
+          <h2 className="m-0 mb-1 text-lg font-semibold tracking-tight">No photos to show</h2>
+          <p className="m-0 mb-5 text-muted">There is nothing here yet, or none of it is ready to display.</p>
+          <Button variant="primary" onClick={close}>
             Close
-          </button>
+          </Button>
         </div>
       )}
       {state.status === "ended" && (
-        <div className="slideshow-card" role="status">
-          <h2>That’s all</h2>
-          <div className="slideshow-card-actions">
-            <button type="button" className="btn btn-primary" onClick={() => ctl?.play()}>
+        <div className={card} role="status">
+          <h2 className="m-0 mb-4 text-lg font-semibold tracking-tight">That’s all</h2>
+          <div className="flex flex-wrap justify-center gap-2">
+            <Button variant="primary" onClick={() => ctl?.play()}>
               Play again
-            </button>
-            <button type="button" className="btn btn-glass" onClick={close}>
+            </Button>
+            <Button variant="secondary" onClick={close}>
               Close
-            </button>
+            </Button>
           </div>
         </div>
       )}
       {state.status === "signed-out" && (
-        <div className="slideshow-card" role="alert">
-          <h2>{source.expired?.title ?? "Sign in again"}</h2>
-          <p className="muted">{source.expired?.text ?? "Your session has ended."}</p>
-          <button
-            type="button"
-            className="btn btn-primary"
+        <div className={card} role="alert">
+          <h2 className="m-0 mb-1 text-lg font-semibold tracking-tight">{source.expired?.title ?? "Sign in again"}</h2>
+          <p className="m-0 mb-5 text-muted">{source.expired?.text ?? "Your session has ended."}</p>
+          <Button
+            variant="primary"
             onClick={() => {
               close();
               if (!source.expired) auth?.setAnonymous();
             }}
           >
             {source.expired ? "Close" : "Sign in"}
-          </button>
+          </Button>
         </div>
       )}
     </div>

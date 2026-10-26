@@ -1,17 +1,19 @@
-import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
+import { ChevronDown } from "lucide-react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api, type Invite, type IssuedInvite, type NewInvite } from "../../api";
 import { gigabytesToBytes, inviteStatusLine, inviteUrl, limitsLine } from "../../adminText";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { Field, FormError, Group, inputClass, Loading, Row, Section, SecretBox, SelectBox } from "../../settings/kit";
+import { Button } from "../../ui/Button";
+import { cn } from "../../ui/cn";
 
 const when = (iso: string) => new Date(iso).toLocaleString();
 const EXPIRY_CHOICES = [1, 3, 7, 14, 30, 90];
 
+type Ask = { kind: "reissue"; invite: Invite } | { kind: "revoke"; invite: Invite };
+
 /** Create, list, re-issue (show the link again) and revoke registration invites. */
 export function Invites() {
-  const noteId = useId();
-  const daysId = useId();
-  const quotaId = useId();
-  const dailyId = useId();
-  const fileId = useId();
   const [items, setItems] = useState<Invite[] | null>(null);
   const [note, setNote] = useState("");
   const [days, setDays] = useState(7);
@@ -22,6 +24,7 @@ export function Invites() {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [ask, setAsk] = useState<Ask | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -63,8 +66,7 @@ export function Invites() {
   }
 
   async function showLinkAgain(inv: Invite) {
-    const warn = "A new link replaces the old one: the old link stops working. Continue?";
-    if (!window.confirm(warn)) return;
+    setAsk(null);
     setError(null);
     try {
       setIssued(await api.reissueInvite(inv.id));
@@ -76,7 +78,7 @@ export function Invites() {
   }
 
   async function revoke(inv: Invite) {
-    if (!window.confirm("Revoke this invite? Its link stops working.")) return;
+    setAsk(null);
     setError(null);
     try {
       await api.revokeInvite(inv.id);
@@ -97,120 +99,154 @@ export function Invites() {
     }
   }
 
+  const limitField = (label: string, value: string, set: (v: string) => void) => (
+    <Field label={label}>
+      {(p) => <input {...p} className={inputClass} inputMode="decimal" value={value} placeholder="No limit" onChange={(e) => set(e.target.value)} />}
+    </Field>
+  );
+
   return (
-    <section aria-labelledby="invites-title">
-      <h2 id="invites-title">Invites</h2>
-      <p className="muted">
-        An invite is a single-use link that lets one person create an account. Send it to them yourself; the server sends no
-        email.
+    <section aria-label="Invites" className="[overflow-wrap:anywhere]">
+      <p className="text-sm text-muted">
+        An invite is a single-use link that lets one person create an account. Send it to them yourself; the server sends no email.
       </p>
 
-      <form className="invite-form" onSubmit={create}>
-        <div className="field-wide">
-          <label htmlFor={noteId}>Note (only you see it)</label>
-          <input
-            id={noteId}
-            value={note}
-            maxLength={200}
-            placeholder="e.g. for Sam"
-            onChange={(e) => setNote(e.target.value)}
-          />
-        </div>
-        <div>
-          <label htmlFor={daysId}>Expires after</label>
-          <select id={daysId} value={days} onChange={(e) => setDays(Number(e.target.value))}>
-            {EXPIRY_CHOICES.map((n) => (
-              <option key={n} value={n}>
-                {n} {n === 1 ? "day" : "days"}
-              </option>
-            ))}
-          </select>
-        </div>
-        <details className="field-wide invite-limits">
-          <summary>Starting limits (optional)</summary>
-          <p className="muted small">Copied onto the new account when the invite is used. Empty means no limit.</p>
-          <div className="invite-limit-fields">
-            <div>
-              <label htmlFor={quotaId}>Storage (GB)</label>
-              <input id={quotaId} inputMode="decimal" value={quota} placeholder="No limit" onChange={(e) => setQuota(e.target.value)} />
-            </div>
-            <div>
-              <label htmlFor={dailyId}>Uploads per day (GB)</label>
-              <input id={dailyId} inputMode="decimal" value={daily} placeholder="No limit" onChange={(e) => setDaily(e.target.value)} />
-            </div>
-            <div>
-              <label htmlFor={fileId}>Largest file (GB)</label>
-              <input id={fileId} inputMode="decimal" value={maxFile} placeholder="No limit" onChange={(e) => setMaxFile(e.target.value)} />
-            </div>
+      <Section title="New invite">
+        <form className="flex flex-col gap-4 rounded-card bg-card p-4 ring-1 ring-line" onSubmit={create}>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_11rem]">
+            <Field label="Note (only you see it)">
+              {(p) => <input {...p} className={inputClass} value={note} maxLength={200} placeholder="e.g. for Sam" onChange={(e) => setNote(e.target.value)} />}
+            </Field>
+            <Field label="Expires after">
+              {(p) => (
+                <SelectBox {...p} value={days} onChange={(e) => setDays(Number(e.target.value))}>
+                  {EXPIRY_CHOICES.map((n) => (
+                    <option key={n} value={n}>
+                      {n} {n === 1 ? "day" : "days"}
+                    </option>
+                  ))}
+                </SelectBox>
+              )}
+            </Field>
           </div>
-        </details>
-        <button type="submit" className="btn btn-primary" disabled={busy}>
-          Create invite
-        </button>
-      </form>
-
-      <div role="alert" className="form-error">
-        {error}
-      </div>
+          <details className="group">
+            <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-sm font-medium text-accent select-none [&::-webkit-details-marker]:hidden">
+              Starting limits (optional)
+              <ChevronDown className="size-4 transition-transform duration-200 group-open:rotate-180" aria-hidden="true" />
+            </summary>
+            <p className="mt-2 text-[0.8125rem] text-muted">Copied onto the new account when the invite is used. Empty means no limit.</p>
+            <div className="mt-3 grid grid-cols-1 gap-3 min-[480px]:grid-cols-3">
+              {limitField("Storage (GB)", quota, setQuota)}
+              {limitField("Uploads per day (GB)", daily, setDaily)}
+              {limitField("Largest file (GB)", maxFile, setMaxFile)}
+            </div>
+          </details>
+          <FormError>{error}</FormError>
+          <div>
+            <Button type="submit" variant="primary" disabled={busy}>
+              Create invite
+            </Button>
+          </div>
+        </form>
+      </Section>
 
       {issued && (
-        <section className="new-key" aria-label="Invite link">
-          <strong>Copy this link now and send it. It is not shown again.</strong>
-          <code>{link}</code>
-          <p className="muted small">
-            It works once and expires {new Date(issued.invite.expires_at).toLocaleDateString()}. If you lose it, make a new
-            link from the list.
+        <Section>
+          <SecretBox
+            label="Invite link"
+            title="Copy this link now and send it. It is not shown again."
+            actions={
+              <>
+                <Button variant="primary" onClick={() => void copy()}>
+                  {copied ? "Copied" : "Copy link"}
+                </Button>
+                <Button variant="quiet" onClick={() => setIssued(null)}>
+                  Done
+                </Button>
+              </>
+            }
+          >
+            {link}
+          </SecretBox>
+          <p className="mt-2 text-[0.8125rem] text-muted">
+            It works once and expires {new Date(issued.invite.expires_at).toLocaleDateString()}. If you lose it, make a new link from the list.
           </p>
-          <button type="button" className="btn btn-primary" onClick={() => void copy()}>
-            {copied ? "Copied" : "Copy link"}
-          </button>{" "}
-          <button type="button" className="btn btn-quiet" onClick={() => setIssued(null)}>
-            Done
-          </button>
-        </section>
+        </Section>
       )}
 
-      {items === null ? (
-        <p className="muted" role="status">
-          Loading…
-        </p>
-      ) : items.length === 0 ? (
-        <p className="muted">No invites yet.</p>
-      ) : (
-        <ul className="invite-list">
-          {items.map((inv) => {
-            const limits = limitsLine(inv.limits);
-            return (
-              <li key={inv.id}>
-                <div className="invite-main">
-                  <div className="invite-title">
-                    <strong>{inv.note ?? "No note"}</strong>
-                    <span className={`badge badge-${inv.status}`}>{inv.status}</span>
-                  </div>
-                  <div className="muted small">{inviteStatusLine(inv)}</div>
-                  <div className="muted small">
-                    Created {when(inv.created_at)}
-                    {inv.created_by ? ` by ${inv.created_by}` : ""}
-                    {inv.used_at ? ` · used ${when(inv.used_at)}` : ""}
-                  </div>
-                  {limits && <div className="muted small">Starts with {limits}</div>}
-                </div>
-                {(inv.status === "pending" || inv.status === "expired") && (
-                  <div className="invite-actions">
-                    <button type="button" className="btn btn-quiet" onClick={() => void showLinkAgain(inv)}>
-                      {inv.status === "expired" ? "Renew link" : "Show link again"}
-                    </button>
-                    {inv.status === "pending" && (
-                      <button type="button" className="btn btn-quiet" onClick={() => void revoke(inv)}>
-                        Revoke
-                      </button>
-                    )}
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+      <Section title="Links">
+        {items === null ? (
+          <Loading />
+        ) : items.length === 0 ? (
+          <p className="text-sm text-muted">No invites yet.</p>
+        ) : (
+          <Group as="ul">
+            {items.map((inv) => {
+              const limits = limitsLine(inv.limits);
+              return (
+                <Row
+                  as="li"
+                  key={inv.id}
+                  className="py-3"
+                  label={
+                    <span className="flex flex-wrap items-center gap-2">
+                      <strong className="font-medium">{inv.note ?? "No note"}</strong>
+                      <span
+                        className={cn(
+                          "inline-flex h-5 items-center rounded-full bg-surface px-2 text-xs font-medium",
+                          inv.status === "pending" && "bg-accent/12 text-accent",
+                          (inv.status === "revoked" || inv.status === "expired") && "text-muted",
+                        )}
+                      >
+                        {inv.status}
+                      </span>
+                    </span>
+                  }
+                  detail={
+                    <>
+                      <span className="block">{inviteStatusLine(inv)}</span>
+                      <span className="block">
+                        Created {when(inv.created_at)}
+                        {inv.created_by ? ` by ${inv.created_by}` : ""}
+                        {inv.used_at ? ` · used ${when(inv.used_at)}` : ""}
+                      </span>
+                      {limits && <span className="block">Starts with {limits}</span>}
+                    </>
+                  }
+                >
+                  {(inv.status === "pending" || inv.status === "expired") && (
+                    <>
+                      <Button size="sm" onClick={() => setAsk({ kind: "reissue", invite: inv })}>
+                        {inv.status === "expired" ? "Renew link" : "Show link again"}
+                      </Button>
+                      {inv.status === "pending" && (
+                        <Button size="sm" onClick={() => setAsk({ kind: "revoke", invite: inv })}>
+                          Revoke
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </Row>
+              );
+            })}
+          </Group>
+        )}
+      </Section>
+
+      {ask?.kind === "reissue" && (
+        <ConfirmDialog
+          title={ask.invite.status === "expired" ? "Renew the link?" : "Make a new link?"}
+          confirmLabel="Make a new link"
+          onCancel={() => setAsk(null)}
+          onConfirm={() => void showLinkAgain(ask.invite)}
+        >
+          <p>A new link replaces the old one: the old link stops working.</p>
+        </ConfirmDialog>
+      )}
+      {ask?.kind === "revoke" && (
+        <ConfirmDialog title="Revoke this invite?" confirmLabel="Revoke" danger onCancel={() => setAsk(null)} onConfirm={() => void revoke(ask.invite)}>
+          <p>Its link stops working.</p>
+        </ConfirmDialog>
       )}
     </section>
   );

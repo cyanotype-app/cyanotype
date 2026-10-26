@@ -1,9 +1,11 @@
-import { useId, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { api, ApiError } from "../api";
 import { useAuth } from "../auth";
 import { AuthForm } from "../components/AuthForm";
-import { Logo } from "../components/Logo";
+import { AuthShell, LinkButton } from "../components/AuthShell";
+import { Field, FormError, inputClass } from "../settings/kit";
+import { Button } from "../ui/Button";
 import { registrationKnownClosed } from "../registration";
 import { returnToOf } from "../returnTo";
 import { codeErrorText, codeToSend } from "../twoFactorText";
@@ -12,7 +14,7 @@ export function Login() {
   const { state, refresh } = useAuth();
   const navigate = useNavigate();
   const returnTo = returnToOf(useLocation().state);
-  const from = returnTo ?? "/library";
+  const from = returnTo ?? "/";
   // An account that must set up two-factor authentication goes there first, and is sent on to where it was headed.
   const enrolState = returnTo ? { from: returnTo } : undefined;
   const [challenge, setChallenge] = useState<string | null>(null);
@@ -79,7 +81,6 @@ export function Login() {
 
 /** The second step of a sign-in: the 6-digit code, or a recovery code instead. */
 function CodeStep({ challenge, onDone, onBack }: { challenge: string; onDone: () => Promise<void>; onBack: () => void }) {
-  const id = useId();
   const [recovery, setRecovery] = useState(false);
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -102,40 +103,11 @@ function CodeStep({ challenge, onDone, onBack }: { challenge: string; onDone: ()
   }
 
   return (
-    <div className="auth-page">
-      <div className="card auth-card">
-        <div className="auth-brand">
-          <Logo size={44} />
-          <h1>Two-factor code</h1>
-        </div>
-        <form onSubmit={submit}>
-          <label htmlFor={`${id}-code`}>{recovery ? "Recovery code" : "Code from your authenticator app"}</label>
-          <input
-            id={`${id}-code`}
-            name="code"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            autoFocus
-            required
-            autoComplete="one-time-code"
-            inputMode={recovery ? "text" : "numeric"}
-            pattern={recovery ? undefined : "[0-9 ]*"}
-            maxLength={recovery ? 24 : 7}
-            spellCheck={false}
-            autoCapitalize="none"
-            placeholder={recovery ? "abcd-efgh-2345-ijkl" : "123 456"}
-          />
-          <div role="alert" className="form-error">
-            {error}
-          </div>
-          <button type="submit" className="btn btn-primary" disabled={busy || code.trim() === ""}>
-            {busy ? "Please wait…" : "Sign in"}
-          </button>
-        </form>
-        <p className="auth-footer muted">
-          <button
-            type="button"
-            className="link-button"
+    <AuthShell
+      title="Two-factor code"
+      footer={
+        <>
+          <LinkButton
             onClick={() => {
               setRecovery(!recovery);
               setCode("");
@@ -143,13 +115,38 @@ function CodeStep({ challenge, onDone, onBack }: { challenge: string; onDone: ()
             }}
           >
             {recovery ? "Use the code from the app" : "Lost your phone? Use a recovery code"}
-          </button>
+          </LinkButton>
           {" · "}
-          <button type="button" className="link-button" onClick={onBack}>
-            Back
-          </button>
-        </p>
-      </div>
-    </div>
+          <LinkButton onClick={onBack}>Back</LinkButton>
+        </>
+      }
+    >
+      <form onSubmit={submit} className="flex flex-col gap-4">
+        <Field label={recovery ? "Recovery code" : "Code from your authenticator app"}>
+          {(p) => (
+            <input
+              {...p}
+              className={inputClass}
+              name="code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              autoFocus
+              required
+              autoComplete="one-time-code"
+              inputMode={recovery ? "text" : "numeric"}
+              pattern={recovery ? undefined : "[0-9 ]*"}
+              maxLength={recovery ? 24 : 7}
+              spellCheck={false}
+              autoCapitalize="none"
+              placeholder={recovery ? "abcd-efgh-2345-ijkl" : "123 456"}
+            />
+          )}
+        </Field>
+        <FormError>{error}</FormError>
+        <Button type="submit" variant="primary" size="lg" className="w-full" disabled={busy || code.trim() === ""}>
+          {busy ? "Please wait…" : "Sign in"}
+        </Button>
+      </form>
+    </AuthShell>
   );
 }

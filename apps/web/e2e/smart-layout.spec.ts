@@ -84,7 +84,9 @@ for (const { width, scheme } of RUNS) {
       await page.goto("/albums");
       await page.getByRole("link", { name: /Faves/ }).first().waitFor();
       await check("albums-with-smart");
-      await page.getByRole("button", { name: "New smart album" }).click();
+      await page.getByRole("button", { name: "New", exact: true }).click();
+      await check("albums-new-menu");
+      await page.getByRole("menuitem", { name: "New smart album" }).click();
       const editor = page.getByRole("dialog", { name: "New smart album" });
       await editor.waitFor();
       await check("smart-editor-new");
@@ -98,7 +100,8 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: /Select IMG_00000/ }).click();
       await check("smart-album-select");
       await page.getByRole("button", { name: "Done" }).click();
-      await page.getByRole("button", { name: "Edit rules" }).click();
+      await page.getByRole("button", { name: "More" }).click();
+      await page.getByRole("menuitem", { name: "Edit rules" }).click();
       const dialog = page.getByRole("dialog", { name: "Edit rules" });
       await dialog.waitFor();
       await dialog.getByText(/1,234 photos/).waitFor();

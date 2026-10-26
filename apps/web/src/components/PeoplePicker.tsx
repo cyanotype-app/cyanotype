@@ -1,6 +1,9 @@
 import { useId, useState } from "react";
 import type { Person } from "../api";
 import { FIND_A_PERSON, matchingPeople, personLabel, photosWord } from "../peopleText";
+import { cn } from "../ui/cn";
+import { BlankFace, FaceCrop } from "./FaceCrop";
+import { inputClass } from "./sheetForm";
 
 interface Props {
   /** The people to choose from: named and not hidden (`filterablePeople`). */
@@ -27,26 +30,27 @@ export function PeoplePicker({ people, value, onChange, label, max, disabled = f
   // A chosen id that is not in the list any more (a deleted or renamed-to-nothing person) can still be taken off.
   const gone = value.filter((v) => !people.some((p) => p.id === v));
   const toggle = (pid: string, on: boolean) => onChange(on ? [...value, pid] : value.filter((v) => v !== pid));
+  const row = "flex min-h-11 cursor-pointer items-center gap-3 rounded-[0.6rem] px-1.5 text-[0.9375rem] hover:bg-surface has-[:disabled]:cursor-default has-[:disabled]:opacity-55";
   return (
-    <fieldset className="people-picker" disabled={disabled}>
-      <legend>{label}</legend>
+    <fieldset className="m-0 flex min-w-0 flex-col gap-2 border-0 p-0" disabled={disabled}>
+      <legend className="mb-1.5 p-0 text-[0.8125rem] font-medium text-muted">{label}</legend>
       <label htmlFor={`${id}-find`} className="sr-only">
         {FIND_A_PERSON}
       </label>
       <input
         id={`${id}-find`}
-        className="text-input"
+        className={cn(inputClass, "bg-card ring-line")}
         type="search"
         placeholder={FIND_A_PERSON}
         value={typed}
         maxLength={100}
         onChange={(e) => setTyped(e.target.value)}
       />
-      <ul className="people-picker-list">
+      <ul className="flex flex-col">
         {gone.map((g) => (
           <li key={g}>
-            <label className="sheet-check">
-              <input type="checkbox" checked onChange={() => toggle(g, false)} />
+            <label className={row}>
+              <input type="checkbox" className="size-5 shrink-0 accent-accent" checked onChange={() => toggle(g, false)} />
               <span>Unknown person</span>
             </label>
           </li>
@@ -55,10 +59,17 @@ export function PeoplePicker({ people, value, onChange, label, max, disabled = f
           const on = value.includes(p.id);
           return (
             <li key={p.id}>
-              <label className="sheet-check">
-                <input type="checkbox" checked={on} disabled={!on && value.length >= max} onChange={(e) => toggle(p.id, e.target.checked)} />
-                <span className="people-picker-name">
-                  {personLabel(p)} <span className="muted small">({photosWord(p.photos)})</span>
+              <label className={row}>
+                <input
+                  type="checkbox"
+                  className="size-5 shrink-0 accent-accent"
+                  checked={on}
+                  disabled={!on && value.length >= max}
+                  onChange={(e) => toggle(p.id, e.target.checked)}
+                />
+                {p.cover ? <FaceCrop url={p.cover.preview_url} box={p.cover.box} className="size-8 shrink-0" /> : <BlankFace className="size-8 shrink-0" />}
+                <span className="min-w-0 [overflow-wrap:anywhere]">
+                  {personLabel(p)} <span className="text-[0.8125rem] text-muted">({photosWord(p.photos)})</span>
                 </span>
               </label>
             </li>
@@ -66,12 +77,12 @@ export function PeoplePicker({ people, value, onChange, label, max, disabled = f
         })}
       </ul>
       {list.length > shown.length && (
-        <p className="muted small" role="status">
+        <p className="text-[0.8125rem] text-muted" role="status">
           {list.length - shown.length} more: type a name to find them.
         </p>
       )}
       {typed.trim() !== "" && !list.some((p) => !value.includes(p.id)) && (
-        <p className="muted small" role="status">
+        <p className="text-[0.8125rem] text-muted" role="status">
           No one is called that.
         </p>
       )}

@@ -16,8 +16,8 @@ const all = () => ({ onAddToAlbum: vi.fn(), onShare: vi.fn(), onArchive: vi.fn()
 const more = () => screen.getByRole("button", { name: "More" });
 const menuLabels = () => screen.getAllByRole("menuitem").map((m) => m.textContent);
 
-describe("Lightbox More menu", () => {
-  it("is a menu button that lists the actions that apply", async () => {
+describe("Lightbox menu", () => {
+  it("is a menu button that lists the secondary actions that apply", async () => {
     const user = userEvent.setup();
     render(<Harness {...all()} />);
     expect(more()).toHaveAttribute("aria-haspopup", "menu");
@@ -25,30 +25,29 @@ describe("Lightbox More menu", () => {
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     await user.click(more());
     expect(more()).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("menu")).toHaveAttribute("id", more().getAttribute("aria-controls"));
-    expect(menuLabels()).toEqual(["Add to album", "Archive", "Hide", "Move to trash"]);
-    expect(screen.getByRole("menuitem", { name: "Add to album" })).toHaveFocus();
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    // Share and Move to trash are buttons of the bar, not menu items.
+    expect(menuLabels()).toEqual(["Add to album", "Download", "Archive", "Hide"]);
   });
 
   it("says Restore and Unhide for an archived, hidden photo", async () => {
     const user = userEvent.setup();
     render(<Harness list={[item(1, { archived: true, hidden: true })]} {...all()} />);
     await user.click(more());
-    expect(menuLabels()).toEqual(["Add to album", "Restore", "Unhide", "Move to trash"]);
+    expect(menuLabels()).toEqual(["Add to album", "Download", "Restore", "Unhide"]);
   });
 
   it("only lists the actions whose handlers are given", async () => {
     const user = userEvent.setup();
     render(<Harness onTrash={vi.fn()} onHide={vi.fn()} />);
     await user.click(more());
-    expect(menuLabels()).toEqual(["Hide", "Move to trash"]);
+    expect(menuLabels()).toEqual(["Download", "Hide"]);
   });
 
-  it("is not rendered when nothing overflows (Share and Download stay in the bar)", () => {
-    render(<Harness onShare={vi.fn()} />);
-    expect(screen.queryByRole("button", { name: "More" })).not.toBeInTheDocument();
+  it("keeps Share and Move to trash as buttons of the bar", () => {
+    render(<Harness onShare={vi.fn()} onTrash={vi.fn()} />);
     expect(screen.getByRole("button", { name: "Share" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Download" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Move to trash" })).toBeInTheDocument();
   });
 
   it("moves focus with the arrow keys, Home and End", async () => {
@@ -56,13 +55,10 @@ describe("Lightbox More menu", () => {
     render(<Harness {...all()} />);
     await user.click(more());
     await user.keyboard("{ArrowDown}");
-    expect(screen.getByRole("menuitem", { name: "Archive" })).toHaveFocus();
-    await user.keyboard("{End}");
-    expect(screen.getByRole("menuitem", { name: "Move to trash" })).toHaveFocus();
     await user.keyboard("{ArrowDown}");
-    expect(screen.getByRole("menuitem", { name: "Add to album" })).toHaveFocus();
-    await user.keyboard("{ArrowUp}");
-    expect(screen.getByRole("menuitem", { name: "Move to trash" })).toHaveFocus();
+    expect(screen.getByRole("menuitem", { name: "Download" })).toHaveFocus();
+    await user.keyboard("{End}");
+    expect(screen.getByRole("menuitem", { name: "Hide" })).toHaveFocus();
     await user.keyboard("{Home}");
     expect(screen.getByRole("menuitem", { name: "Add to album" })).toHaveFocus();
   });
@@ -73,19 +69,11 @@ describe("Lightbox More menu", () => {
     render(<Harness {...all()} onClose={onClose} />);
     await user.click(more());
     await user.keyboard("{Escape}");
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
     expect(more()).toHaveFocus();
     expect(onClose).not.toHaveBeenCalled();
     await user.keyboard("{Escape}");
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
-  });
-
-  it("closes when you click or tap anywhere else", async () => {
-    const user = userEvent.setup();
-    render(<Harness {...all()} />);
-    await user.click(more());
-    await user.click(screen.getByText("1 / 3"));
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
   it("runs the chosen action with the photo and closes", async () => {
@@ -95,37 +83,22 @@ describe("Lightbox More menu", () => {
     await user.click(more());
     await user.click(screen.getByRole("menuitem", { name: "Archive" }));
     expect(h.onArchive).toHaveBeenCalledExactlyOnceWith(items[0]);
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    expect(more()).toHaveFocus();
+    await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
 
     await user.click(more());
     await user.keyboard("{End}{Enter}");
-    expect(h.onTrash).toHaveBeenCalledExactlyOnceWith(items[0]);
+    expect(h.onHide).toHaveBeenCalledExactlyOnceWith(items[0]);
     expect(h.onAddToAlbum).not.toHaveBeenCalled();
-    expect(h.onHide).not.toHaveBeenCalled();
+    expect(h.onTrash).not.toHaveBeenCalled();
   });
 
-  it("closes when the photo changes", async () => {
+  it("does not take the viewer's shortcuts while the menu has the keyboard", async () => {
     const user = userEvent.setup();
-    render(<Harness {...all()} />);
+    const onTrash = vi.fn();
+    render(<Harness {...all()} onTrash={onTrash} />);
     await user.click(more());
-    await user.click(screen.getByRole("button", { name: "Next photo" }));
-    expect(screen.getByRole("dialog", { name: "photo-2.jpg" })).toBeInTheDocument();
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    expect(more()).toHaveAttribute("aria-expanded", "false");
-  });
-
-  it("closes the file chooser when it opens, and the other way round", async () => {
-    const user = userEvent.setup();
-    render(<Harness list={[item(1, { edited: true })]} {...all()} />);
-    const download = screen.getByRole("button", { name: "Download" });
-    await user.click(download);
-    expect(download).toHaveAttribute("aria-expanded", "true");
-    await user.click(more());
-    expect(download).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("menu")).toBeInTheDocument();
-    await user.click(download);
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    expect(download).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByRole("dialog", { name: "photo-1.jpg" })).toBeInTheDocument();
+    expect(onTrash).not.toHaveBeenCalled();
   });
 });

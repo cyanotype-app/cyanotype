@@ -85,7 +85,7 @@ async function rects(page: Page): Promise<Rects> {
     };
     const regions: Record<string, { l: number; t: number; w: number; h: number }> = {};
     for (const el of Array.from(document.querySelectorAll<HTMLElement>(".face-region"))) regions[el.dataset.faceId!] = r(el);
-    return { img: r(document.querySelector(".lightbox-photo img")!), regions };
+    return { img: r(document.querySelector(".viewer-photo.current img")!), regions };
   });
 }
 
@@ -104,7 +104,7 @@ async function expectOnFaces(page: Page, faces: Face[], label: string) {
   }
 }
 
-const zoomOf = (page: Page) => page.evaluate(() => Number(document.querySelector<HTMLElement>(".lightbox-photo")!.dataset.zoom ?? "1"));
+const zoomOf = (page: Page) => page.evaluate(() => Number(document.querySelector<HTMLElement>(".viewer-photo.current")!.dataset.zoom ?? "1"));
 
 /** Wait for the photo to stop moving (the easing after a key or a double tap). */
 async function settled(page: Page) {
@@ -127,7 +127,7 @@ const centre = async (l: Locator) => {
 async function expectNothingOpened(page: Page) {
   await page.waitForTimeout(700); // longer than the double-tap window a tap on a face waits out
   await expect(whoIsThis(page)).toHaveCount(0);
-  expect(new URL(page.url()).pathname).toBe("/library");
+  expect(new URL(page.url()).pathname).toMatch(/^\/(library|photos)$/);
 }
 
 test.describe("faces on the photo, desktop", () => {
@@ -202,11 +202,11 @@ test.describe("faces on the photo, desktop", () => {
 
     // The switch in Info outlines every face.
     await page.keyboard.press("i");
-    const panel = page.getByRole("complementary", { name: "Photo details" });
-    await panel.getByRole("checkbox", { name: "Show face boxes on the photo" }).check();
+    const panel = page.locator("#details-panel");
+    await panel.getByRole("switch", { name: "Show face boxes on the photo" }).check();
     await page.mouse.move(5, 5);
     for (const id of ["fn", "fu", "fp"]) expect((await outline(id)).border, id).toBeGreaterThanOrEqual(2);
-    await panel.getByRole("checkbox", { name: "Show face boxes on the photo" }).uncheck();
+    await panel.getByRole("switch", { name: "Show face boxes on the photo" }).uncheck();
     expect((await outline("fu")).border).toBe(0);
   });
 
@@ -214,7 +214,7 @@ test.describe("faces on the photo, desktop", () => {
     await setupFaces(page);
     await openWithFaces(page);
     await page.keyboard.press("i");
-    const panel = page.getByRole("complementary", { name: "Photo details" });
+    const panel = page.locator("#details-panel");
     await expect(panel.getByRole("link", { name: "Person A" })).toHaveCount(1);
     await expect(panel.getByText("Unknown face")).toHaveCount(0);
     await expect(panel.getByRole("link", { name: "Unnamed person" })).toHaveCount(0);
@@ -304,7 +304,7 @@ test.describe("faces on the photo, desktop", () => {
     await whoIsThis(page).getByRole("button", { name: "Not a face" }).click();
     await expect(page.locator(".face-region")).toHaveCount(2);
     await page.keyboard.press("i");
-    const panel = page.getByRole("complementary", { name: "Photo details" });
+    const panel = page.locator("#details-panel");
     await panel.getByRole("button", { name: /Bring back 1 detection marked/ }).click();
     await expect(page.locator(".face-region")).toHaveCount(3);
     expect(calls.unmarked).toEqual(["fu", "fu"]);
@@ -416,7 +416,7 @@ test.describe("faces on the photo, touch", () => {
     await page.keyboard.press("+");
     await settled(page);
     const before = await rects(page);
-    const stage = (await page.locator(".lightbox-stage").boundingBox())!;
+    const stage = (await page.locator(".viewer-stage").boundingBox())!;
     const g = before.regions.fu!;
     // A finger on the face when it is on screen, else on the middle of the stage.
     const on = g.l > stage.x + 10 && g.l + g.w < stage.x + stage.width - 10 && g.t > stage.y + 10 && g.t + g.h < stage.y + stage.height - 10;
@@ -449,12 +449,25 @@ for (const width of [320, 375, 414, 1280]) {
         await dialog.waitFor();
         const img = dialog.locator(".face-context-frame img");
         await expect.poll(async () => (await img.boundingBox())?.width ?? 0).toBeGreaterThan(40);
-        const i = (await img.boundingBox())!;
-        const b = (await dialog.getByTestId("face-context-box").boundingBox())!;
-        expect(Math.abs(b.x - (i.x + UNCLAIMED.box[0] * i.width))).toBeLessThan(1.5);
-        expect(Math.abs(b.y - (i.y + UNCLAIMED.box[1] * i.height))).toBeLessThan(1.5);
-        expect(Math.abs(b.width - UNCLAIMED.box[2] * i.width)).toBeLessThan(1.5);
-        expect(Math.abs(b.height - UNCLAIMED.box[3] * i.height)).toBeLessThan(1.5);
+        // The sheet slides in: read the picture and the outline in one evaluate, until they agree (it has stopped moving).
+        const frame = async () =>
+          page.evaluate(() => {
+            const im = document.querySelector('[role="dialog"] .face-context-frame img')!.getBoundingClientRect();
+            const bx = document.querySelector('[data-testid="face-context-box"]')!.getBoundingClientRect();
+            return { i: { x: im.x, y: im.y, width: im.width, height: im.height }, b: { x: bx.x, y: bx.y, width: bx.width, height: bx.height } };
+          });
+        await expect
+          .poll(async () => {
+            const { i, b } = await frame();
+            return Math.max(
+              Math.abs(b.x - (i.x + UNCLAIMED.box[0] * i.width)),
+              Math.abs(b.y - (i.y + UNCLAIMED.box[1] * i.height)),
+              Math.abs(b.width - UNCLAIMED.box[2] * i.width),
+              Math.abs(b.height - UNCLAIMED.box[3] * i.height),
+            );
+          })
+          .toBeLessThan(1.5);
+        const { i } = await frame();
         // The whole photo is shown (the picture is landscape, 3:2), not a crop.
         expect(Math.abs(i.width / i.height - 1.5)).toBeLessThan(0.02);
         const vp = page.viewportSize()!;

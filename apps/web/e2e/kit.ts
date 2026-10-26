@@ -18,24 +18,65 @@ export const viewportOf = (width: number) => ({ width, height: width === 1280 ? 
 
 export const LONG_NAME = "IMG_20240615_184233_a-really-quite-long-camera-generated-filename-with-no-spaces-at-all-HDR-PANO.jpg";
 
+/** Wait for the viewer's open animation (the photo grows from its tile) or a step to the next photo to end: the stage, the photo on show and the side panel stay where they are for a while. */
+export async function viewerSettled(page: Page) {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        const key = () => {
+          return [".viewer-stage", ".viewer-photo.current", "#details-panel", "#text-panel"]
+            .map((sel) => {
+              const b = document.querySelector(sel)?.getBoundingClientRect();
+              return b ? [b.left, b.top, b.width, b.height].map((n) => n.toFixed(2)).join() : "";
+            })
+            .join("|");
+        };
+        let last = "";
+        let same = 0;
+        const tick = () => {
+          const now = key();
+          same = now === last ? same + 1 : 0;
+          last = now;
+          if (same >= 12) resolve();
+          else requestAnimationFrame(tick);
+        };
+        tick();
+      }),
+  );
+}
+
+/**
+ * The viewer hides its bars after 3 s without a touch, a mouse move or a key, and a hidden bar takes no clicks. A long spec on a
+ * busy machine (screenshots between the steps) outlasts that, so this nudges the mouse over the viewer once a second, as a hand
+ * resting on the mouse would. Not for specs that check the fade itself.
+ */
+export async function keepViewerBarsShown(page: Page) {
+  await page.addInitScript(() => {
+    setInterval(() => {
+      document.querySelector('[role="dialog"][aria-modal="true"]')?.dispatchEvent(new PointerEvent("pointermove", { pointerType: "mouse", bubbles: true }));
+    }, 1000);
+  });
+}
+
 /** Assert that nothing sticks out of the viewport, and with SHOT_DIR save `<prefix>-<name>.png`. */
 export function makeCheck(page: Page, prefix: string, problems: string[]) {
   if (SHOT_DIR) mkdirSync(SHOT_DIR, { recursive: true });
   return async function check(name: string) {
     await page.waitForTimeout(150);
+    if (await page.locator(".viewer-stage").count()) await viewerSettled(page);
     const r = await page.evaluate(() => {
       const w = window.innerWidth;
       const bad: string[] = [];
       for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
         const b = el.getBoundingClientRect();
-        if (b.width === 0 || el.closest(".tile") || el.closest(".map-canvas") || el.closest(".memories-row") || el.closest(".face-crop") || el.classList.contains("slide-backdrop")) continue;
+        if (b.width === 0 || el.closest(".tile, [data-tile]") || el.closest(".viewer-stage") || el.closest(".map-canvas") || el.closest(".memories-row, [data-scroll-row]") || el.closest(".face-crop") || el.classList.contains("slide-backdrop")) continue;
         if (b.right > w + 0.5 || b.left < -0.5) {
           bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} "${(el.textContent ?? "").trim().slice(0, 24)}" [${Math.round(b.left)}..${Math.round(b.right)}]`);
         }
       }
       if (document.documentElement.scrollWidth > w) {
         for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
-          if (el.scrollWidth > w + 0.5 && !el.closest(".tile") && !el.closest(".map-canvas") && !el.closest(".memories-row") && !el.closest(".face-crop") && !el.classList.contains("slide-backdrop")) {
+          if (el.scrollWidth > w + 0.5 && !el.closest(".tile, [data-tile]") && !el.closest(".viewer-stage") && !el.closest(".map-canvas") && !el.closest(".memories-row, [data-scroll-row]") && !el.closest(".face-crop") && !el.classList.contains("slide-backdrop")) {
             bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} scrollWidth ${el.scrollWidth}`);
           }
         }

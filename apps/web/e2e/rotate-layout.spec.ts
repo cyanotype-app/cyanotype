@@ -2,7 +2,8 @@
 // the "updating" note after a save, and an edited photo's download menu and Info row. Nothing may stick out sideways, the
 // handles must be touch targets, and a drag with a finger must move the crop. Set SHOT_DIR to save the screenshots.
 import { expect, test } from "@playwright/test";
-import { json, LONG_NAME, makeCheck, RUNS, setupApp, shotPrefix, viewportOf, type Handler } from "./kit";
+import { viewerSettled } from "./viewerKit";
+import { json, keepViewerBarsShown, LONG_NAME, makeCheck, RUNS, setupApp, shotPrefix, viewportOf, type Handler } from "./kit";
 
 for (const { width, scheme } of RUNS) {
   test.describe(`rotate and crop ${width}px ${scheme}`, () => {
@@ -12,6 +13,7 @@ for (const { width, scheme } of RUNS) {
       test.setTimeout(120_000);
       const problems: string[] = [];
       const check = makeCheck(page, shotPrefix("a5", width, scheme), problems);
+      await keepViewerBarsShown(page);
       const saved: Record<string, unknown>[] = [];
       let assets: Record<string, unknown>[] = [];
       // Photo a2 is edited by the test (the render takes two polls); a3 is edited from the start.
@@ -82,8 +84,9 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: new RegExp(`Open ${LONG_NAME.slice(0, 20)}`) }).first().click();
       const viewer = page.getByRole("dialog", { name: LONG_NAME });
       await viewer.waitFor();
-      const crop = viewer.getByRole("button", { name: "Rotate and crop" });
+      const crop = viewer.getByRole("button", { name: "Rotate and crop", exact: true });
       await expect(crop).toBeEnabled();
+      await viewerSettled(page); // (the photo grows from its tile first)
       await check("viewer-crop-button");
 
       // The editor: turn with the key, show the crop handles, drag a corner, straighten, pick a shape.
@@ -152,19 +155,19 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: /Open IMG_00003/ }).first().click();
       const edited = page.getByRole("dialog", { name: "IMG_00003.jpg" });
       await edited.waitFor();
-      await expect(edited.getByText(/edited ·/)).toBeVisible();
-      await edited.getByRole("button", { name: "Download", exact: true }).click();
-      await expect(edited.getByRole("button", { name: "Download edited (JPEG)" })).toBeVisible();
-      await expect(edited.getByRole("link", { name: /Download original/ })).toBeVisible();
+      await expect(edited.getByText("Edited", { exact: true })).toBeVisible();
+      await edited.getByRole("button", { name: "More" }).click();
+      await expect(page.getByRole("menuitem", { name: "Download edited (JPEG)" })).toBeVisible();
+      await expect(page.getByRole("menuitem", { name: /Download original/ })).toBeVisible();
       await check("edited-downloads");
-      await edited.getByRole("button", { name: "Download", exact: true }).click();
+      await page.keyboard.press("Escape");
       await page.keyboard.press("i");
-      const panel = page.getByRole("complementary", { name: "Photo details" });
+      const panel = page.locator("#details-panel");
       await panel.waitFor();
       await expect(panel.getByText(/Rotated 90° right, cropped to 1800 × 2000/)).toBeVisible();
       await check("edited-info");
       await page.keyboard.press("Escape");
-      await edited.getByRole("button", { name: "Rotate and crop" }).click();
+      await edited.getByRole("button", { name: "Rotate and crop", exact: true }).click();
       const again = page.getByRole("dialog", { name: "Rotate and crop" });
       await expect(again.getByRole("button", { name: "Revert to original" })).toBeVisible();
       await expect(again.getByRole("button", { name: "Save" })).toBeDisabled();

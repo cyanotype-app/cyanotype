@@ -211,7 +211,7 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: "Slideshow", exact: true }).click();
       const show = page.getByRole("dialog", { name: /^Slideshow: / });
       await waitPicture(page);
-      const bar = show.locator(".slideshow-bottom");
+      const bar = show.locator("[data-slideshow-bar=\"bottom\"]");
       await expect(bar).toHaveCSS("opacity", "1");
       await expect(show).toHaveClass(/idle/, { timeout: 8000 });
       await expect(bar).toHaveCSS("opacity", "0");
@@ -241,9 +241,9 @@ test.describe("slideshow behaviour", () => {
     const first = await srcOf(page);
     await expect.poll(() => page.evaluate(() => (window as unknown as { __wake: { requested: number } }).__wake.requested)).toBeGreaterThan(0);
     // After ~3 s the next photo fades in over the first: two layers for a moment, then one.
-    await expect.poll(() => page.locator(".slideshow .slide-layer").count(), { timeout: 8000 }).toBe(2);
+    await expect.poll(() => page.locator(".slideshow .slide-layer").count(), { timeout: 8000, intervals: [100] }).toBe(2);
     expect(await srcOf(page)).not.toBe(first);
-    await expect.poll(() => page.locator(".slideshow .slide-layer").count(), { timeout: 4000 }).toBe(1);
+    await expect.poll(() => page.locator(".slideshow .slide-layer").count(), { timeout: 4000, intervals: [100] }).toBe(1);
     // It never holds more than two layers, however long it runs.
     for (let i = 0; i < 5; i++) {
       await page.waitForTimeout(1500);
@@ -294,6 +294,7 @@ test.describe("slideshow behaviour", () => {
     // Started from a click: it went full screen at once.
     await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(true);
     await expect(button).toHaveAttribute("aria-pressed", "true");
+    await page.mouse.move(600, 300); // (the bars fade after a few quiet seconds, and a faded bar takes no click)
     await button.click();
     await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(false);
     await page.keyboard.press("Escape");
@@ -314,7 +315,8 @@ test.describe("slideshow behaviour", () => {
     await expect(page.getByRole("dialog", { name: /^Slideshow: / })).toBeHidden();
     await expect(page.getByRole("dialog", { name: "IMG_00002.jpg" })).toBeVisible();
     // The button does the same.
-    await page.getByRole("button", { name: "Play from here" }).click();
+    await page.getByRole("button", { name: "More" }).click();
+    await page.getByRole("menuitem", { name: "Play from here" }).click();
     await page.getByRole("dialog", { name: /^Slideshow: / }).waitFor();
     expect(violations, "CSP violations").toEqual([]);
   });

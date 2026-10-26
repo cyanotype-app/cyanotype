@@ -1,8 +1,9 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { api, ApiError, type RegistrationInfo } from "../api";
 import { useAuth } from "../auth";
 import { AuthForm } from "../components/AuthForm";
+import { Field, inputClass, Notice } from "../settings/kit";
 import { markRegistrationClosed, parseInviteToken, registrationKnownClosed } from "../registration";
 
 type InviteState = "unknown" | "checking" | "valid" | "used" | "revoked" | "expired" | "invalid";
@@ -17,7 +18,6 @@ const INVITE_PROBLEM: Record<string, string> = {
 export function Register() {
   const { state, refresh } = useAuth();
   const navigate = useNavigate();
-  const inviteId = useId();
   const [params] = useSearchParams();
   const linked = parseInviteToken(params.get("invite") ?? "");
   const [pasted, setPasted] = useState("");
@@ -50,7 +50,7 @@ export function Register() {
     };
   }, [linked]);
 
-  if (state.status === "authenticated") return <Navigate to="/library" replace />;
+  if (state.status === "authenticated") return <Navigate to="/" replace />;
 
   const needsInvite = info?.invite_required === true && !linked;
   const refused = closed || (info !== null && !info.open && !info.invite_required);
@@ -65,46 +65,45 @@ export function Register() {
       notice={
         <>
           {info?.first_account && info.open && (
-            <p className="notice" role="status">
-              This server has no accounts yet. The first one becomes the administrator.
-            </p>
+            <Notice role="status">This server has no accounts yet. The first one becomes the administrator.</Notice>
           )}
           {problem && (
-            <p className="notice" role="alert">
+            <Notice tone="warn" role="alert">
               {problem}
-            </p>
+            </Notice>
           )}
           {inviteState === "valid" && (
-            <p className="notice notice-ok" role="status">
+            <Notice tone="ok" role="status">
               You have been invited. Create your account below.
-            </p>
+            </Notice>
           )}
           {refused && !problem && (
-            <p className="notice" role="status">
+            <Notice role="status">
               {info?.mode === "first_user" || info === null
                 ? "Registration is closed on this server. Ask the owner to add you, or sign in if you already have an account."
                 : "Registration is closed on this server. Sign in if you already have an account."}
-            </p>
+            </Notice>
           )}
         </>
       }
       extra={
         needsInvite && (
-          <>
-            <label htmlFor={inviteId}>Invite link or code</label>
-            <input
-              id={inviteId}
-              name="invite"
-              autoComplete="off"
-              autoCapitalize="none"
-              spellCheck={false}
-              required
-              value={pasted}
-              placeholder="Paste the link you were sent"
-              onChange={(e) => setPasted(e.target.value)}
-            />
-            <p className="muted small">This server is invite-only. Ask its administrator for a link.</p>
-          </>
+          <Field label="Invite link or code" hint="This server is invite-only. Ask its administrator for a link.">
+            {(p) => (
+              <input
+                {...p}
+                className={inputClass}
+                name="invite"
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                required
+                value={pasted}
+                placeholder="Paste the link you were sent"
+                onChange={(e) => setPasted(e.target.value)}
+              />
+            )}
+          </Field>
         )
       }
       onSubmit={async (email, password) => {
@@ -123,7 +122,7 @@ export function Register() {
           throw e;
         }
         await refresh();
-        navigate("/library", { replace: true });
+        navigate("/", { replace: true });
       }}
       footer={
         <>

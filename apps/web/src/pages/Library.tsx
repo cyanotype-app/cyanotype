@@ -1,36 +1,69 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import {
+  type LucideIcon,
+  Archive,
+  ArchiveRestore,
+  BookImage,
+  Clock,
+  Download,
+  Eye,
+  EyeOff,
+  FolderUp,
+  Heart,
+  ImagePlus,
+  Layers,
+  Loader2,
+  Pencil,
+  Play,
+  Share2,
+  SlidersHorizontal,
+  Star,
+  Tag,
+  Trash2,
+  Upload,
+  ZoomIn,
+  ZoomOut,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { dayFromSearch } from "../detailsText";
 import { api, ApiError, isScope, type AssetListItem, type StackDetail, type Target } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
 import { ProcessingStatus } from "../components/ProcessingStatus";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { EmptyState } from "../components/EmptyState";
 import { Lightbox } from "../components/Lightbox";
-import { LibraryTabs } from "../components/LibraryTabs";
-import { MemoriesStrip } from "../components/MemoriesStrip";
-import { SortToggle } from "../components/SortToggle";
-import { StackToggle } from "../components/StackToggle";
 import type { StackView } from "../components/StackBar";
 import { usePrefs } from "../usePrefs";
-import { archiveMessage, emptyView, viewTitle, type ViewKind } from "../viewText";
-import { SelectionBar } from "../components/SelectionBar";
-import { RateTools } from "../components/RateTools";
-import { ZipButton } from "../components/ZipButton";
-import { TagTools } from "../components/TagTools";
+import { archiveMessage, emptyView, pageTitle, type ViewKind } from "../viewText";
+import { SelectionBar, type BarAction } from "../components/SelectionBar";
+import { RateDialog } from "../components/RateTools";
+import { useZip } from "../components/ZipButton";
+import { TagDialog } from "../components/TagDialog";
 import { EditDialog, type EditKind } from "../components/EditDialog";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
 import { MAX_BULK_IDS } from "../api";
+import { useHeaderHeight } from "../components/headerHeight";
 import { TimelineGrid } from "../components/TimelineGrid";
 import { useToast } from "../components/Toast";
 import { similarUrl } from "../searchText";
 import { useSelection } from "../selection";
-import { inOrder, runAround } from "../timeline";
-import { STACK_MESSAGES, alone, canStack, expandIds, expandTarget, hiddenInStacks, positionOf, selectionNote, step, substitute, tileIds } from "../stacks";
-import { PAGE, useTimeline } from "../useTimeline";
-import { ACCEPT, filesFromDrop, filterFiles } from "../upload/files";
 import { useUploads } from "../upload/UploadProvider";
-import { SlideshowButton } from "../slideshow/SlideshowHost";
+import { PageHeader } from "../shell/PageHeader";
+import { UploadMenu } from "../shell/AppShell";
+import { useUploadPicker } from "../shell/UploadPicker";
+import { inOrder, runAround, type GridStyle } from "../timeline";
+import { STACK_MESSAGES, alone, canStack, expandIds, expandTarget, hiddenInStacks, positionOf, selectionNote, step, substitute, tileIds } from "../stacks";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
+import { Menu, MenuItem, MenuLabel, MenuSeparator } from "../ui/Menu";
+import { MenuRadioGroup, MenuRadioItem } from "../ui/MenuRadio";
+import { Sheet } from "../ui/Sheet";
+import { useDesktop } from "../ui/useMedia";
+import { PAGE, useTimeline } from "../useTimeline";
+import { filesFromDrop } from "../upload/files";
+import { useSlideshow } from "../slideshow/SlideshowHost";
 import { scopeSource } from "../slideshow/sources";
 
 const REFRESH_EVERY_MS = 3000;
@@ -52,20 +85,22 @@ interface LibraryProps {
   recent?: boolean;
   /** The server said the Hidden view is locked (the ten minutes ran out): the page asks for the password again. */
   onLocked?: () => void;
+  /** A slim row under the header (the Hidden view's unlock time and "Lock now"). */
+  subbar?: ReactNode;
 }
 
 /**
  * The library as a date-grouped, virtualized timeline: all photos (in the order the user chose, remembered per user),
- * favorites, the archive, the hidden photos or the photos by upload time. The order is read first so the timeline is
- * laid out once.
+ * favorites, the archive, the hidden photos or the photos by upload time. The order and the grid style are read first so the
+ * timeline is laid out once.
  */
 export function Library(props: LibraryProps) {
   const plain = !props.favorites && !props.archive && !props.hidden && !props.recent;
-  const { prefs, update } = usePrefs(plain);
-  if (plain && prefs === null) return <p className="center muted" role="status">Loading your photos…</p>;
-  const sort = props.recent ? "added" : plain ? (prefs?.library_sort ?? "taken") : "taken";
+  const { prefs, update } = usePrefs();
+  if (prefs === null) return <p className="py-24 text-center text-muted" role="status">Loading your photos…</p>;
+  const sort = props.recent ? "added" : plain ? prefs.library_sort : "taken";
   // Bursts and stacks as one tile each, or every photo (the Recently added view follows the setting on the server).
-  const stacks = plain ? (prefs?.stacks_collapsed === false ? "expanded" : "collapsed") : undefined;
+  const stacks = plain ? (prefs.stacks_collapsed === false ? "expanded" : "collapsed") : undefined;
   return (
     <LibraryView
       key={`${sort}-${stacks}`}
@@ -84,6 +119,7 @@ function LibraryView({
   hidden = false,
   recent = false,
   onLocked,
+  subbar,
   sort,
   stacks,
   onSort,
@@ -103,7 +139,13 @@ function LibraryView({
   const { queue } = useUploads();
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
-  const [notice, setNotice] = useState<string | null>(null);
+  const picker = useUploadPicker();
+  const slideshow = useSlideshow();
+  const [rateOpen, setRateOpen] = useState(false);
+  const [tagOpen, setTagOpen] = useState(false);
+  // Rows that keep each photo's shape on a desktop, square crops on a phone.
+  const gridStyle: GridStyle = useDesktop() ? "justified" : "square";
+  const [density, setDensity] = useDensity(gridStyle);
   const [confirmTrash, setConfirmTrash] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   // Photos waiting in the "add to album" dialog (explicit ids, or the whole view), and a counter that makes the
@@ -242,19 +284,6 @@ function LibraryView({
     return () => clearInterval(t);
   }, [pendingKey, refreshItem]);
 
-  const addFiles = useCallback(
-    (files: File[]) => {
-      const { accepted, skipped } = filterFiles(files);
-      if (accepted.length) queue.add(accepted);
-      setNotice(
-        skipped
-          ? `${skipped} file${skipped === 1 ? " was" : "s were"} skipped (not a supported photo type).`
-          : null,
-      );
-    },
-    [queue],
-  );
-
   const isFileDrag = (e: React.DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
   const dropProps = {
     onDragEnter: (e: React.DragEvent) => {
@@ -276,7 +305,7 @@ function LibraryView({
       e.preventDefault();
       dragDepth.current = 0;
       setDragging(false);
-      void filesFromDrop(e.dataTransfer).then(addFiles);
+      void filesFromDrop(e.dataTransfer).then(picker.add);
     },
   };
 
@@ -609,10 +638,11 @@ function LibraryView({
 
   // Keyboard: Escape clears the selection (then leaves selection mode); Delete asks, then trashes the selection.
   useEffect(() => {
-    if (open !== null || confirmTrash || addIds !== null || shareTarget !== null) return; // the lightbox and the dialog own the keyboard
+    if (open !== null || confirmTrash || addIds !== null || shareTarget !== null || rateOpen || tagOpen || editMenu || editKind !== null) return; // the lightbox and the dialogs own the keyboard
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t?.closest("input, textarea, select, [contenteditable]")) return;
+      if (e.defaultPrevented || document.querySelector("[role='menu']")) return; // an open menu takes Escape first
       if (e.key === "Escape" && sel.selecting) {
         e.preventDefault();
         sel.escape();
@@ -623,7 +653,7 @@ function LibraryView({
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, confirmTrash, addIds, shareTarget, sel]);
+  }, [open, confirmTrash, addIds, shareTarget, rateOpen, tagOpen, editMenu, editKind, sel]);
 
   // Stacking by hand: the selected tiles (a stack's tile brings its photos along) become one stack with the first as its cover.
   const stackSelected = useCallback(async () => {
@@ -671,164 +701,251 @@ function LibraryView({
       }),
   }) : undefined;
 
-  if (tl.status === "loading") return <p className="center muted" role="status">Loading your photos…</p>;
+  const zip = useZip({
+    target: bulkTarget(),
+    onStarted: (message) => show({ message }),
+    onError: (e) => failure(e, "Couldn’t download."),
+  });
+  const pull = usePullToRefresh(open === null && !sel.selecting, tl.refresh);
+  const title = pageTitle(kind);
+
+  if (tl.status === "loading") {
+    return (
+      <div data-library="">
+        <PageHeader title={title} />
+        <p className="py-24 text-center text-muted" role="status">Loading your photos…</p>
+      </div>
+    );
+  }
 
   if (tl.status === "error") {
     return (
-      <div className="empty" role="alert">
-        <h1>Couldn’t load your library</h1>
-        <p className="muted">{tl.error}</p>
-        <button type="button" className="btn btn-primary" onClick={tl.retry}>
-          Try again
-        </button>
+      <div data-library="">
+        <PageHeader title={title} />
+        <div role="alert">
+          <EmptyState icon={ImagePlus} title="Couldn’t load your library" hint={tl.error ?? "Something went wrong."}>
+            <Button variant="primary" onClick={tl.retry}>
+              Try again
+            </Button>
+          </EmptyState>
+        </div>
       </div>
     );
   }
 
-  const tabs = (
+  const uploadButtons = (
     <>
-    <LibraryTabs />
-    <ProcessingStatus />
+      <Button variant="primary" onClick={() => picker.pick("files")}>
+        <Upload />
+        Upload photos
+      </Button>
+      <Button variant="secondary" onClick={() => picker.pick("folder")}>
+        <FolderUp />
+        Upload folder
+      </Button>
     </>
   );
+  const overlays = (
+    <>
+      {toast}
+      <AnimatePresence>{dragging && <DropOverlay />}</AnimatePresence>
+      <PullIndicator pull={pull.distance} refreshing={pull.refreshing} />
+    </>
+  );
+  const notice = picker.notice && (
+    <p className="flex items-center gap-2 px-4 py-2 text-sm text-muted md:px-8" role="status">
+      <span className="min-w-0 flex-1">{picker.notice}</span>
+      <button type="button" className="shrink-0 rounded-full px-2 py-1 text-fg hover:bg-surface" onClick={picker.dismissNotice}>
+        Dismiss
+      </button>
+    </p>
+  );
 
-  const title = viewTitle(kind);
   if (index.total === 0) {
     const e = emptyView(kind);
     return (
-      <div className="library" {...dropProps}>
-        {tabs}
-        {kind === "library" && <MemoriesStrip />}
+      <div data-library="" {...dropProps}>
+        <PageHeader title={title} actions={<UploadOnPhones />} />
+        {subbar}
+        <ProcessingStatus />
+        {notice}
         {e ? (
-          <div className="empty">
-            <h1>{e.title}</h1>
-            <p>{e.body}</p>
-          </div>
+          <EmptyState icon={EMPTY_ICON[kind]} title={e.title} hint={e.body}>
+            {kind === "recent" ? (
+              <Button variant="primary" onClick={() => picker.pick("files")}>
+                <Upload />
+                Upload photos
+              </Button>
+            ) : (
+              <Button variant="secondary" asChild>
+                <Link to="/photos">Browse photos</Link>
+              </Button>
+            )}
+          </EmptyState>
         ) : (
-          <div className="empty">
-            <h1>Your library is empty</h1>
-            <p>Drop photos or a folder anywhere on this page, or pick them from your computer.</p>
-            <UploadButtons onFiles={addFiles} />
-            {notice && <p className="muted small" role="status">{notice}</p>}
-            <p className="muted small">The command-line importer is the better fit for a large existing archive.</p>
-          </div>
+          <EmptyState
+            icon={ImagePlus}
+            title="Your library is empty"
+            hint="Drop photos or a folder anywhere on this page, or pick them from your device."
+            footnote="The command-line importer is the better fit for a large existing archive."
+          >
+            {uploadButtons}
+          </EmptyState>
         )}
-        {toast}
-        {dragging && <DropOverlay />}
+        {overlays}
       </div>
     );
   }
 
+  const none = sel.count === 0 || bulkBusy;
+  const actions: BarAction[] = [
+    {
+      id: "favorite",
+      label: allSelectedFavorite ? "Unfavorite" : "Favorite",
+      icon: <Heart className={allSelectedFavorite ? "fill-current" : undefined} />,
+      onSelect: favoriteSelected,
+      disabled: none,
+    },
+    {
+      id: "album",
+      label: "Album",
+      ariaLabel: "Add to album",
+      icon: <BookImage />,
+      onSelect: () => setAddIds({ target: bulkTarget(), count: sel.count + hiddenCount }),
+      disabled: none,
+    },
+    {
+      id: "share",
+      label: "Share",
+      icon: <Share2 />,
+      onSelect: () => setShareTarget(shareTargetOf(bulkTarget(), sel.count + hiddenCount)),
+      disabled: none,
+    },
+    {
+      id: "download",
+      label: zip.busy ? "Preparing…" : "Download",
+      title: "Download the originals as one ZIP",
+      icon: <Download />,
+      onSelect: () => void zip.start(),
+      disabled: sel.count === 0 || zip.busy,
+    },
+    { id: "tag", label: "Tag", icon: <Tag />, onSelect: () => setTagOpen(true), disabled: none },
+    { id: "rate", label: "Rate", icon: <Star />, onSelect: () => setRateOpen(true), disabled: none },
+  ];
+  if (kind === "library") {
+    actions.push({
+      id: "stack",
+      label: "Stack",
+      icon: <Layers />,
+      title: STACK_MESSAGES.needTwo,
+      onSelect: () => void stackSelected(),
+      disabled: bulkBusy || !canStack(items, sel.selected, sel.all),
+    });
+  }
+  if (!hidden) {
+    actions.push({
+      id: "archive",
+      label: archive ? "Restore" : "Archive",
+      icon: archive ? <ArchiveRestore /> : <Archive />,
+      onSelect: archiveSelected,
+      disabled: none,
+    });
+  }
+  actions.push(
+    { id: "hide", label: hidden ? "Unhide" : "Hide", icon: hidden ? <Eye /> : <EyeOff />, onSelect: hideSelected, disabled: none },
+    {
+      id: "edit",
+      label: "Edit",
+      icon: <Pencil />,
+      title: sel.count > MAX_BULK_IDS ? `Edit at most ${MAX_BULK_IDS} photos at a time` : undefined,
+      onSelect: () => setEditMenu(true),
+      disabled: none || sel.count > MAX_BULK_IDS,
+    },
+    { id: "trash", label: "Trash", ariaLabel: "Move to trash", icon: <Trash2 />, onSelect: onTrashClick, disabled: none, danger: true, pinned: true },
+  );
+
+  const canSlideshow = kind === "library" || kind === "favorites" || kind === "archive";
   return (
-    <div className="library" {...dropProps}>
-      <h1 className={title ? "view-title" : "sr-only"}>{title ?? (favorites ? "Favorites" : "Library")}</h1>
-      {tabs}
-      {kind === "library" && <MemoriesStrip />}
-      <div className="library-bar">
-        <UploadButtons onFiles={addFiles} />
-        <button
-          type="button"
-          className="btn btn-quiet"
-          aria-pressed={sel.selecting}
-          onClick={() => sel.setSelecting(!sel.selecting)}
-        >
-          Select
-        </button>
-        {(kind === "library" || kind === "favorites" || kind === "archive") && index.total > 0 && (
-          <SlideshowButton source={() => scopeSource(scope, title ?? (favorites ? "Favorites" : "Library"))} />
-        )}
-        {onSort && <SortToggle value={sort} onChange={onSort} />}
-        {onStacks && <StackToggle collapsed={stacks !== "expanded"} onChange={onStacks} />}
-        {notice && <span className="muted small" role="status">{notice}</span>}
-      </div>
-      {sel.selecting && (
-        <SelectionBar
-          count={sel.count}
-          total={index.total}
-          onSelectAll={sel.selectAll}
-          onClear={sel.clear}
-          onDone={() => sel.setSelecting(false)}
-          note={selectionNote(hiddenCount)}
-        >
-          <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || bulkBusy} onClick={favoriteSelected}>
-            {allSelectedFavorite ? "Unfavorite" : "Favorite"}
-          </button>
-          <ZipButton
-            target={bulkTarget()}
-            disabled={sel.count === 0}
-            onStarted={(message) => show({ message })}
-            onError={(e) => failure(e, "Couldn’t download.")}
-          />
-          <RateTools
-            target={bulkTarget()}
-            count={sel.count}
-            disabled={sel.count === 0 || bulkBusy}
-            onDone={(_r, _n, message) => {
-              sel.setSelecting(false);
-              void refresh();
-              show({ message });
-            }}
-            onError={(e) => failure(e, "Couldn’t rate.")}
-          />
-          <TagTools
-            target={bulkTarget()}
-            count={sel.count}
-            disabled={sel.count === 0 || bulkBusy}
-            onDone={(message) => {
-              sel.setSelecting(false);
-              void refresh();
-              show({ message });
-            }}
-          />
-          {kind === "library" && (
-            <button
-              type="button"
-              className="btn btn-quiet"
-              disabled={bulkBusy || !canStack(items, sel.selected, sel.all)}
-              title={STACK_MESSAGES.needTwo}
-              onClick={() => void stackSelected()}
+    <div data-library="" {...dropProps}>
+      <PageHeader
+        title={title}
+        actions={
+          <>
+            <Button variant="ghost" size="sm" aria-pressed={sel.selecting} onClick={() => sel.setSelecting(!sel.selecting)}>
+              Select
+            </Button>
+            <Menu
+              label="View options"
+              trigger={
+                <Button variant="ghost" size="icon" aria-label="View options">
+                  <SlidersHorizontal />
+                </Button>
+              }
             >
-              Stack
-            </button>
-          )}
-          {!hidden && (
-            <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || bulkBusy} onClick={archiveSelected}>
-              {archive ? "Restore" : "Archive"}
-            </button>
-          )}
-          <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || bulkBusy} onClick={hideSelected}>
-            {hidden ? "Unhide" : "Hide"}
-          </button>
-          <button
-            type="button"
-            className="btn btn-quiet"
-            disabled={sel.count === 0 || bulkBusy}
-            onClick={() => setAddIds({ target: bulkTarget(), count: sel.count + hiddenCount })}
-          >
-            Add to album
-          </button>
-          <button
-            type="button"
-            className="btn btn-quiet"
-            disabled={sel.count === 0 || bulkBusy}
-            onClick={() => setShareTarget(shareTargetOf(bulkTarget(), sel.count + hiddenCount))}
-          >
-            Share
-          </button>
-          <button
-            type="button"
-            className="btn btn-quiet"
-            disabled={sel.count === 0 || bulkBusy || sel.count > MAX_BULK_IDS}
-            title={sel.count > MAX_BULK_IDS ? `Edit at most ${MAX_BULK_IDS} photos at a time` : undefined}
-            onClick={() => setEditMenu(true)}
-          >
-            Edit
-          </button>
-          <button type="button" className="btn btn-primary" disabled={sel.count === 0 || bulkBusy} onClick={onTrashClick}>
-            Move to trash
-          </button>
-        </SelectionBar>
-      )}
+              <MenuLabel>Size</MenuLabel>
+              <MenuItem onSelect={() => setDensity(-1)}>
+                <ZoomIn />
+                Larger photos
+              </MenuItem>
+              <MenuItem onSelect={() => setDensity(1)}>
+                <ZoomOut />
+                Smaller photos
+              </MenuItem>
+              {onSort && (
+                <>
+                  <MenuSeparator />
+                  <MenuLabel>Sort by</MenuLabel>
+                  <MenuRadioGroup label="Sort photos by" value={sort} onValueChange={onSort}>
+                    <MenuRadioItem value="taken">Date taken</MenuRadioItem>
+                    <MenuRadioItem value="added">Date added</MenuRadioItem>
+                  </MenuRadioGroup>
+                </>
+              )}
+              {onStacks && (
+                <>
+                  <MenuSeparator />
+                  <MenuLabel>Stacks</MenuLabel>
+                  <MenuRadioGroup
+                    label="Stacks"
+                    value={stacks === "expanded" ? "expanded" : "collapsed"}
+                    onValueChange={(v) => onStacks(v === "collapsed")}
+                  >
+                    <MenuRadioItem value="collapsed">Stacked</MenuRadioItem>
+                    <MenuRadioItem value="expanded">Every photo</MenuRadioItem>
+                  </MenuRadioGroup>
+                </>
+              )}
+              {slideshow && canSlideshow && (
+                <>
+                  <MenuSeparator />
+                  <MenuItem onSelect={() => slideshow.start(scopeSource(scope, title))}>
+                    <Play />
+                    Slideshow
+                  </MenuItem>
+                </>
+              )}
+            </Menu>
+            <UploadOnPhones />
+          </>
+        }
+      />
+      {subbar}
+      <ProcessingStatus />
+      {notice}
+      <AnimatePresence>
+        {sel.selecting && (
+          <SelectionBar
+            key="selection"
+            count={sel.count}
+            total={index.total}
+            onSelectAll={sel.selectAll}
+            onClear={sel.clear}
+            onDone={() => sel.setSelecting(false)}
+            note={selectionNote(hiddenCount)}
+            actions={actions}
+          />
+        )}
+      </AnimatePresence>
       <TimelineGrid
         index={index}
         loaded={loaded}
@@ -838,19 +955,24 @@ function LibraryView({
         selecting={sel.selecting}
         selected={sel.selected}
         onSelect={sel.select}
-        onLongPress={sel.begin}
+        onLongPress={sel.dragStart}
+        onDragOver={sel.dragOver}
+        onDragEnd={sel.dragEnd}
         onFavorite={favoriteOne}
         jumpToDay={jumpToDay}
+        gridStyle={gridStyle}
+        density={density}
+        onDensity={setDensity}
       />
-      <p className="muted center small" role="status">
+      <p className="py-8 text-center text-sm text-muted" role="status">
         {photos(index.total)}
       </p>
       {tl.error && (
-        <p className="center" role="alert">
-          {tl.error}{" "}
-          <button type="button" className="btn btn-quiet" onClick={tl.retry}>
+        <p className="flex items-center justify-center gap-2 pb-6 text-center" role="alert">
+          {tl.error}
+          <Button variant="secondary" size="sm" onClick={tl.retry}>
             Retry
-          </button>
+          </Button>
         </p>
       )}
       {open !== null && run && (
@@ -904,33 +1026,34 @@ function LibraryView({
           }}
         />
       )}
-      {editMenu && (
-        <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && setEditMenu(false)}>
-          <div className="modal card" role="dialog" aria-modal="true" aria-label="Edit photos">
-            <h2>Edit {photos(sel.count)}</h2>
-            <div className="edit-menu">
-              {([["date", "Adjust date and time"], ["location", "Set location"], ["caption", "Add a caption"]] as const).map(([k, l]) => (
-                <button
-                  key={k}
-                  type="button"
-                  className="btn btn-quiet"
-                  onClick={() => {
-                    setEditMenu(false);
-                    setEditKind(k);
-                  }}
-                >
-                  {l}
-                </button>
-              ))}
-            </div>
-            <div className="modal-actions">
-              <button type="button" className="btn btn-quiet" onClick={() => setEditMenu(false)}>
-                Cancel
-              </button>
-            </div>
-          </div>
+      <Sheet
+        open={editMenu}
+        onOpenChange={setEditMenu}
+        size="sm"
+        title="Edit photos"
+        description={photos(sel.count)}
+        footer={
+          <Button variant="secondary" onClick={() => setEditMenu(false)}>
+            Cancel
+          </Button>
+        }
+      >
+        <div className="flex flex-col gap-1">
+          {([["date", "Adjust date and time"], ["location", "Set location"], ["caption", "Add a caption"]] as const).map(([k, l]) => (
+            <button
+              key={k}
+              type="button"
+              className="flex min-h-12 items-center rounded-xl px-3 text-left text-[0.9375rem] hover:bg-surface"
+              onClick={() => {
+                setEditMenu(false);
+                setEditKind(k);
+              }}
+            >
+              {l}
+            </button>
+          ))}
         </div>
-      )}
+      </Sheet>
       {editKind !== null && (
         <EditDialog
           kind={editKind}
@@ -945,9 +1068,33 @@ function LibraryView({
           }}
         />
       )}
+      <RateDialog
+        open={rateOpen}
+        onOpenChange={setRateOpen}
+        target={bulkTarget()}
+        count={sel.count}
+        onDone={(_r, _n, message) => {
+          sel.setSelecting(false);
+          void refresh();
+          show({ message });
+        }}
+        onError={(e) => failure(e, "Couldn’t rate.")}
+      />
+      {tagOpen && (
+        <TagDialog
+          target={bulkTarget()}
+          count={sel.count}
+          onClose={() => setTagOpen(false)}
+          onDone={(r) => {
+            setTagOpen(false);
+            sel.setSelecting(false);
+            void refresh();
+            show({ message: r.message });
+          }}
+        />
+      )}
       {shareTarget !== null && <ShareDialog target={shareTarget} onClose={() => setShareTarget(null)} />}
-      {toast}
-      {dragging && <DropOverlay />}
+      {overlays}
     </div>
   );
 }
@@ -982,40 +1129,166 @@ function stackViewOf(stack: { detail: StackDetail; pick: string }, busy: boolean
   };
 }
 
-function DropOverlay() {
+const EMPTY_ICON: Record<ViewKind, LucideIcon> = {
+  library: ImagePlus,
+  favorites: Heart,
+  recent: Clock,
+  archive: Archive,
+  hidden: EyeOff,
+};
+
+/** The header's Upload menu, on phones only (the sidebar has it on a desktop). */
+function UploadOnPhones() {
   return (
-    <div className="drop-overlay" aria-hidden="true">
-      <p>Drop photos or folders to upload</p>
+    <div className="md:hidden">
+      <UploadMenu compact />
     </div>
   );
 }
 
-/** "Upload photos" and "Upload folder" buttons over hidden file inputs. */
-function UploadButtons({ onFiles }: { onFiles: (files: File[]) => void }) {
-  const files = useRef<HTMLInputElement>(null);
-  const folder = useRef<HTMLInputElement>(null);
-  const onChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    onFiles(Array.from(e.target.files ?? []));
-    e.target.value = ""; // allow choosing the same files again
-  };
+/** Shown while files are dragged over the page. */
+function DropOverlay() {
+  const reduce = useReducedMotion();
   return (
-    <div className="upload-buttons">
-      <button type="button" className="btn btn-primary" onClick={() => files.current?.click()}>
-        Upload photos
-      </button>
-      <button type="button" className="btn btn-quiet" onClick={() => folder.current?.click()}>
-        Upload folder
-      </button>
-      <input ref={files} type="file" multiple accept={ACCEPT} hidden onChange={onChange} aria-label="Choose photos" />
-      <input
-        ref={folder}
-        type="file"
-        multiple
-        hidden
-        onChange={onChange}
-        aria-label="Choose a folder"
-        {...{ webkitdirectory: "" }}
-      />
+    <motion.div
+      className="pointer-events-none fixed inset-0 z-50 grid grid-cols-1 place-items-center bg-scrim backdrop-blur-sm"
+      aria-hidden="true"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: reduce ? 0 : 0.15 }}
+      data-drop-overlay=""
+    >
+      <div className="flex flex-col items-center gap-3 rounded-sheet border-2 border-dashed border-white/70 px-10 py-9 text-white">
+        <Upload className="size-8" />
+        <p className="text-lg font-medium">Drop photos or folders to upload</p>
+      </div>
+    </motion.div>
+  );
+}
+
+const DENSITY_KEY = "cyanotype.grid-density";
+const DENSITY_MIN = -5;
+const DENSITY_MAX = 6;
+
+/** How many columns more (or smaller rows) than usual, per grid style, kept in this browser (a pinch or the menu changes it). */
+function useDensity(style: GridStyle): [number, (delta: number) => void] {
+  const [all, setAll] = useState<Record<GridStyle, number>>(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem(DENSITY_KEY) ?? "{}") as Partial<Record<GridStyle, number>>;
+      return { square: Number(v.square) || 0, justified: Number(v.justified) || 0 };
+    } catch {
+      return { square: 0, justified: 0 };
+    }
+  });
+  const change = useCallback(
+    (delta: number) =>
+      setAll((a) => {
+        const next = { ...a, [style]: Math.min(DENSITY_MAX, Math.max(DENSITY_MIN, a[style] + delta)) };
+        try {
+          localStorage.setItem(DENSITY_KEY, JSON.stringify(next));
+        } catch {
+          /* private mode: the change lasts until the page is closed */
+        }
+        return next;
+      }),
+    [style],
+  );
+  return [all[style], change];
+}
+
+/** Finger travel before a pull starts, the distance (px of pull) that refreshes, and the furthest the spinner is drawn down. */
+const PULL_START = 10;
+const PULL_AT = 64;
+const PULL_MAX = 96;
+
+/**
+ * Pull down at the top of the page (touch) to read the timeline again. The page's own overscroll is cancelled while pulling, so
+ * the browser's reload gesture (Android) and the rubber band (iOS) do not also fire; with two fingers (a pinch), a drag that
+ * starts on the date rail, or anything not at the very top, nothing happens.
+ */
+function usePullToRefresh(enabled: boolean, onRefresh: () => Promise<void>): { distance: number; refreshing: boolean } {
+  const [distance, setDistance] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const live = useRef({ enabled, onRefresh, refreshing });
+  useEffect(() => {
+    live.current = { enabled, onRefresh, refreshing };
+  });
+  useEffect(() => {
+    let from = 0;
+    let active = false;
+    let pulled = 0;
+    const start = (e: TouchEvent) => {
+      active = false;
+      pulled = 0;
+      const t = e.target as HTMLElement | null;
+      if (!live.current.enabled || live.current.refreshing || e.touches.length !== 1 || window.scrollY > 0) return;
+      if (t?.closest("[data-handle], dialog, [role='menu'], input, textarea")) return;
+      from = e.touches[0]!.clientY;
+      active = true;
+    };
+    const move = (e: TouchEvent) => {
+      if (!active) return;
+      const dy = e.touches[0] ? e.touches[0].clientY - from : 0;
+      if (e.touches.length !== 1 || window.scrollY > 0 || dy < 0) {
+        active = false;
+        pulled = 0;
+        setDistance(0);
+        return;
+      }
+      if (dy < PULL_START) return;
+      if (e.cancelable) e.preventDefault();
+      pulled = Math.min(PULL_MAX, (dy - PULL_START) * 0.55);
+      setDistance(pulled);
+    };
+    const end = () => {
+      const go = active && pulled >= PULL_AT * 0.8;
+      active = false;
+      if (!go) {
+        setDistance(0);
+        return;
+      }
+      setRefreshing(true);
+      setDistance(PULL_AT * 0.7);
+      void Promise.all([live.current.onRefresh(), new Promise((r) => setTimeout(r, 600))]).finally(() => {
+        setRefreshing(false);
+        setDistance(0);
+      });
+    };
+    document.addEventListener("touchstart", start, { passive: true });
+    document.addEventListener("touchmove", move, { passive: false });
+    document.addEventListener("touchend", end);
+    document.addEventListener("touchcancel", end);
+    return () => {
+      document.removeEventListener("touchstart", start);
+      document.removeEventListener("touchmove", move);
+      document.removeEventListener("touchend", end);
+      document.removeEventListener("touchcancel", end);
+    };
+  }, []);
+  return { distance, refreshing };
+}
+
+/** The small spinner that follows the pull, under the page's header. */
+function PullIndicator({ pull, refreshing }: { pull: number; refreshing: boolean }) {
+  const hdr = useHeaderHeight();
+  if (pull <= 0 && !refreshing) return null;
+  return (
+    <div className="pointer-events-none fixed inset-x-0 z-[7] flex justify-center md:hidden" style={{ top: hdr }} aria-hidden={!refreshing}>
+      <div
+        className="grid size-9 grid-cols-1 place-items-center rounded-full bg-card text-accent shadow-float"
+        style={{ transform: `translateY(${pull - 24}px) scale(${Math.min(1, 0.4 + pull / PULL_AT)})`, opacity: Math.min(1, pull / 30) }}
+      >
+        <Loader2
+          className={cn("size-5", refreshing && "animate-spin")}
+          style={refreshing ? undefined : { transform: `rotate(${pull * 4}deg)` }}
+        />
+        {refreshing && (
+          <span className="sr-only" role="status">
+            Refreshing
+          </span>
+        )}
+      </div>
     </div>
   );
 }

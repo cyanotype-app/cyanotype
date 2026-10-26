@@ -6,6 +6,8 @@ import {
   chipsOf,
   clearRecent,
   dateRangeLabel,
+  dateShortcuts,
+  quickFilters,
   hasFilters,
   indexingNote,
   indexingPercent,
@@ -263,5 +265,41 @@ describe("recent searches", () => {
     expect(suggestionsFor("do", recent)).toEqual(["dog on the beach", "dogs"]);
     expect(suggestionsFor("DOGS", recent)).toEqual([]);
     expect(suggestionsFor("zebra", recent)).toEqual([]);
+  });
+});
+
+describe("date shortcuts", () => {
+  it("counts back from today, inclusive, and wraps the year", () => {
+    expect(dateShortcuts("2026-03-10")).toEqual([
+      { label: "Last 7 days", from: "2026-03-04", to: "2026-03-10" },
+      { label: "This month", from: "2026-03-01", to: "2026-03-10" },
+      { label: "Last month", from: "2026-02-01", to: "2026-02-28" },
+      { label: "This year", from: "2026-01-01", to: "2026-03-10" },
+      { label: "Last year", from: "2025-01-01", to: "2025-12-31" },
+    ]);
+    const jan = dateShortcuts("2026-01-03");
+    expect(jan[0]).toEqual({ label: "Last 7 days", from: "2025-12-28", to: "2026-01-03" });
+    expect(jan[2]).toEqual({ label: "Last month", from: "2025-12-01", to: "2025-12-31" });
+  });
+});
+
+describe("quick filters", () => {
+  const base = { favorites: 0, with_location: 0, types: [] as { value: string; count: number }[] };
+  it("offers only what would find something, and only filters the search takes", () => {
+    expect(quickFilters(base)).toEqual([]);
+    const all = quickFilters({
+      favorites: 3,
+      with_location: 10,
+      with_text: 2,
+      ratings: [{ value: "5", count: 4 }],
+      types: [
+        { value: "raw", count: 6 },
+        { value: "heic", count: 0 },
+        { value: "jpeg", count: 50 },
+      ],
+    });
+    expect(all.map((f) => f.key)).toEqual(["favorite", "rating", "text", "location", "raw"]);
+    expect(all.find((f) => f.key === "raw")?.patch).toEqual({ type: "raw" });
+    expect(all.find((f) => f.key === "rating")?.label).toBe("5 stars");
   });
 });

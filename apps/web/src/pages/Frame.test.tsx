@@ -22,7 +22,7 @@ function renderFrame(path: string) {
         <Routes>
           <Route path="/frame" element={<Frame />} />
           <Route path="/login" element={<Where />} />
-          <Route path="/library" element={<Where />} />
+          <Route path="/photos" element={<Where />} />
         </Routes>
       </AuthProvider>
     </MemoryRouter>,
@@ -142,7 +142,7 @@ describe("setup", () => {
     expect(vi.mocked(api.slideshowPage).mock.calls[0]![0]).toEqual({ album: ALBUM });
     expect(vi.mocked(api.slideshowPage).mock.calls[0]![1]).toMatchObject({ order: "shuffle" });
     expect(shown().at(-1)).toBe("/img/p1.jpg");
-    expect(document.querySelector(".frame-clock")).toBeInTheDocument();
+    expect(document.querySelector("[data-frame-clock]")).toBeInTheDocument();
     expect(localStorage.getItem(FRAME_KEY)).toContain(`album=${ALBUM}`);
   });
 
@@ -245,13 +245,13 @@ describe("the frame", () => {
     serve();
     const { unmount } = renderFrame("/frame?source=library&interval=5");
     await flush();
-    expect(document.querySelector(".frame-clock")).not.toBeInTheDocument();
-    expect(document.querySelector(".frame-caption")).not.toBeInTheDocument();
+    expect(document.querySelector("[data-frame-clock]")).not.toBeInTheDocument();
+    expect(document.querySelector("[data-frame-caption]")).not.toBeInTheDocument();
     unmount();
     serve();
     renderFrame("/frame?source=library&interval=5&clock=1&caption=1");
     await flush();
-    expect(document.querySelector(".frame-clock time")).toBeInTheDocument();
+    expect(document.querySelector("[data-frame-clock] time")).toBeInTheDocument();
     expect(screen.getByText("A day at the lake")).toBeInTheDocument();
   });
 
@@ -269,18 +269,18 @@ describe("the tap menu", () => {
     renderFrame("/frame?source=library&interval=3600");
     await flush();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    fireEvent.click(document.querySelector(".frame")!);
+    fireEvent.click(document.querySelector("[data-frame]")!);
     expect(screen.getByRole("dialog", { name: "Photo frame menu" })).toBeInTheDocument();
     await flush(10_001);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
-    fireEvent.click(document.querySelector(".frame")!);
+    fireEvent.click(document.querySelector("[data-frame]")!);
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
-    fireEvent.click(document.querySelector(".frame")!);
+    fireEvent.click(document.querySelector("[data-frame]")!);
     fireEvent.click(screen.getByRole("button", { name: "Exit the frame" }));
-    expect(screen.getByTestId("where")).toHaveTextContent("/library");
+    expect(screen.getByTestId("where")).toHaveTextContent("/photos");
   });
 
   it("Change what is shown opens the setup", async () => {
@@ -288,7 +288,7 @@ describe("the tap menu", () => {
     vi.spyOn(api, "listAlbums").mockResolvedValue({ items: [] });
     renderFrame("/frame?source=library&interval=3600");
     await flush();
-    fireEvent.click(document.querySelector(".frame")!);
+    fireEvent.click(document.querySelector("[data-frame]")!);
     fireEvent.click(screen.getByRole("button", { name: "Change what is shown" }));
     await flush();
     expect(screen.getByRole("button", { name: "Start the frame" })).toBeInTheDocument();

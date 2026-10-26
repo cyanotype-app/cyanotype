@@ -1,13 +1,13 @@
 import { useEffect } from "react";
-import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./auth";
-import { Logo } from "./components/Logo";
 import { AlbumPage } from "./pages/Album";
 import { Albums } from "./pages/Albums";
+import { Collections } from "./pages/Collections";
 import { Activate } from "./pages/Activate";
 import { ApiKeys } from "./pages/ApiKeys";
 import { CliAuthorize } from "./pages/CliAuthorize";
-import { AdminLayout } from "./pages/admin/AdminLayout";
+import { AdminHome, AdminLayout } from "./pages/admin/AdminLayout";
 import { Accounts } from "./pages/admin/Accounts";
 import { TwoFactorAdmin } from "./pages/admin/TwoFactorAdmin";
 import { Security } from "./pages/Security";
@@ -28,10 +28,13 @@ import { PersonPage } from "./pages/PersonPage";
 import { Register } from "./pages/Register";
 import { ResetPassword } from "./pages/ResetPassword";
 import { ShareView } from "./pages/ShareView";
+import { SearchShortcut } from "./components/SearchBar";
 import { SearchPage } from "./pages/Search";
 import { Sessions } from "./pages/Sessions";
-import { SettingsLayout } from "./pages/SettingsLayout";
+import { SettingsHome, SettingsLayout } from "./pages/SettingsLayout";
+import { DisplaySettings } from "./pages/DisplaySettings";
 import { TagPage } from "./pages/TagPage";
+import { TripPage } from "./pages/TripPage";
 import { TagsPage } from "./pages/Tags";
 import { SharedLinks } from "./pages/SharedLinks";
 import { Storage } from "./pages/Storage";
@@ -40,6 +43,8 @@ import { SlideshowProvider } from "./slideshow/SlideshowHost";
 import { PeopleProvider } from "./usePeople";
 import { UploadProvider } from "./upload/UploadProvider";
 import { UploadTray } from "./upload/UploadTray";
+import { AppShell } from "./shell/AppShell";
+import { UploadPickerProvider } from "./shell/UploadPicker";
 
 // Client routes must not start with /auth or /assets: the gateway sends those to the API. /cli/authorize is the one client
 // route under /cli (the rest of /cli is the CLI download); the gateway and the web container name it explicitly.
@@ -58,13 +63,17 @@ export function App() {
       {/* The photo frame: a wall tablet's view. Signed in, but outside the shell (no bar, nothing to click). */}
       <Route path="/frame" element={<Frame />} />
       <Route element={<RequireAuth />}>
-        <Route path="/library" element={<Library key="all" />} />
+        <Route path="/" element={<Collections />} />
+        <Route path="/photos" element={<Library key="all" />} />
+        {/* The grid's old address, from bookmarks and older links. */}
+        <Route path="/library" element={<Navigate to="/photos" replace />} />
         <Route path="/favorites" element={<Library key="favorites" favorites />} />
         <Route path="/recent" element={<Library key="recent" recent />} />
         <Route path="/archive" element={<Library key="archive" archive />} />
         <Route path="/hidden" element={<HiddenPage />} />
         <Route path="/memories" element={<MemoriesPage />} />
         <Route path="/map" element={<MapPage />} />
+        <Route path="/trips/:id" element={<TripPage />} />
         <Route path="/search" element={<SearchPage />} />
         <Route path="/duplicates" element={<Duplicates />} />
         <Route path="/tags" element={<TagsPage />} />
@@ -76,7 +85,8 @@ export function App() {
         <Route path="/shared" element={<SharedLinks />} />
         <Route path="/trash" element={<Trash />} />
         <Route path="/settings" element={<SettingsLayout />}>
-          <Route index element={<Navigate to="storage" replace />} />
+          <Route index element={<SettingsHome />} />
+          <Route path="display" element={<DisplaySettings />} />
           <Route path="storage" element={<Storage />} />
           <Route path="sessions" element={<Sessions />} />
           <Route path="security" element={<Security />} />
@@ -85,7 +95,7 @@ export function App() {
           <Route path="*" element={<NotFound />} />
         </Route>
         <Route path="/admin" element={<AdminLayout />}>
-          <Route index element={<Navigate to="accounts" replace />} />
+          <Route index element={<AdminHome />} />
           <Route path="accounts" element={<Accounts />} />
           <Route path="invites" element={<Invites />} />
           <Route path="security" element={<TwoFactorAdmin />} />
@@ -94,15 +104,15 @@ export function App() {
           <Route path="*" element={<NotFound />} />
         </Route>
       </Route>
-      <Route path="*" element={<Navigate to="/library" replace />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }
 
 function RequireAuth() {
-  const { state, signOut } = useAuth();
+  const { state } = useAuth();
   const loc = useLocation();
-  if (state.status === "loading") return <p className="center muted" role="status">Loading…</p>;
+  if (state.status === "loading") return <p className="px-4 py-8 text-center text-muted" role="status">Loading…</p>;
   if (state.status === "anonymous") return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;
   // The administrator requires 2FA and this account has none: the server refuses everything else, so go and enrol.
   if (state.user.mfa_enrol_required && loc.pathname !== "/settings/security") {
@@ -112,38 +122,15 @@ function RequireAuth() {
     <UploadProvider>
     <PeopleProvider>
     <SlideshowProvider>
-    <div className="shell">
-      <header className="topbar">
-        <Link to="/library" className="brand">
-          <Logo size={26} />
-          <span>Cyanotype</span>
-        </Link>
-        <div className="topbar-right">
-          <Link to="/albums" className="btn btn-quiet">
-            Albums
-          </Link>
-          <Link to="/trash" className="btn btn-quiet">
-            Trash
-          </Link>
-          <Link to="/settings" className="btn btn-quiet">
-            Settings
-          </Link>
-          {state.user.role === "admin" && (
-            <Link to="/admin" className="btn btn-quiet">
-              Admin
-            </Link>
-          )}
-          <span className="muted email">{state.user.email}</span>
-          <button type="button" className="btn btn-quiet" onClick={() => void signOut()}>
-            Sign out
-          </button>
-        </div>
-      </header>
-      <main>
-        <Outlet />
-      </main>
+    <UploadPickerProvider>
+      <AppShell>
+        <main className="p-0">
+          <Outlet />
+        </main>
+      </AppShell>
+      <SearchShortcut />
       <UploadTray />
-    </div>
+    </UploadPickerProvider>
     </SlideshowProvider>
     </PeopleProvider>
     </UploadProvider>
@@ -156,5 +143,5 @@ function Logout() {
   useEffect(() => {
     void signOut().finally(() => navigate("/login", { replace: true }));
   }, [signOut, navigate]);
-  return <p className="center muted" role="status">Signing out…</p>;
+  return <p className="px-4 py-8 text-center text-muted" role="status">Signing out…</p>;
 }

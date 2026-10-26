@@ -26,6 +26,8 @@ interface Props {
   onOpenPhoto: (id: string) => void;
   /** The map cannot start (typically no WebGL). */
   onUnavailable: (reason: string) => void;
+  /** Pixels of the map that bars and panels cover; the view is fitted to what is left. */
+  inset?: { top: number; right: number; bottom: number; left: number };
 }
 
 const MAX_ZOOM = 19;
@@ -42,12 +44,18 @@ function markerElement(c: MapCluster, onClick: () => void): HTMLElement {
   el.type = "button";
   if (c.count > 1) {
     const size = bubbleSize(c.count);
-    el.className = "map-bubble";
+    el.dataset.marker = "cluster";
+    el.className =
+      "flex cursor-pointer items-center justify-center rounded-full border-2 border-white bg-accent p-0 text-[0.8125rem] leading-none font-bold " +
+      "text-on-accent shadow-[0_1px_4px_rgb(0_19_31/0.45)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-focus";
     el.style.width = el.style.height = `${size}px`;
     el.textContent = shortCount(c.count);
     el.setAttribute("aria-label", `${c.count} photos, zoom in`);
   } else {
-    el.className = "map-thumb";
+    el.dataset.marker = "photo";
+    el.className =
+      "flex size-[3.25rem] cursor-pointer items-center justify-center overflow-hidden rounded-lg border-2 border-white bg-accent/40 bg-cover bg-center p-0 " +
+      "shadow-[0_1px_4px_rgb(0_19_31/0.45)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-focus";
     el.setAttribute("aria-label", "Open photo");
     const bg = placeholderUrl(c.thumbhash);
     if (bg) el.style.backgroundImage = `url(${bg})`;
@@ -56,6 +64,7 @@ function markerElement(c: MapCluster, onClick: () => void): HTMLElement {
       img.src = c.thumb_url;
       img.alt = "";
       img.draggable = false;
+      img.className = "pointer-events-none block size-full object-cover";
       img.loading = "lazy";
       el.appendChild(img);
     }
@@ -67,7 +76,9 @@ function markerElement(c: MapCluster, onClick: () => void): HTMLElement {
   return el;
 }
 
-export default function MapCanvas({ clusters, basemap, dark, fitTo, onViewport, onOpenPhoto, onUnavailable }: Props) {
+const NO_INSET = { top: 0, right: 0, bottom: 0, left: 0 };
+
+export default function MapCanvas({ clusters, basemap, dark, fitTo, onViewport, onOpenPhoto, onUnavailable, inset = NO_INSET }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const lib = useRef<typeof import("maplibre-gl") | null>(null);
@@ -82,6 +93,7 @@ export default function MapCanvas({ clusters, basemap, dark, fitTo, onViewport, 
   const styleRef = useRef(style);
   const clustersRef = useRef(clusters);
   const fitRef = useRef(fitTo);
+  const insetRef = useRef(inset);
 
   // Create the map once.
   useEffect(() => {
@@ -128,8 +140,15 @@ export default function MapCanvas({ clusters, basemap, dark, fitTo, onViewport, 
 
   function fit(map: MapLibreMap, b: Bounds) {
     const degenerate = Math.abs(b.east - b.west) < 1e-4 && Math.abs(b.north - b.south) < 1e-4;
-    if (degenerate) map.jumpTo({ center: [b.west, b.south], zoom: 12 });
-    else map.fitBounds([[b.west, b.south], [b.east, b.north]], { padding: 48, maxZoom: 14, duration: 0 });
+    if (degenerate) map.jumpTo({ center: [b.west, b.south], zoom: 12, padding: insetRef.current });
+    else {
+      const pad = insetRef.current;
+      map.fitBounds([[b.west, b.south], [b.east, b.north]], {
+        padding: { top: 48 + pad.top, right: 48 + pad.right, bottom: 48 + pad.bottom, left: 48 + pad.left },
+        maxZoom: 14,
+        duration: 0,
+      });
+    }
   }
 
   // Markers: add what is new, drop what is gone, leave the rest untouched (no flicker while panning).
@@ -163,6 +182,10 @@ export default function MapCanvas({ clusters, basemap, dark, fitTo, onViewport, 
   }, [clusters]);
 
   useEffect(() => {
+    insetRef.current = inset;
+  });
+
+  useEffect(() => {
     fitRef.current = fitTo;
     const map = mapRef.current;
     if (map && fitTo) fit(map, fitTo);
@@ -177,5 +200,5 @@ export default function MapCanvas({ clusters, basemap, dark, fitTo, onViewport, 
     mapRef.current?.setStyle(style);
   }, [style, styleKey]);
 
-  return <div className="map-canvas" ref={host} role="application" aria-label="Photo map" />;
+  return <div className="map-canvas size-full" ref={host} role="application" aria-label="Photo map" />;
 }

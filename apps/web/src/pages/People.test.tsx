@@ -4,8 +4,10 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { AuthProvider } from "../auth";
-import { LibraryTabs } from "../components/LibraryTabs";
 import { person } from "../test/fixtures";
+import { AppShell } from "../shell/AppShell";
+import { UploadPickerProvider } from "../shell/UploadPicker";
+import { UploadProvider } from "../upload/UploadProvider";
 import { PeopleProvider } from "../usePeople";
 import { PeoplePage } from "./People";
 
@@ -175,7 +177,7 @@ describe("the People page", () => {
       await pick(/^Person B/);
       await pick(/^Unnamed person/);
       await userEvent.click(within(screen.getByRole("toolbar", { name: "Selection" })).getByRole("button", { name: "Delete" }));
-      const dialog = screen.getByRole("alertdialog", { name: "Delete 2 people?" });
+      const dialog = screen.getByRole("dialog", { name: "Delete 2 people?" });
       expect(within(dialog).getByText(/The photos stay in your library/)).toBeInTheDocument();
       expect(bulk).not.toHaveBeenCalled();
       await userEvent.click(within(dialog).getByRole("button", { name: "Delete people" }));
@@ -197,7 +199,7 @@ describe("the People page", () => {
 });
 
 describe("the way to People", () => {
-  const renderTabs = (status: "on" | "off" | "error") => {
+  const renderShell = (status: "on" | "off" | "error") => {
     const s = vi.spyOn(api, "peopleStatus");
     if (status === "error") s.mockRejectedValue(new Error("no"));
     else s.mockResolvedValue({ enabled: status === "on" });
@@ -205,22 +207,27 @@ describe("the way to People", () => {
       <MemoryRouter>
         <AuthProvider>
           <PeopleProvider>
-            <LibraryTabs />
+            <UploadProvider deps={{ api, hash: async () => "0".repeat(64) }}>
+              <UploadPickerProvider>
+                <AppShell>
+                  <p>page</p>
+                </AppShell>
+              </UploadPickerProvider>
+            </UploadProvider>
           </PeopleProvider>
         </AuthProvider>
       </MemoryRouter>,
     );
   };
-  it("is in the More menu next to Tags only when the feature is on", async () => {
-    renderTabs("on");
-    await userEvent.click(screen.getByLabelText("More views"));
-    await waitFor(() => expect(screen.getByRole("link", { name: "People" })).toHaveAttribute("href", "/people"));
-    expect(screen.getByRole("link", { name: "Tags" })).toBeInTheDocument();
+  const library = () => within(screen.getByRole("navigation", { name: "Library" }));
+  it("is in the sidebar next to Tags only when the feature is on", async () => {
+    renderShell("on");
+    await waitFor(() => expect(library().getByRole("link", { name: "People" })).toHaveAttribute("href", "/people"));
+    expect(library().getByRole("link", { name: "Tags" })).toBeInTheDocument();
   });
   it.each(["off", "error"] as const)("is nowhere when the feature is %s", async (status) => {
-    renderTabs(status);
-    await userEvent.click(screen.getByLabelText("More views"));
-    expect(screen.getByRole("link", { name: "Tags" })).toBeInTheDocument();
+    renderShell(status);
+    expect(library().getByRole("link", { name: "Tags" })).toBeInTheDocument();
     await waitFor(() => expect(api.peopleStatus).toHaveBeenCalled());
     expect(screen.queryByRole("link", { name: "People" })).not.toBeInTheDocument();
   });

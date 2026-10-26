@@ -1,3 +1,4 @@
+import { cn } from "../ui/cn";
 import { afterTap, clampStars, MAX_STARS, starsLabel } from "../ratingText";
 
 /** One star, filled or outlined. */
@@ -30,9 +31,9 @@ export function RatingStars({ value, onChange, label = "Rating", disabled = fals
   const v = clampStars(value);
   if (!onChange) {
     return (
-      <span className="stars stars-readonly" role="img" aria-label={starsLabel(v)}>
+      <span className="inline-flex items-center gap-0.5 text-muted" role="img" aria-label={starsLabel(v)}>
         {Array.from({ length: MAX_STARS }, (_, i) => (
-          <span key={i} className={`star${i < v ? " on" : ""}`}>
+          <span key={i} className={cn("size-[1.2rem]", i < v && "text-(--star)")}>
             <StarIcon filled={i < v} />
           </span>
         ))}
@@ -40,14 +41,14 @@ export function RatingStars({ value, onChange, label = "Rating", disabled = fals
     );
   }
   return (
-    <span className="stars" role="group" aria-label={`${label}: ${starsLabel(v)}`}>
+    <span className="inline-flex items-center gap-0.5 text-muted" role="group" aria-label={`${label}: ${starsLabel(v)}`}>
       {Array.from({ length: MAX_STARS }, (_, i) => {
         const n = i + 1;
         return (
           <button
             key={n}
             type="button"
-            className={`star${n <= v ? " on" : ""}`}
+            className={cn("inline-flex size-11 items-center justify-center rounded-lg p-2.5 transition-colors hover:bg-(--star)/15 disabled:opacity-50 md:size-9 md:p-2", n <= v && "text-(--star)")}
             aria-pressed={n === v}
             aria-label={n === v ? `${starsLabel(n)}, selected. Press to clear` : starsLabel(n)}
             disabled={disabled}

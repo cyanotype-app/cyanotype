@@ -1,4 +1,5 @@
 /// <reference types="vitest/config" />
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
@@ -13,7 +14,7 @@ const previewHeaders = async (): Promise<Record<string, string> | undefined> =>
   process.env.E2E_CSP ? { "Content-Security-Policy": (await import("./e2e/csp")).spaPolicy() } : undefined;
 
 export default defineConfig(async () => ({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   build: { assetsDir: "static", sourcemap: false },
   preview: { headers: await previewHeaders() },
   server: {

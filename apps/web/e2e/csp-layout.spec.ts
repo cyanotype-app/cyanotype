@@ -65,6 +65,25 @@ const handlers: Handler[] = [
     if (p === "/assets/places") return ok([]);
     if (p === "/assets/check") return ok({ status: "exists", asset_id: "a1" });
     if (p === "/assets/shares") return ok({ items: [] });
+    if (p === "/assets/trash" && method === "GET")
+      return ok({
+        items: [1, 2, 3].map((n) => ({
+          id: `t${n}`,
+          original_name: `trashed-${n}.jpg`,
+          content_type: "image/jpeg",
+          size_bytes: 1000,
+          width: 400,
+          height: 300,
+          sort_time: new Date(Date.UTC(2026, 0, 30 - n)).toISOString(),
+          thumbhash: null,
+          thumb_url: `${TEST_S3_ORIGIN}/fixture-thumbs/${n}.svg`,
+          deleted_at: new Date(Date.now() - 86_400_000).toISOString(),
+          purge_at: new Date(Date.now() + 29 * 86_400_000).toISOString(),
+        })),
+        next_cursor: null,
+        total: 3,
+        retention_days: 30,
+      });
     if (p.startsWith("/assets/public/s/")) {
       const rest = p.slice("/assets/public/s/".length).split("/").slice(1).join("/");
       if (rest === "")
@@ -130,7 +149,7 @@ test("every page works under the gateway's Content-Security-Policy", async ({ pa
   // Map: MapLibre, its worker, PMTiles range reads and glyphs
   await page.goto("/map");
   await page.getByText("Photos in view").first().waitFor();
-  await page.locator(".map-thumb, .map-bubble, .map-notice[role=alert]").first().waitFor({ timeout: 20_000 });
+  await page.locator("[data-marker], [data-map-notice][role=alert]").first().waitFor({ timeout: 20_000 });
   await page.waitForTimeout(1500);
   expect(await page.locator(".map-canvas canvas, canvas.maplibregl-canvas").count()).toBeGreaterThan(0);
 
@@ -140,10 +159,19 @@ test("every page works under the gateway's Content-Security-Policy", async ({ pa
   await page.waitForLoadState("networkidle");
 
   // Settings pages
-  for (const path of ["/settings", "/settings/storage", "/settings/sessions", "/settings/security", "/settings/api-keys", "/settings/google-photos"]) {
+  for (const path of ["/settings", "/settings/display", "/settings/storage", "/settings/sessions", "/settings/security", "/settings/api-keys", "/settings/google-photos"]) {
     await page.goto(path);
     await page.waitForLoadState("networkidle");
   }
+
+  // A confirmation sheet (a <dialog> moved by the animation library: no style element, only the CSSOM)
+  await page.goto("/trash");
+  await page.getByRole("button", { name: "More" }).click();
+  await page.getByRole("menuitem", { name: "Empty trash" }).click();
+  await page.getByRole("alertdialog", { name: "Empty the trash?" }).waitFor();
+  await page.waitForTimeout(400);
+  await page.keyboard.press("Escape");
+  await page.getByRole("alertdialog").waitFor({ state: "detached" });
 
   // Upload: the file is hashed in a Web Worker with WebAssembly (hash-wasm), then the API is asked about it
   await page.goto("/library");

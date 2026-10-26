@@ -2,7 +2,7 @@
 // the buttons and `[` `]`, set the cover, take a photo out, unstack), "Stack" in the selection bar and the Stacked / Every
 // photo switch. Nothing may stick out sideways, and every button must be reachable. Set SHOT_DIR to save the screenshots.
 import { expect, test } from "@playwright/test";
-import { json, makeCheck, RUNS, setupApp, shotPrefix, viewportOf } from "./kit";
+import { json, keepViewerBarsShown, makeCheck, RUNS, setupApp, shotPrefix, viewportOf } from "./kit";
 import { pageOf, timelineOf, type FakeAsset } from "./fakeLibrary";
 
 for (const { width, scheme } of RUNS) {
@@ -13,6 +13,7 @@ for (const { width, scheme } of RUNS) {
       test.setTimeout(120_000);
       const problems: string[] = [];
       const check = makeCheck(page, shotPrefix("stacks", width, scheme), problems);
+      await keepViewerBarsShown(page);
       const calls: string[] = [];
       const lists: string[] = [];
       const assets = await setupApp(page, { count: 12 });
@@ -85,13 +86,15 @@ for (const { width, scheme } of RUNS) {
         },
       );
 
-      await page.goto("/library");
+      await page.goto("/photos");
       const tile = page.getByRole("button", { name: "Open IMG_00002.jpg, stack of 3 photos" });
       await expect(tile).toBeVisible();
-      await expect(tile.locator(".tile-stack")).toHaveText("3");
+      await expect(tile.getByText("3", { exact: true })).toBeVisible(); // the badge
       // The other two photos of the stack are not tiles.
       await expect(page.getByRole("button", { name: /Open IMG_00003.jpg/ })).toHaveCount(0);
-      await expect(page.getByRole("button", { name: "Stacked" })).toHaveAttribute("aria-pressed", "true");
+      await page.getByRole("button", { name: "View options" }).click();
+      await expect(page.getByRole("menuitemradio", { name: "Stacked" })).toHaveAttribute("aria-checked", "true");
+      await page.keyboard.press("Escape");
       await check("timeline");
 
       // The viewer: the strip, stepping with the buttons and with the keys, then the cover.
@@ -102,7 +105,8 @@ for (const { width, scheme } of RUNS) {
       await check("viewer");
       await dialog.getByRole("button", { name: "Previous photo in the stack" }).click();
       await expect(dialog.getByText("Photo 2 of 3 in this stack")).toBeVisible();
-      await expect(dialog.getByText("IMG_00003.jpg", { exact: true })).toBeVisible();
+      // The strip marks the photo on show.
+      await expect(dialog.getByRole("button", { name: "IMG_00003.jpg", exact: true })).toHaveAttribute("aria-current", "true");
       await page.keyboard.press("[");
       await expect(dialog.getByText("Photo 1 of 3 in this stack")).toBeVisible();
       await page.keyboard.press("]");
@@ -141,13 +145,23 @@ for (const { width, scheme } of RUNS) {
       // Stack by hand from the selection bar.
       await page.getByRole("button", { name: "Select", exact: true }).click();
       const bar = page.getByRole("toolbar", { name: "Selection" });
-      const stackButton = bar.getByRole("button", { name: "Stack", exact: true });
-      await expect(stackButton).toBeDisabled();
+      // "Stack" is on the bar on a wide screen, in its "More" menu on a phone.
+      const openMore = async () => {
+        if (!(await page.getByRole("menu", { name: "More actions" }).isVisible())) await bar.getByRole("button", { name: "More actions" }).click();
+        return page.getByRole("menuitem", { name: "Stack", exact: true });
+      };
+      const stackItem = async () => ((await bar.getByRole("button", { name: "Stack", exact: true }).count()) ? bar.getByRole("button", { name: "Stack", exact: true }) : openMore());
+      const disabled = async () => {
+        const el = await stackItem();
+        return (await el.getAttribute("aria-disabled")) === "true" || (await el.isDisabled());
+      };
+      expect(await disabled()).toBe(true);
+      await page.keyboard.press("Escape");
       await page.getByRole("button", { name: "Select IMG_00000.jpg" }).click();
       await page.getByRole("button", { name: "Select IMG_00001.jpg" }).click();
-      await expect(stackButton).toBeEnabled();
+      expect(await disabled()).toBe(false);
       await check("selection");
-      await stackButton.click();
+      await (await stackItem()).click();
       await expect(page.getByText("2 photos stacked")).toBeVisible();
       expect(calls).toContain("stack a0,a1");
       // Undo hands back what the server said the photos were.
@@ -155,7 +169,8 @@ for (const { width, scheme } of RUNS) {
       await expect.poll(() => calls.includes("restore a0,a1")).toBe(true);
 
       // "Every photo" lists them all; the switch is remembered by the server.
-      await page.getByRole("button", { name: "Every photo" }).click();
+      await page.getByRole("button", { name: "View options" }).click();
+      await page.getByRole("menuitemradio", { name: "Every photo" }).click();
       await expect.poll(() => lists.some((q) => q.includes("stacks=expanded"))).toBe(true);
       await expect(page.getByRole("button", { name: /Open IMG_00004.jpg/ })).toBeVisible();
       await check("every-photo");

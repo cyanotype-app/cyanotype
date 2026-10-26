@@ -1,14 +1,17 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, ApiError, isScope, type Album as AlbumData, type AssetListItem } from "../api";
+import { CheckSquare, ImagePlus, Images, MoreHorizontal, Pencil, Play, Share2, SlidersHorizontal, Sparkles, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useState, type FormEvent } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { api, ApiError, isScope, type Album as AlbumData, type AssetListItem, type SmartRules } from "../api";
 import { useAuth } from "../auth";
-import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ConfirmSheet } from "../components/ConfirmSheet";
 import { Grid } from "../components/Grid";
 import { Lightbox } from "../components/Lightbox";
+import { Enter, Empty, InlineError, Loading, PageProblem, useTitleCut } from "../components/pageKit";
 import { SelectionBar } from "../components/SelectionBar";
 import { RateTools } from "../components/RateTools";
 import { ZipButton } from "../components/ZipButton";
 import { TagTools } from "../components/TagTools";
+import { Field, FormError, Modal, TextInput } from "../components/sheetForm";
 import { SmartAlbumEditor } from "../components/SmartAlbumEditor";
 import { describeRules, smartCount } from "../smartText";
 import { ShareDialog, type ShareTarget } from "../components/ShareDialog";
@@ -16,9 +19,13 @@ import { useToast } from "../components/Toast";
 import { similarUrl } from "../searchText";
 import { dateRange, hiddenNote, photoCount } from "../albumText";
 import { useSelection } from "../selection";
+import { PageHeader } from "../shell/PageHeader";
 import { useAssetPages } from "../useAssetPages";
-import { SlideshowButton } from "../slideshow/SlideshowHost";
+import { useSlideshow } from "../slideshow/SlideshowHost";
 import { scopeSource } from "../slideshow/sources";
+import { placeholderUrl } from "../thumbhash";
+import { Button, buttonVariants } from "../ui/Button";
+import { Menu, MenuItem, MenuSeparator } from "../ui/Menu";
 
 const PAGE = 60;
 
@@ -27,10 +34,11 @@ export function AlbumPage() {
   return <AlbumView key={id} id={id} />;
 }
 
-/** One album: editable title and description, its photos, selection actions and "Add photos". */
+/** One album: a cover hero, its photos, selection actions, "Add photos", sharing, and rename / cover / rules / delete in the menu. */
 function AlbumView({ id }: { id: string }) {
   const { setAnonymous } = useAuth();
   const navigate = useNavigate();
+  const slideshow = useSlideshow();
   const [album, setAlbum] = useState<AlbumData | null>(null);
   const [problem, setProblem] = useState<{ status: number; message: string } | null>(null);
   const [editing, setEditing] = useState(false);
@@ -51,6 +59,7 @@ function AlbumView({ id }: { id: string }) {
     useAssetPages(fetchPage);
   const itemIds = useMemo(() => items.map((i) => i.id), [items]);
   const sel = useSelection(itemIds, album?.photo_count);
+  const titleCut = useTitleCut(album?.title ?? "");
 
   const failure = useCallback(
     (e: unknown, what: string) => {
@@ -112,7 +121,7 @@ function AlbumView({ id }: { id: string }) {
     }
   }
 
-  async function saveRules(title: string, rules: import("../api").SmartRules) {
+  async function saveRules(title: string, rules: SmartRules) {
     setBusy(true);
     setRuleError(null);
     try {
@@ -212,7 +221,7 @@ function AlbumView({ id }: { id: string }) {
 
   // Keyboard: Escape clears the selection, then leaves selection mode.
   useEffect(() => {
-    if (open !== null || confirmDelete || adding || editing || sharing) return;
+    if (open !== null || confirmDelete || adding || editing || editingRules || sharing) return;
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t?.closest("input, textarea, select, [contenteditable]")) return;
@@ -223,7 +232,7 @@ function AlbumView({ id }: { id: string }) {
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, confirmDelete, adding, editing, sharing, sel]);
+  }, [open, confirmDelete, adding, editing, editingRules, sharing, sel]);
 
   const select = useCallback(
     (i: number) => {
@@ -236,194 +245,217 @@ function AlbumView({ id }: { id: string }) {
 
   if (problem) {
     return (
-      <div className="empty" role="alert">
-        <h1>{problem.status === 404 ? "Album not found" : "Couldn’t load the album"}</h1>
-        <p className="muted">{problem.status === 404 ? "It may have been deleted." : problem.message}</p>
-        <Link to="/albums" className="btn btn-primary">
-          All albums
-        </Link>
-      </div>
+      <PageProblem
+        title={problem.status === 404 ? "Album not found" : "Couldn’t load the album"}
+        message={problem.status === 404 ? "It may have been deleted." : problem.message}
+        back={{ to: "/albums", label: "Albums" }}
+      />
     );
   }
   if (!album || !started) {
     return (
       <>
-        <p className="center muted" role="status">Loading the album…</p>
+        <PageHeader title={album?.title ?? "Album"} back={{ to: "/albums", label: "Albums" }} />
+        <Loading>Loading the album…</Loading>
         {toast}
       </>
     );
   }
 
+  const facts = [
+    album.smart ? smartCount(album.photo_count, album.photo_count_capped) : photoCount(album.photo_count),
+    hiddenNote(album.hidden_count),
+    dateRange(album.first_at, album.last_at),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const pill = buttonVariants({ variant: "secondary", size: "sm" });
+
   return (
-    <div className="library album-page">
-      <p className="small">
-        <Link to="/albums">‹ Albums</Link>
-      </p>
-      {editing ? (
-        <AlbumForm album={album} busy={busy} onSave={(p) => void save(p)} onCancel={() => setEditing(false)} />
-      ) : (
-        <div className="page-head album-head">
-          <div>
-            <h1>
-              {album.title}
-              {album.smart && <span className="badge smart-badge">Smart</span>}
-            </h1>
-            {album.description && <p className="album-description">{album.description}</p>}
-            {album.smart && album.rules && (
-              <p className="small smart-summary">
-                <strong>Rules:</strong> {describeRules(album.rules)}
-              </p>
+    <>
+      <PageHeader
+        title={album.title}
+        back={{ to: "/albums", label: "Albums" }}
+        actions={
+          <>
+            <Button size="icon" variant="ghost" aria-label="Share" onClick={() => setSharing({ kind: "album", albumId: id, albumTitle: album.title })}>
+              <Share2 />
+            </Button>
+            {!album.smart && (
+              <Button size="icon" variant="ghost" aria-label="Add photos" onClick={() => setAdding(true)}>
+                <ImagePlus />
+              </Button>
             )}
-            <p className="muted small">
-              {[
-                album.smart ? smartCount(album.photo_count, album.photo_count_capped) : photoCount(album.photo_count),
-                hiddenNote(album.hidden_count),
-                dateRange(album.first_at, album.last_at),
-              ]
-                .filter(Boolean)
-                .join(" · ")}
+            <Menu
+              label="Album"
+              trigger={
+                <Button size="icon" variant="ghost" aria-label="More">
+                  <MoreHorizontal />
+                </Button>
+              }
+            >
+              {album.smart ? (
+                <MenuItem onSelect={() => setEditingRules(true)}>
+                  <SlidersHorizontal />
+                  Edit rules
+                </MenuItem>
+              ) : (
+                <>
+                  <MenuItem onSelect={() => setEditing(true)}>
+                    <Pencil />
+                    Edit details
+                  </MenuItem>
+                  {items.length > 0 && (
+                    <MenuItem
+                      onSelect={() => {
+                        sel.setSelecting(true);
+                        show({ message: "Pick a photo, then choose Set as cover." });
+                      }}
+                    >
+                      <Images />
+                      Choose cover
+                    </MenuItem>
+                  )}
+                </>
+              )}
+              <MenuSeparator />
+              <MenuItem danger onSelect={() => setConfirmDelete(true)}>
+                <Trash2 />
+                Delete album
+              </MenuItem>
+            </Menu>
+          </>
+        }
+      />
+      <Enter className="mx-auto max-w-[96rem] px-4 md:px-8">
+        {album.cover?.thumb_url && <Hero thumbhash={album.cover.thumbhash} url={album.cover.thumb_url} />}
+        <div className="flex flex-col gap-1.5 pt-3.5 pb-1">
+          {titleCut && <p className="text-[1.25rem] leading-snug font-semibold tracking-tight text-pretty [overflow-wrap:anywhere]">{album.title}</p>}
+          <p className="flex items-center gap-2 text-[0.9375rem] text-muted">
+            {album.smart && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-surface px-2 py-0.5 text-xs font-medium text-fg">
+                <Sparkles className="size-3" aria-hidden="true" />
+                Smart
+              </span>
+            )}
+            {facts}
+          </p>
+          {album.description && <p className="max-w-prose text-[0.9375rem] text-pretty [overflow-wrap:anywhere]">{album.description}</p>}
+          {album.smart && album.rules && (
+            <p className="max-w-prose text-sm text-muted [overflow-wrap:anywhere]">
+              <strong className="font-semibold text-fg">Rules:</strong> {describeRules(album.rules)}
             </p>
-            {album.smart && <p className="muted small">Smart albums update by themselves: they show whatever matches the rules when you open them.</p>}
-          </div>
-          <div className="album-head-actions">
-            {album.smart ? (
-              <button type="button" className="btn btn-primary" onClick={() => setEditingRules(true)}>
-                Edit rules
-              </button>
-            ) : (
-              <>
-                <button type="button" className="btn btn-quiet" onClick={() => setEditing(true)}>
-                  Edit
-                </button>
-                <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
-                  Add photos
-                </button>
-              </>
-            )}
-            {album.photo_count > 0 && <SlideshowButton source={() => scopeSource({ album: id }, album.title)} />}
-            <button
-              type="button"
-              className="btn btn-quiet"
-              onClick={() => setSharing({ kind: "album", albumId: id, albumTitle: album.title })}
-            >
-              Share
-            </button>
-            {items.length > 0 && (
-              <ZipButton
-                target={{ scope: { album: id }, except: [] }}
-                name={album.title}
-                onStarted={(message) => show({ message })}
-                onError={(e) => failure(e, "Couldn’t download.")}
-              />
-            )}
-            {items.length > 0 && (
-              <button
-                type="button"
-                className="btn btn-quiet"
-                aria-pressed={sel.selecting}
-                onClick={() => sel.setSelecting(!sel.selecting)}
-              >
-                Select
-              </button>
-            )}
-            <button type="button" className="btn btn-quiet btn-danger-quiet" onClick={() => setConfirmDelete(true)}>
-              Delete album
-            </button>
-          </div>
+          )}
+          {album.smart && <p className="max-w-prose text-sm text-muted">Smart albums update by themselves: they show whatever matches the rules when you open them.</p>}
         </div>
-      )}
+        {items.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 py-3">
+            {slideshow && album.photo_count > 0 && (
+              <Button variant="secondary" size="sm" onClick={() => slideshow.start(scopeSource({ album: id }, album.title))}>
+                <Play />
+                Slideshow
+              </Button>
+            )}
+            <ZipButton
+              className={pill}
+              target={{ scope: { album: id }, except: [] }}
+              name={album.title}
+              onStarted={(message) => show({ message })}
+              onError={(e) => failure(e, "Couldn’t download.")}
+            />
+            <Button variant="secondary" size="sm" aria-pressed={sel.selecting} onClick={() => sel.setSelecting(!sel.selecting)}>
+              <CheckSquare />
+              Select
+            </Button>
+          </div>
+        )}
+      </Enter>
       {sel.selecting && (
-        <SelectionBar
-          count={sel.count}
-          total={album.photo_count}
-          onSelectAll={sel.selectAll}
-          onClear={sel.clear}
-          onDone={() => sel.setSelecting(false)}
-        >
-          {!album.smart && (
-            <button
-              type="button"
-              className="btn btn-quiet"
-              disabled={sel.count !== 1 || sel.all || busy}
-              onClick={() => void setCover()}
-            >
-              Set as cover
-            </button>
-          )}
-          <ZipButton
-            target={sel.target({ album: id })} name={album.title}
-            disabled={sel.count === 0}
-            onStarted={(message) => show({ message })}
-            onError={(e) => failure(e, "Couldn’t download.")}
-          />
-          <RateTools
-            target={sel.target({ album: id })}
+        <div className="mx-auto max-w-[96rem] px-4 md:px-8">
+          <SelectionBar
             count={sel.count}
-            disabled={sel.count === 0 || busy}
-            onDone={(rating, _n, message) => {
-              const picked = sel.all ? null : new Set(sel.ids);
-              sel.setSelecting(false);
-              if (picked) for (const pid of picked) refreshItem(pid, { rating });
-              else reset();
-              show({ message });
-            }}
-            onError={(e) => failure(e, "Couldn’t rate.")}
-          />
-          <TagTools
-            target={sel.target({ album: id })}
-            count={sel.count}
-            disabled={sel.count === 0 || busy}
-            onDone={(message) => {
-              sel.setSelecting(false);
-              show({ message });
-            }}
-          />
-          <button
-            type="button"
-            className="btn btn-quiet"
-            disabled={sel.ids.length === 0 || busy}
-            onClick={() => setSharing({ kind: "photos", ids: sel.ids })}
+            total={album.photo_count}
+            onSelectAll={sel.selectAll}
+            onClear={sel.clear}
+            onDone={() => sel.setSelecting(false)}
           >
-            Share
-          </button>
-          {!album.smart && (
-            <button
-              type="button"
-              className="btn btn-primary"
+            {!album.smart && (
+              <Button variant="quiet" size="sm" disabled={sel.count !== 1 || sel.all || busy} onClick={() => void setCover()}>
+                Set as cover
+              </Button>
+            )}
+            <ZipButton
+              className={buttonVariants({ variant: "quiet", size: "sm" })}
+              target={sel.target({ album: id })}
+              name={album.title}
+              disabled={sel.count === 0}
+              onStarted={(message) => show({ message })}
+              onError={(e) => failure(e, "Couldn’t download.")}
+            />
+            <RateTools
+              target={sel.target({ album: id })}
+              count={sel.count}
               disabled={sel.count === 0 || busy}
-              onClick={() => void removeSelected()}
-            >
-              Remove from album
-            </button>
-          )}
-        </SelectionBar>
+              onDone={(rating, _n, message) => {
+                const picked = sel.all ? null : new Set(sel.ids);
+                sel.setSelecting(false);
+                if (picked) for (const pid of picked) refreshItem(pid, { rating });
+                else reset();
+                show({ message });
+              }}
+              onError={(e) => failure(e, "Couldn’t rate.")}
+            />
+            <TagTools
+              target={sel.target({ album: id })}
+              count={sel.count}
+              disabled={sel.count === 0 || busy}
+              onDone={(message) => {
+                sel.setSelecting(false);
+                show({ message });
+              }}
+            />
+            <Button variant="quiet" size="sm" disabled={sel.ids.length === 0 || busy} onClick={() => setSharing({ kind: "photos", ids: sel.ids })}>
+              Share
+            </Button>
+            {!album.smart && (
+              <Button variant="primary" size="sm" disabled={sel.count === 0 || busy} onClick={() => void removeSelected()}>
+                Remove from album
+              </Button>
+            )}
+          </SelectionBar>
+        </div>
       )}
       {items.length === 0 ? (
-        <div className="empty">
-          <h2>{album.smart ? "No photo matches these rules" : "This album is empty"}</h2>
-          <p>{album.smart ? "It fills by itself when photos match." : "Add photos from your library."}</p>
-        </div>
+        <Empty
+          icon={Images}
+          title={album.smart ? "No photo matches these rules" : "This album is empty"}
+          action={
+            !album.smart && (
+              <Button variant="primary" onClick={() => setAdding(true)}>
+                <ImagePlus />
+                Add photos
+              </Button>
+            )
+          }
+        >
+          {album.smart ? "It fills by itself when photos match." : "Add photos from your library."}
+        </Empty>
       ) : (
-        <Grid
-          items={items}
-          onOpen={select}
-          onThumbError={(i) => void api.getAsset(i).then((d) => refreshItem(i, { thumb_url: d.thumb_url, thumbhash: d.thumbhash }), () => undefined)}
-          selecting={sel.selecting}
-          selected={sel.selected}
-          onSelect={sel.select}
-          onLongPress={sel.begin}
-          onFavorite={(target, favorite) => void setFavorite(target, favorite)}
-        />
+        <div className="md:px-8">
+          <Grid
+            items={items}
+            onOpen={select}
+            onThumbError={(i) => void api.getAsset(i).then((d) => refreshItem(i, { thumb_url: d.thumb_url, thumbhash: d.thumbhash }), () => undefined)}
+            selecting={sel.selecting}
+            selected={sel.selected}
+            onSelect={sel.select}
+            onLongPress={sel.begin}
+            onFavorite={(target, favorite) => void setFavorite(target, favorite)}
+          />
+        </div>
       )}
-      <div ref={sentinel} className="sentinel" aria-hidden="true" />
-      {pagesError && (
-        <p className="center" role="alert">
-          {pagesError}{" "}
-          <button type="button" className="btn btn-quiet" onClick={() => void loadMore()}>
-            Retry
-          </button>
-        </p>
-      )}
+      <div ref={sentinel} className="h-px" aria-hidden="true" />
+      {pagesError && <InlineError onRetry={() => void loadMore()}>{pagesError}</InlineError>}
       {open !== null && items.length > 0 && (
         <Lightbox
           items={items}
@@ -440,7 +472,7 @@ function AlbumView({ id }: { id: string }) {
         />
       )}
       {confirmDelete && (
-        <ConfirmDialog
+        <ConfirmSheet
           title="Delete this album?"
           confirmLabel="Delete album"
           danger
@@ -449,9 +481,10 @@ function AlbumView({ id }: { id: string }) {
           onConfirm={() => void deleteAlbum()}
         >
           <p>The photos stay in your library. Only the album is deleted.</p>
-        </ConfirmDialog>
+        </ConfirmSheet>
       )}
       {sharing && <ShareDialog target={sharing} onClose={() => setSharing(null)} />}
+      {editing && <AlbumForm album={album} busy={busy} onSave={(p) => void save(p)} onCancel={() => setEditing(false)} />}
       {editingRules && album.rules && (
         <SmartAlbumEditor
           title="Edit rules"
@@ -469,6 +502,19 @@ function AlbumView({ id }: { id: string }) {
       )}
       {adding && <PhotoPicker albumId={id} onCancel={() => setAdding(false)} onAdded={(n) => void onPhotosAdded(n)} />}
       {toast}
+    </>
+  );
+}
+
+/** The cover, wide: its soft thumbnail over the ThumbHash it came from (an album with no cover has no hero). */
+function Hero({ thumbhash, url }: { thumbhash: string | null; url: string }) {
+  const bg = placeholderUrl(thumbhash);
+  return (
+    <div
+      className="relative mt-1 h-44 overflow-hidden rounded-sheet bg-surface bg-cover md:h-60"
+      style={bg ? { backgroundImage: `url(${bg})` } : undefined}
+    >
+      <img src={url} alt="" decoding="async" draggable={false} className="size-full scale-[1.03] object-cover blur-[1.5px]" />
     </div>
   );
 }
@@ -484,6 +530,7 @@ function AlbumForm({
   onSave: (p: { title: string; description: string | null }) => void;
   onCancel: () => void;
 }) {
+  const id = useId();
   const [title, setTitle] = useState(album.title);
   const [description, setDescription] = useState(album.description ?? "");
   const submit = (e: FormEvent) => {
@@ -491,45 +538,42 @@ function AlbumForm({
     if (title.trim()) onSave({ title: title.trim(), description: description.trim() || null });
   };
   return (
-    <form className="album-form" onSubmit={submit}>
-      <label htmlFor="album-title-input" className="sr-only">
-        Title
-      </label>
-      <input
-        id="album-title-input"
-        className="text-input album-title-input"
-        value={title}
-        maxLength={200}
-        autoFocus
-        onChange={(e) => setTitle(e.target.value)}
-        onKeyDown={(e) => e.key === "Escape" && onCancel()}
-      />
-      <label htmlFor="album-desc-input" className="sr-only">
-        Description
-      </label>
-      <textarea
-        id="album-desc-input"
-        className="text-input"
-        rows={3}
-        placeholder="Description (optional)"
-        value={description}
-        maxLength={5000}
-        onChange={(e) => setDescription(e.target.value)}
-        onKeyDown={(e) => e.key === "Escape" && onCancel()}
-      />
-      <div className="album-form-actions">
-        <button type="button" className="btn btn-quiet" onClick={onCancel} disabled={busy}>
-          Cancel
-        </button>
-        <button type="submit" className="btn btn-primary" disabled={busy || !title.trim()}>
-          Save
-        </button>
-      </div>
-    </form>
+    <Modal
+      onClose={onCancel}
+      title="Edit details"
+      size="md"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" type="submit" form={id} disabled={busy || !title.trim()}>
+            Save
+          </Button>
+        </>
+      }
+    >
+      <form id={id} className="flex flex-col gap-4" onSubmit={submit}>
+        <Field label="Title" htmlFor={`${id}-title`}>
+          <TextInput id={`${id}-title`} data-autofocus="" value={title} maxLength={200} onChange={(e) => setTitle(e.target.value)} />
+        </Field>
+        <Field label="Description" htmlFor={`${id}-desc`}>
+          <textarea
+            id={`${id}-desc`}
+            className="block min-h-24 w-full resize-y rounded-card bg-surface px-3.5 py-3 text-base text-fg ring-1 ring-line outline-none placeholder:text-muted focus-visible:ring-2 focus-visible:ring-focus md:text-[0.9375rem]"
+            rows={3}
+            placeholder="Optional"
+            value={description}
+            maxLength={5000}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+        </Field>
+      </form>
+    </Modal>
   );
 }
 
-/** Full-screen picker over the whole library: select photos (same grid and selection bar) and add them. */
+/** A sheet over the whole library: select photos (same grid) and add them. */
 function PhotoPicker({
   albumId,
   onCancel,
@@ -567,22 +611,6 @@ function PhotoPicker({
       live = false;
     };
   }, []);
-  useEffect(() => {
-    const overflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onCancel();
-      }
-    }
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.body.style.overflow = overflow;
-      document.removeEventListener("keydown", onKey, true);
-    };
-  }, [onCancel]);
 
   async function add() {
     setBusy(true);
@@ -596,32 +624,31 @@ function PhotoPicker({
     }
   }
 
+  const total = libraryTotal ?? pickItems.length;
   return (
-    <div className="picker" role="dialog" aria-modal="true" aria-label="Add photos">
-      <div className="picker-head">
-        <h2>Add photos</h2>
-        <button type="button" className="btn btn-quiet" onClick={onCancel} disabled={busy}>
-          Cancel
-        </button>
-      </div>
-      <SelectionBar
-        count={sel.count}
-        total={libraryTotal ?? pickItems.length}
-        onSelectAll={sel.selectAll}
-        onClear={sel.clear}
-      >
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={sel.count === 0 || busy}
-          onClick={() => void add()}
-        >
-          {sel.count === 0 ? "Add" : `Add ${sel.count.toLocaleString()}`}
-        </button>
-      </SelectionBar>
-      {error && <p role="alert" className="form-error center">{error}</p>}
-      <div className="picker-body">
-        {pickStarted && pickItems.length === 0 && <p className="center muted">Your library is empty.</p>}
+    <Modal
+      onClose={onCancel}
+      title="Add photos"
+      description={<span aria-live="polite">{sel.count === 0 ? "Pick the photos to add." : `${sel.count.toLocaleString("en-US")} selected`}</span>}
+      size="lg"
+      className="h-[92dvh] md:h-[86dvh] md:max-w-5xl"
+      footer={
+        <div className="flex w-full items-center gap-2">
+          <Button variant="quiet" size="sm" onClick={sel.selectAll} disabled={total === 0 || sel.count === total}>
+            Select all
+          </Button>
+          <Button variant="quiet" size="sm" onClick={sel.clear} disabled={sel.count === 0}>
+            Clear
+          </Button>
+          <Button variant="primary" className="ml-auto" disabled={sel.count === 0 || busy} onClick={() => void add()}>
+            {sel.count === 0 ? "Add" : `Add ${sel.count.toLocaleString()}`}
+          </Button>
+        </div>
+      }
+    >
+      {error && <FormError className="pb-2">{error}</FormError>}
+      {pickStarted && pickItems.length === 0 && <p className="py-10 text-center text-sm text-muted">Your library is empty.</p>}
+      <div className="-mx-5 -mb-5">
         <Grid
           items={pickItems}
           onOpen={() => undefined}
@@ -630,16 +657,9 @@ function PhotoPicker({
           selected={sel.selected}
           onSelect={sel.select}
         />
-        <div ref={pickSentinel} className="sentinel" aria-hidden="true" />
-        {pickError && (
-          <p className="center" role="alert">
-            {pickError}{" "}
-            <button type="button" className="btn btn-quiet" onClick={() => void pickMore()}>
-              Retry
-            </button>
-          </p>
-        )}
       </div>
-    </div>
+      <div ref={pickSentinel} className="h-px" aria-hidden="true" />
+      {pickError && <InlineError onRetry={() => void pickMore()}>{pickError}</InlineError>}
+    </Modal>
   );
 }

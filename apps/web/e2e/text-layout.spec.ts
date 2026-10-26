@@ -6,6 +6,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { installLibrary, makeAssets, type FakeAsset } from "./fakeLibrary";
+import { keepViewerBarsShown, viewerSettled } from "./kit";
 
 const SHOT_DIR = process.env.SHOT_DIR;
 const RUNS: { width: number; scheme: "light" | "dark" }[] = [
@@ -58,16 +59,25 @@ async function mock(page: Page, assets: FakeAsset[], texts: Record<string, unkno
 function makeCheck(page: Page, prefix: string, problems: string[]) {
   return async (name: string) => {
     await page.waitForTimeout(200);
-    const r = await page.evaluate(() => {
-      const w = window.innerWidth;
-      const bad: string[] = [];
-      for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
-        const b = el.getBoundingClientRect();
-        if (b.width === 0 || el.closest(".text-body")) continue;
-        if (b.right > w + 0.5 || b.left < -0.5) bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} [${Math.round(b.left)}..${Math.round(b.right)}]`);
-      }
-      return { scroll: document.documentElement.scrollWidth, w, bad: bad.slice(0, 6) };
-    });
+    // The viewer grows from its tile and its side panel slides in: measure once they are still.
+    if (await page.locator(".viewer-stage").count()) await viewerSettled(page);
+    const measure = () =>
+      page.evaluate(() => {
+        const w = window.innerWidth;
+        const bad: string[] = [];
+        for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
+          const b = el.getBoundingClientRect();
+          if (b.width === 0 || el.closest(".text-body") || el.closest(".viewer-stage")) continue;
+          if (b.right > w + 0.5 || b.left < -0.5) bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} [${Math.round(b.left)}..${Math.round(b.right)}]`);
+        }
+        return { scroll: document.documentElement.scrollWidth, w, bad: bad.slice(0, 6) };
+      });
+    // A panel that is still sliding in is wider than its box for a moment: what counts is where it ends up.
+    let r = await measure();
+    for (let i = 0; i < 10 && r.bad.length; i++) {
+      await page.waitForTimeout(200);
+      r = await measure();
+    }
     if (r.scroll > r.w || r.bad.length) problems.push(`${name}: scrollWidth ${r.scroll} > ${r.w}; ${r.bad.join("; ")}`);
     if (SHOT_DIR) await page.screenshot({ path: join(SHOT_DIR, `${prefix}-${name}.png`) });
   };
@@ -80,6 +90,7 @@ for (const { width, scheme } of RUNS) {
     test("the Text panel: text, boxes, QR codes and the empty states fit", async ({ page }) => {
       test.setTimeout(60_000);
       if (SHOT_DIR) mkdirSync(SHOT_DIR, { recursive: true });
+      await keepViewerBarsShown(page);
       const problems: string[] = [];
       const check = makeCheck(page, `${width}${scheme === "dark" ? "-dark" : ""}-text`, problems);
       const assets = makeAssets(30);
@@ -91,8 +102,11 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("dialog").waitFor();
       await check("viewer");
 
-      await page.getByRole("button", { name: "Text" }).click();
-      const panel = page.getByRole("complementary", { name: "Text in this photo" });
+      // The panel is a sheet on a phone and a column beside the photo on a desktop; either way it is #text-panel.
+      const phone = width < 768;
+      await page.getByRole("button", { name: "More" }).click();
+      await page.getByRole("menuitem", { name: "Text in photo" }).click();
+      const panel = page.locator("#text-panel");
       await panel.waitFor();
       await expect(panel.getByLabel("Recognised text")).toContainText("HOFER KG");
       await expect(page.locator(".text-box:not(.qr)")).toHaveCount(4);
@@ -100,7 +114,7 @@ for (const { width, scheme } of RUNS) {
       await check("text-panel");
       // The boxes sit over the photo: inside the picture's own rectangle.
       const inside = await page.evaluate(() => {
-        const img = document.querySelector<HTMLImageElement>(".lightbox-stage img")!.getBoundingClientRect();
+        const img = document.querySelector<HTMLImageElement>(".viewer-photo.current img")!.getBoundingClientRect();
         const all = Array.from(document.querySelectorAll<HTMLElement>(".text-box")).map((b) => b.getBoundingClientRect());
         const bad = all.filter((r) => r.left < img.left - 1 || r.right > img.right + 1 || r.top < img.top - 1 || r.bottom > img.bottom + 1);
         return { bad: bad.length, img: [img.left, img.top, img.right, img.bottom].map(Math.round), first: bad[0] ? [bad[0].left, bad[0].top, bad[0].right, bad[0].bottom].map(Math.round) : null };
@@ -117,26 +131,31 @@ for (const { width, scheme } of RUNS) {
       expect(seen.opened).toEqual([]);
 
       // Boxes off, Escape closes the panel before the viewer; `t` brings it back.
-      await panel.getByLabel("Show on the photo").uncheck();
+      await panel.getByRole("switch", { name: "Show on the photo" }).uncheck();
       await expect(page.locator(".text-box")).toHaveCount(0);
-      await panel.getByRole("heading", { name: "Text" }).click(); // out of the checkbox: typing in a field is not a viewer shortcut
+      await panel.getByText(/Read automatically/).click(); // out of the switch: a control that has focus keeps its own keys
       await page.keyboard.press("Escape");
       await expect(panel).toHaveCount(0);
       await page.keyboard.press("t");
       await panel.waitFor();
-      await panel.getByLabel("Show on the photo").check();
+      await panel.getByRole("switch", { name: "Show on the photo" }).check();
 
-      // Another photo: nothing found, then not read yet.
-      await page.getByRole("button", { name: "Next photo" }).click();
+      // Another photo: nothing found, then not read yet. (A phone's sheet covers the viewer: put it away to page, `t` brings it back.)
+      if (phone) await page.keyboard.press("Escape");
+      await page.keyboard.press("ArrowRight");
+      if (phone) await page.keyboard.press("t");
       await expect(panel.getByText("No text found in this photo.")).toBeVisible();
       await check("text-empty");
-      await page.getByRole("button", { name: "Next photo" }).click();
+      if (phone) await page.keyboard.press("Escape");
+      await page.keyboard.press("ArrowRight");
+      if (phone) await page.keyboard.press("t");
       await expect(panel.getByText(/has not been read yet/)).toBeVisible();
       await check("text-pending");
 
       // Info and Text are one panel at a time.
+      if (phone) await page.keyboard.press("Escape");
       await page.getByRole("button", { name: "Info" }).click();
-      await expect(page.getByRole("complementary", { name: "Photo details" })).toBeVisible();
+      await expect(page.locator("#details-panel")).toBeVisible();
       await expect(panel).toHaveCount(0);
 
       expect(problems, problems.join("\n")).toEqual([]);

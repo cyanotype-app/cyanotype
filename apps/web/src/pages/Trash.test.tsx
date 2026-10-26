@@ -49,14 +49,15 @@ describe("Trash page", () => {
     expect(await screen.findByAltText("photo-1.jpg")).toBeInTheDocument();
     expect(screen.getAllByText("Deleted 3 days ago · gone in 28 days")).toHaveLength(2);
     expect(screen.getByText(/deleted forever 30 days after/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Empty trash" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "More" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Recently deleted" })).toBeInTheDocument();
   });
 
   it("says so when the trash is empty", async () => {
     vi.spyOn(api, "listTrash").mockResolvedValue(list(0));
     renderTrash();
     expect(await screen.findByText("The trash is empty.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Empty trash" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "More" })).not.toBeInTheDocument();
   });
 
   it("restores the selected photos (click and shift-click range)", async () => {
@@ -137,7 +138,8 @@ describe("Trash page", () => {
     const user = userEvent.setup();
     renderTrash();
     await screen.findByAltText("photo-1.jpg");
-    await user.click(screen.getByRole("button", { name: "Empty trash" }));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Empty trash" }));
     const dialog = screen.getByRole("alertdialog", { name: "Empty the trash?" });
     expect(within(dialog).getByText(/All 140 photos in the trash will be permanently deleted/)).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Delete 140 photos forever" }));

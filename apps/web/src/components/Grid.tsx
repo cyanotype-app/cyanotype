@@ -13,6 +13,9 @@ interface Props<T extends AssetListItem> {
   onSelect?: (id: string, shift: boolean) => void;
   /** A tile was long-pressed outside selection mode: the page should enter selection mode with it selected. */
   onLongPress?: (id: string) => void;
+  /** Touch: after a long press the finger moved over another tile / was lifted. */
+  onDragOver?: (id: string) => void;
+  onDragEnd?: () => void;
   /** Heart on the tiles (hover, and always while favorited). */
   onFavorite?: (id: string, favorite: boolean) => void;
   /** Small text over the bottom of a tile (the trash page shows when it will be deleted). */
@@ -31,15 +34,21 @@ export function Grid<T extends AssetListItem>({
   selected,
   onSelect,
   onLongPress,
+  onDragOver,
+  onDragEnd,
   onFavorite,
   caption,
   burst,
   inBurst,
 }: Props<T>) {
   return (
-    <ul className={`grid${selecting ? " selecting" : ""}`} aria-label="Photos">
+    <ul
+      className="m-0 grid list-none grid-cols-3 gap-0.5 p-0 min-[500px]:grid-cols-4 md:grid-cols-4 md:gap-1 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7"
+      aria-label="Photos"
+      data-selecting={selecting ? "" : undefined}
+    >
       {items.map((it, i) => (
-        <li key={it.id}>
+        <li key={it.id} className="aspect-square min-w-0">
           <Tile
             item={it}
             index={i}
@@ -49,6 +58,8 @@ export function Grid<T extends AssetListItem>({
             selected={selected?.has(it.id) ?? false}
             onSelect={onSelect}
             onLongPress={onLongPress}
+            onDragOver={onDragOver}
+            onDragEnd={onDragEnd}
             onFavorite={onFavorite}
             caption={caption?.(it) ?? null}
             burst={burst?.(it) ?? null}

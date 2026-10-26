@@ -1,10 +1,12 @@
-import { memo, useRef, useState } from "react";
+import { Check, Play } from "lucide-react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { AssetListItem } from "../api";
 import { placeholderUrl } from "../thumbhash";
 import { stackLabel, tileIds } from "../stacks";
+import { cn } from "../ui/cn";
 
 /** Press and hold this long (touch / pen) to start selecting. */
-const LONG_PRESS_MS = 500;
+const LONG_PRESS_MS = 420;
 /** Finger travel that turns a press into a scroll. */
 const LONG_PRESS_SLOP_PX = 10;
 
@@ -19,6 +21,10 @@ export interface TileProps {
   selected: boolean;
   onSelect?: (id: string, shift: boolean) => void;
   onLongPress?: (id: string) => void;
+  /** After a long press, the finger moved over another tile (touch): the page extends the selection to it. */
+  onDragOver?: (id: string) => void;
+  /** The finger that long-pressed was lifted (or the system took the touch). */
+  onDragEnd?: () => void;
   /** Shows the heart: on hover (desktop) and always while favorited. Omit where favorites do not apply. */
   onFavorite?: (id: string, favorite: boolean) => void;
   caption?: string | null;
@@ -53,7 +59,12 @@ export function HeartIcon({ filled }: { filled: boolean }) {
   );
 }
 
-/** One photo: a button that opens it (or toggles it while selecting), with the heart and RAW badge on top. */
+const badge = "pointer-events-none rounded-full bg-black/55 px-1.5 text-[0.625rem] leading-[1.35] font-semibold tracking-wide text-white backdrop-blur-sm";
+
+/**
+ * One photo: a button that opens it (or toggles it while selecting), with the heart and the badges on top. It fills whatever
+ * cell it is put in; the blurred ThumbHash shows at once and the picture fades in over it.
+ */
 export const Tile = memo(function Tile({
   item,
   index,
@@ -63,6 +74,8 @@ export const Tile = memo(function Tile({
   selected,
   onSelect,
   onLongPress,
+  onDragOver,
+  onDragEnd,
   onFavorite,
   caption = null,
   burst = null,
@@ -72,23 +85,82 @@ export const Tile = memo(function Tile({
   const [retried, setRetried] = useState(false);
   const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number } | null>(null);
   const longPressed = useRef(false);
+  const stopDrag = useRef<(() => void) | null>(null);
   const bg = placeholderUrl(item.thumbhash);
   const favorite = item.favorite === true;
   // A stack in the timeline (two or more photos behind this tile): the badge, and what selecting the tile means.
   const stackSize = item.stack && item.stack.size > 1 ? item.stack.size : 0;
   const behind = tileIds(item).length - 1;
+  const video = item.content_type.startsWith("video/");
 
   const cancelPress = () => {
     if (press.current) clearTimeout(press.current.timer);
     press.current = null;
   };
-  const canLongPress = !selecting && onLongPress !== undefined;
+  useEffect(
+    () => () => {
+      if (press.current) clearTimeout(press.current.timer);
+      stopDrag.current?.();
+    },
+    [],
+  );
+  const canLongPress = onLongPress !== undefined;
 
+  // After the long press, a finger that keeps moving selects the tiles it crosses; the page does not scroll meanwhile.
+  const followFinger = useCallback(() => {
+    if (!onDragOver) return;
+    let last = item.id;
+    const move = (e: TouchEvent) => {
+      const t = e.touches[0];
+      if (!t) return;
+      if (e.cancelable) e.preventDefault();
+      const id = document.elementFromPoint?.(t.clientX, t.clientY)?.closest<HTMLElement>("[data-tile-id]")?.dataset.tileId;
+      if (id && id !== last) {
+        last = id;
+        onDragOver(id);
+      }
+    };
+    const end = () => {
+      stopDrag.current?.();
+      onDragEnd?.();
+    };
+    document.addEventListener("touchmove", move, { passive: false });
+    document.addEventListener("touchend", end);
+    document.addEventListener("touchcancel", end);
+    stopDrag.current = () => {
+      document.removeEventListener("touchmove", move);
+      document.removeEventListener("touchend", end);
+      document.removeEventListener("touchcancel", end);
+      stopDrag.current = null;
+    };
+  }, [item.id, onDragOver, onDragEnd]);
+
+  // A picture that was already in the cache is there before React hears about it.
+  const imgRef = useCallback((el: HTMLImageElement | null) => {
+    if (el?.complete && el.naturalWidth > 0) setLoaded(true);
+  }, []);
+
+  const showCheck = selecting;
   return (
-    <div className={`tile-cell${favorite ? " is-favorite" : ""}${stackSize ? " is-stack" : ""}${inBurst ? " in-burst" : ""}${burst ? " burst-cover" : ""}`}>
+    <div
+      data-tile=""
+      data-tile-id={item.id}
+      data-selected={selected ? "" : undefined}
+      data-in-burst={inBurst ? "" : undefined}
+      data-burst-cover={burst ? "" : undefined}
+      className={cn(
+        "group relative size-full overflow-hidden bg-surface",
+        inBurst && "ring-2 ring-accent ring-inset",
+        burst && !burst.expanded && "shadow-[3px_3px_0_-1px_var(--surface-2),6px_6px_0_-2px_var(--border)]",
+      )}
+    >
       <button
         type="button"
-        className={`tile${selected ? " selected" : ""}`}
+        className={cn(
+          "absolute inset-0 block size-full cursor-pointer overflow-hidden bg-cover bg-center p-0 outline-offset-[-2px] select-none [-webkit-touch-callout:none]",
+          "transition-[transform,border-radius] duration-200 ease-soft",
+          selected && "scale-[0.86] rounded-[0.65rem]",
+        )}
         style={bg ? { backgroundImage: `url(${bg})` } : undefined}
         onClick={(e) => {
           if (longPressed.current) {
@@ -109,7 +181,9 @@ export const Tile = memo(function Tile({
             timer: setTimeout(() => {
               press.current = null;
               longPressed.current = true;
+              navigator.vibrate?.(8);
               onLongPress(item.id);
+              if (e.pointerType === "touch") followFinger();
             }, LONG_PRESS_MS),
           };
         }}
@@ -139,12 +213,14 @@ export const Tile = memo(function Tile({
       >
         {item.thumb_url ? (
           <img
+            ref={imgRef}
             src={item.thumb_url}
             alt={item.original_name}
+            data-asset-id={item.id}
             loading="lazy"
             decoding="async"
             draggable={false}
-            className={loaded ? "loaded" : undefined}
+            className={cn("absolute inset-0 size-full object-cover opacity-0 transition-opacity duration-300 ease-soft", loaded && "opacity-100")}
             onLoad={() => setLoaded(true)}
             onError={() => {
               if (!retried) {
@@ -154,37 +230,61 @@ export const Tile = memo(function Tile({
             }}
           />
         ) : (
-          <span className="tile-pending">Processing…</span>
-        )}
-        {item.paired && item.paired.length > 0 && (
-          <span className="tile-badge" title="RAW + JPEG: the RAW file is kept with this photo">
-            RAW
+          <span data-asset-id={item.id} className="absolute inset-0 grid grid-cols-1 place-items-center text-xs text-muted">
+            <span className="rounded-full bg-card/80 px-2 py-0.5">Processing…</span>
           </span>
         )}
-        {item.archived === true && (
-          <span className="tile-badge tile-badge-archived" title="Archived: not in the timeline or the map">
-            Archived
-          </span>
-        )}
+        {selecting && !selected && <span className="absolute inset-0 bg-black/10" aria-hidden="true" />}
+        <span className="pointer-events-none absolute top-1.5 right-1.5 flex items-center gap-1">
+          {video && (
+            <span className={cn(badge, "inline-flex items-center py-0.5")} title="Video">
+              <Play className="size-2.5 fill-current" aria-hidden="true" />
+              <span className="sr-only">Video</span>
+            </span>
+          )}
+          {item.paired && item.paired.length > 0 && (
+            <span className={badge} title="RAW + JPEG: the RAW file is kept with this photo">
+              RAW
+            </span>
+          )}
+          {item.archived === true && (
+            <span className={badge} title="Archived: not in the timeline or the map">
+              Archived
+            </span>
+          )}
+        </span>
         {stackSize > 0 && (
-          <span className="tile-stack" title={stackLabel(stackSize)}>
-            <span className="tile-stack-icon">
+          <span className={cn(badge, "absolute right-1.5 bottom-1.5 inline-flex items-center gap-1 py-0.5 pl-1 text-[0.6875rem]")} title={stackLabel(stackSize)}>
+            <span className="inline-grid size-3">
               <StackIcon />
             </span>
             <span aria-hidden="true">{stackSize}</span>
           </span>
         )}
-        {selecting && (
-          <span className="tile-check" aria-hidden="true">
-            {selected ? "✓" : ""}
+        {showCheck && (
+          <span
+            className={cn(
+              "absolute top-1.5 left-1.5 grid size-6 grid-cols-1 place-items-center rounded-full transition-[background-color,box-shadow,transform] duration-150 ease-soft",
+              selected
+                ? "scale-100 bg-accent text-on-accent shadow-[0_0_0_1.5px_white]"
+                : "bg-black/15 shadow-[inset_0_0_0_1.5px_rgb(255_255_255/0.95)]",
+            )}
+            aria-hidden="true"
+          >
+            {selected && <Check className="size-4" strokeWidth={3} />}
           </span>
         )}
-        {caption && <span className="tile-caption">{caption}</span>}
+        {caption && (
+          <span className="pointer-events-none absolute inset-x-0 bottom-0 truncate bg-black/55 px-2 py-1 text-xs text-white">{caption}</span>
+        )}
       </button>
       {burst && (
         <button
           type="button"
-          className={`tile-burst${burst.expanded ? " open" : ""}`}
+          className={cn(
+            "absolute right-1.5 bottom-1.5 min-h-9 min-w-9 rounded-full border border-white/60 px-2 text-xs leading-none font-bold text-white",
+            burst.expanded ? "bg-accent" : "bg-black/70 hover:bg-accent",
+          )}
           aria-expanded={burst.expanded}
           aria-label={
             burst.expanded
@@ -199,19 +299,32 @@ export const Tile = memo(function Tile({
       {onFavorite &&
         (selecting ? (
           favorite && (
-            <span className="tile-heart on" aria-hidden="true">
-              <HeartIcon filled />
+            <span
+              data-heart="on"
+              className="pointer-events-none absolute bottom-1.5 left-1.5 grid size-7 grid-cols-1 place-items-center rounded-full bg-black/45 p-1.5 text-[#ff6b81]"
+              aria-hidden="true"
+            >
+              <span className="block size-full">
+                <HeartIcon filled />
+              </span>
             </span>
           )
         ) : (
           <button
             type="button"
-            className={`tile-heart${favorite ? " on" : ""}`}
+            data-heart={favorite ? "on" : "off"}
+            className={cn(
+              "absolute bottom-1.5 left-1.5 grid size-8 cursor-pointer grid-cols-1 place-items-center rounded-full bg-black/45 p-1.5 text-white transition-opacity duration-150",
+              "focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:pointer-events-none",
+              favorite ? "text-[#ff6b81] opacity-100" : "opacity-0",
+            )}
             aria-label={favorite ? `Remove ${item.original_name} from favorites` : `Add ${item.original_name} to favorites`}
             aria-pressed={favorite}
             onClick={() => onFavorite(item.id, !favorite)}
           >
-            <HeartIcon filled={favorite} />
+            <span className="block size-full">
+              <HeartIcon filled={favorite} />
+            </span>
           </button>
         ))}
     </div>

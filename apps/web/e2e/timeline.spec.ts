@@ -27,15 +27,17 @@ const shot = async (page: Page, name: string) => {
   mkdirSync(SHOT_DIR, { recursive: true });
   await page.screenshot({ path: join(SHOT_DIR, `${page.viewportSize()!.width}-${name}.png`) });
 };
-const tiles = (page: Page) => page.locator(".tile-cell").count();
-const loadedTiles = (page: Page) => page.locator(".tile-cell img").count();
+const tiles = (page: Page) => page.locator("[data-tile]").count();
+const loadedTiles = (page: Page) => page.locator("[data-tile] img").count();
 const heapMb = (page: Page) =>
   page.evaluate(() => Math.round(((performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0) / 1e6));
 
 /** Drag the scrubber handle to `fraction` of the rail without letting go (touch or mouse). */
 async function dragHandle(page: Page, fraction: number, { touch = false } = {}) {
+  // The rail only takes touches while it is awake: after the page scrolled, or with a mouse near the right edge.
+  await page.evaluate(() => window.dispatchEvent(new Event("scroll")));
   const handle = page.getByRole("slider");
-  const rail = (await page.locator(".scrubber").boundingBox())!;
+  const rail = (await page.locator("[data-scrubber]").boundingBox())!;
   const h = (await handle.boundingBox())!;
   const x = h.x + h.width / 2;
   const startY = h.y + h.height / 2;
@@ -71,13 +73,13 @@ for (const { width, height, touch } of [
     test("20,000 photos: only a few hundred tiles ever exist, at the top and after scrubber jumps", async ({ page }) => {
       test.setTimeout(120_000);
       const seen = await setup(page);
-      await page.goto("/library");
-      await expect(page.locator(".tile-cell img").first()).toBeVisible();
+      await page.goto("/photos");
+      await expect(page.locator("[data-tile] img").first()).toBeVisible();
       await page.waitForLoadState("networkidle");
 
       // Initial render: the whole library is laid out, but only the rows near the viewport are in the DOM.
       const first = await tiles(page);
-      console.log(`[${width}px] initial: ${first} tile cells (${await loadedTiles(page)} with images), ${await page.locator(".tl-row").count()} rows`);
+      console.log(`[${width}px] initial: ${first} tile cells (${await loadedTiles(page)} with images), ${await page.locator("[data-row]").count()} rows`);
       expect(first).toBeGreaterThan(5);
       expect(first).toBeLessThanOrEqual(MAX_TILES);
       expect(await page.locator("h2").first().textContent()).toBe("October 2026");
@@ -91,23 +93,24 @@ for (const { width, height, touch } of [
       const before = await heapMb(page);
 
       await shot(page, "timeline");
-      await expect(page.locator(".scrubber")).toBeVisible();
-      const years = await page.locator(".scrub-year").allTextContents();
+      await expect(page.locator("[data-scrubber]")).toBeAttached();
+      await page.evaluate(() => window.dispatchEvent(new Event("scroll"))); // wake the rail: its marks show
+      const years = await page.locator("[data-year]").allTextContents();
       expect(years[0]).toBe("2026");
       expect(years.length).toBeGreaterThanOrEqual(6);
 
       // Drag the handle half way: a bubble names the month, the page jumps there, and only that part is fetched.
       const lists = seen.list.length;
       const release = await dragHandle(page, 0.5, { touch });
-      const bubble = page.locator(".scrubber-bubble");
+      const bubble = page.locator("[data-scrubber] [role=status]");
       await expect(bubble).toBeVisible();
       const label = (await bubble.textContent())!;
       expect(label).toMatch(/^[A-Z][a-z]+ 20(19|2\d)$/);
       console.log(`[${width}px] dragging to 50%: "${label}"`);
       await shot(page, "scrubber-dragging");
       await release();
-      await expect(bubble).toBeHidden();
-      await expect(page.locator(".tile-cell img").first()).toBeVisible({ timeout: 10_000 });
+      await expect(bubble).toHaveText("");
+      await expect(page.locator("[data-tile] img").first()).toBeVisible({ timeout: 10_000 });
       await page.waitForLoadState("networkidle");
       const mid = await tiles(page);
       console.log(`[${width}px] after jump to "${label}": ${mid} tile cells, ${seen.list.length - lists} list requests`);
@@ -120,20 +123,29 @@ for (const { width, height, touch } of [
       await shot(page, "timeline-after-jump");
 
       // Tap a year on the rail: lands on the top of its first month.
-      const y2022 = page.locator(".scrub-year", { hasText: "2022" });
-      await y2022.click();
-      await expect(page.locator(".tile-cell img").first()).toBeVisible({ timeout: 10_000 });
+      // (A mouse near the edge wakes the rail for taps; a finger drags the handle instead, tested above.)
+      if (!touch) {
+        const vp = page.viewportSize()!;
+        await page.mouse.move(vp.width - 10, vp.height / 2);
+        await page.waitForTimeout(150);
+        await page.locator("[data-year]", { hasText: "2022" }).click();
+      } else {
+        await dragHandle(page, 0.6, { touch }).then((release) => release());
+      }
+      await expect(page.locator("[data-tile] img").first()).toBeVisible({ timeout: 10_000 });
       await page.waitForLoadState("networkidle");
-      const heading = page.locator("h2", { hasText: "2022" }).first();
-      await expect(heading).toBeVisible();
-      const top = await heading.evaluate((e) => e.getBoundingClientRect().top);
-      expect(top).toBeLessThan(200);
+      if (!touch) {
+        const heading = page.locator("h2", { hasText: "2022" }).first();
+        await expect(heading).toBeVisible();
+        const top = await heading.evaluate((e) => e.getBoundingClientRect().top);
+        expect(top).toBeLessThan(200);
+      }
       expect(await tiles(page)).toBeLessThanOrEqual(MAX_TILES);
 
       // Jump to the very end and back to the start.
       const end = await dragHandle(page, 1, { touch });
       await end();
-      await expect(page.locator(".tile-cell img").first()).toBeVisible({ timeout: 10_000 });
+      await expect(page.locator("[data-tile] img").first()).toBeVisible({ timeout: 10_000 });
       await page.waitForLoadState("networkidle");
       expect(await tiles(page)).toBeLessThanOrEqual(MAX_TILES);
       await expect(page.getByRole("slider")).toHaveAttribute("aria-valuetext", /20(19|20)/);
@@ -162,7 +174,7 @@ for (const { width, height, touch } of [
       const small = makeAssets(400);
       assets.splice(0, assets.length, ...small);
       const seen = await setup(page);
-      await page.goto("/library");
+      await page.goto("/photos");
       await expect(page.getByRole("button", { name: /Open IMG_00000/ })).toBeVisible();
 
       // A favorited photo (i % 11 === 3) shows its heart without hovering; others only on hover.
@@ -199,13 +211,12 @@ for (const { width, height, touch } of [
       await page.keyboard.press("Escape");
 
       // The Favorites view only has hearts, and the nav links to it.
-      await page.getByRole("link", { name: "Favorites" }).click();
-      await expect(page).toHaveURL(/\/favorites$/);
-      await expect(page.getByRole("link", { name: "Favorites" })).toHaveAttribute("aria-current", "page");
+      await page.goto("/favorites");
+      await expect(page.getByRole("heading", { level: 1, name: "Favorites" })).toBeVisible();
       const hearted = assets.filter((a) => a.favorite).length;
       await expect(page.getByText(`${hearted} photos`)).toBeAttached();
       expect(seen.timeline.at(-1)).toBe("?favorite=true");
-      await expect(page.locator(".tile-cell img").first()).toBeVisible();
+      await expect(page.locator("[data-tile] img").first()).toBeVisible();
       await page.waitForLoadState("networkidle");
       expect(await page.getByRole("button", { name: /^Remove .* from favorites$/ }).count()).toBe(await tiles(page));
       await shot(page, "favorites-view");
@@ -218,16 +229,16 @@ for (const { width, height, touch } of [
       const target = dayOf(assets[300]!.sort_time);
       detailsDay.set("a0", target);
       await setup(page);
-      await page.goto("/library");
+      await page.goto("/photos");
       await page.getByRole("button", { name: "Open IMG_00000.jpg" }).click();
       const box = page.getByRole("dialog");
-      const panel = page.getByRole("complementary", { name: "Photo details" });
+      const panel = page.locator("#details-panel");
       await expect(panel).toBeHidden();
 
       if (touch) {
         // A real touch drag, upward, on the photo (not the arrows): the panel opens.
         const cdp = await page.context().newCDPSession(page);
-        const stage = (await page.locator(".lightbox-stage").boundingBox())!;
+        const stage = (await page.locator(".viewer-stage").boundingBox())!;
         const x = stage.x + stage.width / 2;
         const y0 = stage.y + stage.height * 0.7;
         await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y: y0, id: 1 }] });
@@ -248,12 +259,12 @@ for (const { width, height, touch } of [
       await page.goBack();
       await expect(panel).toBeHidden();
       await expect(box).toBeVisible();
-      await expect(page).toHaveURL(/\/library$/);
+      await expect(page).toHaveURL(/\/photos$/);
 
       // The date jumps the library to the other day.
       await box.getByRole("button", { name: "Info" }).click();
       await panel.getByRole("link", { name: /\d{4}$/ }).click();
-      await expect(page).toHaveURL(new RegExp(`/library\\?day=${target}$`));
+      await expect(page).toHaveURL(new RegExp(`/photos\\?day=${target}$`));
       await expect(box).toBeHidden();
       const label = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }).format(new Date(`${target}T12:00:00Z`));
       const header = page.locator("h3", { hasText: label }).first();
@@ -269,24 +280,26 @@ for (const { width, height, touch } of [
       assets.splice(0, assets.length, ...small);
       const bucket = await startBucket();
       const seen = await setup(page, bucket.origin);
-      await page.goto("/library");
+      await page.goto("/photos");
       // a0 is a RAW + JPEG pair; a1 is a single file.
       await page.getByRole("button", { name: "Open IMG_00001.jpg" }).click();
       const box = page.getByRole("dialog");
-      await expect(box.getByRole("link", { name: "Download" })).toHaveAttribute("href", "/assets/a1/download");
+      await box.getByRole("button", { name: "More" }).click();
+      await expect(page.getByRole("menuitem", { name: "Download" })).toHaveAttribute("href", "/assets/a1/download");
       await shot(page, "lightbox-download");
-      const [single] = await Promise.all([page.waitForEvent("download"), box.getByRole("link", { name: "Download" }).click()]);
+      const [single] = await Promise.all([page.waitForEvent("download"), page.getByRole("menuitem", { name: "Download" }).click()]);
       expect(single.suggestedFilename()).toBe("IMG_00001.jpg");
-      expect(page.url()).toMatch(/\/library$/); // the page stayed where it was
+      expect(page.url()).toMatch(/\/photos$/); // the page stayed where it was
       await page.keyboard.press("Escape");
 
       await page.getByRole("button", { name: "Open IMG_00000.jpg" }).click();
-      await box.getByRole("button", { name: "Download" }).click();
-      await expect(box.getByRole("link", { name: /Download RAW/ })).toHaveAttribute("href", "/assets/a0/download?file=r0");
+      await box.getByRole("button", { name: "More" }).click();
+      await expect(page.getByRole("menuitem", { name: /Download RAW/ })).toHaveAttribute("href", "/assets/a0/download?file=r0");
       await shot(page, "lightbox-download-pair");
-      const [raw] = await Promise.all([page.waitForEvent("download"), box.getByRole("link", { name: /Download RAW/ }).click()]);
+      const [raw] = await Promise.all([page.waitForEvent("download"), page.getByRole("menuitem", { name: /Download RAW/ }).click()]);
       expect(raw.suggestedFilename()).toBe("IMG_00000.CR3");
-      const [jpg] = await Promise.all([page.waitForEvent("download"), box.getByRole("link", { name: /Download JPEG/ }).click()]);
+      await box.getByRole("button", { name: "More" }).click();
+      const [jpg] = await Promise.all([page.waitForEvent("download"), page.getByRole("menuitem", { name: /Download JPEG/ }).click()]);
       expect(jpg.suggestedFilename()).toBe("IMG_00000.jpg");
 
       // No CORS needed: the bucket sent no CORS headers and was only ever reached by navigations, never fetch()/XHR.

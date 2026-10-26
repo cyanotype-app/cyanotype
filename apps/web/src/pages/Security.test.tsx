@@ -246,7 +246,6 @@ describe("Admin two-factor page", () => {
     vi.spyOn(api, "adminTwoFactor").mockResolvedValue(overview());
     const req = vi.spyOn(api, "adminRequireTwoFactor").mockResolvedValue({ required: true });
     const reset = vi.spyOn(api, "adminResetTwoFactor").mockResolvedValue({ reset: true, had_2fa: true });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     shell(<TwoFactorAdmin />);
     expect(await screen.findByText(/2 of 3 have it on/)).toBeInTheDocument();
@@ -255,6 +254,8 @@ describe("Admin two-factor page", () => {
     await user.click(screen.getByLabelText(/Require two-factor/));
     expect(req).toHaveBeenCalledWith(true);
     await user.click(screen.getByRole("button", { name: "Reset" }));
+    expect(reset).not.toHaveBeenCalled(); // the question comes first
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Reset" }));
     await waitFor(() => expect(reset).toHaveBeenCalledWith("u2"));
   });
 });

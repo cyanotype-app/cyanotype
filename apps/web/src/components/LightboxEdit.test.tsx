@@ -48,7 +48,7 @@ describe("editing from the panel", () => {
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Adjust date and time" })).not.toBeInTheDocument();
     // Escape closed the editor only: the panel is still there.
-    expect(screen.getByRole("complementary", { name: "Photo details" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Info" })).toBeInTheDocument();
   });
 
   it("offers to add a location when the photo has none, and marks edited values", async () => {

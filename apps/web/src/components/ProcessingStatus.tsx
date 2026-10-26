@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api as defaultApi, type Api, type Processing } from "../api";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
 import { kindLabel, nextPollMs, processingLabel, processingPercent } from "../processingText";
 
 /**
@@ -68,59 +70,67 @@ export function ProcessingStatus({ api = defaultApi }: { api?: Pick<Api, "proces
   };
 
   return (
-    <section className="processing" aria-label="Background processing">
-      <div className="processing-row">
+    <section aria-label="Background processing" className="mx-4 mb-3 rounded-card bg-surface px-4 py-2.5 md:mx-8">
+      <div className="flex min-h-7 items-center gap-3">
         {label && (
-          <p className="processing-label" role="status">
+          <p className="min-w-0 flex-1 truncate text-sm" role="status">
             {label}
           </p>
         )}
         {status.failed > 0 && (
-          <button
-            type="button"
-            className="btn btn-quiet processing-failed"
+          <Button
+            size="sm"
+            variant="quiet"
+            className={cn("ml-auto text-danger", !label && "flex-1 justify-start")}
             aria-expanded={open}
             aria-controls="processing-panel"
             onClick={() => setOpen(!open)}
           >
             {status.failed.toLocaleString("en-US")} failed
-          </button>
+          </Button>
         )}
       </div>
       {label && (
         <div
-          className="processing-bar"
+          className="mt-2 h-1 overflow-hidden rounded-full bg-line"
           role="progressbar"
           aria-label="Processing progress"
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={percent ?? undefined}
         >
-          <span className={percent === null ? "indeterminate" : undefined} style={percent === null ? undefined : { width: `${percent}%` }} />
+          <span
+            className={cn("block h-full rounded-full bg-accent transition-[width] duration-500 ease-soft", percent === null && "w-1/3 animate-pulse")}
+            style={percent === null ? undefined : { width: `${percent}%` }}
+          />
         </div>
       )}
       {open && status.failed > 0 && (
-        <div className="processing-panel" id="processing-panel">
-          <div className="processing-panel-head">
-            <strong>Failed</strong>
-            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void retry()}>
+        <div className="mt-3 flex flex-col gap-3 border-t border-line pt-3" id="processing-panel">
+          <div className="flex items-center justify-between gap-3">
+            <strong className="text-sm font-semibold">Failed</strong>
+            <Button size="sm" variant="primary" disabled={busy} onClick={() => void retry()}>
               Retry failed
-            </button>
+            </Button>
           </div>
-          {error && <p role="alert" className="small">{error}</p>}
-          <ul className="processing-failures">
+          {error && (
+            <p role="alert" className="text-sm text-danger">
+              {error}
+            </p>
+          )}
+          <ul className="flex flex-col gap-2.5">
             {status.failures.map((f) => (
-              <li key={f.job_id}>
-                <span className="processing-file">{f.original_name}</span>
-                <span className="muted small">
+              <li key={f.job_id} className="flex flex-col gap-0.5">
+                <span className="truncate text-sm">{f.original_name}</span>
+                <span className="text-[0.8125rem] text-muted">
                   {kindLabel(f.kind)}, {f.attempts} {f.attempts === 1 ? "attempt" : "attempts"}
                 </span>
-                {f.last_error && <span className="muted small processing-error">{f.last_error}</span>}
+                {f.last_error && <span className="text-[0.8125rem] break-words text-muted">{f.last_error}</span>}
               </li>
             ))}
           </ul>
           {status.failed > status.failures.length && (
-            <p className="muted small">Showing the latest {status.failures.length} of {status.failed.toLocaleString("en-US")}.</p>
+            <p className="text-[0.8125rem] text-muted">Showing the latest {status.failures.length} of {status.failed.toLocaleString("en-US")}.</p>
           )}
         </div>
       )}

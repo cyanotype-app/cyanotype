@@ -2,6 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, isScope, type Target, type TrashItem } from "../api";
 import { useAuth } from "../auth";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { Ellipsis, Trash2 } from "lucide-react";
+import { PageHeader } from "../shell/PageHeader";
+import { Button } from "../ui/Button";
+import { Menu, MenuItem } from "../ui/Menu";
+import { Empty, Loading } from "../settings/kit";
 import { Grid } from "../components/Grid";
 import { SelectionBar } from "../components/SelectionBar";
 import { useToast } from "../components/Toast";
@@ -169,80 +174,108 @@ export function Trash() {
     }
   }, [confirm, remove, show, fail]);
 
-  if (!started) return <p className="center muted" role="status">Loading the trash…</p>;
+  const header = (
+    <PageHeader
+      title="Recently deleted"
+      actions={
+        total > 0 && (
+          <Menu
+            label="More"
+            trigger={
+              <Button variant="ghost" size="icon" aria-label="More">
+                <Ellipsis />
+              </Button>
+            }
+          >
+            <MenuItem danger onSelect={() => setConfirm({ kind: "empty" })}>
+              <Trash2 />
+              Empty trash
+            </MenuItem>
+          </Menu>
+        )
+      }
+    />
+  );
+
+  if (!started)
+    return (
+      <>
+        {header}
+        <Loading>Loading the trash…</Loading>
+      </>
+    );
 
   if (error && items.length === 0) {
     return (
-      <div className="empty" role="alert">
-        <h1>Couldn’t load the trash</h1>
-        <p className="muted">{error}</p>
-        <button type="button" className="btn btn-primary" onClick={() => void loadMore()}>
-          Try again
-        </button>
-      </div>
+      <>
+        {header}
+        <Empty
+          role="alert"
+          title="Couldn’t load the trash"
+          action={
+            <Button variant="primary" onClick={() => void loadMore()}>
+              Try again
+            </Button>
+          }
+        >
+          {error}
+        </Empty>
+      </>
     );
   }
 
   return (
-    <div className="library trash">
-      <div className="page-head">
-        <div>
-          <h1>Trash</h1>
-          <p className="muted small">
-            {retention !== null
-              ? `Photos here are deleted forever ${retention} day${retention === 1 ? "" : "s"} after you move them.`
-              : "Photos here are deleted forever after a while."}
+    <>
+      {header}
+      <div className="px-4 pb-10 md:px-8">
+        <p className="pb-3 text-sm text-muted">
+          {retention !== null
+            ? `Photos here are deleted forever ${retention} day${retention === 1 ? "" : "s"} after you move them.`
+            : "Photos here are deleted forever after a while."}
+        </p>
+
+        {items.length === 0 ? (
+          <Empty>
+            <p>The trash is empty.</p>
+          </Empty>
+        ) : (
+          <>
+            <SelectionBar count={sel.count} total={total} onSelectAll={sel.selectAll} onClear={sel.clear}>
+              <Button variant="primary" disabled={sel.count === 0 || busy} onClick={() => void restore()}>
+                Restore
+              </Button>
+              <Button
+                variant="danger"
+                disabled={sel.count === 0 || busy}
+                onClick={() => setConfirm({ kind: "forever", target: sel.target("trash"), count: sel.count })}
+              >
+                Delete forever
+              </Button>
+            </SelectionBar>
+            <Grid
+              items={items}
+              onOpen={() => {}}
+              onThumbError={() => void refreshThumb()}
+              selecting
+              selected={sel.selected}
+              onSelect={sel.select}
+              caption={(it) => trashCaption(it, now)}
+            />
+            <div ref={sentinel} className="h-px" aria-hidden="true" />
+            <p className="py-4 text-center text-sm text-muted" role="status">
+              {loading ? "Loading more…" : done ? photos(items.length) : ""}
+            </p>
+          </>
+        )}
+        {error && items.length > 0 && (
+          <p className="py-4 text-center text-sm" role="alert">
+            {error}{" "}
+            <Button size="sm" variant="secondary" onClick={() => void loadMore()}>
+              Retry
+            </Button>
           </p>
-        </div>
-        {total > 0 && (
-          <button type="button" className="btn btn-quiet btn-danger-quiet" onClick={() => setConfirm({ kind: "empty" })}>
-            Empty trash
-          </button>
         )}
       </div>
-
-      {items.length === 0 ? (
-        <div className="empty">
-          <p>The trash is empty.</p>
-        </div>
-      ) : (
-        <>
-          <SelectionBar count={sel.count} total={total} onSelectAll={sel.selectAll} onClear={sel.clear}>
-            <button type="button" className="btn btn-primary" disabled={sel.count === 0 || busy} onClick={() => void restore()}>
-              Restore
-            </button>
-            <button
-              type="button"
-              className="btn btn-danger"
-              disabled={sel.count === 0 || busy}
-              onClick={() => setConfirm({ kind: "forever", target: sel.target("trash"), count: sel.count })}
-            >
-              Delete forever
-            </button>
-          </SelectionBar>
-          <Grid
-            items={items}
-            onOpen={() => {}}
-            onThumbError={() => void refreshThumb()}
-            selecting
-            selected={sel.selected}
-            onSelect={sel.select}
-            caption={(it) => trashCaption(it, now)}
-          />
-          <div ref={sentinel} className="sentinel" aria-hidden="true" />
-          <p className="muted center small" role="status">
-            {loading ? "Loading more…" : done ? photos(items.length) : ""}
-          </p>
-        </>
-      )}
-      {error && items.length > 0 && (
-        <p className="center" role="alert">
-          {error}{" "}
-          <button type="button" className="btn btn-quiet" onClick={() => void loadMore()}>
-            Retry
-          </button>
-        </p>
-      )}
 
       {confirm && (
         <ConfirmDialog
@@ -262,6 +295,6 @@ export function Trash() {
         </ConfirmDialog>
       )}
       {toast}
-    </div>
+    </>
   );
 }

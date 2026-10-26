@@ -4,7 +4,9 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, zipApi } from "../api";
 import { AuthProvider } from "../auth";
+import { shareApi } from "../shareApi";
 import { album, detail, item, withRaw } from "../test/fixtures";
+import { link } from "../test/shareFixtures";
 import { AlbumPage } from "./Album";
 import { Albums } from "./Albums";
 
@@ -53,11 +55,27 @@ describe("Albums page", () => {
     expect(card).toHaveTextContent("3 photos");
     expect(screen.getByRole("link", { name: /Empty/ })).toHaveTextContent("0 photos");
 
-    await user.click(screen.getByRole("button", { name: "New album" }));
+    await user.click(screen.getByRole("button", { name: "New" }));
+    await user.click(await screen.findByRole("menuitem", { name: "New album" }));
     await user.type(screen.getByLabelText("Album title"), "Made");
     await user.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(create).toHaveBeenCalledWith({ title: "Made" }));
     expect(await screen.findByRole("heading", { name: "Made" })).toBeInTheDocument();
+  }, 15_000);
+
+  it("badges smart albums and the ones with a live link, and keeps the order the server gave (latest first)", async () => {
+    vi.spyOn(api, "listAlbums").mockResolvedValue({
+      items: [album(2, { title: "Newest" }), album(1, { title: "Linked" }), album(3, { title: "Rules", smart: true, rules: { match: "all", archived: "exclude", rules: [{ field: "favorite", value: true }] } })],
+    });
+    vi.spyOn(shareApi, "list").mockResolvedValue({
+      items: [link(1, { kind: "album", album: { id: "album-1", title: "Linked" } }), link(2, { kind: "album", album: { id: "album-2", title: "Newest" }, expired: true })],
+    });
+    renderAt("/albums");
+    const cards = within(await screen.findByRole("list", { name: "Albums" })).getAllByRole("link");
+    expect(cards.map((c) => c.getAttribute("href"))).toEqual(["/albums/album-2", "/albums/album-1", "/albums/album-3"]);
+    await waitFor(() => expect(within(cards[1]!).getByText("Shared")).toBeInTheDocument());
+    expect(within(cards[0]!).queryByText("Shared")).not.toBeInTheDocument(); // an expired link is no link
+    expect(within(cards[2]!).getByText("Smart")).toBeInTheDocument();
   });
 
   it("invites you to make the first album", async () => {
@@ -95,7 +113,8 @@ describe("Album page", () => {
     const save = vi.spyOn(api, "updateAlbum").mockResolvedValue(album(3, { title: "Holiday", description: null }));
     const user = userEvent.setup();
     await screen.findByRole("heading", { name: "Trip" });
-    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Edit details" }));
     const title = screen.getByLabelText("Title");
     await user.clear(title);
     await user.type(title, "Holiday");
@@ -213,8 +232,9 @@ describe("Album page", () => {
     vi.spyOn(api, "listAlbums").mockResolvedValue({ items: [] });
     const user = userEvent.setup();
     await screen.findByRole("heading", { name: "Trip" });
-    await user.click(screen.getByRole("button", { name: "Delete album" }));
-    const dlg = screen.getByRole("alertdialog");
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Delete album" }));
+    const dlg = await screen.findByRole("dialog", { name: "Delete this album?" });
     expect(dlg).toHaveTextContent("The photos stay in your library");
     expect(del).not.toHaveBeenCalled();
     await user.click(within(dlg).getByRole("button", { name: "Delete album" }));

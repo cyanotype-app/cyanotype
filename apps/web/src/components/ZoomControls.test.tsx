@@ -43,9 +43,10 @@ describe("ZoomControls", () => {
   });
 
   it("marks itself on while zoomed (a touch screen shows it only then)", () => {
-    const { container, rerender, on, levelRef, announceRef } = setup(false);
-    expect(container.querySelector(".zoom-controls")).not.toHaveClass("on");
+    const { rerender, on, levelRef, announceRef } = setup(false);
+    // A touch screen hides it at fit (the class says so) and shows it once zoomed.
+    expect(screen.getByRole("group", { name: "Zoom" }).className).toContain("pointer-coarse:hidden");
     rerender(<ZoomControls zoomed onIn={on.in} onOut={on.out} onFit={on.fit} levelRef={levelRef} announceRef={announceRef} />);
-    expect(container.querySelector(".zoom-controls")).toHaveClass("on");
+    expect(screen.getByRole("group", { name: "Zoom" }).className).not.toContain("pointer-coarse:hidden");
   });
 });

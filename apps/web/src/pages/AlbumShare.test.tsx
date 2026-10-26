@@ -43,11 +43,6 @@ const renderAt = (path: string) =>
   );
 
 describe("sharing from Albums", () => {
-  it("links to the shared links page from the albums page", async () => {
-    renderAt("/albums");
-    expect(await screen.findByRole("link", { name: "Shared links" })).toHaveAttribute("href", "/shared");
-  });
-
   it("shares the whole album from the album page", async () => {
     const create = vi.spyOn(shareApi, "create").mockResolvedValue(link(1, { kind: "album" }));
     const user = userEvent.setup();

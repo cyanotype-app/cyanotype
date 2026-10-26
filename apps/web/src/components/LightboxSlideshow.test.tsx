@@ -29,19 +29,22 @@ afterEach(() => {
 const shown = () => document.querySelector<HTMLImageElement>(".slide-photo")?.getAttribute("src");
 
 describe("Play from here", () => {
-  it("is not offered where there is no slideshow to start", () => {
+  it("is not offered where there is no slideshow to start", async () => {
+    const user = userEvent.setup();
     render(<Harness />);
-    expect(screen.queryByRole("button", { name: "Play from here" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.queryByRole("menuitem", { name: "Play from here" })).not.toBeInTheDocument();
   });
 
-  it("the button starts a slideshow at the photo on show, and Escape returns to the viewer", async () => {
+  it("the menu item starts a slideshow at the photo on show, and Escape returns to the viewer", async () => {
     const user = userEvent.setup();
     render(
       <SlideshowProvider>
         <Harness start={2} />
       </SlideshowProvider>,
     );
-    await user.click(screen.getByRole("button", { name: "Play from here" }));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Play from here" }));
     await waitFor(() => expect(shown()).toBe("/img/id-3.jpg"));
     expect(screen.getByRole("dialog", { name: "Slideshow: Photos" })).toBeInTheDocument();
     // The viewer's own keys do not act while the slideshow is open: the arrow moves the slideshow, not the viewer.

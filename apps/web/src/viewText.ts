@@ -17,24 +17,20 @@ export function viewTitle(kind: ViewKind): string | null {
   }
 }
 
-/** What an empty view says; null for All photos, which offers uploads instead. */
+/** The title of the page that shows the view. */
+export function pageTitle(kind: ViewKind): string {
+  return viewTitle(kind) ?? (kind === "favorites" ? "Favorites" : "Photos");
+}
+
+/** What an empty view says, in a line each; null for All photos, which offers uploads instead. */
 export function emptyView(kind: ViewKind): { title: string; body: string } | null {
   switch (kind) {
     case "favorites":
-      return {
-        title: "No favorites yet",
-        body: "Tap the heart on a photo, or select photos and choose Favorite, and they will be here.",
-      };
+      return { title: "No favorites yet", body: "Tap the heart on a photo and it will be here." };
     case "archive":
-      return {
-        title: "The archive is empty",
-        body: "Archive photos you want to keep but not see in the timeline. They stay in albums and in search, and you restore them here.",
-      };
+      return { title: "The archive is empty", body: "Archived photos leave the timeline but stay in albums and search." };
     case "hidden":
-      return {
-        title: "No hidden photos",
-        body: "Select photos and choose Hide, or open a photo and choose Hide. They leave every view until you open this one with your password.",
-      };
+      return { title: "No hidden photos", body: "Photos you hide wait here, behind your password." };
     case "recent":
       return { title: "Nothing added yet", body: "Photos you upload show up here, newest first." };
     default:

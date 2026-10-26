@@ -1,12 +1,17 @@
+import { Copy, ExternalLink, Link2, Pencil, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { ApiError } from "../api";
 import { useAuth } from "../auth";
-import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ConfirmSheet } from "../components/ConfirmSheet";
+import { Empty, InlineError, Loading, Rise } from "../components/pageKit";
+import { inputClass } from "../components/sheetForm";
 import { EditShareDialog } from "../components/ShareDialog";
 import { useToast } from "../components/Toast";
 import { shareApi, type ShareLink } from "../shareApi";
 import { copyText, downloadText, shareName, shareSummary, shareUrl } from "../shareText";
+import { PageHeader } from "../shell/PageHeader";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
 
 /** The owner's share links: copy, edit expiry / password / downloads, revoke. */
 export function SharedLinks() {
@@ -60,65 +65,67 @@ export function SharedLinks() {
   }
 
   return (
-    <div className="albums shared-links">
-      <div className="page-head">
-        <h1>Shared links</h1>
-        <Link to="/albums" className="btn btn-quiet">
-          Albums
-        </Link>
-      </div>
-      <p className="muted small share-intro">
-        Anyone with a link can view what it shares, without an account. Revoking a link ends access at once.
-      </p>
-      {error && (
-        <p className="center" role="alert">
-          {error}
+    <>
+      <PageHeader title="Shared links" />
+      <div className="mx-auto max-w-[96rem] px-4 pt-3 pb-10 md:px-8">
+        <p className="mb-4 max-w-prose text-sm text-muted">
+          Anyone with a link can view what it shares, without an account. Revoking a link ends access at once.
         </p>
-      )}
-      {!error && links === null && <p className="center muted" role="status">Loading your links…</p>}
-      {links !== null && links.length === 0 && (
-        <div className="empty">
-          <h2>No shared links yet</h2>
-          <p>Select photos or open an album and choose Share to create one.</p>
-        </div>
-      )}
-      {links !== null && links.length > 0 && (
-        <ul className="share-list" aria-label="Shared links">
-          {links.map((s) => (
-            <li key={s.id} className={`share-row${s.expired ? " expired" : ""}`}>
-              <div className="share-row-head">
-                <strong className="share-row-title">{shareName(s)}</strong>
-                {s.expired && <span className="share-badge share-badge-warn">Expired</span>}
-                {s.has_password && <span className="share-badge">Password</span>}
-                {s.include_originals && <span className="share-badge share-badge-warn">Originals</span>}
-              </div>
-              <p className="muted small share-row-meta">{shareSummary(s)}</p>
-              <p className="muted small share-row-meta">{downloadText(s)}</p>
-              <input
-                className="text-input share-url"
-                readOnly
-                aria-label={`Link for ${shareName(s)}`}
-                value={shareUrl(s.token)}
-                onFocus={(e) => e.currentTarget.select()}
-              />
-              <div className="share-row-actions">
-                <button type="button" className="btn btn-quiet" onClick={() => void copy(s)}>
-                  Copy link
-                </button>
-                <a className="btn btn-quiet" href={shareUrl(s.token)} target="_blank" rel="noopener noreferrer">
-                  Open
-                </a>
-                <button type="button" className="btn btn-quiet" onClick={() => setEditing(s)}>
-                  Edit
-                </button>
-                <button type="button" className="btn btn-quiet btn-danger-quiet" onClick={() => setRevoking(s)}>
-                  Revoke
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+        {error && <InlineError>{error}</InlineError>}
+        {!error && links === null && <Loading>Loading your links…</Loading>}
+        {links !== null && links.length === 0 && (
+          <Empty icon={Link2} title="No shared links yet">
+            Select photos or open an album and choose Share to create one.
+          </Empty>
+        )}
+        {links !== null && links.length > 0 && (
+          <ul className="grid grid-cols-1 gap-3 lg:grid-cols-2" aria-label="Shared links">
+              {links.map((s, i) => (
+                <Rise key={s.id} index={i} className={cn("flex flex-col gap-3 rounded-card bg-card p-4 ring-1 ring-line", s.expired && "opacity-80")}>
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                    <strong className="min-w-0 truncate text-[1.0625rem] font-semibold tracking-tight [overflow-wrap:anywhere]">{shareName(s)}</strong>
+                    {s.expired && <Pill tone="warn">Expired</Pill>}
+                    {s.has_password && <Pill>Password</Pill>}
+                    {s.include_originals && <Pill tone="warn">Originals</Pill>}
+                  </div>
+                  <div className="flex flex-col gap-0.5 text-[0.8125rem] text-muted">
+                    <p>{shareSummary(s)}</p>
+                    <p>{downloadText(s)}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      className={cn(inputClass, "h-10 min-w-0 flex-1 rounded-full text-[0.8125rem] text-muted md:text-[0.8125rem]")}
+                      readOnly
+                      aria-label={`Link for ${shareName(s)}`}
+                      value={shareUrl(s.token)}
+                      onFocus={(e) => e.currentTarget.select()}
+                    />
+                    <Button variant="primary" onClick={() => void copy(s)}>
+                      <Copy />
+                      Copy link
+                    </Button>
+                  </div>
+                  <div className="-mb-1 flex items-center gap-1 border-t border-line pt-2">
+                    <Button asChild variant="quiet" size="sm">
+                      <a href={shareUrl(s.token)} target="_blank" rel="noopener noreferrer" aria-label="Open">
+                        <ExternalLink />
+                        Open
+                      </a>
+                    </Button>
+                    <Button variant="quiet" size="sm" onClick={() => setEditing(s)}>
+                      <Pencil />
+                      Edit
+                    </Button>
+                    <Button variant="quiet" size="sm" className="ml-auto text-danger hover:text-danger" onClick={() => setRevoking(s)}>
+                      <Trash2 />
+                      Revoke
+                    </Button>
+                  </div>
+                </Rise>
+              ))}
+            </ul>
+        )}
+      </div>
       {editing && (
         <EditShareDialog
           share={editing}
@@ -131,7 +138,7 @@ export function SharedLinks() {
         />
       )}
       {revoking && (
-        <ConfirmDialog
+        <ConfirmSheet
           title="Revoke this link?"
           confirmLabel="Revoke link"
           danger
@@ -140,9 +147,15 @@ export function SharedLinks() {
           onConfirm={() => void revoke(revoking)}
         >
           <p>Anyone who has the link will no longer be able to open it. Your photos are not touched.</p>
-        </ConfirmDialog>
+        </ConfirmSheet>
       )}
       {toast}
-    </div>
+    </>
+  );
+}
+
+function Pill({ tone, children }: { tone?: "warn"; children: string }) {
+  return (
+    <span className={cn("inline-flex h-6 items-center rounded-full bg-surface px-2.5 text-xs font-medium", tone === "warn" ? "text-danger" : "text-muted")}>{children}</span>
   );
 }

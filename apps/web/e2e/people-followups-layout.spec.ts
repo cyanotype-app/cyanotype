@@ -96,9 +96,9 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("region", { name: /^Unnamed/ }).waitFor();
       await page.getByRole("link", { name: /3 photos to confirm$/ }).waitFor();
       expect(await page.getByRole("link", { name: /1 photo to confirm$/ }).count()).toBe(1);
-      expect(await page.locator(".person-card-badge").allTextContents()).toEqual(["3", "99+", "1"]);
+      expect(await page.locator("[data-badge]").allTextContents()).toEqual(["3", "99+", "1"]);
       const top = (l: Locator) => l.evaluate((e) => e.getBoundingClientRect().top);
-      const [named, unnamed, hidden] = [page.getByRole("list", { name: "People", exact: true }), page.getByRole("region", { name: /^Unnamed/ }), page.locator("details.people-hidden")];
+      const [named, unnamed, hidden] = [page.getByRole("list", { name: "People", exact: true }), page.getByRole("region", { name: /^Unnamed/ }), page.locator("details[data-hidden-people]")];
       expect(await top(named)).toBeLessThan(await top(unnamed));
       expect(await top(unnamed)).toBeLessThan(await top(hidden));
       await check("sections");
@@ -134,7 +134,7 @@ for (const { width, scheme } of RUNS) {
       await page.getByText("8 selected").waitFor();
       await check("select-all");
       await bar.getByRole("button", { name: "Delete" }).click();
-      const del = page.getByRole("alertdialog", { name: "Delete 8 people?" });
+      const del = page.getByRole("dialog", { name: "Delete 8 people?" });
       await del.waitFor();
       await check("delete-dialog");
       await page.keyboard.press("Escape");

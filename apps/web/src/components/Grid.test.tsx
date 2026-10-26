@@ -33,7 +33,7 @@ describe("Grid favorites", () => {
 
     rerender(<Grid items={items} onOpen={onOpen} onThumbError={() => {}} onFavorite={onFavorite} selecting />);
     expect(screen.queryByRole("button", { name: /favorites/ })).not.toBeInTheDocument();
-    expect(document.querySelectorAll(".tile-heart.on")).toHaveLength(1);
+    expect(document.querySelectorAll("[data-heart=on]")).toHaveLength(1);
   });
 });
 
@@ -55,8 +55,8 @@ describe("Grid bursts", () => {
     expect(onToggle).toHaveBeenCalledOnce();
     expect(onOpen).not.toHaveBeenCalled();
     expect(screen.getAllByText("+4")).toHaveLength(1);
-    expect(document.querySelectorAll(".tile-cell.in-burst")).toHaveLength(1);
-    expect(document.querySelectorAll(".tile-cell.burst-cover")).toHaveLength(1);
+    expect(document.querySelectorAll("[data-in-burst]")).toHaveLength(1);
+    expect(document.querySelectorAll("[data-burst-cover]")).toHaveLength(1);
   });
 
   it("names what a tap selects while selecting: the whole burst while it is collapsed", () => {

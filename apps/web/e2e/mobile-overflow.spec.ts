@@ -3,6 +3,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { viewerSettled } from "./viewerKit";
 import { installLibrary, makeAssets, pageOf, timelineOf, type FakeAsset } from "./fakeLibrary";
 
 const SHOT_DIR = process.env.SHOT_DIR;
@@ -93,7 +94,6 @@ const BUSY = {
     { job_id: 3, asset_id: "a4", original_name: "IMG_1004.HEIC", kind: "thumbnail", last_error: "sha256 mismatch", attempts: 5 },
   ],
 };
-const INDEXING = { ...IDLE, total_photos: 52000, embedding: { indexed: 12345, total: 52000, queued: 39654, running: 1, failed: 0 } };
 // An older model answers while the improved one indexes the library.
 const REINDEXING = {
   ...IDLE,
@@ -120,7 +120,7 @@ test.afterEach(() => {
 });
 let memberView = false;
 let anonymous = false;
-let processing: typeof IDLE | typeof BUSY | typeof INDEXING | typeof REINDEXING = IDLE;
+let processing: typeof IDLE | typeof BUSY | typeof REINDEXING = IDLE;
 
 // Search: the mock answers by what the query says. "nothing" matches no photo, "unavailable" is a server without the
 // model; anything else ranks the library's photos. Facets carry long names to stress the filter sheet.
@@ -645,14 +645,16 @@ async function mockUsage(page: Page) {
 function makeCheck(page: Page, prefix: string, problems: string[]) {
   return async function check(name: string) {
     await page.waitForTimeout(150);
+    // The viewer grows from its tile when it opens, and pages to the next photo: measure once it is still.
+    if (await page.locator(".viewer-stage").count()) await viewerSettled(page);
     const r = await page.evaluate(() => {
       const w = window.innerWidth;
       const bad: string[] = [];
       for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
         const b = el.getBoundingClientRect();
         // Tiles clip their hover-zoomed image; map markers sit wherever the map puts them and the pane clips them.
-        // The On this day cards scroll sideways inside their own row (clipped by it, on purpose).
-        if (b.width === 0 || el.closest(".tile") || el.closest(".map-canvas") || el.closest(".memories-row")) continue;
+        // The On this day cards scroll sideways inside their own row (clipped by it, on purpose), and the viewer pages its photos in a clipped stage.
+        if (b.width === 0 || el.closest("[data-tile]") || el.closest(".viewer-stage") || el.closest(".map-canvas") || el.closest(".memories-row, [data-scroll-row]")) continue;
         if (b.right > w + 0.5 || b.left < -0.5) {
           bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} "${(el.textContent ?? "").trim().slice(0, 24)}" [${Math.round(b.left)}..${Math.round(b.right)}]`);
         }
@@ -660,7 +662,7 @@ function makeCheck(page: Page, prefix: string, problems: string[]) {
       // The page can also be pushed wide by something whose own box fits but whose content spills (scrollWidth): name those.
       if (document.documentElement.scrollWidth > w) {
         for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
-          if (el.scrollWidth > w + 0.5 && !el.closest(".tile") && !el.closest(".map-canvas") && !el.closest(".memories-row")) {
+          if (el.scrollWidth > w + 0.5 && !el.closest("[data-tile]") && !el.closest(".viewer-stage") && !el.closest(".map-canvas") && !el.closest(".memories-row, [data-scroll-row]")) {
             bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} scrollWidth ${el.scrollWidth}`);
           }
         }
@@ -670,6 +672,17 @@ function makeCheck(page: Page, prefix: string, problems: string[]) {
     if (r.scroll > r.w || r.bad.length) problems.push(`${name}: scrollWidth ${r.scroll} > ${r.w}; offenders: ${r.bad.join("; ")}`);
     if (SHOT_DIR) await page.screenshot({ path: join(SHOT_DIR, `${prefix}-${name}.png`) });
   };
+}
+
+/** Press an action of the Photos selection bar: on the bar if it fits there, else in its "More actions" menu. */
+async function pressBar(page: Page, name: string) {
+  const bar = page.getByRole("toolbar", { name: "Selection" });
+  const direct = bar.getByRole("button", { name, exact: true });
+  if (await direct.count()) await direct.click();
+  else {
+    await bar.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("menuitem", { name, exact: true }).click();
+  }
 }
 
 for (const { width, scheme } of RUNS) {
@@ -684,7 +697,7 @@ for (const { width, scheme } of RUNS) {
       const check = makeCheck(page, `${width}${scheme === "dark" ? "-dark" : ""}`, problems);
       const open = async (path: string, ready: string | RegExp) => {
         await page.goto(path);
-        await (typeof ready === "string" ? page.getByText(ready) : page.getByRole("button", { name: ready })).first().waitFor();
+        await (typeof ready === "string" ? page.locator("main").getByText(ready) : page.getByRole("button", { name: ready })).first().waitFor();
         await page.waitForLoadState("networkidle");
       };
 
@@ -701,7 +714,7 @@ for (const { width, scheme } of RUNS) {
       await page.unroute("**/auth/me");
 
       // Library
-      await open("/library", /Open IMG_1000/);
+      await open("/photos", /Open IMG_1000/);
       await check("library");
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_1000/ }).click();
@@ -710,7 +723,7 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: "Select all" }).click();
       await check("library-select-all");
       // Edit the selection: choose what, then a shift of the dates, one location, one caption
-      await page.getByRole("button", { name: "Edit", exact: true }).click();
+      await pressBar(page, "Edit");
       await page.getByRole("dialog", { name: "Edit photos" }).waitFor();
       await check("dialog-edit-menu");
       await page.getByRole("button", { name: "Adjust date and time" }).click();
@@ -718,6 +731,7 @@ for (const { width, scheme } of RUNS) {
       await check("dialog-edit-shift");
       await page.keyboard.press("Escape");
       await page.getByRole("dialog").waitFor({ state: "detached" });
+      await page.getByRole("button", { name: "Add to album" }).waitFor();
       await page.getByRole("button", { name: "Add to album" }).click();
       await page.getByRole("dialog").waitFor();
       await check("dialog-add-to-album");
@@ -734,7 +748,7 @@ for (const { width, scheme } of RUNS) {
 
       // Processing indicator: banner while photos are processed, the failures panel, and after a retry
       processing = BUSY;
-      await open("/library", /Open IMG_1000/);
+      await open("/photos", /Open IMG_1000/);
       await page.getByText("Processing 20,617 photos…").waitFor();
       await check("library-processing");
       await page.getByRole("button", { name: "1,234 failed" }).click();
@@ -747,7 +761,7 @@ for (const { width, scheme } of RUNS) {
 
       // Map: with a basemap, a photo from a marker in the lightbox, and the plain-background fallback without one
       const mapReady = () =>
-        page.locator(".map-thumb, .map-bubble, .map-notice[role=alert]").first().waitFor({ timeout: 20_000 });
+        page.locator("[data-marker], [data-map-notice][role=alert]").first().waitFor({ timeout: 20_000 });
       basemapInstalled = true;
       await open("/map", "Photos in view");
       await mapReady();
@@ -755,10 +769,10 @@ for (const { width, scheme } of RUNS) {
       await check("map");
       // A thumbnail that is inside the pane and not under another marker (they overlap at world zoom).
       let shown = null;
-      for (const t of await page.locator(".map-thumb").all()) {
+      for (const t of await page.locator("[data-marker=photo]").all()) {
         const onTop = await t.evaluate((el) => {
           const r = el.getBoundingClientRect();
-          const pane = document.querySelector(".map-pane")!.getBoundingClientRect();
+          const pane = document.querySelector("section[aria-label='Map of your photos']")!.getBoundingClientRect();
           const inside = r.left > pane.left && r.right < pane.right && r.top > pane.top && r.bottom < pane.bottom;
           return inside && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === el;
         });
@@ -773,6 +787,9 @@ for (const { width, scheme } of RUNS) {
         await check("map-lightbox");
         await page.keyboard.press("Escape");
       }
+      // On a phone the photos wait in a folded sheet.
+      const unfold = page.getByRole("button", { name: "Show photos in view" });
+      if (await unfold.isVisible()) await unfold.click();
       await page.getByRole("button", { name: /Open IMG_1000/ }).click();
       await page.getByRole("dialog").waitFor();
       await check("map-list-lightbox");
@@ -785,20 +802,34 @@ for (const { width, scheme } of RUNS) {
       basemapInstalled = true;
 
       // Lightbox
-      await open("/library", /Open IMG_1000/);
+      await open("/photos", /Open IMG_1000/);
       await page.getByRole("button", { name: /Open IMG_20240615/ }).click();
-      await page.getByText("In albums:").waitFor();
+      await page.getByRole("dialog").getByRole("button", { name: "Info" }).waitFor();
       await check("lightbox-long-name");
-      await page.getByRole("button", { name: "Next photo" }).click();
+      await viewerSettled(page);
+      // The arrows are for a mouse: a touch screen swipes, and the key does the same.
+      const nextPhoto = page.getByRole("button", { name: "Next photo" });
+      if (await nextPhoto.isVisible()) await nextPhoto.click();
+      else await page.keyboard.press("ArrowRight");
+      await viewerSettled(page);
       await check("lightbox");
 
       // Photo details: the Info button (then `i` and Escape), a photo with every row, then one with none but the file
       await page.getByRole("button", { name: "Info" }).click();
-      const panel = page.getByRole("complementary", { name: "Photo details" });
+      const panel = page.locator("#details-panel");
       await panel.waitFor();
       await panel.getByText("Time zone unknown").waitFor();
       await check("lightbox-info-bare");
-      await page.getByRole("button", { name: "Previous photo" }).click();
+      if (await page.getByRole("button", { name: "Previous photo" }).isVisible()) await page.getByRole("button", { name: "Previous photo" }).click();
+      else {
+        // On a phone the details are a sheet over the photo: close it, step back (the key does what a swipe does), open it again.
+        await page.keyboard.press("Escape");
+        await expect(panel).toHaveCount(0);
+        await page.keyboard.press("ArrowLeft");
+        await viewerSettled(page);
+        await page.getByRole("button", { name: "Info" }).click();
+        await panel.waitFor();
+      }
       await panel.getByText("Altitude 38 m above sea level").waitFor();
       await page.locator(".place-map canvas").first().waitFor({ timeout: 20_000 });
       await page.waitForTimeout(1200); // basemap tiles draw
@@ -820,7 +851,7 @@ for (const { width, scheme } of RUNS) {
       await page.keyboard.press("Escape");
       await page.getByRole("dialog", { name: "Edit caption" }).waitFor({ state: "detached" });
       // The panel's own scroll reaches its last row, and the sheet never grows past the screen.
-      await panel.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+      await panel.getByText("3 of 12 in a burst").scrollIntoViewIfNeeded();
       await panel.getByText("3 of 12 in a burst").waitFor();
       await check("lightbox-info-scrolled");
       await page.keyboard.press("Escape");
@@ -828,13 +859,14 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("dialog").waitFor();
       await page.keyboard.press("i");
       await panel.waitFor();
-      await page.keyboard.press("i");
+      // `i` toggles the side panel on a wide screen; on a phone the details are a modal sheet, which Escape closes.
+      await page.keyboard.press(width >= 768 ? "i" : "Escape");
       await panel.waitFor({ state: "detached" });
       await check("lightbox-info-closed");
 
       // Upload tray (the mocked check endpoint refuses, so every file shows as failed)
-      await open("/library", /Open IMG_1000/);
-      await page.locator('input[aria-label="Choose photos"]').setInputFiles([
+      await open("/photos", /Open IMG_1000/);
+      await page.locator('input[aria-label="Choose photos"]').first().setInputFiles([
         { name: LONG_NAME, mimeType: "image/jpeg", buffer: Buffer.from("x") },
         { name: "second.jpg", mimeType: "image/jpeg", buffer: Buffer.from("y") },
       ]);
@@ -845,7 +877,7 @@ for (const { width, scheme } of RUNS) {
       await check("upload-tray-collapsed");
 
       // Trash
-      await open("/trash", "Trash");
+      await open("/trash", /Select IMG_1000/);
       await page.getByRole("button", { name: /Select IMG_1000/ }).waitFor();
       await check("trash");
       await page.getByRole("button", { name: /Select IMG_1001/ }).click();
@@ -853,7 +885,8 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: "Delete forever" }).click();
       await check("dialog-delete-forever");
       await page.getByRole("button", { name: "Cancel" }).click();
-      await page.getByRole("button", { name: "Empty trash" }).click();
+      await page.getByRole("button", { name: "More" }).click();
+      await page.getByRole("menuitem", { name: "Empty trash" }).click();
       await check("dialog-empty-trash");
       await page.getByRole("button", { name: "Cancel" }).click();
 
@@ -861,35 +894,40 @@ for (const { width, scheme } of RUNS) {
       await open("/albums", "Albums");
       await page.getByRole("link", { name: /Pets/ }).waitFor();
       await check("albums");
-      await page.getByRole("button", { name: "New album" }).click();
+      await page.getByRole("button", { name: "New", exact: true }).click();
+      await page.getByRole("menuitem", { name: "New album" }).click();
       await check("dialog-new-album");
       await page.keyboard.press("Escape");
 
       // Album page
-      await open("/albums/l1", "Edit");
-      await page.getByRole("button", { name: /Open IMG_1000/ }).waitFor();
+      await open("/albums/l1", /Open IMG_1000/);
       await check("album");
-      await page.getByRole("button", { name: "Edit", exact: true }).click();
+      await page.getByRole("button", { name: "More", exact: true }).click();
+      await check("album-menu");
+      await page.getByRole("menuitem", { name: "Edit details" }).click();
       await check("album-edit");
       await page.getByRole("button", { name: "Cancel" }).click();
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_1001/ }).click();
       await check("album-select");
       await page.getByRole("button", { name: "Done" }).click();
-      await page.getByRole("button", { name: "Delete album" }).click();
+      await page.getByRole("button", { name: "More", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Delete album" }).click();
       await check("dialog-delete-album");
       await page.getByRole("button", { name: "Cancel" }).click();
       await page.getByRole("button", { name: "Add photos" }).click();
       await page.getByRole("button", { name: /Select IMG_1000/ }).waitFor();
       await page.getByRole("button", { name: /Select IMG_1003/ }).click();
       await check("album-photo-picker");
-      await page.getByRole("dialog", { name: "Add photos" }).getByRole("button", { name: "Cancel" }).click();
+      // The picker has no Cancel button: Escape (or the close button on a desktop, or a drag down) leaves it.
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("dialog", { name: "Add photos" })).toHaveCount(0);
       await page.getByRole("button", { name: /Open IMG_1000/ }).click();
       await check("album-lightbox");
 
       // Share links: the dialog (with and without the originals warning, and once created), the owner's list with its
       // edit and revoke dialogs, and the public viewer (grid, viewer with a RAW + JPEG download menu, password form, gone).
-      await open("/library", /Open IMG_1000/);
+      await open("/photos", /Open IMG_1000/);
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_1000/ }).click();
       await page.getByRole("button", { name: "Share", exact: true }).click();
@@ -936,18 +974,19 @@ for (const { width, scheme } of RUNS) {
 
       // Timeline of a larger library: month and day headers, the scrubber (resting and dragged), hearts, downloads.
       await installLibrary(page, makeAssets(4000), (r) => r.fallback());
-      await open("/library", /Open IMG_00000/);
-      await page.locator(".scrubber").waitFor();
+      await open("/photos", /Open IMG_00000/);
+      await page.locator("[data-scrubber]").waitFor();
+      await page.evaluate(() => window.dispatchEvent(new Event("scroll"))); // the rail wakes with the page's scrolling
       await check("timeline");
       const handle = (await page.getByRole("slider").boundingBox())!;
-      const rail = (await page.locator(".scrubber").boundingBox())!;
+      const rail = (await page.locator("[data-scrubber]").boundingBox())!;
       await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
       await page.mouse.down();
       await page.mouse.move(handle.x + handle.width / 2, rail.y + rail.height * 0.55, { steps: 6 });
-      await page.locator(".scrubber-bubble").waitFor();
+      await page.locator("[data-scrubber] [role=status]").filter({ hasText: /\d{4}/ }).waitFor();
       await check("timeline-scrubber-drag");
       await page.mouse.up();
-      await page.locator(".tile-cell img").first().waitFor();
+      await page.locator("[data-tile] img").first().waitFor();
       await check("timeline-scrolled");
       await page.evaluate(() => window.scrollTo(0, 0));
       await page.getByRole("button", { name: "Select", exact: true }).click();
@@ -955,9 +994,10 @@ for (const { width, scheme } of RUNS) {
       await check("timeline-select");
       await page.getByRole("button", { name: "Done" }).click();
       await page.getByRole("button", { name: /Open IMG_00000/ }).click(); // a RAW + JPEG pair
-      await page.getByRole("dialog").getByRole("button", { name: "Download" }).click();
-      await page.getByRole("link", { name: /Download RAW/ }).waitFor();
+      await page.getByRole("dialog").getByRole("button", { name: "More" }).click();
+      await page.getByRole("menuitem", { name: /Download RAW/ }).waitFor();
       await check("lightbox-download-pair");
+      await page.keyboard.press("Escape");
       await page.getByRole("button", { name: "Add to favorites" }).click();
       await check("lightbox-favorited");
       await page.keyboard.press("Escape");
@@ -988,25 +1028,22 @@ for (const { width, scheme } of RUNS) {
       const flagged = assets.map((a, i) => (i % 5 === 1 ? { ...a, archived: true } : a));
       await page.route("**/assets?*", (r) => (new URL(r.request().url()).pathname === "/assets" ? r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pageOf(flagged as FakeAsset[], new URL(r.request().url()).searchParams)) }) : r.fallback()));
 
-      // The library: the On this day strip on top, the sort toggle and the More menu in the header.
-      await page.goto("/library");
+      // The library: grid style, sort, stacks and the slideshow in the header's view menu.
+      await page.goto("/photos");
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
-      await page.getByRole("heading", { name: "On this day" }).waitFor();
-      await check("library-strip");
-      await page.getByRole("button", { name: "Date added" }).waitFor();
-      await page.locator("summary[aria-label='More views']").click();
-      await page.getByRole("link", { name: "Hidden", exact: true }).waitFor();
-      await check("more-menu");
+      await page.getByRole("button", { name: "View options" }).click();
+      await page.getByRole("menuitemradio", { name: "Date added" }).waitFor();
+      await check("view-menu");
       await page.keyboard.press("Escape");
-      await page.locator("summary[aria-label='More views']").click();
 
       // Selection bar with the new actions, and the viewer menu.
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_1000/ }).click();
-      await page.getByRole("button", { name: "Archive", exact: true }).waitFor();
+      await page.getByRole("toolbar", { name: "Selection" }).waitFor();
       await check("select-archive-hide");
       await page.getByRole("button", { name: "Done" }).click();
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().click();
+      await viewerSettled(page);
       // Hide is inline in the bar on wide screens and in the More menu on phones.
       await page.getByRole("button", { name: /^(Hide|More)$/ }).first().waitFor();
       if (await page.getByRole("button", { name: "More", exact: true }).isVisible()) {
@@ -1036,7 +1073,7 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_1000/ }).click();
-      await page.getByRole("button", { name: "Restore", exact: true }).waitFor();
+      await page.getByRole("toolbar", { name: "Selection" }).waitFor();
       await check("archive-select");
 
       // Hidden: the password first (a wrong one shows its error), then the view with its lock bar.
@@ -1054,7 +1091,7 @@ for (const { width, scheme } of RUNS) {
       await check("hidden-open");
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_1000/ }).click();
-      await page.getByRole("button", { name: "Unhide", exact: true }).waitFor();
+      await page.getByRole("toolbar", { name: "Selection" }).waitFor();
       await check("hidden-select");
       hiddenUnlocked = false;
 
@@ -1068,9 +1105,9 @@ for (const { width, scheme } of RUNS) {
       await page.goto("/search?q=dog");
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
       await page.getByRole("button", { name: /^Filters/ }).click();
-      await page.getByRole("checkbox", { name: "Include archived" }).waitFor();
+      await page.getByRole("switch", { name: "Include archived" }).waitFor();
       await check("search-include-archived");
-      await page.getByRole("checkbox", { name: "Include archived" }).uncheck();
+      await page.getByRole("switch", { name: "Include archived" }).click();
       await page.getByRole("button", { name: "Show photos" }).click();
       await page.getByText("Without archived").first().waitFor();
       await check("search-without-archived-chip");
@@ -1078,153 +1115,7 @@ for (const { width, scheme } of RUNS) {
       expect(problems, problems.join("\n")).toEqual([]);
     });
 
-    test(`search: bar, results, filters, chips and states fit`, async ({ page }) => {
-      test.setTimeout(90_000);
-      if (SHOT_DIR) mkdirSync(SHOT_DIR, { recursive: true });
-      const problems: string[] = [];
-      const check = makeCheck(page, `${width}${scheme === "dark" ? "-dark" : ""}-search`, problems);
-      await mock(page);
-      processing = IDLE;
-      const field = page.getByRole("combobox", { name: "Search photos" });
-      // A phone shows an icon that expands; a wide screen shows the field. Either way this leaves the field usable.
-      const openBar = async () => {
-        const icon = page.getByRole("button", { name: "Search photos" });
-        if (await icon.isVisible()) await icon.click();
-        await field.waitFor({ state: "visible" });
-      };
-
-      await page.goto("/library");
-      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
-      await check("bar-collapsed");
-      expect(await page.getByRole("link").filter({ hasText: /^(All photos|Favorites|Map)$/ }).count()).toBe(3);
-      await openBar();
-      await check("bar-expanded");
-      // Recent searches drop down under the field.
-      await page.evaluate(() => localStorage.setItem("cyanotype.recentSearches", JSON.stringify(["dog on the beach", "red car at night", "x".repeat(90)])));
-      await field.fill("");
-      await field.blur(); // (a phone's field is already focused after expanding)
-      await field.focus();
-      await page.getByRole("listbox", { name: "Recent searches" }).waitFor();
-      await check("bar-recent");
-
-      await field.fill("dog on the beach");
-      await field.press("Enter");
-      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
-      await page.getByText(/^\d+ matches$/).waitFor();
-      await check("results");
-      await page.getByRole("button", { name: "Select", exact: true }).click();
-      await page.getByRole("button", { name: /Select IMG_1000/ }).click();
-      await check("results-select");
-      await page.getByRole("button", { name: "Done" }).click();
-
-      await page.getByRole("button", { name: /^Filters/ }).click();
-      await page.getByRole("dialog", { name: "Filters" }).waitFor();
-      await page.getByRole("option", { name: new RegExp(LONG_CAMERA.slice(0, 20)) }).first().waitFor({ state: "attached" });
-      await check("filters-sheet");
-      const sheet = page.getByRole("dialog", { name: "Filters" });
-      await sheet.getByLabel("Camera", { exact: true }).selectOption(LONG_CAMERA);
-      await sheet.getByLabel("Place", { exact: true }).selectOption(LONG_PLACE);
-      await sheet.getByLabel("Year", { exact: true }).selectOption("2024");
-      await sheet.getByRole("checkbox", { name: /Favorites only/ }).check();
-      await sheet.getByRole("radio", { name: "RAW" }).check({ force: true });
-      await check("filters-sheet-filled");
-      await page.getByRole("button", { name: "Show photos" }).click();
-      await page.getByRole("list", { name: "Active filters" }).getByText("2024").waitFor();
-      await check("results-with-chips");
-
-      await openBar();
-      await field.fill("empty like it");
-      await field.press("Enter");
-      await page.getByRole("heading", { name: "Nothing matched" }).waitFor();
-      await check("no-results");
-
-      // The query read as a date and a place: two chips (the place as long as a place name can be), and taking one off.
-      await page.goto("/search?q=dog%20in%20summer%202022");
-      await page.getByRole("list", { name: "Understood from your search" }).waitFor();
-      await check("parsed-chips");
-      await page.getByRole("button", { name: "Remove date Summer 2022" }).click();
-      await page.waitForURL(/skip=date/);
-      await check("parsed-chip-removed");
-
-      // Strong matches with weaker ones behind them, and the weaker ones shown.
-      await page.goto("/search?q=weak");
-      await page.getByRole("button", { name: /Show weaker matches \(12\)/ }).waitFor();
-      await check("weaker-offered");
-      await page.getByRole("button", { name: /Show weaker matches/ }).click();
-      await page.getByText("8 matches, 12 weaker").waitFor();
-      await check("weaker-shown");
-      // Nothing close, but weaker matches exist; and nothing at all.
-      await page.goto("/search?q=nothing%20close");
-      await page.getByRole("heading", { name: "No close matches" }).waitFor();
-      await check("no-close-matches");
-      await page.getByRole("button", { name: /Show weaker matches \(6\)/ }).click();
-      await page.getByText("0 matches, 6 weaker").waitFor();
-      await check("no-close-matches-weaker-shown");
-      await page.goto("/search?q=empty");
-      await page.getByRole("heading", { name: "Nothing matched" }).waitFor();
-      await check("nothing-at-all");
-
-      // An older model answers while the improved one indexes the library: said once, with progress.
-      processing = REINDEXING;
-      await page.goto("/search?q=dog");
-      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
-      await page.getByText(/Re-indexing with the improved search model: 40%/).first().waitFor();
-      await check("reindexing");
-      await page.goto("/search");
-      await page.getByRole("heading", { name: "Search your photos" }).waitFor();
-      await page.getByText(/Re-indexing with the improved search model: 40%/).waitFor();
-      await check("reindexing-intro");
-
-      processing = INDEXING;
-      await page.goto("/search?q=dog");
-      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
-      await page.getByText(/Still indexing 39,655 photos/).first().waitFor();
-      await check("indexing");
-      await page.goto("/search?q=nothing");
-      await page.getByText(/still being indexed cannot match/).waitFor();
-      await check("indexing-no-results");
-      processing = IDLE;
-
-      await page.goto("/search?q=unavailable");
-      await page.getByRole("heading", { name: "Search isn’t available" }).waitFor();
-      await check("unavailable");
-
-      await page.goto("/search");
-      await page.getByRole("heading", { name: "Search your photos" }).waitFor();
-      await check("intro");
-
-      // Bursts: collapsed with their badges, one opened inline, and selecting a collapsed burst (the bar says what it includes).
-      await page.goto("/search?q=burst");
-      await page.getByRole("button", { name: "Show 3 more photos from this burst" }).waitFor();
-      await check("bursts");
-      await page.getByRole("button", { name: "Show 3 more photos from this burst" }).click();
-      await page.getByRole("button", { name: "Hide the other 3 photos of this burst" }).waitFor();
-      await check("burst-open");
-      await page.getByRole("button", { name: "Hide the other 3 photos of this burst" }).click();
-      await page.getByRole("button", { name: "Select", exact: true }).click();
-      await page.getByRole("button", { name: /Select IMG_1001.* and 3 more from its burst/ }).click();
-      await page.getByText("4 selected").waitFor();
-      await check("burst-selected");
-      await page.getByRole("button", { name: "Done" }).click();
-
-      // "More like this": the source chip with its thumbnail, the filters beside it, weaker matches, the lightbox button
-      // that starts it, and a photo that is not indexed yet.
-      await page.goto("/search?similar=6f1c2b0e-0000-4000-8000-0000000000a3&favorite=true");
-      await page.getByText("8 similar photos").waitFor();
-      await check("similar");
-      await page.getByRole("button", { name: /Show weaker matches \(12\)/ }).click();
-      await page.getByText("8 similar photos, 12 weaker").waitFor();
-      await check("similar-weaker-shown");
-      await page.getByRole("button", { name: /Open IMG_1000/ }).first().click();
-      await page.getByRole("button", { name: "Similar photos" }).waitFor();
-      await check("similar-lightbox");
-      await page.keyboard.press("Escape");
-      await page.goto("/search?similar=6f1c2b0e-0000-4000-8000-00000000dead");
-      await page.getByRole("heading", { name: "This photo is still being indexed" }).waitFor();
-      await check("similar-not-indexed");
-
-      expect(problems, problems.join("\n")).toEqual([]);
-    });
+    // (The Search page's own states are checked in search-layout.spec.ts.)
 
     test(`admin: invites and the invite-only register page fit`, async ({ page }) => {
       test.setTimeout(90_000);
@@ -1236,7 +1127,7 @@ for (const { width, scheme } of RUNS) {
       await mockUsage(page);
       bucketTask = null;
       memberView = false;
-      await page.goto("/admin");
+      await page.goto("/admin/accounts");
       await page.getByRole("heading", { name: "Accounts", exact: true }).waitFor();
       await page.getByText(LONG_EMAIL).first().waitFor();
       await check("accounts");
@@ -1297,9 +1188,9 @@ for (const { width, scheme } of RUNS) {
           }),
         }),
       );
-      await page.goto("/library");
+      await page.goto("/photos");
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
-      await page.locator('input[aria-label="Choose photos"]').setInputFiles([
+      await page.locator('input[aria-label="Choose photos"]').first().setInputFiles([
         { name: LONG_NAME, mimeType: "image/jpeg", buffer: Buffer.from("x") },
         { name: "second.jpg", mimeType: "image/jpeg", buffer: Buffer.from("y") },
         { name: "third.jpg", mimeType: "image/jpeg", buffer: Buffer.from("z") },

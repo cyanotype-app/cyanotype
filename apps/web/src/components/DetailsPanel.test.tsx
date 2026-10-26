@@ -50,7 +50,7 @@ beforeEach(() => {
 describe("DetailsPanel", () => {
   it("shows every row of a fully described photo", async () => {
     setup({ status: "ready", details: photoDetails() });
-    const panel = screen.getByRole("complementary", { name: "Photo details" });
+    const panel = screen.getByRole("dialog", { name: "Info" });
     expect(within(panel).getByText("Tuesday, July 4, 2023")).toBeInTheDocument();
     expect(panel).toHaveTextContent("1:05 PM · UTC+02:00");
     expect(within(panel).getByText("Lisbon, Portugal")).toBeInTheDocument();
@@ -73,7 +73,7 @@ describe("DetailsPanel", () => {
 
   it("hides the rows a photo has nothing for, and says when the zone and capture time are missing", () => {
     setup({ status: "ready", details: bareDetails() });
-    const panel = screen.getByRole("complementary", { name: "Photo details" });
+    const panel = screen.getByRole("dialog", { name: "Info" });
     for (const label of ["Location", "Camera", "Lens", "Exposure", "35 mm equivalent", "Flash", "Albums", "Burst", "Resolution", "Software", "Colour space"]) {
       expect(within(panel).queryByText(label)).not.toBeInTheDocument();
     }
@@ -113,7 +113,7 @@ describe("DetailsPanel", () => {
     expect(await go("Apple iPhone 15")).toBe("/search?camera=Apple+iPhone+15");
     expect(await go("iPhone 15 back camera 6.765mm f/1.78")).toBe("/search?lens=iPhone+15+back+camera+6.765mm+f%2F1.78");
     expect(await go("Lisbon, Portugal")).toBe("/search?place=Lisbon");
-    expect(await go("Tuesday, July 4, 2023")).toBe("/library?day=2023-07-04");
+    expect(await go("Tuesday, July 4, 2023")).toBe("/photos?day=2023-07-04");
     expect(await go("Open the map at this photo")).toBe("/map?lat=38.7223&lon=-9.1393");
     // Each followed link took the panel's history entry off first.
     expect(p.onLeave).toHaveBeenCalledTimes(5);
@@ -125,13 +125,12 @@ describe("DetailsPanel", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Could not load the details.");
     await user.click(screen.getByRole("button", { name: "Try again" }));
     expect(p.onRetry).toHaveBeenCalled();
-    await user.click(screen.getByRole("button", { name: "Close info" }));
+    await user.click(screen.getByRole("button", { name: "Close" }));
     expect(p.onClose).toHaveBeenCalled();
   });
 
-  it("moves focus into the panel when it opens, and says it is loading", () => {
+  it("is a sheet named Info, and says it is loading", () => {
     setup({ status: "loading" });
     expect(screen.getByRole("status")).toHaveTextContent("Loading details");
-    expect(screen.getByRole("button", { name: "Close info" })).toHaveFocus();
   });
 });

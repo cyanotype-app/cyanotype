@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, type AssetListItem, type StackDetail } from "../api";
 import { AuthProvider } from "../auth";
 import { UploadProvider } from "../upload/UploadProvider";
+import { UploadPickerProvider } from "../shell/UploadPicker";
+import { barDisabled, chooseView, pressBar } from "../test/bar";
 import { detail, item } from "../test/fixtures";
 import { fakeLibrary } from "../test/fakeLibrary";
 import { Library } from "./Library";
@@ -37,7 +39,9 @@ const renderLibrary = () =>
     <MemoryRouter initialEntries={["/library"]}>
       <AuthProvider>
         <UploadProvider deps={{ api, hash: async () => "0".repeat(64) }}>
-          <Library />
+          <UploadPickerProvider>
+            <Library />
+          </UploadPickerProvider>
         </UploadProvider>
       </AuthProvider>
     </MemoryRouter>,
@@ -59,8 +63,10 @@ describe("stacks in the library", () => {
     expect(screen.getByRole("button", { name: "Open photo-1.jpg" })).toBeInTheDocument();
     expect(lib.listAssets).toHaveBeenCalledWith(expect.objectContaining({ stacks: "collapsed" }));
 
-    expect(screen.getByRole("button", { name: "Stacked" })).toHaveAttribute("aria-pressed", "true");
-    await user.click(screen.getByRole("button", { name: "Every photo" }));
+    await user.click(screen.getByRole("button", { name: "View options" }));
+    expect(await screen.findByRole("menuitemradio", { name: "Stacked" })).toHaveAttribute("aria-checked", "true");
+    await user.keyboard("{Escape}");
+    await chooseView(user, "Every photo");
     expect(setPrefs).toHaveBeenCalledWith({ stacks_collapsed: false });
     await waitFor(() => expect(lib.listAssets).toHaveBeenCalledWith(expect.objectContaining({ stacks: "expanded" })));
   });
@@ -76,7 +82,7 @@ describe("stacks in the library", () => {
 
     await user.keyboard("]");
     expect(await within(dialog).findByText("Photo 2 of 3 in this stack")).toBeInTheDocument();
-    expect(within(dialog).getByText("photo-3.jpg")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "photo-3.jpg" })).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "photo-4.jpg" }));
     expect(within(dialog).getByText("Photo 3 of 3 in this stack")).toBeInTheDocument();
     await user.keyboard("]");
@@ -87,7 +93,7 @@ describe("stacks in the library", () => {
     // ArrowRight goes to the next photo of the timeline (photo 5), which is not in a stack: the strip goes.
     await user.keyboard("{ArrowRight}");
     await waitFor(() => expect(within(dialog).queryByRole("region", { name: "Stack" })).not.toBeInTheDocument());
-    expect(within(dialog).getByText("photo-5.jpg")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "photo-5.jpg" })).toBeInTheDocument();
   });
 
   it("sets the photo on show as the cover, and keeps the viewer where it is", async () => {
@@ -148,13 +154,15 @@ describe("stacks in the library", () => {
     renderLibrary();
     await user.click(await screen.findByRole("button", { name: "Select" }));
     const bar = screen.getByRole("toolbar", { name: "Selection" });
-    expect(within(bar).getByRole("button", { name: "Stack" })).toBeDisabled();
+    expect(await barDisabled(user, "Stack")).toBe(true);
+    await user.keyboard("{Escape}");
 
     await user.click(screen.getByRole("button", { name: "Select photo-1.jpg" }));
-    expect(within(bar).getByRole("button", { name: "Stack" })).toBeDisabled();
+    expect(await barDisabled(user, "Stack")).toBe(true);
+    await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Select photo-2.jpg and 2 more from its stack" }));
     expect(within(bar).getByText("plus 2 more in stacks")).toBeInTheDocument();
-    await user.click(within(bar).getByRole("button", { name: "Stack" }));
+    await pressBar(user, "Stack");
     await waitFor(() => expect(stack).toHaveBeenCalledWith(["id-1", "id-2", "id-3", "id-4"]));
     expect(await screen.findByText("5 photos stacked")).toBeInTheDocument();
     // Undo hands back what the server said the photos were before, so merged stacks return too.

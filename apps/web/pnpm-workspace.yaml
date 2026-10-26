@@ -1,0 +1,2 @@
+# New package versions must be at least 14 days old (20160 minutes) before pnpm will resolve them, direct or transitive.
+minimumReleaseAge: 20160

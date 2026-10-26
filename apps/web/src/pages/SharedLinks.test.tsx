@@ -31,7 +31,7 @@ const renderPage = () =>
     </MemoryRouter>,
   );
 
-const rows = () => screen.getAllByRole("listitem").filter((li) => li.classList.contains("share-row"));
+const rows = () => within(screen.getByRole("list", { name: "Shared links" })).getAllByRole("listitem");
 
 describe("SharedLinks", () => {
   it("lists each link with what it shares, its state and its address", async () => {
@@ -58,11 +58,10 @@ describe("SharedLinks", () => {
     expect(within(c!).getByRole("link", { name: "Open" })).toHaveAttribute("href", `${window.location.origin}/s/${"tok3".padEnd(32, "x")}`);
   });
 
-  it("explains the empty state and reaches Albums", async () => {
+  it("explains the empty state", async () => {
     vi.spyOn(shareApi, "list").mockResolvedValue({ items: [] });
     renderPage();
     expect(await screen.findByText("No shared links yet")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Albums" })).toHaveAttribute("href", "/albums");
   });
 
   it("copies a link", async () => {
