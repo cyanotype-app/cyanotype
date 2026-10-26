@@ -241,6 +241,16 @@ pub fn is_transient(status: StatusCode) -> bool {
     status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::REQUEST_TIMEOUT
 }
 
+/// The server's words when it has too many login requests open (`too_many_login_requests`, HTTP 429): retrying at once only
+/// adds to the pile, so the person is told instead. None for any other body.
+pub fn login_busy_message(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body.trim()).ok()?;
+    if v.get("code")?.as_str()? != "too_many_login_requests" {
+        return None;
+    }
+    Some(v.get("error")?.as_str()?.to_string())
+}
+
 #[derive(Clone)]
 pub struct Api {
     http: reqwest::Client,
@@ -290,6 +300,9 @@ impl Api {
                     let text = res.text().await.unwrap_or_default();
                     if let Some(limit) = LimitInfo::from_body(&text) {
                         return Err(ApiError::Limit(limit));
+                    }
+                    if let Some(message) = login_busy_message(&text) {
+                        return Err(ApiError::Fatal(message));
                     }
                     if last {
                         return Err(ApiError::Fatal(format!(
@@ -651,6 +664,18 @@ mod tests {
         assert!(!is_transient(StatusCode::FORBIDDEN));
         assert!(!is_transient(StatusCode::NOT_FOUND));
         assert!(!is_transient(StatusCode::OK));
+    }
+
+    #[test]
+    fn a_busy_login_server_is_reported_in_its_own_words() {
+        let body =
+            r#"{"error":"Too many login requests are open. Wait a few minutes.","code":"too_many_login_requests"}"#;
+        assert_eq!(
+            login_busy_message(body).as_deref(),
+            Some("Too many login requests are open. Wait a few minutes.")
+        );
+        assert_eq!(login_busy_message(r#"{"error":"x","code":"quota_exceeded"}"#), None);
+        assert_eq!(login_busy_message("slow down"), None);
     }
 
     #[test]

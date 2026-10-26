@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
 import { api, ApiError, type TwoFactorEnrolment, type TwoFactorStatus } from "../api";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 import { QrCode } from "../components/QrCode";
 import { RecoveryCodes } from "../components/RecoveryCodes";
+import { returnToOf } from "../returnTo";
 import { cleanCode, codeErrorText, codeToSend, groupSecret } from "../twoFactorText";
 
 type Mode = "idle" | "enrolling" | "disabling" | "regenerating";
@@ -20,6 +22,9 @@ export function Security() {
   const { state, refresh } = useAuth();
   const email = state.status === "authenticated" ? state.user.email : "";
   const pending = state.status === "authenticated" && state.user.mfa_enrol_required === true;
+  // Sent here from a page that needed two-factor authentication first (a command-line login, say): back there once it is set up.
+  const returnTo = returnToOf(useLocation().state);
+  const navigate = useNavigate();
   const [status, setStatus] = useState<TwoFactorStatus | null>(null);
   const [mode, setMode] = useState<Mode>("idle");
   const [enrolment, setEnrolment] = useState<TwoFactorEnrolment | null>(null);
@@ -83,7 +88,14 @@ export function Security() {
         {error}
       </div>
 
-      {codes && <RecoveryCodes codes={codes} email={email} onDone={() => setCodes(null)} />}
+      {codes && <RecoveryCodes
+          codes={codes}
+          email={email}
+          onDone={() => {
+            setCodes(null);
+            if (returnTo && !pending) navigate(returnTo, { replace: true });
+          }}
+        />}
 
       {status === null ? (
         <p className="muted" role="status">

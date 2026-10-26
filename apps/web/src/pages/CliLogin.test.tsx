@@ -5,7 +5,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "../api";
 import { AuthProvider } from "../auth";
-import { authorizeParams, formatUserCode, isLoopbackRedirect, nav, userCodeComplete } from "../cliLoginText";
+import { authorizeParams, codeFromHash, formatUserCode, isLoopbackRedirect, nav, userCodeComplete } from "../cliLoginText";
 import { Activate } from "./Activate";
 import { CliAuthorize } from "./CliAuthorize";
 
@@ -28,6 +28,11 @@ function LoginProbe() {
   return <p>login page, back to {(loc.state as { from?: string } | null)?.from}</p>;
 }
 
+function SecurityProbe() {
+  const loc = useLocation();
+  return <p>security page, back to {(loc.state as { from?: string } | null)?.from}</p>;
+}
+
 function page(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
@@ -36,6 +41,7 @@ function page(path: string) {
           <Route path="/cli/authorize" element={<CliAuthorize />} />
           <Route path="/activate" element={<Activate />} />
           <Route path="/login" element={<LoginProbe />} />
+          <Route path="/settings/security" element={<SecurityProbe />} />
         </Routes>
       </AuthProvider>
     </MemoryRouter>,
@@ -72,9 +78,23 @@ describe("the rules", () => {
     expect(userCodeComplete("WDJB-MJHT")).toBe(true);
     expect(userCodeComplete("WDJB-MJH")).toBe(false);
   });
+
+  it("reads a code out of the fragment of a scanned address, and nothing else", () => {
+    expect(codeFromHash("#code=WDJB-MJHT")).toBe("WDJB-MJHT");
+    expect(codeFromHash("#code=wdjbmjht")).toBe("WDJB-MJHT");
+    expect(codeFromHash("#code=WDJB")).toBe("");
+    expect(codeFromHash("#other=WDJB-MJHT")).toBe("");
+    expect(codeFromHash("")).toBe("");
+  });
 });
 
 describe("CliAuthorize", () => {
+  it("sends an account that must set up two-factor authentication there, and remembers the request", async () => {
+    vi.spyOn(api, "me").mockResolvedValue({ id: "u1", email: "alpha@example.com", role: "member", mfa_enrol_required: true });
+    page(`/cli/authorize${QUERY}`);
+    expect(await screen.findByText(`security page, back to /cli/authorize${QUERY}`)).toBeInTheDocument();
+  });
+
   it("asks anonymous visitors to sign in first and brings them back to the same request", async () => {
     vi.spyOn(api, "me").mockRejectedValue(new ApiError(401, "unauthorized"));
     page(`/cli/authorize${QUERY}`);
@@ -146,6 +166,32 @@ describe("CliAuthorize", () => {
 });
 
 describe("Activate", () => {
+  it("fills in the code a scanned QR code carries, and still asks before anything is allowed", async () => {
+    signedIn();
+    const lookup = vi.spyOn(api, "cliDeviceLookup").mockResolvedValue({ device: "test-laptop", scope: "import", expires_in: 500 });
+    const approve = vi.spyOn(api, "cliDeviceApprove").mockResolvedValue({ approved: true, device: "test-laptop" });
+    const user = userEvent.setup();
+    page("/activate#code=WDJB-MJHT");
+    expect(await screen.findByLabelText("Code")).toHaveValue("WDJB-MJHT");
+    expect(lookup).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(lookup).toHaveBeenCalledWith("WDJB-MJHT");
+    expect(await screen.findByRole("button", { name: "Allow" })).toBeInTheDocument();
+    expect(approve).not.toHaveBeenCalled();
+  });
+
+  it("keeps the code through signing in and through two-factor set-up", async () => {
+    vi.spyOn(api, "me").mockRejectedValue(new ApiError(401, "unauthorized"));
+    const first = page("/activate#code=WDJB-MJHT");
+    expect(await screen.findByText("login page, back to /activate#code=WDJB-MJHT")).toBeInTheDocument();
+    first.unmount();
+
+    vi.restoreAllMocks();
+    vi.spyOn(api, "me").mockResolvedValue({ id: "u1", email: "alpha@example.com", role: "member", mfa_enrol_required: true });
+    page("/activate#code=WDJB-MJHT");
+    expect(await screen.findByText("security page, back to /activate#code=WDJB-MJHT")).toBeInTheDocument();
+  });
+
   it("looks the typed code up, shows the device, and approves with the code in the body only", async () => {
     signedIn();
     const lookup = vi.spyOn(api, "cliDeviceLookup").mockResolvedValue({ device: "test-laptop", scope: "import", expires_in: 500 });

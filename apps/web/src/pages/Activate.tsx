@@ -1,12 +1,14 @@
-import { useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
+import { useLocation } from "react-router-dom";
 import { api, type ApiKeyScope, type CliRequest } from "../api";
-import { formatUserCode, userCodeComplete } from "../cliLoginText";
+import { codeFromHash, formatUserCode, userCodeComplete } from "../cliLoginText";
 import { CliConsent, CliPage } from "../components/CliConsent";
 
 /**
  * `/activate`: approve a command-line login from any device (the device-code flow, for SSH sessions and machines without a
- * browser). The person types the short code the terminal printed; the code goes to the server in a request body and is
- * never part of an address, so it ends up in no history, referrer or log.
+ * browser). The person types the short code the terminal printed (or scans the QR code, which opens this page with
+ * `#code=...`: only the fragment, which a browser never sends anywhere, and it is removed from the address at once); the code
+ * goes to the server in a request body and is never part of a request address, so it ends up in no server log or referrer.
  */
 export function Activate() {
   return <CliPage title="Sign in the command line">{(email) => <ActivateSteps email={email} />}</CliPage>;
@@ -20,7 +22,13 @@ type View =
 function ActivateSteps({ email }: { email: string }) {
   const id = useId();
   const [view, setView] = useState<View>({ step: "enter" });
-  const [code, setCode] = useState("");
+  // A scanned QR code opens /activate#code=...: the code is filled in, and the person still presses Continue and then Allow.
+  const { hash } = useLocation();
+  const [code, setCode] = useState(() => codeFromHash(hash));
+  // Out of the address bar and the history once it is in the box.
+  useEffect(() => {
+    if (window.location.hash) window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
+  }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

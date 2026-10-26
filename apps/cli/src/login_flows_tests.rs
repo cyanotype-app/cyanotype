@@ -193,7 +193,7 @@ async fn the_device_flow_polls_through_pending_and_slow_down_to_the_key() {
     let base = serve(fake.clone()).await;
     let api = Api::new(&base, None).unwrap();
     // One "second" is a millisecond here.
-    let grant = login_device(&api, &base, "import", "test-laptop", Duration::from_millis(1))
+    let grant = login_device(&api, &base, "import", "test-laptop", Duration::from_millis(1), false)
         .await
         .unwrap();
     assert_eq!(grant.key, "cyk_test");
@@ -207,7 +207,7 @@ async fn the_device_flow_reports_denial_and_expiry() {
         fake.lock().unwrap().script = vec![err("authorization_pending"), err(answer)];
         let base = serve(fake).await;
         let api = Api::new(&base, None).unwrap();
-        let e = login_device(&api, &base, "import", "test-laptop", Duration::from_millis(1))
+        let e = login_device(&api, &base, "import", "test-laptop", Duration::from_millis(1), false)
             .await
             .unwrap_err();
         assert!(e.to_string().contains(word), "{e}");

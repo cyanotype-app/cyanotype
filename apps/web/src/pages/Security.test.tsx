@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { api, type TwoFactorStatus } from "../api";
 import { AuthProvider } from "../auth";
@@ -76,6 +76,65 @@ describe("Security", () => {
     expect(await screen.findByText(/10 of 10 recovery codes left/)).toBeInTheDocument();
   });
 
+  it("goes back to the page that sent the person here once the recovery codes are saved", async () => {
+    vi.spyOn(api, "me")
+      .mockResolvedValueOnce({ ...me, mfa_enrol_required: true })
+      .mockResolvedValue(me);
+    vi.spyOn(api, "twoFactorStatus")
+      .mockResolvedValueOnce(status({ required: true }))
+      .mockResolvedValue(status({ enabled: true, recovery_codes_remaining: 10, required: true }));
+    vi.spyOn(api, "twoFactorEnrol").mockResolvedValue({ secret: "GEZDGNBVGY3TQOJQ", otpauth_uri: "otpauth://totp/x?secret=GEZDGNBVGY3TQOJQ", issuer: "Cyanotype", account: "a@example.com" });
+    vi.spyOn(api, "twoFactorConfirm").mockResolvedValue({ enabled: true, recovery_codes: ["aaaa-bbbb-cccc-dddd"] });
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={[{ pathname: "/settings/security", state: { from: "/activate#code=WDJB-MJHT" } }]}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/settings/security" element={<Security />} />
+            <Route path="/activate" element={<p>activate page</p>} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+    await user.click(await screen.findByRole("button", { name: /Set up two-factor/ }));
+    await user.type(screen.getByLabelText(/6-digit code/), "123456");
+    await user.click(screen.getByRole("button", { name: "Turn on" }));
+    expect(await screen.findByText("aaaa-bbbb-cccc-dddd")).toBeInTheDocument();
+    // Not before the codes are saved.
+    expect(screen.queryByText("activate page")).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText(/I have saved these codes/));
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(await screen.findByText("activate page")).toBeInTheDocument();
+  });
+
+  it("does not follow a return address that leaves the site", async () => {
+    vi.spyOn(api, "me").mockResolvedValue(me);
+    vi.spyOn(api, "twoFactorStatus")
+      .mockResolvedValueOnce(status())
+      .mockResolvedValue(status({ enabled: true, recovery_codes_remaining: 10 }));
+    vi.spyOn(api, "twoFactorEnrol").mockResolvedValue({ secret: "GEZDGNBVGY3TQOJQ", otpauth_uri: "otpauth://totp/x?secret=GEZDGNBVGY3TQOJQ", issuer: "Cyanotype", account: "a@example.com" });
+    vi.spyOn(api, "twoFactorConfirm").mockResolvedValue({ enabled: true, recovery_codes: ["aaaa-bbbb-cccc-dddd"] });
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={[{ pathname: "/settings/security", state: { from: "//evil.example/x" } }]}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/settings/security" element={<Security />} />
+            <Route path="*" element={<p>somewhere else</p>} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+    await user.click(await screen.findByRole("button", { name: /Set up two-factor/ }));
+    await user.type(screen.getByLabelText(/6-digit code/), "123456");
+    await user.click(screen.getByRole("button", { name: "Turn on" }));
+    await screen.findByText("aaaa-bbbb-cccc-dddd");
+    await user.click(screen.getByLabelText(/I have saved these codes/));
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByText("somewhere else")).not.toBeInTheDocument();
+    expect(await screen.findByText(/10 of 10 recovery codes left/)).toBeInTheDocument();
+  });
+
   it("a wrong confirmation code shows the reason and keeps the setup open", async () => {
     vi.spyOn(api, "me").mockResolvedValue(me);
     vi.spyOn(api, "twoFactorStatus").mockResolvedValue(status());
@@ -121,6 +180,31 @@ describe("Login with a second factor", () => {
     await user.type(input, "123456");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
     await waitFor(() => expect(code).toHaveBeenCalledWith("chal", "123456"));
+  });
+
+  it("sends an account that must enrol to the set-up page, keeping where it was headed", async () => {
+    vi.spyOn(api, "me").mockRejectedValueOnce(Object.assign(new Error("x"), { status: 401 }));
+    vi.spyOn(api, "me").mockResolvedValue({ ...me, mfa_enrol_required: true });
+    vi.spyOn(api, "login").mockResolvedValue({ id: "u1", mfa_enrol_required: true });
+    function Here() {
+      const loc = useLocation();
+      return <p>security page, back to {(loc.state as { from?: string } | null)?.from}</p>;
+    }
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={[{ pathname: "/login", state: { from: "/activate#code=WDJB-MJHT" } }]}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route path="/settings/security" element={<Here />} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+    await user.type(await screen.findByLabelText("Email"), "a@example.com");
+    await user.type(screen.getByLabelText("Password"), "correct horse");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByText("security page, back to /activate#code=WDJB-MJHT")).toBeInTheDocument();
   });
 
   it("offers a recovery code instead", async () => {

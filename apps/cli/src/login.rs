@@ -277,7 +277,14 @@ fn times(unit: Duration, n: u64) -> Duration {
 
 /// The device flow: print the code, poll until it is approved, denied or expires. `unit` is how long one "second" of the
 /// server's interval lasts (a second; tests make it a millisecond).
-pub async fn login_device(api: &Api, server: &str, scope: &str, device: &str, unit: Duration) -> Result<KeyGrant> {
+pub async fn login_device(
+    api: &Api,
+    server: &str,
+    scope: &str,
+    device: &str,
+    unit: Duration,
+    qr: bool,
+) -> Result<KeyGrant> {
     let start: DeviceStart = api
         .device_start(device, scope)
         .await
@@ -287,6 +294,13 @@ pub async fn login_device(api: &Api, server: &str, scope: &str, device: &str, un
         start.verification_path
     );
     eprintln!("\n  {}\n", start.user_code);
+    if qr {
+        // Or scan this with a phone: the address carries the code in its fragment, which a browser never sends anywhere;
+        // the page fills the code in and still asks the person to confirm.
+        if let Some(art) = crate::qr::render(&activation_url(server, &start.verification_path, &start.user_code)) {
+            eprintln!("Or scan this with your phone:\n\n{art}");
+        }
+    }
     eprintln!(
         "Check that the page names \"{}\". The code works for {} minutes. Waiting…",
         device_label(device),
@@ -313,6 +327,12 @@ pub async fn login_device(api: &Api, server: &str, scope: &str, device: &str, un
     }
 }
 
+/// The activation page with the user code pre-filled, for the QR code: `<server>/activate#code=WDJB-MJHT`. The code is in the
+/// fragment so that it never reaches a server log, a proxy or a referrer.
+pub fn activation_url(server: &str, path: &str, user_code: &str) -> String {
+    format!("{}{path}#code={user_code}", server.trim_end_matches('/'))
+}
+
 /// The name as the server will show it (letters, digits and a few separators), for the "check that the page names" line.
 pub fn device_label(device: &str) -> String {
     let kept: String = device
@@ -325,11 +345,12 @@ pub fn device_label(device: &str) -> String {
 }
 
 /// Picks the flow and runs it. `device_flag`: `--device`.
-pub async fn login(api: &Api, server: &str, scope: &str, device_flag: bool) -> Result<KeyGrant> {
+pub async fn login(api: &Api, server: &str, scope: &str, device_flag: bool, want_qr: bool) -> Result<KeyGrant> {
     let device = device_name();
     let linux = cfg!(target_os = "linux");
     if wants_device_flow(device_flag, linux, |k| std::env::var(k).ok()) {
-        login_device(api, server, scope, &device, Duration::from_secs(1)).await
+        let qr = want_qr && std::io::stdout().is_terminal() && std::io::stderr().is_terminal();
+        login_device(api, server, scope, &device, Duration::from_secs(1), qr).await
     } else {
         if !std::io::stdout().is_terminal() {
             eprintln!("(not a terminal: if nobody can press Allow here, use `cyanotype login --device`)");
@@ -420,6 +441,14 @@ mod tests {
         assert_eq!(parse_callback("GET /other?code=abc&state=s1 HTTP/1.1", "s1"), None);
         assert_eq!(parse_callback("POST /callback?code=abc&state=s1 HTTP/1.1", "s1"), None);
         assert_eq!(parse_callback("", "s1"), None);
+    }
+
+    #[test]
+    fn the_activation_address_carries_the_code_in_the_fragment() {
+        assert_eq!(
+            activation_url("https://photos.example.com/", "/activate", "WDJB-MJHT"),
+            "https://photos.example.com/activate#code=WDJB-MJHT"
+        );
     }
 
     #[test]

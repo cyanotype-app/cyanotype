@@ -66,12 +66,29 @@ cyanotype login https://photos.example.com --device
 # To sign in, open https://photos.example.com/activate on any device and enter this code:
 #
 #   WDJB-MJHT
+#
+# Or scan this with your phone:
+#   (a QR code)
 ```
 
-Open `/activate` on your phone or any computer, sign in if asked, type the code, check the device name and Allow. The CLI polls
+Open `/activate` on your phone or any computer, sign in if asked, type the code (or scan the QR code, which opens
+`/activate#code=WDJB-MJHT`: the code is filled in, and you still press Continue, check the device name and Allow). The CLI polls
 `POST /auth/cli/device/token` until you do (the code works for 10 minutes; the CLI honours the server's interval and `slow_down`,
-and stops on `access_denied` or `expired_token`). The code is typed into the page and sent in a request body, never put in an
-address.
+and stops on `access_denied` or `expired_token`). The code is sent to the server in a request body, never in a request address;
+the QR code carries it in the address's fragment (after the `#`), which a browser never sends to a server or a referrer, and the
+page removes it from the address bar as soon as it is in the box. The QR code is drawn with Unicode half blocks, black on white
+whatever the terminal's colors, and only when both stdout and stderr are terminals; pass `--no-qr` to leave it out.
+
+Signing in on the way (or setting up two-factor authentication first, when the administrator requires it) brings you back to the
+same page with the code still in it.
+
+**Limits.** A login request that nobody has finished is a database row for ten minutes, so the number of them is capped.
+The server keeps at most 500 device-code requests open at once (starting one needs no account; the per-IP rate limit keeps one
+address to roughly 100 in ten minutes), and one account may have at most 5 approved logins nobody has collected yet (device
+codes waiting for their CLI to poll, plus loopback codes not yet traded). Over a limit the server answers `429` with code
+`too_many_login_requests` and `Retry-After: 60`, and the CLI prints its message ("The server has too many command-line logins
+open right now. Wait a few minutes and run `cyanotype login` again.") instead of retrying. Expired requests are deleted whenever
+a new one is started or approved.
 
 Other ways to log in:
 
