@@ -1,34 +1,44 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { api, ApiError, isScope, type AssetListItem, type ParsedChip, type Person, type SearchItem, type SearchParams, type SearchResult, type Target } from "../api";
+import { Clock, Loader2, MapPin, SearchX, SlidersHorizontal, Sparkles, X, type LucideIcon } from "lucide-react";
+import { motion, useReducedMotion } from "motion/react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { api, ApiError, isScope, localToday, type AssetListItem, type Facets, type ParsedChip, type Person, type SearchItem, type SearchParams, type SearchResult, type Target } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { FaceCrop } from "../components/FaceCrop";
 import { FilterSheet } from "../components/FilterSheet";
 import { Grid } from "../components/Grid";
-import { LibraryTabs } from "../components/LibraryTabs";
 import { Lightbox } from "../components/Lightbox";
 import { useProcessing } from "../components/ProcessingStatus";
+import { SearchBar } from "../components/SearchBar";
 import { SelectionBar } from "../components/SelectionBar";
 import { RateTools } from "../components/RateTools";
 import { ZipButton } from "../components/ZipButton";
 import { TagTools } from "../components/TagTools";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
 import { useToast } from "../components/Toast";
-import { filterablePeople, peopleIdsOf } from "../peopleText";
+import { filterablePeople, peopleIdsOf, personLabel } from "../peopleText";
+import { PageHeader } from "../shell/PageHeader";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
 import { usePeopleEnabled } from "../usePeople";
 import {
   addSkip,
   chipsOf,
+  clearRecent,
+  dateShortcuts,
   hasFilters,
   indexingNote,
   indexingPercent,
   isEmptySearch,
   loadRecent,
   paramsFromUrl,
+  quickFilters,
   reindexNote,
   similarUrl,
   urlFromParams,
+  yearRange,
 } from "../searchText";
 import { allPhotos, collapsedStats, indexResults, patchPhoto, removePhotos, selectionIds, visiblePhotos } from "../burst";
 import { useSelection } from "../selection";
@@ -54,9 +64,10 @@ export function SearchPage() {
   // (A link with people waits for the answer, so the first search is the right one.)
   if (enabled === null && sp.get("people")) {
     return (
-      <p className="center muted" role="status">
-        Searching…
-      </p>
+      <>
+        <PageHeader title="Search" />
+        <Searching />
+      </>
     );
   }
   // Everything below starts over when the search changes.
@@ -85,15 +96,17 @@ function withParsed(filters: Omit<SearchParams, "q" | "skip" | "similar">, chips
   return out;
 }
 
+const chipCls = "inline-flex h-9 max-w-full items-center rounded-full text-[0.8125rem] font-medium";
+
 function SearchView({ params }: { params: SearchParams }) {
   const navigate = useNavigate();
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [albumTitle, setAlbumTitle] = useState<string | undefined>();
-  // The owner's people, for the filter sheet and the names on the chips (asked only while People is on).
+  // The owner's people, for the filter sheet, the names on the chips and the suggestions (asked only while People is on).
   const peopleOn = usePeopleEnabled() === true;
   const [people, setPeople] = useState<Person[] | undefined>();
   const filters = withoutQuery(params);
-  const q = params.q;
+  const empty = isEmptySearch(params);
 
   useEffect(() => {
     if (!params.album) return;
@@ -119,64 +132,93 @@ function SearchView({ params }: { params: SearchParams }) {
     };
   }, [peopleOn]);
 
+  const go = (next: SearchParams) => {
+    const qs = urlFromParams(next);
+    navigate(qs ? `/search?${qs}` : "/search");
+  };
   const apply = (next: Omit<SearchParams, "q">) => {
     setFiltersOpen(false);
-    const qs = urlFromParams({ ...next, q, skip: params.skip, similar: params.similar });
-    navigate(qs ? `/search?${qs}` : "/search");
+    go({ ...next, q: params.q, skip: params.skip, similar: params.similar });
   };
   const clear = (keys: (keyof SearchParams)[]) => {
     const next = { ...params };
     for (const k of keys) delete next[k];
-    const qs = urlFromParams(next);
-    navigate(qs ? `/search?${qs}` : "/search");
+    go(next);
   };
   const chips = chipsOf(filters, albumTitle, filterablePeople(people ?? []));
+  const clearFilters = () => clear(Object.keys(filters).filter((k) => k !== "skip") as (keyof SearchParams)[]);
+  const closeFilters = useCallback(() => setFiltersOpen(false), []);
 
   return (
-    <div className="library search-page">
-      <h1 className="sr-only">Search</h1>
-      <LibraryTabs />
-      <div className="search-head">
-        <button
-          type="button"
-          className="btn btn-quiet search-filters-btn"
-          aria-haspopup="dialog"
-          onClick={() => setFiltersOpen(true)}
-        >
-          <FilterIcon />
-          Filters{chips.length > 0 ? ` (${chips.length})` : ""}
-        </button>
-        {params.similar && <SimilarChip id={params.similar} onRemove={() => clear(["similar"])} />}
-        <ul className="chips" aria-label="Active filters">
-          {chips.map((c) => (
-            <li key={c.clears.join()}>
-              <span className="chip">
-                <span className="chip-label">{c.label}</span>
-                <button type="button" className="chip-x" aria-label={`Remove filter ${c.label}`} onClick={() => clear(c.clears)}>
-                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
-                    <path d="m6 6 12 12M18 6 6 18" />
-                  </svg>
-                </button>
+    <>
+      <PageHeader title="Search">
+        <SearchBar recentsInPage={empty}>
+          <Button
+            variant="secondary"
+            aria-haspopup="dialog"
+            aria-label={`Filters${chips.length > 0 ? ` (${chips.length})` : ""}`}
+            className="relative size-12 shrink-0 px-0 md:w-auto md:px-5"
+            onClick={() => setFiltersOpen(true)}
+          >
+            <SlidersHorizontal />
+            <span className="hidden md:inline" aria-hidden="true">
+              Filters
+            </span>
+            {chips.length > 0 && (
+              <span
+                aria-hidden="true"
+                className="absolute -top-0.5 -right-0.5 inline-flex size-5 items-center justify-center rounded-full bg-accent text-xs font-semibold text-on-accent md:static md:size-auto md:min-w-5 md:px-1"
+              >
+                {chips.length}
               </span>
-            </li>
-          ))}
-        </ul>
-        {hasFilters(params) && (
-          <button type="button" className="btn btn-quiet small" onClick={() => clear(Object.keys(filters).filter((k) => k !== "skip") as (keyof SearchParams)[])}>
-            Clear filters
-          </button>
+            )}
+          </Button>
+        </SearchBar>
+        {(chips.length > 0 || params.similar) && (
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            {params.similar && <SimilarChip id={params.similar} onRemove={() => clear(["similar"])} />}
+            <ul className="contents" aria-label="Active filters">
+              {chips.map((c) => (
+                <li key={c.clears.join()} className="max-w-full">
+                  <span className={cn(chipCls, "gap-0.5 bg-accent/12 pr-1 pl-3.5 text-accent")}>
+                    <span className="truncate">{c.label}</span>
+                    <RemoveButton label={`Remove filter ${c.label}`} onClick={() => clear(c.clears)} />
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {hasFilters(params) && (
+              <Button variant="quiet" size="sm" onClick={clearFilters}>
+                Clear filters
+              </Button>
+            )}
+          </div>
         )}
+      </PageHeader>
+      <div className="px-4 pt-4 pb-10 md:px-8">
+        {empty ? <Intro people={people} /> : <Results params={params} onClearFilters={hasFilters(params) ? clearFilters : undefined} />}
       </div>
-      {isEmptySearch(params) ? <Intro /> : <Results params={params} />}
-      {filtersOpen && (
-        <FilterSheet
-          value={filters}
-          onApply={apply}
-          onClose={() => setFiltersOpen(false)}
-          people={peopleOn ? filterablePeople(people ?? []) : undefined}
-        />
-      )}
-    </div>
+      <FilterSheet
+        open={filtersOpen}
+        value={filters}
+        onApply={apply}
+        onClose={closeFilters}
+        people={peopleOn ? filterablePeople(people ?? []) : undefined}
+      />
+    </>
+  );
+}
+
+function RemoveButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={onClick}
+      className="inline-flex size-7 shrink-0 items-center justify-center rounded-full hover:bg-accent/15"
+    >
+      <X className="size-3.5" aria-hidden="true" />
+    </button>
   );
 }
 
@@ -194,57 +236,203 @@ function SimilarChip({ id, onRemove }: { id: string; onRemove: () => void }) {
     };
   }, [id]);
   return (
-    <span className="chip chip-photo" aria-label="Similar to">
-      {source?.thumb ? <img src={source.thumb} alt="" className="chip-thumb" /> : <span className="chip-thumb" aria-hidden="true" />}
-      <span className="chip-label">Similar to {source?.name ?? "photo"}</span>
-      <button type="button" className="chip-x" aria-label="Remove similar photo" onClick={onRemove}>
-        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
-          <path d="m6 6 12 12M18 6 6 18" />
-        </svg>
-      </button>
+    <span className={cn(chipCls, "gap-2 bg-accent/12 pr-1 pl-1.5 text-accent")} aria-label="Similar to">
+      {source?.thumb ? (
+        <img src={source.thumb} alt="" className="size-6 shrink-0 rounded-full object-cover" />
+      ) : (
+        <span className="size-6 shrink-0 rounded-full bg-line" aria-hidden="true" />
+      )}
+      <span className="truncate">Similar to {source?.name ?? "photo"}</span>
+      <RemoveButton label="Remove similar photo" onClick={onRemove} />
     </span>
   );
 }
 
-/** Before anything is typed: how to search, examples to tap, and this browser's recent searches. */
-function Intro() {
+const pillCls =
+  "inline-flex h-10 max-w-full items-center gap-2 rounded-full bg-surface px-4 text-[0.9375rem] text-fg no-underline " +
+  "transition-[background-color,transform] duration-150 ease-soft hover:bg-line/70 active:scale-[0.97] [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted";
+
+function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
+  return (
+    <section>
+      <div className="mb-2.5 flex items-center justify-between gap-3">
+        <h2 className="text-[1.0625rem] font-semibold tracking-tight">{title}</h2>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function Pills({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <ul className="flex flex-wrap gap-2" aria-label={label}>
+      {children}
+    </ul>
+  );
+}
+
+/** Before anything is typed: recent searches, and one tap into the library's people, places, kinds of photo and dates. */
+function Intro({ people }: { people: Person[] | undefined }) {
   const navigate = useNavigate();
-  const recent = useMemo(() => loadRecent(), []);
+  const reduce = useReducedMotion();
+  const [recent, setRecent] = useState(() => loadRecent().slice(0, 5));
+  const [facets, setFacets] = useState<Facets | null>(null);
   const { status } = useProcessing();
   const note = reindexNote(status) ?? indexingNote(status);
   const go = (q: string) => navigate(`/search?${urlFromParams({ q })}`);
+  const to = (p: SearchParams) => `/search?${urlFromParams(p)}`;
+
+  useEffect(() => {
+    let live = true;
+    api.searchFacets().then(
+      (f) => live && setFacets(f),
+      () => undefined, // the shortcuts that need the library's numbers are simply not offered
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const today = localToday();
+  const named = useMemo(() => [...filterablePeople(people ?? [])].sort((a, b) => b.photos - a.photos).slice(0, 8), [people]);
+  const places = useMemo(() => [...(facets?.places ?? [])].sort((a, b) => b.count - a.count).slice(0, 8), [facets]);
+  const kinds = useMemo(() => (facets ? quickFilters(facets) : []), [facets]);
+  const years = useMemo(() => (facets?.years ?? []).slice(0, 6), [facets]);
+
   return (
-    <div className="empty search-intro">
-      <h2>Search your photos</h2>
-      <p>
-        Describe what you are looking for, like <em>dog on the beach</em> or <em>birthday cake</em>, or use Filters for
-        dates, places, cameras and more. Everything is matched on your own server: nothing leaves it.
-      </p>
-      <ul className="chips" aria-label="Examples">
-        {EXAMPLES.map((e) => (
-          <li key={e}>
-            <button type="button" className="chip chip-button" onClick={() => go(e)}>
-              {e}
-            </button>
-          </li>
-        ))}
-      </ul>
+    <motion.div
+      className="mx-auto flex max-w-5xl flex-col gap-8"
+      initial={reduce ? false : { opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2, ease: [0.2, 0.8, 0.2, 1] }}
+    >
+      <h2 className="sr-only">Search your photos</h2>
+      {note && <IndexingNote status={status} />}
       {recent.length > 0 && (
-        <>
-          <h3 className="small muted">Recent searches</h3>
-          <ul className="chips" aria-label="Recent searches">
+        <Section
+          title="Recent searches"
+          action={
+            <Button
+              variant="quiet"
+              size="sm"
+              aria-label="Clear recent searches"
+              onClick={() => {
+                clearRecent();
+                setRecent([]);
+              }}
+            >
+              Clear
+            </Button>
+          }
+        >
+          <ul className="divide-y divide-line overflow-hidden rounded-card bg-card ring-1 ring-line" aria-label="Recent searches">
             {recent.map((r) => (
               <li key={r}>
-                <button type="button" className="chip chip-button" onClick={() => go(r)}>
-                  {r}
+                <button
+                  type="button"
+                  className="flex h-12 w-full items-center gap-3 px-4 text-left text-[0.9375rem] transition-colors hover:bg-surface active:bg-surface"
+                  onClick={() => go(r)}
+                >
+                  <Clock className="size-4 shrink-0 text-muted" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate">{r}</span>
                 </button>
               </li>
             ))}
           </ul>
-        </>
+        </Section>
       )}
-      {note && <IndexingNote status={status} />}
-    </div>
+      {named.length > 0 && (
+        <Section
+          title="People"
+          action={
+            <Button variant="quiet" size="sm" asChild>
+              <Link to="/people">All people</Link>
+            </Button>
+          }
+        >
+          <ul className="grid grid-cols-4 gap-x-3 gap-y-4 sm:grid-cols-6 md:grid-cols-8" aria-label="People">
+            {named.map((p) => (
+              <li key={p.id} className="min-w-0">
+                <Link to={to({ people: p.id })} className="group flex flex-col items-center gap-1.5 text-fg no-underline">
+                  <span className="block size-16 overflow-hidden rounded-full bg-surface transition-transform duration-150 ease-soft group-active:scale-95 md:size-[4.5rem]">
+                    {p.cover ? (
+                      <FaceCrop url={p.cover.preview_url} box={p.cover.box} />
+                    ) : (
+                      <span className="flex size-full items-center justify-center text-lg font-semibold text-muted" aria-hidden="true">
+                        {personLabel(p).slice(0, 1).toUpperCase()}
+                      </span>
+                    )}
+                  </span>
+                  <span className="w-full truncate text-center text-[0.8125rem]">{personLabel(p)}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+      {places.length > 0 && (
+        <Section title="Places">
+          <Pills label="Places">
+            {places.map((p) => (
+              <li key={`${p.kind}:${p.value}`} className="max-w-full">
+                <Link to={to({ place: p.value })} className={pillCls}>
+                  <MapPin />
+                  <span className="truncate">{p.value}</span>
+                </Link>
+              </li>
+            ))}
+          </Pills>
+        </Section>
+      )}
+      {kinds.length > 0 && (
+        <Section title="Kinds of photo">
+          <Pills label="Kinds of photo">
+            {kinds.map((k) => (
+              <li key={k.key} className="max-w-full">
+                <Link to={to(k.patch)} className={pillCls}>
+                  <span className="truncate">{k.label}</span>
+                  {k.count !== undefined && <span className="text-sm text-muted">{k.count.toLocaleString("en-US")}</span>}
+                </Link>
+              </li>
+            ))}
+          </Pills>
+        </Section>
+      )}
+      <Section title="Dates">
+        <Pills label="Dates">
+          {dateShortcuts(today).map((d) => (
+            <li key={d.label}>
+              <Link to={to({ from: d.from, to: d.to })} className={pillCls}>
+                {d.label}
+              </Link>
+            </li>
+          ))}
+          {years
+            .filter((y) => y.value !== String(Number(today.slice(0, 4))) && y.value !== String(Number(today.slice(0, 4)) - 1))
+            .map((y) => (
+              <li key={y.value}>
+                <Link to={to(yearRange(y.value))} className={pillCls}>
+                  {y.value}
+                </Link>
+              </li>
+            ))}
+        </Pills>
+      </Section>
+      <Section title="Try describing a photo">
+        <Pills label="Examples">
+          {EXAMPLES.map((e) => (
+            <li key={e} className="max-w-full">
+              <button type="button" className={cn(pillCls, "truncate")} onClick={() => go(e)}>
+                <Sparkles />
+                <span className="truncate">{e}</span>
+              </button>
+            </li>
+          ))}
+        </Pills>
+        <p className="mt-2.5 text-sm text-muted">Search matches what is in the photo, and the words in it. It all happens on your own server.</p>
+      </Section>
+    </motion.div>
   );
 }
 
@@ -254,16 +442,45 @@ function IndexingNote({ status }: { status: ReturnType<typeof useProcessing>["st
   const percent = reindex ? (status?.embedding?.percent ?? null) : indexingPercent(status);
   if (!note) return null;
   return (
-    <section className="indexing" aria-label={reindex ? "Search re-indexing" : "Search indexing"}>
-      <p className="indexing-label small" role="status">
+    <section className="rounded-card bg-surface px-4 py-3" aria-label={reindex ? "Search re-indexing" : "Search indexing"}>
+      <p className="text-sm text-muted" role="status">
         {note}
       </p>
       {percent !== null && (
-        <div className="processing-bar" role="progressbar" aria-label={reindex ? "Search re-indexing progress" : "Search indexing progress"} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}>
-          <span style={{ width: `${percent}%` }} />
+        <div
+          className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-line"
+          role="progressbar"
+          aria-label={reindex ? "Search re-indexing progress" : "Search indexing progress"}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+        >
+          <span className="block h-full rounded-full bg-accent transition-[width] duration-300" style={{ width: `${percent}%` }} />
         </div>
       )}
     </section>
+  );
+}
+
+function Searching() {
+  return (
+    <p className="flex items-center justify-center gap-2 py-16 text-sm text-muted" role="status">
+      <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />
+      Searching…
+    </p>
+  );
+}
+
+/** Nothing to show, or something that went wrong: an icon, what happened, what to do. */
+function Notice({ icon: Icon, title, role, children }: { icon: LucideIcon; title: string; role: "status" | "alert"; children?: ReactNode }) {
+  return (
+    <div role={role} className="mx-auto flex max-w-sm flex-col items-center gap-3 px-2 py-14 text-center">
+      <span className="flex size-14 items-center justify-center rounded-full bg-surface text-muted">
+        <Icon className="size-6" aria-hidden="true" />
+      </span>
+      <h2 className="text-[1.0625rem] font-semibold tracking-tight text-balance">{title}</h2>
+      {children}
+    </div>
   );
 }
 
@@ -276,7 +493,7 @@ type Meta = {
   reindexing: SearchResult["reindexing"];
 };
 
-function Results({ params }: { params: SearchParams }) {
+function Results({ params, onClearFilters }: { params: SearchParams; onClearFilters?: () => void }) {
   const navigate = useNavigate();
   const { setAnonymous } = useAuth();
   const [open, setOpen] = useState<number | null>(null);
@@ -537,27 +754,33 @@ function Results({ params }: { params: SearchParams }) {
   const notIndexed = Boolean(params.similar) && error !== null && /still being indexed/i.test(error);
   const weakerCount = meta.weaker?.count ?? 0;
   const weakerButton = (
-    <button type="button" className="btn btn-quiet weaker-btn" onClick={showWeaker}>
+    <Button variant="secondary" onClick={showWeaker}>
       Show weaker matches ({weakerCount.toLocaleString("en-US")})
-    </button>
+    </Button>
   );
   const chips = meta.parsed?.chips ?? [];
 
-  if (!started) return <p className="center muted" role="status">Searching…</p>;
+  if (!started) return <Searching />;
 
   return (
     <>
       {(indexing || reindexing) && <IndexingNote status={status} />}
       {chips.length > 0 && (
-        <ul className="chips parsed-chips" aria-label="Understood from your search">
+        <ul className="mb-3 flex flex-wrap gap-2" aria-label="Understood from your search">
           {chips.map((c) => (
-            <li key={c.kind}>
-              <span className="chip" title={`Read “${c.matched}” as ${c.kind === "people" ? "people" : `a ${c.kind}`}`}>
-                <span className="chip-label">{c.label}</span>
-                <button type="button" className="chip-x" aria-label={`Remove ${c.kind} ${c.label}`} onClick={() => removeChip(c)}>
-                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
-                    <path d="m6 6 12 12M18 6 6 18" />
-                  </svg>
+            <li key={c.kind} className="max-w-full">
+              <span
+                className={cn(chipCls, "gap-0.5 bg-surface pr-1 pl-3.5")}
+                title={`Read “${c.matched}” as ${c.kind === "people" ? "people" : `a ${c.kind}`}`}
+              >
+                <span className="truncate">{c.label}</span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${c.kind} ${c.label}`}
+                  onClick={() => removeChip(c)}
+                  className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted hover:bg-line/70 hover:text-fg"
+                >
+                  <X className="size-3.5" aria-hidden="true" />
                 </button>
               </span>
             </li>
@@ -565,72 +788,70 @@ function Results({ params }: { params: SearchParams }) {
         </ul>
       )}
       {noResults && (
-        <div className="empty" role="status">
-          <h2>
-            {weakerCount > 0 && !weakerShown ? "No close matches" : params.similar ? "No similar photos" : "Nothing matched"}
-          </h2>
-          <p>
+        <Notice
+          icon={SearchX}
+          role="status"
+          title={weakerCount > 0 && !weakerShown ? "No close matches" : params.similar ? "No similar photos" : "Nothing matched"}
+        >
+          <p className="text-[0.9375rem] text-muted text-balance">
             {weakerCount > 0 && !weakerShown
               ? "Nothing in your library matches this closely. There are weaker matches."
               : params.similar
                 ? "Nothing else in your library looks like this photo, or the filters leave nothing. Remove a filter to widen it."
                 : params.q
-                ? "Try describing the scene with other words, or remove a filter."
-                : "No photo has all of these. Remove a filter to widen the search."}
+                  ? "Try describing the scene with other words, or remove a filter."
+                  : "No photo has all of these. Remove a filter to widen the search."}
           </p>
-          {weakerCount > 0 && !weakerShown && weakerButton}
-          {indexing && <p className="muted small">Photos that are still being indexed cannot match a description yet.</p>}
-        </div>
+          {indexing && <p className="text-sm text-muted text-balance">Photos that are still being indexed cannot match a description yet.</p>}
+          <div className="mt-1 flex flex-wrap justify-center gap-2">
+            {weakerCount > 0 && !weakerShown && weakerButton}
+            {onClearFilters && (
+              <Button variant={weakerCount > 0 && !weakerShown ? "quiet" : "secondary"} onClick={onClearFilters}>
+                Clear filters
+              </Button>
+            )}
+          </div>
+        </Notice>
       )}
       {notIndexed && (
-        <div className="empty" role="status">
-          <h2>This photo is still being indexed</h2>
-          <p className="muted">Similar photos can be found once it has been indexed, which usually takes a few minutes after an upload.</p>
-          <button type="button" className="btn btn-primary" onClick={() => reset()}>
+        <Notice icon={Loader2} role="status" title="This photo is still being indexed">
+          <p className="text-[0.9375rem] text-muted text-balance">
+            Similar photos can be found once it has been indexed, which usually takes a few minutes after an upload.
+          </p>
+          <Button variant="primary" className="mt-1" onClick={() => reset()}>
             Try again
-          </button>
-        </div>
+          </Button>
+        </Notice>
       )}
       {error && !notIndexed && (
-        <div className="empty" role="alert">
-          <h2>{noModel ? "Search isn’t available" : "Couldn’t search"}</h2>
-          <p className="muted">
+        <Notice icon={noModel ? SearchX : Loader2} role="alert" title={noModel ? "Search isn’t available" : "Couldn’t search"}>
+          <p className="text-[0.9375rem] text-muted text-balance">
             {noModel
               ? "This server has no search model installed. Filters still work; ask whoever runs the server to install the model."
               : error}
           </p>
           {!noModel && (
-            <button type="button" className="btn btn-primary" onClick={() => (items.length ? void loadMore() : reset())}>
+            <Button variant="primary" className="mt-1" onClick={() => (items.length ? void loadMore() : reset())}>
               Try again
-            </button>
+            </Button>
           )}
-        </div>
+        </Notice>
       )}
       {items.length > 0 && (
         <>
-          <div className="library-bar">
-            <p className="muted small search-count" role="status">
+          <div className="mb-3 flex flex-wrap items-center gap-x-1 gap-y-1">
+            <p className="mr-auto text-sm text-muted" role="status">
               {shown}
             </p>
-            <button
-              type="button"
-              className="btn btn-quiet"
-              aria-pressed={sel.selecting}
-              onClick={() => sel.setSelecting(!sel.selecting)}
-            >
+            <Button variant={sel.selecting ? "secondary" : "quiet"} size="sm" aria-pressed={sel.selecting} onClick={() => sel.setSelecting(!sel.selecting)}>
               Select
-            </button>
+            </Button>
             <SlideshowButton source={() => searchSource(params, "Search results")} />
             {/* The photos of the people filter (a filter-only search: the server can name them all) as an album of their own. */}
             {!meta.ranked && (peopleIdsOf(params.people).length > 0 || chips.some((c) => c.kind === "people")) && (meta.total ?? 0) > 0 && (
-              <button
-                type="button"
-                className="btn btn-quiet"
-                disabled={busy}
-                onClick={() => setAddIds({ target: { scope, except: [] }, count: meta.total ?? 0, save: true })}
-              >
+              <Button variant="quiet" size="sm" disabled={busy} onClick={() => setAddIds({ target: { scope, except: [] }, count: meta.total ?? 0, save: true })}>
                 Save as album
-              </button>
+              </Button>
             )}
           </div>
           {sel.selecting && (
@@ -646,9 +867,9 @@ function Results({ params }: { params: SearchParams }) {
                   : null
               }
             >
-              <button type="button" className="btn btn-quiet" disabled={sel.count === 0 || busy} onClick={() => void favoriteSelected()}>
+              <Button variant="quiet" size="sm" disabled={sel.count === 0 || busy} onClick={() => void favoriteSelected()}>
                 Favorite
-              </button>
+              </Button>
               <ZipButton
                 target={sel.target(scope)}
                 disabled={sel.count === 0}
@@ -680,30 +901,30 @@ function Results({ params }: { params: SearchParams }) {
                   show({ message });
                 }}
               />
-              <button
-                type="button"
-                className="btn btn-quiet"
+              <Button
+                variant="quiet"
+                size="sm"
                 disabled={sel.count === 0 || busy}
                 onClick={() => setAddIds({ target: sel.target(scope), count: sel.count })}
               >
                 Add to album
-              </button>
-              <button
-                type="button"
-                className="btn btn-quiet"
+              </Button>
+              <Button
+                variant="quiet"
+                size="sm"
                 disabled={sel.count === 0 || busy}
                 onClick={() => setShareTarget(shareTargetOf(sel.target(scope), sel.count))}
               >
                 Share
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
                 disabled={sel.count === 0 || busy}
                 onClick={() => (sel.all ? setConfirmed(true) : void trashSelected())}
               >
                 Move to trash
-              </button>
+              </Button>
             </SelectionBar>
           )}
           <Grid
@@ -744,10 +965,10 @@ function Results({ params }: { params: SearchParams }) {
         </>
       )}
       {done && items.length > 0 && weakerCount > 0 && !weakerShown && !error && (
-        <div className="weaker-more">{weakerButton}</div>
+        <div className="mt-6 flex justify-center">{weakerButton}</div>
       )}
-      <div ref={sentinel} className="sentinel" aria-hidden="true" />
-      {loading && items.length > 0 && <p className="center muted small" role="status">Loading more…</p>}
+      <div ref={sentinel} className="h-1" aria-hidden="true" />
+      {loading && items.length > 0 && <p className="py-4 text-center text-sm text-muted" role="status">Loading more…</p>}
       {open !== null && tiles.length > 0 && (
         <Lightbox
           items={tiles}
@@ -801,13 +1022,5 @@ function ConfirmTrash({ count, onCancel, onConfirm }: { count: number; onCancel:
     <ConfirmDialog title={`Move ${photos(count)} to trash?`} confirmLabel="Move to trash" onCancel={onCancel} onConfirm={onConfirm}>
       <p>You can restore {count === 1 ? "it" : "them"} from the trash.</p>
     </ConfirmDialog>
-  );
-}
-
-function FilterIcon() {
-  return (
-    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-      <path d="M4 6h16M7 12h10M10 18h4" />
-    </svg>
   );
 }

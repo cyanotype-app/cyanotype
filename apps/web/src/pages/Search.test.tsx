@@ -429,3 +429,74 @@ describe("Search page people", () => {
     expect(screen.queryByRole("group", { name: "People" })).not.toBeInTheDocument();
   });
 });
+
+describe("Search page suggestions (nothing searched yet)", () => {
+  const A = "6f1c2b0e-0000-4000-8000-000000000001";
+  const facets = {
+    total: 100,
+    favorites: 7,
+    with_location: 60,
+    with_text: 3,
+    types: [{ value: "raw", count: 6 }],
+    cameras: [],
+    places: [
+      { value: "Lisbon", kind: "city" as const, count: 40 },
+      { value: "Portugal", kind: "country" as const, count: 50 },
+    ],
+    years: [{ value: "2019", count: 10 }],
+  };
+  const renderIntro = () =>
+    render(
+      <MemoryRouter initialEntries={["/search"]}>
+        <AuthProvider>
+          <PeopleProvider>
+            <UploadProvider deps={{ api, hash: async () => "0".repeat(64) }}>
+              <Routes>
+                <Route path="/search" element={<SearchPage />} />
+              </Routes>
+              <Where />
+            </UploadProvider>
+          </PeopleProvider>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+
+  it("offers people, places, kinds of photo and dates that the library has, each as a link into the filter", async () => {
+    vi.spyOn(api, "peopleStatus").mockResolvedValue({ enabled: true });
+    vi.spyOn(api, "listPeople").mockResolvedValue({ items: [person(A, "Person A", 12), person("h", "Hidden one", 3, { hidden: true })] });
+    vi.spyOn(api, "searchFacets").mockResolvedValue(facets);
+    renderIntro();
+    const people = await screen.findByRole("list", { name: "People" });
+    expect(within(people).getByRole("link", { name: "Person A" })).toHaveAttribute("href", `/search?people=${A}`);
+    expect(within(people).queryByText("Hidden one")).not.toBeInTheDocument();
+    const places = await screen.findByRole("list", { name: "Places" });
+    expect(within(places).getByRole("link", { name: "Lisbon" })).toHaveAttribute("href", "/search?place=Lisbon");
+    const kinds = screen.getByRole("list", { name: "Kinds of photo" });
+    expect(within(kinds).getByRole("link", { name: /Favorites/ })).toHaveAttribute("href", "/search?favorite=true");
+    expect(within(kinds).getByRole("link", { name: /RAW/ })).toHaveAttribute("href", "/search?type=raw");
+    expect(within(kinds).getByRole("link", { name: /Text in photo/ })).toHaveAttribute("href", "/search?has_text=true");
+    expect(within(kinds).queryByRole("link", { name: /HEIC/ })).not.toBeInTheDocument(); // none in the library
+    const dates = screen.getByRole("list", { name: "Dates" });
+    expect(within(dates).getByRole("link", { name: "Last 7 days" })).toBeInTheDocument();
+    expect(within(dates).getByRole("link", { name: "2019" })).toHaveAttribute("href", "/search?from=2019-01-01&to=2019-12-31");
+  });
+
+  it("offers no people section while People is off, and still works when the library's numbers cannot be read", async () => {
+    vi.spyOn(api, "peopleStatus").mockResolvedValue({ enabled: false });
+    vi.spyOn(api, "searchFacets").mockRejectedValue(new ApiError(500, "down"));
+    renderIntro();
+    expect(await screen.findByRole("list", { name: "Dates" })).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Examples" })).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "People" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Places" })).not.toBeInTheDocument();
+  });
+
+  it("clears the recent searches", async () => {
+    localStorage.setItem("cyanotype.recentSearches", JSON.stringify(["red car"]));
+    vi.spyOn(api, "searchFacets").mockResolvedValue(facets);
+    renderIntro();
+    await userEvent.click(await screen.findByRole("button", { name: "Clear recent searches" }));
+    expect(localStorage.getItem("cyanotype.recentSearches")).toBeNull();
+    expect(screen.queryByRole("list", { name: "Recent searches" })).not.toBeInTheDocument();
+  });
+});

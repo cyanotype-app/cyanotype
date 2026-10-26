@@ -238,3 +238,66 @@ export function suggestionsFor(typed: string, recent: readonly string[]): string
   const t = typed.trim().toLowerCase();
   return recent.filter((r) => r.toLowerCase().startsWith(t) && r.toLowerCase() !== t);
 }
+
+// ---- shortcuts on the empty search page ---------------------------------------------------------------------------
+
+const p2 = (v: number) => String(v).padStart(2, "0");
+const ymd = (d: Date) => `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`;
+const utcDay = (day: string) => {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(Date.UTC(y!, m! - 1, d!));
+};
+
+export interface DateShortcut {
+  label: string;
+  from: string;
+  to: string;
+}
+
+/** "Last 7 days", "This month", "Last year" and the like, as inclusive `from`/`to` days counted back from `today` (`YYYY-MM-DD`). */
+export function dateShortcuts(today: string): DateShortcut[] {
+  const t = utcDay(today);
+  const y = t.getUTCFullYear();
+  const m = t.getUTCMonth();
+  const week = new Date(t);
+  week.setUTCDate(week.getUTCDate() - 6);
+  return [
+    { label: "Last 7 days", from: ymd(week), to: today },
+    { label: "This month", from: ymd(new Date(Date.UTC(y, m, 1))), to: today },
+    { label: "Last month", from: ymd(new Date(Date.UTC(y, m - 1, 1))), to: ymd(new Date(Date.UTC(y, m, 0))) },
+    { label: "This year", from: `${y}-01-01`, to: today },
+    { label: "Last year", ...yearRange(String(y - 1)) },
+  ];
+}
+
+export interface QuickFilter {
+  key: string;
+  label: string;
+  /** How many photos it finds, when the library says. */
+  count?: number;
+  patch: Partial<SearchParams>;
+}
+
+/**
+ * The one-tap filters the empty page offers, from what the library has: only those that would find something (a library
+ * with no RAW photos is not offered "RAW"). Every one is a filter the search already takes.
+ */
+export function quickFilters(f: {
+  favorites: number;
+  with_location: number;
+  with_text?: number;
+  ratings?: readonly { value: string; count: number }[];
+  types: readonly { value: string; count: number }[];
+}): QuickFilter[] {
+  const out: QuickFilter[] = [];
+  if (f.favorites > 0) out.push({ key: "favorite", label: "Favorites", count: f.favorites, patch: { favorite: true } });
+  const five = f.ratings?.find((r) => r.value === "5");
+  if (five && five.count > 0) out.push({ key: "rating", label: ratingFilterLabel(5), count: five.count, patch: { rating: 5 } });
+  if ((f.with_text ?? 0) > 0) out.push({ key: "text", label: "Text in photo", count: f.with_text, patch: { has_text: true } });
+  if (f.with_location > 0) out.push({ key: "location", label: "On the map", count: f.with_location, patch: { has_location: true } });
+  for (const t of ["raw", "heic"] as const) {
+    const c = f.types.find((x) => x.value === t)?.count ?? 0;
+    if (c > 0) out.push({ key: t, label: TYPE_LABEL[t], count: c, patch: { type: t } });
+  }
+  return out;
+}

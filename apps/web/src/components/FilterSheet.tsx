@@ -1,8 +1,12 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { api, type Album, type Facets, type Person, type SearchParams, type Tag } from "../api";
 import { MAX_FILTER_PEOPLE, NO_NAMED_PEOPLE, PEOPLE_FILTER_NOTE, peopleIdsOf } from "../peopleText";
 import { ratingFilterLabel } from "../ratingText";
 import { tagListOf } from "../tagText";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
+import { Switch } from "../ui/Controls";
+import { Sheet } from "../ui/Sheet";
 import { PeoplePicker } from "./PeoplePicker";
 import { TagInput } from "./TagInput";
 import { TYPE_LABEL, yearRange } from "../searchText";
@@ -13,6 +17,8 @@ type Filters = Omit<SearchParams, "q">;
 const defaultTagLoad = (typed: string) => api.listTags({ q: typed || undefined, sort: "count", limit: 12 }).then((r) => r.items);
 
 interface Props {
+  /** Shown or hidden; the sheet stays mounted so it can animate out. */
+  open?: boolean;
   /** The filters in force now. */
   value: Filters;
   /** Apply the edited filters. */
@@ -35,59 +41,39 @@ const defaultLoad = async () => {
 const n = (v: number) => v.toLocaleString("en-US");
 const yearOf = (f: Filters) => (f.from && f.to && f.from === yearRange(f.from.slice(0, 4)).from && f.to === yearRange(f.from.slice(0, 4)).to ? f.from.slice(0, 4) : "");
 
+const fieldCls = "h-11 w-full min-w-0 rounded-xl bg-surface px-3 text-base text-fg outline-none focus-visible:ring-2 focus-visible:ring-accent";
+
 /**
- * Filters for the search: date range (or a whole year), favorites, camera, place, file type, location and album. A
- * bottom sheet on a phone, a dialog on a wide screen; edits apply together with "Show photos", and the choices come from
- * what the library has (`GET /assets/search/facets`) with counts.
+ * Filters for the search: date range (or a whole year), favorites, tags, people, rating, camera, place, file type,
+ * location, text and album. A bottom sheet on a phone, a dialog on a wide screen; edits apply together with "Show
+ * photos", and the choices come from what the library has (`GET /assets/search/facets`) with counts.
  */
-export function FilterSheet({ value, onApply, onClose, load = defaultLoad, tagLoad = defaultTagLoad, people }: Props) {
+export function FilterSheet({ open = true, value, onApply, onClose, load = defaultLoad, tagLoad = defaultTagLoad, people }: Props) {
   const [draft, setDraft] = useState<Filters>(value);
   const [options, setOptions] = useState<{ facets: Facets; albums: Album[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
   const id = useId();
 
+  // Each time the sheet opens it starts from the filters in force, not from the last abandoned edit.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setDraft(value);
+  }
+
+  // The library's options are read when the sheet is first opened (and again if that failed).
+  const needOptions = open && options === null;
   useEffect(() => {
+    if (!needOptions) return;
     let live = true;
     load().then(
-      (o) => live && setOptions(o),
+      (o) => live && (setOptions(o), setError(null)),
       (e: unknown) => live && setError(e instanceof Error ? e.message : "Could not load the filter options."),
     );
     return () => {
       live = false;
     };
-  }, [load]);
-
-  useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
-    ref.current?.querySelector<HTMLElement>("select, input, button")?.focus();
-    const overflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        onClose();
-      } else if (e.key === "Tab" && ref.current) {
-        const f = ref.current.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), select:not(:disabled)");
-        const first = f[0];
-        const last = f[f.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last?.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first?.focus();
-        }
-      }
-    }
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("keydown", onKey, true);
-      document.body.style.overflow = overflow;
-      prev?.focus?.();
-    };
-  }, [onClose]);
+  }, [needOptions, load]);
 
   const set = (patch: Partial<Filters>) =>
     setDraft((d) => {
@@ -106,64 +92,81 @@ export function FilterSheet({ value, onApply, onClose, load = defaultLoad, tagLo
   const year = yearOf(draft);
   const years = withCurrent(facets?.years ?? [], year || undefined, (v) => ({ value: v, count: 0 }));
   const count = Object.keys(draft).length;
-  const label = (what: string, v: { value: string; count: number }) => (v.count > 0 ? `${v.value} (${n(v.count)})` : v.value) || what;
+  const label = (v: { value: string; count: number }) => (v.count > 0 ? `${v.value} (${n(v.count)})` : v.value);
 
   return (
-    <div className="sheet-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="sheet card" role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} ref={ref}>
-        <div className="sheet-grip" aria-hidden="true" />
-        <h2 id={`${id}-title`}>Filters</h2>
-        {error && (
-          <p role="alert" className="form-error small">
-            {error}
-          </p>
-        )}
-        <div className="sheet-body">
-          <div className="sheet-field">
-            <label htmlFor={`${id}-year`}>Year</label>
+    <Sheet
+      open={open}
+      onOpenChange={(o) => !o && onClose()}
+      title="Filters"
+      footer={
+        <div className="flex w-full items-center gap-2">
+          <Button variant="quiet" disabled={count === 0} onClick={() => setDraft({})}>
+            Clear all
+          </Button>
+          <div className="flex-1" />
+          <Button variant="secondary" className="hidden md:inline-flex" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" className="flex-1 md:flex-none" onClick={() => onApply(draft)}>
+            Show photos
+          </Button>
+        </div>
+      }
+    >
+      {error && (
+        <p role="alert" className="mb-3 text-sm text-danger">
+          {error}
+        </p>
+      )}
+      <div className="flex flex-col gap-6 pb-2">
+        <Group title="When">
+          <Field label="Year" htmlFor={`${id}-year`}>
             <select
               id={`${id}-year`}
-              className="text-input"
+              className={fieldCls}
               value={year}
               onChange={(e) => set(e.target.value ? yearRange(e.target.value) : { from: undefined, to: undefined })}
             >
               <option value="">Any</option>
               {years.map((y) => (
                 <option key={y.value} value={y.value}>
-                  {label("", y)}
+                  {label(y)}
                 </option>
               ))}
             </select>
-          </div>
-          <div className="sheet-pair">
-            <div className="sheet-field">
-              <label htmlFor={`${id}-from`}>From</label>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="From" htmlFor={`${id}-from`}>
               <input
                 id={`${id}-from`}
-                className="text-input"
+                className={fieldCls}
                 type="date"
                 value={draft.from ?? ""}
                 max={draft.to}
                 onChange={(e) => set({ from: e.target.value })}
               />
-            </div>
-            <div className="sheet-field">
-              <label htmlFor={`${id}-to`}>To</label>
+            </Field>
+            <Field label="To" htmlFor={`${id}-to`}>
               <input
                 id={`${id}-to`}
-                className="text-input"
+                className={fieldCls}
                 type="date"
                 value={draft.to ?? ""}
                 min={draft.from}
                 onChange={(e) => set({ to: e.target.value })}
               />
-            </div>
+            </Field>
           </div>
-          <label className="sheet-check">
-            <input type="checkbox" checked={draft.favorite === true} onChange={(e) => set({ favorite: e.target.checked || undefined })} />
-            <span>Favorites only{facets ? ` (${n(facets.favorites)})` : ""}</span>
-          </label>
-          <div className="sheet-field">
+        </Group>
+
+        <Group title="Photos">
+          <Switch
+            checked={draft.favorite === true}
+            onChange={(on) => set({ favorite: on || undefined })}
+            label={`Favorites only${facets ? ` (${n(facets.favorites)})` : ""}`}
+          />
+          <div className="flex flex-col gap-2">
             <TagInput
               label="Tags"
               placeholder="Any tag"
@@ -173,24 +176,22 @@ export function FilterSheet({ value, onApply, onClose, load = defaultLoad, tagLo
               load={tagLoad}
             />
             {tagListOf(draft.tags).length > 1 && (
-              <div className="sheet-segments" role="group" aria-label="Match">
-                {(["all", "any"] as const).map((m) => (
-                  <label key={m} className="sheet-segment">
-                    <input type="radio" name={`${id}-tagmode`} checked={(draft.tag_mode ?? "all") === m} onChange={() => set({ tag_mode: m === "any" ? "any" : undefined })} />
-                    <span>{m === "all" ? "All of them" : "Any of them"}</span>
-                  </label>
-                ))}
-              </div>
+              <Choices label="Match" name={`${id}-tagmode`} value={draft.tag_mode ?? "all"} onChange={(m) => set({ tag_mode: m === "any" ? "any" : undefined })}>
+                {[
+                  { value: "all", label: "All of them" },
+                  { value: "any", label: "Any of them" },
+                ]}
+              </Choices>
             )}
           </div>
           {people !== undefined &&
             (people.length === 0 && !draft.people ? (
-              <div className="sheet-field">
-                <span className="sheet-label">People</span>
-                <p className="muted small">{NO_NAMED_PEOPLE}</p>
+              <div>
+                <span className="mb-1.5 block text-sm font-medium">People</span>
+                <p className="text-sm text-muted">{NO_NAMED_PEOPLE}</p>
               </div>
             ) : (
-              <div className="sheet-field">
+              <div className="flex flex-col gap-2">
                 <PeoplePicker
                   label="People"
                   people={people}
@@ -198,14 +199,13 @@ export function FilterSheet({ value, onApply, onClose, load = defaultLoad, tagLo
                   max={MAX_FILTER_PEOPLE}
                   onChange={(ids) => set({ people: ids.length ? ids.join(",") : undefined })}
                 />
-                <p className="muted small">{PEOPLE_FILTER_NOTE}</p>
+                <p className="text-sm text-muted">{PEOPLE_FILTER_NOTE}</p>
               </div>
             ))}
-          <div className="sheet-field">
-            <label htmlFor={`${id}-rating`}>Rating</label>
+          <Field label="Rating" htmlFor={`${id}-rating`}>
             <select
               id={`${id}-rating`}
-              className="text-input"
+              className={fieldCls}
               value={draft.rating ?? ""}
               onChange={(e) => set({ rating: e.target.value ? Number(e.target.value) : undefined })}
             >
@@ -220,86 +220,19 @@ export function FilterSheet({ value, onApply, onClose, load = defaultLoad, tagLo
                 );
               })}
             </select>
-          </div>
-          <label className="sheet-check">
-            <input
-              type="checkbox"
-              checked={draft.include_archived !== false}
-              onChange={(e) => set({ include_archived: e.target.checked ? undefined : false })}
-            />
-            <span>Include archived</span>
-          </label>
-          <div className="sheet-field">
-            <label htmlFor={`${id}-camera`}>Camera</label>
-            <select id={`${id}-camera`} className="text-input" value={draft.camera ?? ""} onChange={(e) => set({ camera: e.target.value })}>
-              <option value="">Any</option>
-              {cameras.map((c) => (
-                <option key={c.value} value={c.value}>
-                  {label("", c)}
-                </option>
-              ))}
-            </select>
-          </div>
-          {lenses.length > 0 && (
-            <div className="sheet-field">
-              <label htmlFor={`${id}-lens`}>Lens</label>
-              <select id={`${id}-lens`} className="text-input" value={draft.lens ?? ""} onChange={(e) => set({ lens: e.target.value })}>
-                <option value="">Any</option>
-                {lenses.map((l) => (
-                  <option key={l.value} value={l.value}>
-                    {label("", l)}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-          <div className="sheet-field">
-            <label htmlFor={`${id}-place`}>Place</label>
-            <select id={`${id}-place`} className="text-input" value={draft.place ?? ""} onChange={(e) => set({ place: e.target.value })}>
-              <option value="">Anywhere</option>
-              {(["country", "region", "city"] as const).map((kind) => {
-                const group = places.filter((p) => p.kind === kind);
-                return group.length === 0 ? null : (
-                  <optgroup key={kind} label={kind === "country" ? "Countries" : kind === "region" ? "Regions" : "Cities"}>
-                    {group.map((p) => (
-                      <option key={`${kind}:${p.value}`} value={p.value}>
-                        {label("", p)}
-                      </option>
-                    ))}
-                  </optgroup>
-                );
-              })}
-            </select>
-          </div>
-          <fieldset className="sheet-field sheet-types">
-            <legend>File type</legend>
-            <div className="sheet-segments">
-              {([undefined, "jpeg", "heic", "raw", "other"] as const).map((t) => (
-                <label key={t ?? "any"} className="sheet-segment">
-                  <input type="radio" name={`${id}-type`} checked={draft.type === t} onChange={() => set({ type: t })} />
-                  <span>{t ? TYPE_LABEL[t] : "Any"}</span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
-          <div className="sheet-field">
-            <label htmlFor={`${id}-loc`}>Location</label>
-            <select
-              id={`${id}-loc`}
-              className="text-input"
-              value={draft.has_location === undefined ? "" : String(draft.has_location)}
-              onChange={(e) => set({ has_location: e.target.value === "" ? undefined : e.target.value === "true" })}
-            >
-              <option value="">Any</option>
-              <option value="true">Has a location{facets ? ` (${n(facets.with_location)})` : ""}</option>
-              <option value="false">No location{facets ? ` (${n(facets.total - facets.with_location)})` : ""}</option>
-            </select>
-          </div>
-          <div className="sheet-field">
-            <label htmlFor={`${id}-text`}>Text in the photo</label>
+          </Field>
+          <Choices
+            label="File type"
+            name={`${id}-type`}
+            value={draft.type ?? ""}
+            onChange={(t) => set({ type: (t || undefined) as Filters["type"] })}
+          >
+            {[{ value: "", label: "Any" }, ...(["jpeg", "heic", "raw", "other"] as const).map((t) => ({ value: t, label: TYPE_LABEL[t] }))]}
+          </Choices>
+          <Field label="Text in the photo" htmlFor={`${id}-text`}>
             <select
               id={`${id}-text`}
-              className="text-input"
+              className={fieldCls}
               value={draft.has_text === undefined ? "" : String(draft.has_text)}
               onChange={(e) => set({ has_text: e.target.value === "" ? undefined : e.target.value === "true" })}
             >
@@ -307,10 +240,68 @@ export function FilterSheet({ value, onApply, onClose, load = defaultLoad, tagLo
               <option value="true">Has text (signs, receipts, screenshots){facets?.with_text !== undefined ? ` (${n(facets.with_text)})` : ""}</option>
               <option value="false">No text</option>
             </select>
-          </div>
-          <div className="sheet-field">
-            <label htmlFor={`${id}-album`}>Album</label>
-            <select id={`${id}-album`} className="text-input" value={draft.album ?? ""} onChange={(e) => set({ album: e.target.value })}>
+          </Field>
+          <Switch
+            checked={draft.include_archived !== false}
+            onChange={(on) => set({ include_archived: on ? undefined : false })}
+            label="Include archived"
+          />
+        </Group>
+
+        <Group title="Where and with what">
+          <Field label="Place" htmlFor={`${id}-place`}>
+            <select id={`${id}-place`} className={fieldCls} value={draft.place ?? ""} onChange={(e) => set({ place: e.target.value })}>
+              <option value="">Anywhere</option>
+              {(["country", "region", "city"] as const).map((kind) => {
+                const group = places.filter((p) => p.kind === kind);
+                return group.length === 0 ? null : (
+                  <optgroup key={kind} label={kind === "country" ? "Countries" : kind === "region" ? "Regions" : "Cities"}>
+                    {group.map((p) => (
+                      <option key={`${kind}:${p.value}`} value={p.value}>
+                        {label(p)}
+                      </option>
+                    ))}
+                  </optgroup>
+                );
+              })}
+            </select>
+          </Field>
+          <Field label="Location" htmlFor={`${id}-loc`}>
+            <select
+              id={`${id}-loc`}
+              className={fieldCls}
+              value={draft.has_location === undefined ? "" : String(draft.has_location)}
+              onChange={(e) => set({ has_location: e.target.value === "" ? undefined : e.target.value === "true" })}
+            >
+              <option value="">Any</option>
+              <option value="true">Has a location{facets ? ` (${n(facets.with_location)})` : ""}</option>
+              <option value="false">No location{facets ? ` (${n(facets.total - facets.with_location)})` : ""}</option>
+            </select>
+          </Field>
+          <Field label="Camera" htmlFor={`${id}-camera`}>
+            <select id={`${id}-camera`} className={fieldCls} value={draft.camera ?? ""} onChange={(e) => set({ camera: e.target.value })}>
+              <option value="">Any</option>
+              {cameras.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {label(c)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {lenses.length > 0 && (
+            <Field label="Lens" htmlFor={`${id}-lens`}>
+              <select id={`${id}-lens`} className={fieldCls} value={draft.lens ?? ""} onChange={(e) => set({ lens: e.target.value })}>
+                <option value="">Any</option>
+                {lenses.map((l) => (
+                  <option key={l.value} value={l.value}>
+                    {label(l)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+          <Field label="Album" htmlFor={`${id}-album`}>
+            <select id={`${id}-album`} className={fieldCls} value={draft.album ?? ""} onChange={(e) => set({ album: e.target.value })}>
               <option value="">Any</option>
               {draft.album && !albums.some((a) => a.id === draft.album) && <option value={draft.album}>(selected album)</option>}
               {albums.map((a) => (
@@ -319,20 +310,65 @@ export function FilterSheet({ value, onApply, onClose, load = defaultLoad, tagLo
                 </option>
               ))}
             </select>
-          </div>
-        </div>
-        <div className="sheet-actions">
-          <button type="button" className="btn btn-quiet" disabled={count === 0} onClick={() => setDraft({})}>
-            Clear all
-          </button>
-          <button type="button" className="btn btn-quiet" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="button" className="btn btn-primary" onClick={() => onApply(draft)}>
-            Show photos
-          </button>
-        </div>
+          </Field>
+        </Group>
       </div>
+    </Sheet>
+  );
+}
+
+function Group({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-3.5">
+      <h3 className="text-xs font-medium tracking-wide text-muted uppercase">{title}</h3>
+      {children}
     </div>
+  );
+}
+
+function Field({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <label htmlFor={htmlFor} className="mb-1.5 block text-sm font-medium">
+        {label}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+/** One of a few options as pills (real radio buttons underneath, so the keyboard and screen readers get a radio group). */
+function Choices({
+  label,
+  name,
+  value,
+  onChange,
+  children,
+}: {
+  label: string;
+  name: string;
+  value: string;
+  onChange: (v: string) => void;
+  children: readonly { value: string; label: string }[];
+}) {
+  return (
+    <fieldset className="m-0 min-w-0 border-0 p-0">
+      <legend className="mb-1.5 p-0 text-sm font-medium">{label}</legend>
+      <div className="flex flex-wrap gap-2">
+        {children.map((o) => (
+          <label
+            key={o.value || "any"}
+            className={cn(
+              "relative inline-flex h-10 cursor-pointer items-center rounded-full px-4 text-[0.9375rem] transition-colors",
+              "has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent",
+              value === o.value ? "bg-accent text-on-accent" : "bg-surface text-fg hover:bg-line/70",
+            )}
+          >
+            <input type="radio" name={name} className="sr-only" checked={value === o.value} onChange={() => onChange(o.value)} />
+            {o.label}
+          </label>
+        ))}
+      </div>
+    </fieldset>
   );
 }

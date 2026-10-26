@@ -93,7 +93,6 @@ const BUSY = {
     { job_id: 3, asset_id: "a4", original_name: "IMG_1004.HEIC", kind: "thumbnail", last_error: "sha256 mismatch", attempts: 5 },
   ],
 };
-const INDEXING = { ...IDLE, total_photos: 52000, embedding: { indexed: 12345, total: 52000, queued: 39654, running: 1, failed: 0 } };
 // An older model answers while the improved one indexes the library.
 const REINDEXING = {
   ...IDLE,
@@ -120,7 +119,7 @@ test.afterEach(() => {
 });
 let memberView = false;
 let anonymous = false;
-let processing: typeof IDLE | typeof BUSY | typeof INDEXING | typeof REINDEXING = IDLE;
+let processing: typeof IDLE | typeof BUSY | typeof REINDEXING = IDLE;
 
 // Search: the mock answers by what the query says. "nothing" matches no photo, "unavailable" is a server without the
 // model; anything else ranks the library's photos. Facets carry long names to stress the filter sheet.
@@ -1068,9 +1067,9 @@ for (const { width, scheme } of RUNS) {
       await page.goto("/search?q=dog");
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
       await page.getByRole("button", { name: /^Filters/ }).click();
-      await page.getByRole("checkbox", { name: "Include archived" }).waitFor();
+      await page.getByRole("switch", { name: "Include archived" }).waitFor();
       await check("search-include-archived");
-      await page.getByRole("checkbox", { name: "Include archived" }).uncheck();
+      await page.getByRole("switch", { name: "Include archived" }).click();
       await page.getByRole("button", { name: "Show photos" }).click();
       await page.getByText("Without archived").first().waitFor();
       await check("search-without-archived-chip");
@@ -1078,153 +1077,7 @@ for (const { width, scheme } of RUNS) {
       expect(problems, problems.join("\n")).toEqual([]);
     });
 
-    test(`search: bar, results, filters, chips and states fit`, async ({ page }) => {
-      test.setTimeout(90_000);
-      if (SHOT_DIR) mkdirSync(SHOT_DIR, { recursive: true });
-      const problems: string[] = [];
-      const check = makeCheck(page, `${width}${scheme === "dark" ? "-dark" : ""}-search`, problems);
-      await mock(page);
-      processing = IDLE;
-      const field = page.getByRole("combobox", { name: "Search photos" });
-      // A phone shows an icon that expands; a wide screen shows the field. Either way this leaves the field usable.
-      const openBar = async () => {
-        const icon = page.getByRole("button", { name: "Search photos" });
-        if (await icon.isVisible()) await icon.click();
-        await field.waitFor({ state: "visible" });
-      };
-
-      await page.goto("/library");
-      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
-      await check("bar-collapsed");
-      expect(await page.getByRole("link").filter({ hasText: /^(All photos|Favorites|Map)$/ }).count()).toBe(3);
-      await openBar();
-      await check("bar-expanded");
-      // Recent searches drop down under the field.
-      await page.evaluate(() => localStorage.setItem("cyanotype.recentSearches", JSON.stringify(["dog on the beach", "red car at night", "x".repeat(90)])));
-      await field.fill("");
-      await field.blur(); // (a phone's field is already focused after expanding)
-      await field.focus();
-      await page.getByRole("listbox", { name: "Recent searches" }).waitFor();
-      await check("bar-recent");
-
-      await field.fill("dog on the beach");
-      await field.press("Enter");
-      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
-      await page.getByText(/^\d+ matches$/).waitFor();
-      await check("results");
-      await page.getByRole("button", { name: "Select", exact: true }).click();
-      await page.getByRole("button", { name: /Select IMG_1000/ }).click();
-      await check("results-select");
-      await page.getByRole("button", { name: "Done" }).click();
-
-      await page.getByRole("button", { name: /^Filters/ }).click();
-      await page.getByRole("dialog", { name: "Filters" }).waitFor();
-      await page.getByRole("option", { name: new RegExp(LONG_CAMERA.slice(0, 20)) }).first().waitFor({ state: "attached" });
-      await check("filters-sheet");
-      const sheet = page.getByRole("dialog", { name: "Filters" });
-      await sheet.getByLabel("Camera", { exact: true }).selectOption(LONG_CAMERA);
-      await sheet.getByLabel("Place", { exact: true }).selectOption(LONG_PLACE);
-      await sheet.getByLabel("Year", { exact: true }).selectOption("2024");
-      await sheet.getByRole("checkbox", { name: /Favorites only/ }).check();
-      await sheet.getByRole("radio", { name: "RAW" }).check({ force: true });
-      await check("filters-sheet-filled");
-      await page.getByRole("button", { name: "Show photos" }).click();
-      await page.getByRole("list", { name: "Active filters" }).getByText("2024").waitFor();
-      await check("results-with-chips");
-
-      await openBar();
-      await field.fill("empty like it");
-      await field.press("Enter");
-      await page.getByRole("heading", { name: "Nothing matched" }).waitFor();
-      await check("no-results");
-
-      // The query read as a date and a place: two chips (the place as long as a place name can be), and taking one off.
-      await page.goto("/search?q=dog%20in%20summer%202022");
-      await page.getByRole("list", { name: "Understood from your search" }).waitFor();
-      await check("parsed-chips");
-      await page.getByRole("button", { name: "Remove date Summer 2022" }).click();
-      await page.waitForURL(/skip=date/);
-      await check("parsed-chip-removed");
-
-      // Strong matches with weaker ones behind them, and the weaker ones shown.
-      await page.goto("/search?q=weak");
-      await page.getByRole("button", { name: /Show weaker matches \(12\)/ }).waitFor();
-      await check("weaker-offered");
-      await page.getByRole("button", { name: /Show weaker matches/ }).click();
-      await page.getByText("8 matches, 12 weaker").waitFor();
-      await check("weaker-shown");
-      // Nothing close, but weaker matches exist; and nothing at all.
-      await page.goto("/search?q=nothing%20close");
-      await page.getByRole("heading", { name: "No close matches" }).waitFor();
-      await check("no-close-matches");
-      await page.getByRole("button", { name: /Show weaker matches \(6\)/ }).click();
-      await page.getByText("0 matches, 6 weaker").waitFor();
-      await check("no-close-matches-weaker-shown");
-      await page.goto("/search?q=empty");
-      await page.getByRole("heading", { name: "Nothing matched" }).waitFor();
-      await check("nothing-at-all");
-
-      // An older model answers while the improved one indexes the library: said once, with progress.
-      processing = REINDEXING;
-      await page.goto("/search?q=dog");
-      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
-      await page.getByText(/Re-indexing with the improved search model: 40%/).first().waitFor();
-      await check("reindexing");
-      await page.goto("/search");
-      await page.getByRole("heading", { name: "Search your photos" }).waitFor();
-      await page.getByText(/Re-indexing with the improved search model: 40%/).waitFor();
-      await check("reindexing-intro");
-
-      processing = INDEXING;
-      await page.goto("/search?q=dog");
-      await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
-      await page.getByText(/Still indexing 39,655 photos/).first().waitFor();
-      await check("indexing");
-      await page.goto("/search?q=nothing");
-      await page.getByText(/still being indexed cannot match/).waitFor();
-      await check("indexing-no-results");
-      processing = IDLE;
-
-      await page.goto("/search?q=unavailable");
-      await page.getByRole("heading", { name: "Search isn’t available" }).waitFor();
-      await check("unavailable");
-
-      await page.goto("/search");
-      await page.getByRole("heading", { name: "Search your photos" }).waitFor();
-      await check("intro");
-
-      // Bursts: collapsed with their badges, one opened inline, and selecting a collapsed burst (the bar says what it includes).
-      await page.goto("/search?q=burst");
-      await page.getByRole("button", { name: "Show 3 more photos from this burst" }).waitFor();
-      await check("bursts");
-      await page.getByRole("button", { name: "Show 3 more photos from this burst" }).click();
-      await page.getByRole("button", { name: "Hide the other 3 photos of this burst" }).waitFor();
-      await check("burst-open");
-      await page.getByRole("button", { name: "Hide the other 3 photos of this burst" }).click();
-      await page.getByRole("button", { name: "Select", exact: true }).click();
-      await page.getByRole("button", { name: /Select IMG_1001.* and 3 more from its burst/ }).click();
-      await page.getByText("4 selected").waitFor();
-      await check("burst-selected");
-      await page.getByRole("button", { name: "Done" }).click();
-
-      // "More like this": the source chip with its thumbnail, the filters beside it, weaker matches, the lightbox button
-      // that starts it, and a photo that is not indexed yet.
-      await page.goto("/search?similar=6f1c2b0e-0000-4000-8000-0000000000a3&favorite=true");
-      await page.getByText("8 similar photos").waitFor();
-      await check("similar");
-      await page.getByRole("button", { name: /Show weaker matches \(12\)/ }).click();
-      await page.getByText("8 similar photos, 12 weaker").waitFor();
-      await check("similar-weaker-shown");
-      await page.getByRole("button", { name: /Open IMG_1000/ }).first().click();
-      await page.getByRole("button", { name: "Similar photos" }).waitFor();
-      await check("similar-lightbox");
-      await page.keyboard.press("Escape");
-      await page.goto("/search?similar=6f1c2b0e-0000-4000-8000-00000000dead");
-      await page.getByRole("heading", { name: "This photo is still being indexed" }).waitFor();
-      await check("similar-not-indexed");
-
-      expect(problems, problems.join("\n")).toEqual([]);
-    });
+    // (The Search page's own states are checked in search-layout.spec.ts.)
 
     test(`admin: invites and the invite-only register page fit`, async ({ page }) => {
       test.setTimeout(90_000);

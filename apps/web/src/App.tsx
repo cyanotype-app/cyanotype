@@ -28,6 +28,7 @@ import { PersonPage } from "./pages/PersonPage";
 import { Register } from "./pages/Register";
 import { ResetPassword } from "./pages/ResetPassword";
 import { ShareView } from "./pages/ShareView";
+import { SearchShortcut } from "./components/SearchBar";
 import { SearchPage } from "./pages/Search";
 import { Sessions } from "./pages/Sessions";
 import { SettingsLayout } from "./pages/SettingsLayout";
@@ -123,6 +124,7 @@ function RequireAuth() {
           <Outlet />
         </main>
       </AppShell>
+      <SearchShortcut />
       <UploadTray />
     </UploadPickerProvider>
     </SlideshowProvider>
