@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Target } from "../api";
+import { Button } from "../ui/Button";
 import { TagDialog } from "./TagDialog";
 
 interface Props {
@@ -10,14 +11,14 @@ interface Props {
   onDone: (message: string) => void;
 }
 
-/** "Tag" for the selection bar: the add/remove dialog for the selected photos. */
+/** "Tag" for the selection bar: the add/remove sheet for the selected photos. */
 export function TagTools({ target, count, disabled, onDone }: Props) {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <button type="button" className="btn btn-quiet" disabled={disabled} onClick={() => setOpen(true)}>
+      <Button variant="quiet" size="sm" disabled={disabled} onClick={() => setOpen(true)}>
         Tag
-      </button>
+      </Button>
       {open && (
         <TagDialog
           target={target}

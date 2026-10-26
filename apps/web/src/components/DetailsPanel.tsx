@@ -1,16 +1,19 @@
-import { lazy, Suspense, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type MouseEvent, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, type PhotoDetails, type TilesInstalled } from "../api";
+import { api, type PhotoDetails, type PhotoFace, type PhotoTag, type TilesInstalled } from "../api";
 import { burstText, coordinatesText, dayHref, mapHref, resolutionText, searchHref, whenText } from "../detailsText";
 import { placeLine } from "../map/geo";
 import { fileSize } from "../pairText";
-import type { EditKind } from "./EditDialog";
-import { useVerticalSwipe } from "../useInfoPanel";
-import { RatingStars } from "./Stars";
-import type { PhotoFace, PhotoTag } from "../api";
 import { peopleNamed } from "../peopleText";
-import { tagSearchHref } from "../tagText";
 import { fromServer, recipeText } from "../recipeText";
+import { tagSearchHref } from "../tagText";
+import { Button } from "../ui/Button";
+import { Switch } from "../ui/Controls";
+import { cn } from "../ui/cn";
+import type { EditKind } from "./EditDialog";
+import { RatingStars } from "./Stars";
+import { TagChip } from "./TagChip";
+import { ViewerPanel } from "./ViewerPanel";
 
 // maplibre-gl is big: the small map loads only when a photo with a location is looked at.
 const PlaceMap = lazy(() => import("../map/PlaceMap"));
@@ -32,6 +35,8 @@ interface Props {
   onLeave: () => Promise<void>;
   /** A link inside the panel was followed: the lightbox closes with it. */
   onNavigate: () => void;
+  /** Whether the panel is shown (the viewer keeps it mounted while it animates away). */
+  open?: boolean;
   /** Open the editor for the photo's date, location or caption. Without it the panel only shows. */
   onEdit?: (kind: EditKind) => void;
   /** The photo's stars, and how to change them (a row of stars shows when `onRate` is given). */
@@ -58,28 +63,51 @@ type Follow = (e: MouseEvent<HTMLAnchorElement>, to: string) => void;
 /** A link inside the panel: a plain click first closes the panel's history entry, then the lightbox, then navigates. */
 function PanelLink({ to, follow, className, children, ...rest }: { to: string; follow: Follow; className?: string; children: ReactNode; "aria-label"?: string }) {
   return (
-    <Link to={to} className={className} onClick={(e) => follow(e, to)} {...rest}>
+    <Link to={to} className={cn("text-accent hover:underline", className)} onClick={(e) => follow(e, to)} {...rest}>
       {children}
     </Link>
   );
 }
 
-function Row({ label, children }: { label: string; children: ReactNode }) {
+/** A group of rows on a rounded well, hairlines between them. */
+function Group({ children, label }: { children: ReactNode; label?: string }) {
   return (
-    <div className="details-row">
-      <dt>{label}</dt>
-      <dd>{children}</dd>
+    <dl aria-label={label} className="divide-y divide-line overflow-hidden rounded-card bg-surface">
+      {children}
+    </dl>
+  );
+}
+
+function Row({ label, children, action }: { label: string; children: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="flex items-start gap-3 px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <dt className="text-[0.8125rem] text-muted">{label}</dt>
+        <dd className="mt-0.5 flex min-w-0 flex-col gap-0.5 text-[0.9375rem] [overflow-wrap:anywhere]">{children}</dd>
+      </div>
+      {action}
     </div>
+  );
+}
+
+const sub = "text-sm text-muted";
+
+function EditButton({ label, onClick }: { label: string; onClick: () => void }) {
+  const text = label.startsWith("Add") || label.startsWith("Edit") ? label.split(" ")[0] : "Adjust";
+  return (
+    <Button variant="ghost" size="sm" className="-mr-2 shrink-0 self-start text-accent" aria-label={label} onClick={onClick}>
+      {text}
+    </Button>
   );
 }
 
 /**
  * The details of the open photo, Apple Photos style: when, where (with a small map), camera and lens, the exposure, the
- * files, albums and burst. A row appears only when the photo has the information. The camera, lens, place and date
- * are links to the search or the timeline for the same thing.
+ * files, albums and burst, in grouped rows. A row appears only when the photo has the information. The camera, lens,
+ * place and date are links to the search or the timeline for the same thing. A bottom sheet on a phone, a column beside the
+ * photo on a desktop.
  */
-export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, onEdit, rating, onRate, tags, onTag, onUntag, onEditPicture, faces, dismissed, onBringBack, faceBoxes, onFaceBoxes }: Props) {
-  const closeRef = useRef<HTMLButtonElement>(null);
+export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, open = true, onEdit, rating, onRate, tags, onTag, onUntag, onEditPicture, faces, dismissed, onBringBack, faceBoxes, onFaceBoxes }: Props) {
   const navigate = useNavigate();
   const follow: Follow = (e, to) => {
     // Let the browser handle new-tab clicks and the like.
@@ -90,49 +118,26 @@ export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavi
       navigate(to);
     });
   };
-  // On a phone the panel is a sheet: drag its header down to put it away.
-  const swipe = useVerticalSwipe({ onDown: onClose });
-  // Focus lands on the panel when it opens (the lightbox hands it back to the Info button on close).
-  useEffect(() => {
-    closeRef.current?.focus();
-  }, []);
 
   return (
-    <aside className="details-panel" id={panelId} aria-label="Photo details">
-      <div className="details-head" {...swipe}>
-        <span className="details-grip" aria-hidden="true" />
-        <h2>Info</h2>
-        <button type="button" className="btn btn-glass details-close" ref={closeRef} onClick={onClose}>
-          Close info
-        </button>
-      </div>
-      <div className="details-body">
-        {state.status === "loading" && (
-          <p className="muted" role="status">
-            Loading details…
-          </p>
-        )}
-        {state.status === "error" && (
-          <p role="alert">
-            Could not load the details.{" "}
-            <button type="button" className="btn btn-glass" onClick={onRetry}>
-              Try again
-            </button>
-          </p>
-        )}
-        {state.status === "ready" && (
-          <Body d={state.details} follow={follow} onEdit={onEdit} rating={rating} onRate={onRate} tags={tags} onTag={onTag} onUntag={onUntag} onEditPicture={onEditPicture} faces={faces} dismissed={dismissed} onBringBack={onBringBack} faceBoxes={faceBoxes} onFaceBoxes={onFaceBoxes} />
-        )}
-      </div>
-    </aside>
-  );
-}
-
-function EditButton({ label, onClick }: { label: string; onClick: () => void }) {
-  return (
-    <button type="button" className="btn btn-glass details-edit" aria-label={label} onClick={onClick}>
-      {label.startsWith("Add") || label.startsWith("Edit") ? label.split(" ")[0] : "Adjust"}
-    </button>
+    <ViewerPanel id={panelId} title="Info" label="Photo details" closeLabel="Close info" onClose={onClose} open={open}>
+      {state.status === "loading" && (
+        <p className="py-4 text-muted" role="status">
+          Loading details…
+        </p>
+      )}
+      {state.status === "error" && (
+        <div role="alert" className="flex flex-col items-start gap-3 py-4">
+          <p>Could not load the details.</p>
+          <Button variant="secondary" onClick={onRetry}>
+            Try again
+          </Button>
+        </div>
+      )}
+      {state.status === "ready" && (
+        <Body d={state.details} follow={follow} onEdit={onEdit} rating={rating} onRate={onRate} tags={tags} onTag={onTag} onUntag={onUntag} onEditPicture={onEditPicture} faces={faces} dismissed={dismissed} onBringBack={onBringBack} faceBoxes={faceBoxes} onFaceBoxes={onFaceBoxes} />
+      )}
+    </ViewerPanel>
   );
 }
 
@@ -174,164 +179,161 @@ function Body({
   const x = d.exposure;
   const pair = d.files.length > 1;
   const named = peopleNamed(faces);
+  const hasCamera = !!(d.camera?.label || d.camera?.lens || x?.line || x?.focal_length_35mm || x?.flash || x?.white_balance || x?.metering || x?.program);
+  const hasPeople = named.length > 0 || (onFaceBoxes && (faces?.length ?? 0) > 0) || (onBringBack && (dismissed ?? 0) > 0);
 
   return (
-    <dl className="details-list">
-      <Row label={d.date.basis === "taken" ? "Date" : d.date.basis === "file" ? "File date" : "Added"}>
-        <PanelLink to={dayHref(d.date.timeline_day)} follow={follow} className="details-link">
-          {when.day}
-        </PanelLink>
-        <span className="details-sub">
-          {when.time}
-          {when.time && " · "}
-          <span className={d.date.zone_known ? undefined : "details-unknown"}>{when.zone}</span>
-        </span>
-        {when.note && <span className="details-sub">{when.note}</span>}
-        {d.edits?.date_edited && <span className="details-sub details-edited">Edited</span>}
-        {onEdit && <EditButton label="Adjust date and time" onClick={() => onEdit("date")} />}
-      </Row>
-
+    <div className="flex flex-col gap-4">
       {onRate && (
-        <Row label="Rating">
+        <div className="flex items-center justify-between gap-3 rounded-card bg-surface px-4 py-1.5">
+          <span className="text-[0.8125rem] text-muted">Rating</span>
           <RatingStars value={rating} onChange={onRate} label="Rating of this photo" />
-        </Row>
+        </div>
       )}
 
-      {onTag && (
-        <Row label="Tags">
-          {tags && tags.length > 0 && (
-            <span className="details-tags">
-              {tags.map((t) => (
-                <span key={t.id} className={`tag-chip${t.imported ? " imported" : ""}`} title={t.imported ? "From the photo's own keywords" : undefined}>
-                  <PanelLink to={tagSearchHref(t.name)} follow={follow} className="tag-chip-name">
-                    {t.name}
-                  </PanelLink>
-                  {onUntag && (
-                    <button type="button" className="tag-chip-x" aria-label={`Remove tag ${t.name}`} onClick={() => onUntag(t)}>
-                      ×
-                    </button>
-                  )}
-                </span>
-              ))}
-            </span>
-          )}
-          <button type="button" className="btn btn-glass details-edit" onClick={onTag}>
-            Add tag
-          </button>
-        </Row>
-      )}
-
-      {(named.length > 0 || (onFaceBoxes && (faces?.length ?? 0) > 0) || (onBringBack && (dismissed ?? 0) > 0)) && (
-        <Row label="People">
-          {named.length > 0 && (
-            <span className="details-tags">
-              {named.map((p) => (
-                <span key={p.id} className="tag-chip person-chip">
-                  <PanelLink to={`/people/${p.id}`} follow={follow} className="tag-chip-name">
-                    {p.name}
-                  </PanelLink>
-                </span>
-              ))}
-            </span>
-          )}
-          {onFaceBoxes && (faces?.length ?? 0) > 0 && (
-            <label className="details-check">
-              <input type="checkbox" checked={faceBoxes === true} onChange={(e) => onFaceBoxes(e.target.checked)} /> Show face boxes on the photo
-            </label>
-          )}
-          {onBringBack && (dismissed ?? 0) > 0 && (
-            <button type="button" className="btn btn-glass details-edit" onClick={onBringBack}>
-              Bring back {dismissed === 1 ? "1 detection" : `${dismissed} detections`} marked “Not a face”
-            </button>
-          )}
-        </Row>
-      )}
-
-      {onEditPicture && (
-        <Row label="Picture">
-          <span className="details-sub">{recipeText(fromServer(d.edits?.recipe), d.file.width, d.file.height)}</span>
-          {d.edits?.recipe && <span className="details-sub details-edited">Edited</span>}
-          <button type="button" className="btn btn-glass details-edit" aria-label="Rotate and crop the picture" onClick={onEditPicture}>
-            Crop
-          </button>
-        </Row>
-      )}
-
-      {loc && (
-        <Row label="Location">
-          {loc.place && (
-            <PanelLink to={searchHref({ place: loc.place.city })} follow={follow} className="details-link">
-              {place}
-            </PanelLink>
-          )}
-          <span className="details-sub">{coordinatesText(loc.latitude, loc.longitude)}</span>
-          {loc.altitude && <span className="details-sub">Altitude {loc.altitude}</span>}
-          {loc.direction && <span className="details-sub">Facing {loc.direction}</span>}
-          {d.edits?.location_edited && <span className="details-sub details-edited">Edited</span>}
-          {onEdit && <EditButton label="Edit location" onClick={() => onEdit("location")} />}
-          <MiniMap lat={loc.latitude} lon={loc.longitude} follow={follow} />
-        </Row>
-      )}
-      {!loc && onEdit && (
-        <Row label="Location">
-          <EditButton label="Add location" onClick={() => onEdit("location")} />
-        </Row>
-      )}
-      {(d.caption || onEdit) && (
-        <Row label="Caption">
-          {d.caption && <span className="details-caption">{d.caption}</span>}
-          {onEdit && <EditButton label={d.caption ? "Edit caption" : "Add a caption"} onClick={() => onEdit("caption")} />}
-        </Row>
-      )}
-
-      {d.camera?.label && (
-        <Row label="Camera">
-          <PanelLink to={searchHref({ camera: d.camera.label })} follow={follow} className="details-link">
-            {d.camera.label}
+      <Group>
+        <Row label={d.date.basis === "taken" ? "Date" : d.date.basis === "file" ? "File date" : "Added"} action={onEdit && <EditButton label="Adjust date and time" onClick={() => onEdit("date")} />}>
+          <PanelLink to={dayHref(d.date.timeline_day)} follow={follow}>
+            {when.day}
           </PanelLink>
-        </Row>
-      )}
-      {d.camera?.lens && (
-        <Row label="Lens">
-          <PanelLink to={searchHref({ lens: d.camera.lens })} follow={follow} className="details-link">
-            {d.camera.lens}
-          </PanelLink>
-        </Row>
-      )}
-
-      {x?.line && <Row label="Exposure">{x.line}</Row>}
-      {x?.focal_length_35mm && <Row label="35 mm equivalent">{x.focal_length_35mm}</Row>}
-      {x?.flash && <Row label="Flash">{x.flash}</Row>}
-      {x?.white_balance && <Row label="White balance">{x.white_balance}</Row>}
-      {x?.metering && <Row label="Metering">{x.metering}</Row>}
-      {x?.program && <Row label="Exposure program">{x.program}</Row>}
-
-      <Row label={pair ? "Files" : "File"}>
-        {d.files.map((f) => (
-          <span key={f.id} className="details-file">
-            <span className="details-name">{f.name}</span>
-            <span className="details-sub">
-              {f.format}
-              {f.raw ? " (RAW)" : ""} · {fileSize(f.size_bytes)}
-            </span>
+          <span className={sub}>
+            {when.time}
+            {when.time && " · "}
+            <span className={d.date.zone_known ? undefined : "italic"}>{when.zone}</span>
           </span>
-        ))}
-      </Row>
-      {resolution && <Row label="Resolution">{resolution}</Row>}
-      {d.file.color_space && <Row label="Colour space">{d.file.color_space}</Row>}
-      {d.file.software && <Row label="Software">{d.file.software}</Row>}
+          {when.note && <span className={sub}>{when.note}</span>}
+          {d.edits?.date_edited && <span className={cn(sub, "italic")}>Edited</span>}
+        </Row>
 
-      {d.albums.length > 0 && (
-        <Row label="Albums">
-          {d.albums.map((a) => (
-            <PanelLink key={a.id} to={`/albums/${a.id}`} follow={follow} className="details-link">
-              {a.title}
-            </PanelLink>
+        {loc && (
+          <Row label="Location" action={onEdit && <EditButton label="Edit location" onClick={() => onEdit("location")} />}>
+            {loc.place && (
+              <PanelLink to={searchHref({ place: loc.place.city })} follow={follow}>
+                {place}
+              </PanelLink>
+            )}
+            <span className={sub}>{coordinatesText(loc.latitude, loc.longitude)}</span>
+            {loc.altitude && <span className={sub}>Altitude {loc.altitude}</span>}
+            {loc.direction && <span className={sub}>Facing {loc.direction}</span>}
+            {d.edits?.location_edited && <span className={cn(sub, "italic")}>Edited</span>}
+            <MiniMap lat={loc.latitude} lon={loc.longitude} follow={follow} />
+          </Row>
+        )}
+        {!loc && onEdit && (
+          <Row label="Location" action={<EditButton label="Add location" onClick={() => onEdit("location")} />}>
+            <span className={sub}>No location</span>
+          </Row>
+        )}
+
+        {(d.caption || onEdit) && (
+          <Row label="Caption" action={onEdit && <EditButton label={d.caption ? "Edit caption" : "Add a caption"} onClick={() => onEdit("caption")} />}>
+            {d.caption ? <span className="whitespace-pre-wrap">{d.caption}</span> : <span className={sub}>No caption</span>}
+          </Row>
+        )}
+      </Group>
+
+      {(onTag || hasPeople || d.albums.length > 0) && (
+        <Group>
+          {onTag && (
+            <Row label="Tags">
+              <span className="mt-1 flex flex-wrap items-center gap-1.5">
+                {tags?.map((t) => (
+                  <TagChip key={t.id} className="bg-card" imported={t.imported} title={t.imported ? "From the photo's own keywords" : undefined} removeLabel={`Remove tag ${t.name}`} onRemove={onUntag && (() => onUntag(t))}>
+                    <PanelLink to={tagSearchHref(t.name)} follow={follow} className="text-fg">
+                      {t.name}
+                    </PanelLink>
+                  </TagChip>
+                ))}
+                <Button variant="secondary" size="sm" className="bg-card hover:bg-card/70" onClick={onTag}>
+                  Add tag
+                </Button>
+              </span>
+            </Row>
+          )}
+
+          {hasPeople && (
+            <Row label="People">
+              {named.length > 0 && (
+                <span className="mt-1 flex flex-wrap gap-1.5">
+                  {named.map((p) => (
+                    <TagChip key={p.id} className="bg-card">
+                      <PanelLink to={`/people/${p.id}`} follow={follow} className="text-fg">
+                        {p.name}
+                      </PanelLink>
+                    </TagChip>
+                  ))}
+                </span>
+              )}
+              {onFaceBoxes && (faces?.length ?? 0) > 0 && <Switch checked={faceBoxes === true} onChange={onFaceBoxes} label="Show face boxes on the photo" />}
+              {onBringBack && (dismissed ?? 0) > 0 && (
+                <Button variant="secondary" size="sm" className="mt-1 h-auto self-start bg-card py-2 whitespace-normal text-left hover:bg-card/70" onClick={onBringBack}>
+                  Bring back {dismissed === 1 ? "1 detection" : `${dismissed} detections`} marked “Not a face”
+                </Button>
+              )}
+            </Row>
+          )}
+
+          {d.albums.length > 0 && (
+            <Row label="Albums">
+              {d.albums.map((a) => (
+                <PanelLink key={a.id} to={`/albums/${a.id}`} follow={follow}>
+                  {a.title}
+                </PanelLink>
+              ))}
+            </Row>
+          )}
+        </Group>
+      )}
+
+      {hasCamera && (
+        <Group>
+          {d.camera?.label && (
+            <Row label="Camera">
+              <PanelLink to={searchHref({ camera: d.camera.label })} follow={follow}>
+                {d.camera.label}
+              </PanelLink>
+            </Row>
+          )}
+          {d.camera?.lens && (
+            <Row label="Lens">
+              <PanelLink to={searchHref({ lens: d.camera.lens })} follow={follow}>
+                {d.camera.lens}
+              </PanelLink>
+            </Row>
+          )}
+          {x?.line && <Row label="Exposure">{x.line}</Row>}
+          {x?.focal_length_35mm && <Row label="35 mm equivalent">{x.focal_length_35mm}</Row>}
+          {x?.flash && <Row label="Flash">{x.flash}</Row>}
+          {x?.white_balance && <Row label="White balance">{x.white_balance}</Row>}
+          {x?.metering && <Row label="Metering">{x.metering}</Row>}
+          {x?.program && <Row label="Exposure program">{x.program}</Row>}
+        </Group>
+      )}
+
+      <Group>
+        <Row label={pair ? "Files" : "File"}>
+          {d.files.map((f) => (
+            <span key={f.id} className="flex flex-col">
+              <span>{f.name}</span>
+              <span className={sub}>
+                {f.format}
+                {f.raw ? " (RAW)" : ""} · {fileSize(f.size_bytes)}
+              </span>
+            </span>
           ))}
         </Row>
-      )}
-      {d.burst && <Row label="Burst">{burstText(d.burst)}</Row>}
-    </dl>
+        {resolution && <Row label="Resolution">{resolution}</Row>}
+        {d.file.color_space && <Row label="Colour space">{d.file.color_space}</Row>}
+        {d.file.software && <Row label="Software">{d.file.software}</Row>}
+        {onEditPicture && (
+          <Row label="Picture" action={<EditButton label="Rotate and crop the picture" onClick={onEditPicture} />}>
+            <span className={sub}>{recipeText(fromServer(d.edits?.recipe), d.file.width, d.file.height)}</span>
+            {d.edits?.recipe && <span className={cn(sub, "italic")}>Edited</span>}
+          </Row>
+        )}
+        {d.burst && <Row label="Burst">{burstText(d.burst)}</Row>}
+      </Group>
+    </div>
   );
 }
 
@@ -359,10 +361,15 @@ function MiniMap({ lat, lon, follow }: { lat: number; lon: number; follow: Follo
   }, []);
   if (failed) return null;
   return (
-    <PanelLink to={mapHref(lat, lon)} follow={follow} className="place-map-link" aria-label="Open the map at this photo">
+    <Link
+      to={mapHref(lat, lon)}
+      onClick={(e) => follow(e, mapHref(lat, lon))}
+      aria-label="Open the map at this photo"
+      className="mt-2 block overflow-hidden rounded-[0.7rem] border border-line"
+    >
       <Suspense fallback={<div className="place-map" />}>
         {tiles ? <PlaceMap lat={lat} lon={lon} basemap={tiles} dark={dark} onUnavailable={() => setFailed(true)} /> : <div className="place-map" />}
       </Suspense>
-    </PanelLink>
+    </Link>
   );
 }

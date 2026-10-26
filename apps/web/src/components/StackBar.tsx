@@ -1,7 +1,10 @@
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type { AssetListItem } from "../api";
 import { placeholderUrl } from "../thumbhash";
 import { positionLabel } from "../stacks";
+import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
 
 /** What the viewer needs to step through the stack of the photo on show and to change it. */
 export interface StackView {
@@ -39,61 +42,62 @@ export function StackBar({ stack }: { stack: StackView }) {
   if (!here) return null;
   const isCover = here.id === coverId;
   return (
-    <section className="stack-bar" aria-label="Stack">
-      <div className="stack-head">
-        <span className="stack-count" aria-live="polite">
-          {positionLabel(position, items.length)}
-        </span>
-        <span className="stack-step">
-          <button
-            type="button"
-            className="btn btn-glass"
+    <section className="grid grid-cols-1 max-w-full gap-2 rounded-card bg-black/45 p-2.5 text-white backdrop-blur-md" aria-label="Stack">
+      <div className="flex items-center justify-between gap-2 pl-1 text-sm">
+        <span aria-live="polite">{positionLabel(position, items.length)}</span>
+        <span className="inline-flex gap-1">
+          <Button
+            variant="overlay"
+            size="icon-sm"
             aria-label="Previous photo in the stack"
             title="Previous in stack ["
             disabled={position === 0}
             onClick={() => stack.onStep(-1)}
           >
-            ◂
-          </button>
-          <button
-            type="button"
-            className="btn btn-glass"
+            <ChevronLeft aria-hidden="true" />
+          </Button>
+          <Button
+            variant="overlay"
+            size="icon-sm"
             aria-label="Next photo in the stack"
             title="Next in stack ]"
             disabled={position >= items.length - 1}
             onClick={() => stack.onStep(1)}
           >
-            ▸
-          </button>
+            <ChevronRight aria-hidden="true" />
+          </Button>
         </span>
       </div>
-      <ul className="stack-strip" ref={strip} aria-label="Photos in this stack">
+      <ul className="m-0 flex list-none gap-1.5 overflow-x-auto p-0.5 [scrollbar-width:thin]" ref={strip} aria-label="Photos in this stack">
         {items.map((it, i) => (
-          <li key={it.id}>
+          <li key={it.id} className="flex-none">
             <button
               type="button"
-              className={`stack-thumb${i === position ? " on" : ""}`}
+              className={cn(
+                "relative block size-12 overflow-hidden rounded-lg border-2 bg-white/10 bg-cover p-0 transition-[border-color,transform] duration-150",
+                i === position ? "scale-100 border-white" : "scale-[0.92] border-transparent",
+              )}
               style={placeholderUrl(it.thumbhash) ? { backgroundImage: `url(${placeholderUrl(it.thumbhash)})` } : undefined}
               aria-label={`${it.original_name}${it.id === coverId ? ", cover" : ""}`}
               aria-current={i === position ? "true" : undefined}
               onClick={() => stack.onPick(it.id)}
             >
-              {it.thumb_url && <img src={it.thumb_url} alt="" loading="lazy" draggable={false} />}
-              {it.id === coverId && <span className="stack-cover-mark">Cover</span>}
+              {it.thumb_url && <img src={it.thumb_url} alt="" loading="lazy" draggable={false} className="block size-full object-cover" />}
+              {it.id === coverId && <span className="absolute inset-x-0 bottom-0 bg-black/65 text-[0.6rem] leading-[1.3] font-bold">Cover</span>}
             </button>
           </li>
         ))}
       </ul>
-      <div className="stack-actions">
-        <button type="button" className="btn btn-glass" disabled={busy || isCover} onClick={stack.onCover}>
+      <div className="flex flex-wrap gap-1.5">
+        <Button variant="overlay" size="sm" disabled={busy || isCover} onClick={stack.onCover}>
           Set as stack cover
-        </button>
-        <button type="button" className="btn btn-glass" disabled={busy} onClick={stack.onRemove}>
+        </Button>
+        <Button variant="overlay" size="sm" disabled={busy} onClick={stack.onRemove}>
           Remove from stack
-        </button>
-        <button type="button" className="btn btn-glass" disabled={busy} onClick={stack.onDissolve}>
+        </Button>
+        <Button variant="overlay" size="sm" disabled={busy} onClick={stack.onDissolve}>
           Unstack all
-        </button>
+        </Button>
       </div>
     </section>
   );

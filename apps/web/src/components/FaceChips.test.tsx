@@ -275,14 +275,14 @@ describe("the people in the Info panel", () => {
   it("switches the face boxes on the photo on and off when the photo has faces to click", async () => {
     const set = vi.fn();
     panel([face("f1", null)], { faceBoxes: false, onFaceBoxes: set });
-    const box = screen.getByRole("checkbox", { name: "Show face boxes on the photo" });
+    const box = screen.getByRole("switch", { name: "Show face boxes on the photo" });
     expect(box).not.toBeChecked();
     await userEvent.click(box);
     expect(set).toHaveBeenCalledWith(true);
   });
   it("offers no switch for the boxes when there is nothing to outline", () => {
     panel([], { onFaceBoxes: vi.fn() });
-    expect(screen.queryByRole("checkbox", { name: "Show face boxes on the photo" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Show face boxes on the photo" })).not.toBeInTheDocument();
   });
   it("brings back detections marked Not a face", async () => {
     const back = vi.fn();
@@ -330,7 +330,7 @@ describe("the viewer and People", () => {
     await userEvent.click(screen.getByRole("button", { name: "Info" }));
     expect(await screen.findByRole("link", { name: "Person A" })).toHaveAttribute("href", "/people/p1");
     expect(screen.queryByRole("button", { name: "Name this face" })).not.toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Show face boxes on the photo" })).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "Show face boxes on the photo" })).not.toBeChecked();
   });
   it("brings back what was marked Not a face from the Info panel, and reads the faces again", async () => {
     vi.spyOn(api, "peopleStatus").mockResolvedValue({ enabled: true });

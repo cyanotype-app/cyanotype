@@ -1,6 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { PhotoText } from "../api";
 import { copyText, linkHost, qrBoxes, lineBoxes, qrKind, safeLink, textStatus } from "../textText";
+import { Button } from "../ui/Button";
+import { Switch } from "../ui/Controls";
+import { ViewerPanel } from "./ViewerPanel";
+import "../viewer.css";
 
 export type TextState = { status: "loading" } | { status: "error" } | { status: "ready"; text: PhotoText };
 
@@ -12,18 +16,16 @@ interface Props {
   /** Draw boxes on the photo where the text is. */
   showBoxes: boolean;
   onShowBoxes: (on: boolean) => void;
+  /** Whether the panel is shown (the viewer keeps it mounted while it animates away). */
+  open?: boolean;
 }
 
 /**
  * The text read off the open photo, to read and copy, and the QR codes in it. A QR code is shown as what it says, and a
  * web address as a link the person has to click: nothing is ever opened for them.
  */
-export function TextPanel({ panelId, state, onRetry, onClose, showBoxes, onShowBoxes }: Props) {
-  const closeRef = useRef<HTMLButtonElement>(null);
+export function TextPanel({ panelId, state, onRetry, onClose, showBoxes, onShowBoxes, open = true }: Props) {
   const [note, setNote] = useState<string | null>(null);
-  useEffect(() => {
-    closeRef.current?.focus();
-  }, []);
   const ready = state.status === "ready" ? state.text : null;
 
   async function copy(text: string) {
@@ -36,77 +38,74 @@ export function TextPanel({ panelId, state, onRetry, onClose, showBoxes, onShowB
   }
 
   return (
-    <aside className="details-panel text-panel" id={panelId} aria-label="Text in this photo">
-      <div className="details-head">
-        <span className="details-grip" aria-hidden="true" />
-        <h2>Text</h2>
-        <button type="button" ref={closeRef} className="btn btn-glass" onClick={onClose}>
-          Close
-        </button>
-      </div>
-      <div className="details-body">
+    <ViewerPanel id={panelId} title="Text" label="Text in this photo" closeLabel="Close" onClose={onClose} open={open}>
+      <div className="flex flex-col gap-4">
         {state.status === "loading" && (
-          <p className="muted" role="status">
+          <p className="py-4 text-muted" role="status">
             Loading…
           </p>
         )}
         {state.status === "error" && (
-          <p role="alert">
-            Could not load the text.{" "}
-            <button type="button" className="btn btn-glass" onClick={onRetry}>
+          <div role="alert" className="flex flex-col items-start gap-3 py-4">
+            <p>Could not load the text.</p>
+            <Button variant="secondary" onClick={onRetry}>
               Try again
-            </button>
-          </p>
+            </Button>
+          </div>
         )}
-        {ready && textStatus(ready) && <p className="muted">{textStatus(ready)}</p>}
+        {ready && textStatus(ready) && <p className="text-muted">{textStatus(ready)}</p>}
         {ready && ready.text.trim() !== "" && (
           <>
-            <div className="text-actions">
-              <button type="button" className="btn btn-glass" onClick={() => void copy(copyText(ready))}>
+            <div className="flex flex-col gap-1">
+              <Button variant="secondary" className="self-start" onClick={() => void copy(copyText(ready))}>
                 Copy all
-              </button>
-              <label className="check">
-                <input type="checkbox" checked={showBoxes} onChange={(e) => onShowBoxes(e.target.checked)} /> Show on the photo
-              </label>
+              </Button>
+              <Switch checked={showBoxes} onChange={onShowBoxes} label="Show on the photo" />
+              <div role="status" className="min-h-5 text-sm text-muted">
+                {note}
+              </div>
             </div>
-            <div role="status" className="muted small">
-              {note}
-            </div>
-            <pre className="text-body" tabIndex={0} aria-label="Recognised text">
+            <pre
+              className="m-0 rounded-card bg-surface p-4 font-[inherit] text-[0.9375rem] leading-relaxed break-words whitespace-pre-wrap select-text"
+              tabIndex={0}
+              aria-label="Recognised text"
+            >
               {ready.text}
             </pre>
-            <p className="muted small">Read automatically: check numbers and names against the photo.</p>
+            <p className="text-sm text-muted">Read automatically: check numbers and names against the photo.</p>
           </>
         )}
         {ready && ready.qr.length > 0 && (
-          <section aria-label="QR codes">
-            <h3>QR {ready.qr.length === 1 ? "code" : "codes"}</h3>
-            <ul className="qr-list">
+          <section aria-label="QR codes" className="flex flex-col gap-2">
+            <h3 className="text-[1.0625rem] font-semibold tracking-tight">QR {ready.qr.length === 1 ? "code" : "codes"}</h3>
+            <ul className="m-0 flex list-none flex-col gap-2 p-0">
               {ready.qr.map((c, i) => {
                 const href = safeLink(c.t);
                 return (
-                  <li key={`${i}-${c.t}`}>
-                    <span className="muted small">{qrKind(c.t)}</span>
-                    <code className="qr-payload">{c.t}</code>
-                    <div className="text-actions">
-                      <button type="button" className="btn btn-glass" onClick={() => void copy(c.t)}>
+                  <li key={`${i}-${c.t}`} className="flex flex-col gap-2 rounded-card bg-surface p-4">
+                    <span className="text-sm text-muted">{qrKind(c.t)}</span>
+                    <code className="font-mono text-sm [overflow-wrap:anywhere]">{c.t}</code>
+                    <div className="flex flex-wrap gap-2">
+                      <Button variant="secondary" size="sm" onClick={() => void copy(c.t)}>
                         Copy
-                      </button>
+                      </Button>
                       {href && (
-                        <a className="btn btn-glass" href={href} target="_blank" rel="noopener noreferrer nofollow">
-                          Open {linkHost(href)}
-                        </a>
+                        <Button asChild variant="secondary" size="sm">
+                          <a href={href} target="_blank" rel="noopener noreferrer nofollow">
+                            Open {linkHost(href)}
+                          </a>
+                        </Button>
                       )}
                     </div>
                   </li>
                 );
               })}
             </ul>
-            <p className="muted small">QR codes are never opened for you. Check the address before you open it.</p>
+            <p className="text-sm text-muted">QR codes are never opened for you. Check the address before you open it.</p>
           </section>
         )}
       </div>
-    </aside>
+    </ViewerPanel>
   );
 }
 

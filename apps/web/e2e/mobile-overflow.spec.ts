@@ -787,14 +787,14 @@ for (const { width, scheme } of RUNS) {
       // Lightbox
       await open("/library", /Open IMG_1000/);
       await page.getByRole("button", { name: /Open IMG_20240615/ }).click();
-      await page.getByText("In albums:").waitFor();
+      await page.getByRole("dialog").getByRole("button", { name: "Info" }).waitFor();
       await check("lightbox-long-name");
       await page.getByRole("button", { name: "Next photo" }).click();
       await check("lightbox");
 
       // Photo details: the Info button (then `i` and Escape), a photo with every row, then one with none but the file
       await page.getByRole("button", { name: "Info" }).click();
-      const panel = page.getByRole("complementary", { name: "Photo details" });
+      const panel = page.locator("#details-panel");
       await panel.waitFor();
       await panel.getByText("Time zone unknown").waitFor();
       await check("lightbox-info-bare");
@@ -820,7 +820,7 @@ for (const { width, scheme } of RUNS) {
       await page.keyboard.press("Escape");
       await page.getByRole("dialog", { name: "Edit caption" }).waitFor({ state: "detached" });
       // The panel's own scroll reaches its last row, and the sheet never grows past the screen.
-      await panel.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+      await panel.getByText("3 of 12 in a burst").scrollIntoViewIfNeeded();
       await panel.getByText("3 of 12 in a burst").waitFor();
       await check("lightbox-info-scrolled");
       await page.keyboard.press("Escape");
@@ -955,9 +955,10 @@ for (const { width, scheme } of RUNS) {
       await check("timeline-select");
       await page.getByRole("button", { name: "Done" }).click();
       await page.getByRole("button", { name: /Open IMG_00000/ }).click(); // a RAW + JPEG pair
-      await page.getByRole("dialog").getByRole("button", { name: "Download" }).click();
-      await page.getByRole("link", { name: /Download RAW/ }).waitFor();
+      await page.getByRole("dialog").getByRole("button", { name: "More" }).click();
+      await page.getByRole("menuitem", { name: /Download RAW/ }).waitFor();
       await check("lightbox-download-pair");
+      await page.keyboard.press("Escape");
       await page.getByRole("button", { name: "Add to favorites" }).click();
       await check("lightbox-favorited");
       await page.keyboard.press("Escape");

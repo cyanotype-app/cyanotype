@@ -15,7 +15,7 @@ function setup(over: Partial<Parameters<typeof RotateCrop>[0]> = {}) {
   return { onSave, onRevert, onCancel, ...utils };
 }
 
-const image = () => document.querySelector<HTMLImageElement>(".rc-frame img")!;
+const image = () => document.querySelector<HTMLImageElement>('[data-testid="crop-frame"] img')!;
 const box = () => screen.getByTestId("crop-box");
 const pct = (el: HTMLElement, prop: "left" | "top" | "width" | "height") => parseFloat(el.style[prop]);
 
@@ -37,7 +37,7 @@ describe("the rotate and crop editor", () => {
     expect(screen.getByText(/Rotated 90° right/)).toBeInTheDocument();
     expect(image().style.transform).toContain("rotate(90deg)");
     // The frame is turned: 3000 x 4000, so it is taller than wide.
-    const wrap = document.querySelector<HTMLElement>(".rc-frame-wrap")!;
+    const wrap = image().closest<HTMLElement>("[data-testid='crop-frame']")!.parentElement!;
     expect(pct(wrap, "height")).toBeGreaterThan(pct(wrap, "width"));
     await user.keyboard("R");
     expect(screen.getByText("Not edited")).toBeInTheDocument();

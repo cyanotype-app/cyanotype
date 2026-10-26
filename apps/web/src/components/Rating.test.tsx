@@ -86,7 +86,7 @@ describe("RateTools", () => {
     render(<RateTools target={["a", "b", "c"]} count={3} onDone={onDone} onError={() => {}} />);
     await user.click(screen.getByRole("button", { name: "Rate" }));
     const dialog = screen.getByRole("dialog", { name: "Rate photos" });
-    expect(dialog).toHaveTextContent("Rate 3 photos");
+    expect(dialog).toHaveTextContent("3 photos");
     await user.click(screen.getByRole("button", { name: /4 stars/ }));
     expect(rate).toHaveBeenCalledWith(["a", "b", "c"], 4);
     await waitFor(() => expect(onDone).toHaveBeenCalledWith(4, 3, "3 photos rated 4 stars"));
@@ -110,7 +110,7 @@ describe("RateTools", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("closes with Escape or Cancel and rates nothing", async () => {
+  it("closes with Escape or its Close button and rates nothing", async () => {
     const user = userEvent.setup();
     const rate = vi.spyOn(api, "rateAssets");
     render(<RateTools target={["a"]} count={1} onDone={() => {}} onError={() => {}} />);
@@ -118,7 +118,8 @@ describe("RateTools", () => {
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Rate" }));
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(rate).not.toHaveBeenCalled();
   });
 });

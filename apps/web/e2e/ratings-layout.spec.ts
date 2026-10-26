@@ -84,8 +84,8 @@ for (const { width, scheme } of RUNS) {
       expect(rated.at(-1)).toEqual({ ids: ["a2"], rating: 3 });
       await check("lightbox-stars");
       await page.keyboard.press("i");
-      await page.getByRole("complementary", { name: "Photo details" }).waitFor();
-      await expect(page.getByRole("complementary", { name: "Photo details" }).getByText("Rating", { exact: true })).toBeVisible();
+      await page.locator("#details-panel").waitFor();
+      await expect(page.locator("#details-panel").getByText("Rating", { exact: true })).toBeVisible();
       await check("lightbox-info-rating");
       await page.keyboard.press("Escape");
       await page.keyboard.press("Escape");

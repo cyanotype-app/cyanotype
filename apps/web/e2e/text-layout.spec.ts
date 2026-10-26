@@ -63,7 +63,7 @@ function makeCheck(page: Page, prefix: string, problems: string[]) {
       const bad: string[] = [];
       for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
         const b = el.getBoundingClientRect();
-        if (b.width === 0 || el.closest(".text-body")) continue;
+        if (b.width === 0 || el.closest(".text-body") || el.closest(".viewer-stage")) continue;
         if (b.right > w + 0.5 || b.left < -0.5) bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} [${Math.round(b.left)}..${Math.round(b.right)}]`);
       }
       return { scroll: document.documentElement.scrollWidth, w, bad: bad.slice(0, 6) };
@@ -91,8 +91,11 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("dialog").waitFor();
       await check("viewer");
 
-      await page.getByRole("button", { name: "Text" }).click();
-      const panel = page.getByRole("complementary", { name: "Text in this photo" });
+      // The panel is a sheet on a phone and a column beside the photo on a desktop; either way it is #text-panel.
+      const phone = width < 768;
+      await page.getByRole("button", { name: "More" }).click();
+      await page.getByRole("menuitem", { name: "Text in photo" }).click();
+      const panel = page.locator("#text-panel");
       await panel.waitFor();
       await expect(panel.getByLabel("Recognised text")).toContainText("HOFER KG");
       await expect(page.locator(".text-box:not(.qr)")).toHaveCount(4);
@@ -100,7 +103,7 @@ for (const { width, scheme } of RUNS) {
       await check("text-panel");
       // The boxes sit over the photo: inside the picture's own rectangle.
       const inside = await page.evaluate(() => {
-        const img = document.querySelector<HTMLImageElement>(".lightbox-stage img")!.getBoundingClientRect();
+        const img = document.querySelector<HTMLImageElement>(".viewer-photo.current img")!.getBoundingClientRect();
         const all = Array.from(document.querySelectorAll<HTMLElement>(".text-box")).map((b) => b.getBoundingClientRect());
         const bad = all.filter((r) => r.left < img.left - 1 || r.right > img.right + 1 || r.top < img.top - 1 || r.bottom > img.bottom + 1);
         return { bad: bad.length, img: [img.left, img.top, img.right, img.bottom].map(Math.round), first: bad[0] ? [bad[0].left, bad[0].top, bad[0].right, bad[0].bottom].map(Math.round) : null };
@@ -117,26 +120,31 @@ for (const { width, scheme } of RUNS) {
       expect(seen.opened).toEqual([]);
 
       // Boxes off, Escape closes the panel before the viewer; `t` brings it back.
-      await panel.getByLabel("Show on the photo").uncheck();
+      await panel.getByRole("switch", { name: "Show on the photo" }).uncheck();
       await expect(page.locator(".text-box")).toHaveCount(0);
-      await panel.getByRole("heading", { name: "Text" }).click(); // out of the checkbox: typing in a field is not a viewer shortcut
+      await panel.getByText(/Read automatically/).click(); // out of the switch: a control that has focus keeps its own keys
       await page.keyboard.press("Escape");
       await expect(panel).toHaveCount(0);
       await page.keyboard.press("t");
       await panel.waitFor();
-      await panel.getByLabel("Show on the photo").check();
+      await panel.getByRole("switch", { name: "Show on the photo" }).check();
 
-      // Another photo: nothing found, then not read yet.
-      await page.getByRole("button", { name: "Next photo" }).click();
+      // Another photo: nothing found, then not read yet. (A phone's sheet covers the viewer: put it away to page, `t` brings it back.)
+      if (phone) await page.keyboard.press("Escape");
+      await page.keyboard.press("ArrowRight");
+      if (phone) await page.keyboard.press("t");
       await expect(panel.getByText("No text found in this photo.")).toBeVisible();
       await check("text-empty");
-      await page.getByRole("button", { name: "Next photo" }).click();
+      if (phone) await page.keyboard.press("Escape");
+      await page.keyboard.press("ArrowRight");
+      if (phone) await page.keyboard.press("t");
       await expect(panel.getByText(/has not been read yet/)).toBeVisible();
       await check("text-pending");
 
       // Info and Text are one panel at a time.
+      if (phone) await page.keyboard.press("Escape");
       await page.getByRole("button", { name: "Info" }).click();
-      await expect(page.getByRole("complementary", { name: "Photo details" })).toBeVisible();
+      await expect(page.locator("#details-panel")).toBeVisible();
       await expect(panel).toHaveCount(0);
 
       expect(problems, problems.join("\n")).toEqual([]);

@@ -130,7 +130,7 @@ describe("Library", () => {
     expect(screen.getByRole("dialog", { name: "photo-3.jpg" })).toBeInTheDocument();
     await waitFor(() => expect(screen.getAllByAltText("photo-3.jpg").some((i) => i.getAttribute("src") === "https://s3.test/preview-3")).toBe(true));
     await user.keyboard("{Escape}");
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(tile).toHaveFocus();
   });
 
@@ -498,7 +498,8 @@ describe("Library", () => {
       const user = userEvent.setup();
       renderLibrary();
       await user.click(await screen.findByRole("button", { name: "Open photo-1.jpg" }));
-      const link = within(screen.getByRole("dialog")).getByRole("link", { name: "Download" });
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "More" }));
+      const link = await screen.findByRole("menuitem", { name: "Download" });
       expect(link).toHaveAttribute("href", "/assets/id-1/download");
     });
   });

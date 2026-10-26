@@ -11,6 +11,9 @@ import {
 } from "../api";
 import { inputLocal, OFFSETS, offsetLabel, parsePoint, setDate, shiftSeconds, shiftText, type Shift } from "../editText";
 import type { Point } from "../map/LocationPicker";
+import { Button } from "../ui/Button";
+import { Sheet } from "../ui/Sheet";
+import { inputClass, labelClass } from "./viewerFields";
 import { placeLine } from "../map/geo";
 
 // maplibre-gl is big: the map loads when the location dialog opens.
@@ -64,22 +67,13 @@ export function EditDialog({ kind, target, count, current, onClose, onDone }: Pr
   // caption
   const [caption, setCaption] = useState(current?.caption ?? "");
 
+  // Focus goes to the first field; once the sheet is gone it goes back to what opened it.
+  // (What opened it is read while rendering: the sheet moves focus into itself as it mounts.)
+  const [opener] = useState(() => document.activeElement as HTMLElement | null);
   useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
     formRef.current?.querySelector<HTMLElement>("input, textarea, select")?.focus();
-    return () => prev?.focus?.();
-  }, []);
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        if (!busy) onClose();
-      }
-    }
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [onClose, busy]);
+    return () => opener?.focus?.();
+  }, [opener]);
 
   useEffect(() => {
     if (kind !== "location") return;
@@ -158,28 +152,51 @@ export function EditDialog({ kind, target, count, current, onClose, onDone }: Pr
         : null;
   const label = `${TITLE[kind]}${many ? `, ${count} photos` : ""}`;
 
-  return (
-    <div className="modal-backdrop">
-      <form className="modal card edit-dialog" role="dialog" aria-modal="true" aria-label={label} ref={formRef} onSubmit={submit}>
-        <h2>{label}</h2>
+  const formId = "edit-form";
+  const canRevert = (edited || many) && kind !== "caption";
+  const canRemoveCaption = kind === "caption" && (many || !!current?.caption);
 
+  return (
+    <Sheet
+      open
+      onOpenChange={(o) => !o && !busy && onClose()}
+      title={label}
+      size="md"
+      footer={
+        <>
+          {canRevert && (
+            <Button variant="quiet" disabled={busy} onClick={() => void send({ [kind]: { revert: true } } as EditRequest)}>
+              Revert to original
+            </Button>
+          )}
+          {canRemoveCaption && (
+            <Button variant="quiet" disabled={busy} onClick={() => void send({ caption: { revert: true } })}>
+              Remove caption
+            </Button>
+          )}
+          <Button variant="ghost" onClick={onClose} disabled={busy} className="md:ml-auto">
+            Cancel
+          </Button>
+          <Button type="submit" form={formId} variant="primary" disabled={busy || !valid}>
+            Save
+          </Button>
+        </>
+      }
+    >
+      <form id={formId} className="flex flex-col gap-4 pb-2" ref={formRef} onSubmit={submit}>
         {kind === "date" && !many && (
           <>
-            <div className="edit-field">
-              <label htmlFor="edit-local">Date and time</label>
-              <input
-                id="edit-local"
-                className="text-input"
-                type="datetime-local"
-                step="1"
-                value={local}
-                onChange={(e) => setLocal(e.target.value)}
-                required
-              />
+            <div>
+              <label className={labelClass} htmlFor="edit-local">
+                Date and time
+              </label>
+              <input id="edit-local" className={inputClass} type="datetime-local" step="1" value={local} onChange={(e) => setLocal(e.target.value)} required />
             </div>
-            <div className="edit-field">
-              <label htmlFor="edit-zone">Time zone</label>
-              <select id="edit-zone" className="text-input" value={zone} onChange={(e) => setZone(e.target.value)}>
+            <div>
+              <label className={labelClass} htmlFor="edit-zone">
+                Time zone
+              </label>
+              <select id="edit-zone" className={inputClass} value={zone} onChange={(e) => setZone(e.target.value)}>
                 <option value="">Unknown</option>
                 {OFFSETS.map((o) => (
                   <option key={o} value={o}>
@@ -192,21 +209,25 @@ export function EditDialog({ kind, target, count, current, onClose, onDone }: Pr
         )}
         {kind === "date" && many && (
           <>
-            <p className="muted small">Move the date and time of all {count} photos by the same amount, each keeping its own time zone.</p>
-            <div className="edit-shift">
-              <label className="sr-only" htmlFor="edit-dir">
-                Direction
-              </label>
-              <select id="edit-dir" className="text-input" value={shift.later ? "later" : "earlier"} onChange={(e) => setShift({ ...shift, later: e.target.value === "later" })}>
-                <option value="later">Later</option>
-                <option value="earlier">Earlier</option>
-              </select>
+            <p className="text-sm text-muted">Move the date and time of all {count} photos by the same amount, each keeping its own time zone.</p>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div>
+                <label className={labelClass} htmlFor="edit-dir">
+                  Direction
+                </label>
+                <select id="edit-dir" className={inputClass} value={shift.later ? "later" : "earlier"} onChange={(e) => setShift({ ...shift, later: e.target.value === "later" })}>
+                  <option value="later">Later</option>
+                  <option value="earlier">Earlier</option>
+                </select>
+              </div>
               {(["days", "hours", "minutes"] as const).map((u) => (
-                <div key={u} className="edit-field">
-                  <label htmlFor={`edit-${u}`}>{u[0]!.toUpperCase() + u.slice(1)}</label>
+                <div key={u}>
+                  <label className={labelClass} htmlFor={`edit-${u}`}>
+                    {u[0]!.toUpperCase() + u.slice(1)}
+                  </label>
                   <input
                     id={`edit-${u}`}
-                    className="text-input"
+                    className={inputClass}
                     type="number"
                     min={0}
                     inputMode="numeric"
@@ -216,7 +237,7 @@ export function EditDialog({ kind, target, count, current, onClose, onDone }: Pr
                 </div>
               ))}
             </div>
-            <p className="small" role="status">
+            <p className="text-sm" role="status">
               {shiftText(shift)}
             </p>
           </>
@@ -224,33 +245,42 @@ export function EditDialog({ kind, target, count, current, onClose, onDone }: Pr
 
         {kind === "location" && (
           <>
-            <div className="edit-field">
-              <label htmlFor="edit-place">Search your places</label>
-              <input id="edit-place" className="text-input" type="search" placeholder="Lisbon" value={query} onChange={(e) => setQuery(e.target.value)} autoComplete="off" />
+            <div>
+              <label className={labelClass} htmlFor="edit-place">
+                Search your places
+              </label>
+              <input id="edit-place" className={inputClass} type="search" placeholder="Lisbon" value={query} onChange={(e) => setQuery(e.target.value)} autoComplete="off" />
             </div>
             {hits && hits.length > 0 && (
-              <ul className="edit-places" aria-label="Your places">
+              <ul className="-mt-2 flex flex-col" aria-label="Your places">
                 {hits.slice(0, 6).map((h) => (
                   <li key={`${h.city}|${h.region}|${h.country}`}>
-                    <button type="button" className="btn btn-quiet" onClick={() => choose({ latitude: h.latitude, longitude: h.longitude })}>
-                      {placeLine(h)} <span className="muted">{h.count.toLocaleString("en-US")}</span>
+                    <button
+                      type="button"
+                      className="flex min-h-11 w-full items-center justify-between gap-3 rounded-card px-3 text-left text-[0.9375rem] hover:bg-surface"
+                      onClick={() => choose({ latitude: h.latitude, longitude: h.longitude })}
+                    >
+                      <span className="min-w-0 [overflow-wrap:anywhere]">{placeLine(h)}</span>
+                      <span className="shrink-0 text-sm text-muted">{h.count.toLocaleString("en-US")}</span>
                     </button>
                   </li>
                 ))}
               </ul>
             )}
-            {hits && hits.length === 0 && query && <p className="muted small">None of your photos is in a place like that.</p>}
+            {hits && hits.length === 0 && query && <p className="text-sm text-muted">None of your photos is in a place like that.</p>}
             {!mapFailed && tiles && (
               <Suspense fallback={<div className="location-picker" />}>
                 <LocationPicker point={point} basemap={tiles} dark={dark} onPick={choose} onUnavailable={() => setMapFailed(true)} />
               </Suspense>
             )}
-            {mapFailed && <p className="muted small">The map cannot be drawn in this browser: type the coordinates instead.</p>}
-            <div className="edit-field">
-              <label htmlFor="edit-coords">Coordinates</label>
+            {mapFailed && <p className="text-sm text-muted">The map cannot be drawn in this browser: type the coordinates instead.</p>}
+            <div>
+              <label className={labelClass} htmlFor="edit-coords">
+                Coordinates
+              </label>
               <input
                 id="edit-coords"
-                className="text-input"
+                className={inputClass}
                 placeholder="38.7223, -9.1393"
                 value={coords}
                 onChange={(e) => {
@@ -265,38 +295,22 @@ export function EditDialog({ kind, target, count, current, onClose, onDone }: Pr
         )}
 
         {kind === "caption" && (
-          <div className="edit-field">
-            <label htmlFor="edit-caption">{many ? `Caption for all ${count} photos` : "Caption"}</label>
-            <textarea id="edit-caption" className="text-input" rows={4} maxLength={2000} value={caption} onChange={(e) => setCaption(e.target.value)} />
-            <p className="muted small">Searching finds photos by the words in their captions.</p>
+          <div>
+            <label className={labelClass} htmlFor="edit-caption">
+              {many ? `Caption for all ${count} photos` : "Caption"}
+            </label>
+            <textarea id="edit-caption" className={inputClass} rows={4} maxLength={2000} value={caption} onChange={(e) => setCaption(e.target.value)} />
+            <p className="mt-1.5 text-sm text-muted">Searching finds photos by the words in their captions.</p>
           </div>
         )}
 
         {error && (
-          <p role="alert" className="form-error">
+          <p role="alert" className="text-sm text-danger">
             {error}
           </p>
         )}
-        {original && <p className="muted small">The file says {original}.</p>}
-        <div className="modal-actions">
-          {(edited || many) && kind !== "caption" && (
-            <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => void send({ [kind]: { revert: true } } as EditRequest)}>
-              Revert to original
-            </button>
-          )}
-          {kind === "caption" && (many || !!current?.caption) && (
-            <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => void send({ caption: { revert: true } })}>
-              Remove caption
-            </button>
-          )}
-          <button type="button" className="btn btn-quiet" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={busy || !valid}>
-            Save
-          </button>
-        </div>
+        {original && <p className="text-sm text-muted">The file says {original}.</p>}
       </form>
-    </div>
+    </Sheet>
   );
 }

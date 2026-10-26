@@ -232,7 +232,7 @@ for (const { width, scheme } of RUNS) {
       await page.keyboard.press("Escape");
       await who.waitFor({ state: "detached" });
       await page.keyboard.press("i");
-      const panel = page.getByRole("complementary", { name: "Photo details" });
+      const panel = page.locator("#details-panel");
       await panel.getByRole("link", { name: LONG }).waitFor();
       await expect(panel.getByText("Unknown face")).toHaveCount(0);
       await expect(panel.getByRole("link", { name: "Unnamed person" })).toHaveCount(0);
