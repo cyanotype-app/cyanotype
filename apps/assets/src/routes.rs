@@ -234,6 +234,7 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/zip", post(zip::selection))
         .route("/assets/zip/plan", post(zip::plan_selection))
         .route("/assets/stacks", post(stacks::create))
+        .route("/assets/stacks/restore", post(stacks::restore))
         .route("/assets/{id}/stack", get(stacks::get).delete(stacks::dissolve))
         .route("/assets/{id}/stack/cover", post(stacks::set_cover))
         .route("/assets/{id}/stack/remove", post(stacks::remove))

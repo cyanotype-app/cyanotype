@@ -28,7 +28,7 @@ for (const { width, scheme } of RUNS) {
       const byId = (id: string) => assets.find((a) => a.id === id)!;
 
       await page.route(
-        (u) => /^\/assets(\/prefs|\/timeline|\/stacks|\/a\d+\/stack(\/cover|\/remove)?)?$/.test(u.pathname),
+        (u) => /^\/assets(\/prefs|\/timeline|\/stacks(\/restore)?|\/a\d+\/stack(\/cover|\/remove)?)?$/.test(u.pathname),
         async (route) => {
           const req = route.request();
           const url = new URL(req.url());
@@ -49,7 +49,13 @@ for (const { width, scheme } of RUNS) {
           if (p === "/assets/stacks" && method === "POST") {
             const body = req.postDataJSON() as { ids: string[] };
             calls.push(`stack ${body.ids.join(",")}`);
-            return route.fulfill(json({ size: body.ids.length, cover_id: body.ids[0] }));
+            const previous = body.ids.map((id) => ({ id, stack_id: null, stack_cover: false }));
+            return route.fulfill(json({ size: body.ids.length, cover_id: body.ids[0], previous }));
+          }
+          if (p === "/assets/stacks/restore" && method === "POST") {
+            const body = req.postDataJSON() as { items: { id: string }[] };
+            calls.push(`restore ${body.items.map((i) => i.id).join(",")}`);
+            return route.fulfill(json({ count: body.items.length }));
           }
           const m = /^\/assets\/(a\d+)\/stack(\/cover|\/remove)?$/.exec(p);
           if (!m) return route.fallback();
@@ -144,6 +150,9 @@ for (const { width, scheme } of RUNS) {
       await stackButton.click();
       await expect(page.getByText("2 photos stacked")).toBeVisible();
       expect(calls).toContain("stack a0,a1");
+      // Undo hands back what the server said the photos were.
+      await page.getByRole("button", { name: "Undo" }).click();
+      await expect.poll(() => calls.includes("restore a0,a1")).toBe(true);
 
       // "Every photo" lists them all; the switch is remembered by the server.
       await page.getByRole("button", { name: "Every photo" }).click();

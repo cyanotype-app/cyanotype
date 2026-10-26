@@ -129,6 +129,10 @@ async fn apply_in(tx: &mut sqlx::PgConnection, owner: Uuid, op: Op, ids: Option<
         photos.insert(c.primary_id.unwrap_or(c.id));
         changed.push(c.id);
     }
+    if matches!(op, Op::Trash) {
+        // A stack that is down to one live photo is no stack (its trashed members leave it too).
+        cyanotype_core::stacks::dissolve_small_around(&mut *tx, owner, &changed).await?;
+    }
     Ok(Applied {
         photos: photos.len() as u64,
         changed,

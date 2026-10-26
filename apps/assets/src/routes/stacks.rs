@@ -8,10 +8,15 @@
 //! - `POST /assets/stacks {ids}`: stack the photos by hand (at least two photos); the first id is the new cover. A photo that
 //!   is already in a stack made by hand brings that whole stack along (stacks merge); the other photos of a picked photo's
 //!   burst do not (the web app sends all of a collapsed burst's photos when its tile is picked). `400` for fewer than two
-//!   photos or more than [`MAX_STACK`].
+//!   photos or more than [`MAX_STACK`]. The answer carries `previous`: every moved photo's stack id and cover flag before.
+//! - `POST /assets/stacks/restore {items: previous}`: puts the photos back exactly as they were (Undo of the stacking).
 //! - `POST /assets/{id}/stack/cover`: make the photo its stack's cover.
 //! - `POST /assets/{id}/stack/remove`: take the photo out of its stack. It stays out of automatic bursts too.
 //! - `DELETE /assets/{id}/stack`: dissolve the photo's stack; its photos stay out of automatic bursts.
+//!
+//! A stack never keeps fewer than two live photos: every path that takes one out (remove, trash, hide, a file that becomes
+//! a RAW, Undo) dissolves what is left, in its own transaction (`cyanotype_core::stacks`). A trashed member stays while two
+//! live ones remain, so a restore puts it back.
 //!
 //! Everything is owner-scoped: an id of another account, an unknown id and a trashed photo are `404` (or ignored in the
 //! bulk call), and a stack never holds photos of two owners. Timeline and search collapse a stack to its cover; favorites,
@@ -201,6 +206,16 @@ pub(super) struct Stacked {
     /// Photos in the new stack (the whole stacks of the picked photos included).
     size: usize,
     cover_id: Uuid,
+    /// What every photo that moved was before (the stackings it merged included), to hand back to [`restore`] for an exact Undo.
+    previous: Vec<Previous>,
+}
+
+/// A photo's stack columns that stacking changes (`stack_unlinked` it leaves alone).
+#[derive(Serialize, Deserialize)]
+pub(super) struct Previous {
+    id: Uuid,
+    stack_id: Option<Uuid>,
+    stack_cover: bool,
 }
 
 pub(super) async fn create(
@@ -236,8 +251,8 @@ pub(super) async fn create(
     keys.dedup();
     // Manual stacks move whole: the picked photos and every photo of the stacks they are in (trashed ones too, so a
     // restored photo does not return to a stack that is gone).
-    let all: Vec<(Uuid, bool)> = sqlx::query_as(
-        "SELECT m.id, m.deleted_at IS NULL FROM assets m
+    let all: Vec<(Uuid, bool, Option<Uuid>, bool)> = sqlx::query_as(
+        "SELECT m.id, m.deleted_at IS NULL, m.stack_id, m.stack_cover FROM assets m
          WHERE m.owner_id = $1 AND m.primary_id IS NULL AND (m.id = ANY($2) OR m.stack_id = ANY($3))",
     )
     .bind(user.id)
@@ -245,7 +260,7 @@ pub(super) async fn create(
     .bind(&keys)
     .fetch_all(&mut *tx)
     .await?;
-    let live = all.iter().filter(|(_, live)| *live).count();
+    let live = all.iter().filter(|m| m.1).count();
     if live < 2 {
         return Err(ApiError::BadRequest("pick at least two photos to stack".into()));
     }
@@ -254,7 +269,15 @@ pub(super) async fn create(
             "a stack holds at most {MAX_STACK} photos"
         )));
     }
-    let members: Vec<Uuid> = all.into_iter().map(|(id, _)| id).collect();
+    let members: Vec<Uuid> = all.iter().map(|m| m.0).collect();
+    let previous: Vec<Previous> = all
+        .into_iter()
+        .map(|(id, _, stack_id, stack_cover)| Previous {
+            id,
+            stack_id,
+            stack_cover,
+        })
+        .collect();
     let stack = Uuid::new_v4();
     sqlx::query("UPDATE assets SET stack_id = $2, stack_cover = (id = $3) WHERE owner_id = $1 AND id = ANY($4)")
         .bind(user.id)
@@ -269,7 +292,53 @@ pub(super) async fn create(
     Ok(Json(Stacked {
         size: live,
         cover_id: cover,
+        previous,
     }))
+}
+
+#[derive(Deserialize)]
+pub(super) struct RestoreRequest {
+    /// The `previous` of a stacking.
+    items: Vec<Previous>,
+}
+
+/// Put photos back the way a stacking found them (Undo): each gets its `stack_id` and cover flag back, so the stacks they
+/// were merged out of return exactly, and a stack that falls below two live photos meanwhile (a photo trashed since) is
+/// dissolved as everywhere else. Only the caller's photos are touched.
+pub(super) async fn restore(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<RestoreRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if req.items.len() > MAX_IDS.max(MAX_STACK) * 2 {
+        return Err(ApiError::BadRequest("too many photos at once".into()));
+    }
+    let ids: Vec<Uuid> = req.items.iter().map(|p| p.id).collect();
+    let stacks: Vec<Option<Uuid>> = req.items.iter().map(|p| p.stack_id).collect();
+    let covers: Vec<bool> = req.items.iter().map(|p| p.stack_cover).collect();
+    let mut tx = s.db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('stack:' || $1::text, 0))")
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await?;
+    let done = sqlx::query(
+        "UPDATE assets a SET stack_id = p.stack_id, stack_cover = p.cover
+         FROM unnest($2::uuid[], $3::uuid[], $4::bool[]) AS p(id, stack_id, cover)
+         WHERE a.id = p.id AND a.owner_id = $1 AND a.primary_id IS NULL",
+    )
+    .bind(user.id)
+    .bind(&ids)
+    .bind(&stacks)
+    .bind(&covers)
+    .execute(&mut *tx)
+    .await?;
+    let mut keys: Vec<Uuid> = stacks.iter().flatten().copied().collect();
+    keys.sort();
+    keys.dedup();
+    cyanotype_core::stacks::dissolve_small(&mut tx, user.id, &keys).await?;
+    tx.commit().await?;
+    super::visibility::manifest_soon(&s, user.id);
+    Ok(Json(serde_json::json!({"count": done.rows_affected()})))
 }
 
 pub(super) async fn set_cover(
@@ -316,16 +385,8 @@ pub(super) async fn remove(
     .execute(&mut *tx)
     .await?;
     if manual {
-        // A manual stack down to one photo is no stack: free the last one (it keeps its cover flag cleared).
-        sqlx::query(
-            "UPDATE assets SET stack_id = NULL, stack_cover = false
-             WHERE owner_id = $1 AND stack_id = $2
-               AND (SELECT count(*) FROM assets WHERE owner_id = $1 AND stack_id = $2 AND deleted_at IS NULL) < 2",
-        )
-        .bind(user.id)
-        .bind(key)
-        .execute(&mut *tx)
-        .await?;
+        // A manual stack down to one photo is no stack: free the last one (trashed members too).
+        cyanotype_core::stacks::dissolve_small(&mut tx, user.id, &[key]).await?;
     }
     tx.commit().await?;
     super::visibility::manifest_soon(&s, user.id);

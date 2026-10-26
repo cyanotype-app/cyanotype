@@ -1995,7 +1995,7 @@ libraries, with one difference on purpose: what the owner decided is never undon
 - **Controls** (in the strip): **Set as stack cover** (the viewer stays; the timeline is read again when it closes, so photos do not move
   under you), **Remove from stack** (the photo leaves, the viewer closes) and **Unstack all** (with Undo, which stacks the same photos
   again by hand). In the selection bar of the timeline, **Stack** makes one stack of the selected tiles (two or more photos; the first
-  selected is the cover; not available for "Select all").
+  selected is the cover; not available for "Select all"; the toast's Undo puts every photo back as it was, merged stacks included).
 - **Selecting a stack's tile means all of its photos**, like a collapsed burst in search: its label says "Select IMG_1 and 2 more from
   its stack", the bar says "plus 2 more in stacks", and favorite, archive, hide, trash, add to album, share, download, tags, stars
   and edit work on every photo of it. In the viewer an action means the one photo on show.
@@ -2017,9 +2017,24 @@ the stack, else its earliest photo, among the photos the view lists. Details:
 - **Manual stacks merge.** Stacking a photo that is already in a manual stack brings that whole stack along (trashed members too, so a
   restored photo does not return to a stack that is gone). The other photos of a picked photo's *burst* do not come along on the
   server; the web app sends all of a collapsed burst's photos when its tile is picked, so picking a burst tile stacks the burst.
-- **At most 100 photos** in a stack made by hand; **at least two**. A manual stack that drops to one photo dissolves.
-- A trashed photo keeps its stack columns (restoring it puts it back); a hidden photo cannot be stacked and is not in a stack's count
-  in the timeline. A RAW that is the hidden half of a pair is never a stack member (its JPEG is).
+- **At most 100 photos** in a stack made by hand; **at least two**. **A manual stack never keeps fewer than two live
+  photos.** Every path that shrinks one dissolves what is left in the same transaction (`cyanotype_core::stacks`): *Remove from stack*,
+  trashing (also through "select all", albums, people... they all go through the trash call), hiding, and a file that becomes the RAW of
+  another photo. Dissolving clears `stack_id` and the cover flag on every member, trashed ones included, and does not set
+  `stack_unlinked`, so the photos are ordinary again (back in their burst, if they were in one). Migration 0035 did the same once for the
+  one-photo stacks that already existed. Archiving does not shrink a stack (archived photos stay members and are listed by the Archive;
+  the timeline counts the ones it lists). Permanent delete, the 30-day purge and account deletion only remove rows that were trashed
+  first, which has already settled their stacks.
+- **Trash.** A trashed photo keeps its stack columns while the stack still has two live photos (restoring it puts it back); when the
+  stack falls below two it dissolves completely, so a photo restored later is an ordinary one and never rejoins a stack that is gone.
+  **Hiding** takes the photo out of its manual stack for good (unhiding does not put it back); a hidden photo cannot be stacked.
+  A RAW that is the hidden half of a pair is never a stack member (its JPEG is).
+- **The cover** is never stored for a photo that left: the flag is cleared when the cover is taken out or the stack dissolves, and a
+  stack without a flagged cover uses the first favorite, else the earliest photo. A trashed cover keeps its flag while the stack lives
+  (it covers again once restored).
+- **Undo of "Stack".** The answer of `POST /assets/stacks` lists `previous` (each moved photo's `stack_id` and `stack_cover` before,
+  the merged stacks' members and trashed members included); the web toast's *Undo* sends it to `POST /assets/stacks/restore {items}`,
+  which writes exactly those values back (only the caller's photos), then dissolves any stack that fell below two meanwhile.
 - **Recovery.** The columns are in the database, so a dump keeps them. A rebuild from the bucket alone (`reindex`) restores them too:
   the recovery manifest (format 4) carries them on the photo's line, only where set (`stack`: the id the members share, `stack_unlinked`,
   `stack_cover`), and the **Stacked / Every photo** switch as a `prefs` line. `reindex` writes them in the transaction that recreates the
@@ -2036,7 +2051,8 @@ the stack, else its earliest photo, among the photos the view lists. Details:
 |---|---|
 | `GET /assets?stacks=collapsed\|expanded`, `GET /assets/timeline?stacks=` | Timeline only (not with `favorite`, `archived`, `hidden` or `bbox`). Absent: the user's setting. Collapsed: one item per stack (its cover), the day counts count tiles. Items in a stack of two or more carry `stack: {size, members}` (`members`: the ids of every listed photo of the stack, the cover included, only while collapsed). |
 | `GET /assets/{id}/stack` | `{cover_id, manual, items}`: the stack's photos in capture order as list items. `404` if the photo is not in a stack of two or more (also another account's, and a hidden photo while the Hidden view is locked; every route below answers the same). |
-| `POST /assets/stacks {ids}` | Stack photos by hand; the first id is the cover. `{size, cover_id}`. `400` for fewer than two photos or more than 100; foreign, unknown, trashed and hidden ids are ignored. |
+| `POST /assets/stacks {ids}` | Stack photos by hand; the first id is the cover. `{size, cover_id, previous}`. `400` for fewer than two photos or more than 100; foreign, unknown, trashed and hidden ids are ignored. |
+| `POST /assets/stacks/restore {items}` | Undo of a stacking: `items` is the `previous` the stacking answered (`[{id, stack_id, stack_cover}]`). Puts each of the caller's photos back; `{count}`. |
 | `POST /assets/{id}/stack/cover` | Make the photo its stack's cover. |
 | `POST /assets/{id}/stack/remove` | Take the photo out of its stack (it stays out of automatic bursts). |
 | `DELETE /assets/{id}/stack` | Dissolve the photo's stack: `{count}`. |

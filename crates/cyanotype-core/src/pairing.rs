@@ -232,6 +232,8 @@ pub async fn pair_asset(pool: &PgPool, id: Uuid) -> Result<Paired> {
         .bind(primary)
         .execute(&mut *tx)
         .await?;
+    // A RAW is the hidden half of its photo, never a stack member of its own (the photo's stack is what counts).
+    crate::stacks::leave(&mut tx, owner, &[raw]).await?;
     // The visible photo carries the favorite flag: a RAW that was favorited on its own hands it over.
     sqlx::query("UPDATE assets SET favorite = favorite OR (SELECT favorite FROM assets WHERE id = $1) WHERE id = $2")
         .bind(raw)
