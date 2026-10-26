@@ -431,4 +431,16 @@ describe("people in lists, scopes and searches", () => {
     await api.search({ similar: "s1", people: "a" });
     expect(f).toHaveBeenLastCalledWith("/assets/s1/similar?people=a", expect.anything());
   });
+
+  it("asks for trips by the user's today, a page size and the day to page from", async () => {
+    const f = mockFetch(jsonRes(200, { enabled: true, trips: [], next_before: null }));
+    await api.trips({ limit: 12, before: "2026-09-01", date: "2026-10-26" });
+    expect(f).toHaveBeenLastCalledWith("/assets/trips?date=2026-10-26&limit=12&before=2026-09-01", expect.anything());
+  });
+
+  it("lists a trip's photos by their dates, without the ones taken out of memories", async () => {
+    const f = mockFetch(jsonRes(200, { items: [], next_cursor: null, next_before: null }));
+    await api.listAssets({ from: "2026-10-12", to: "2026-10-19", memories: true, limit: 60 });
+    expect(f).toHaveBeenLastCalledWith("/assets?from=2026-10-12&to=2026-10-19&memories=true&limit=60", expect.anything());
+  });
 });

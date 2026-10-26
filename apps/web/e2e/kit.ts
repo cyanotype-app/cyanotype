@@ -28,14 +28,14 @@ export function makeCheck(page: Page, prefix: string, problems: string[]) {
       const bad: string[] = [];
       for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
         const b = el.getBoundingClientRect();
-        if (b.width === 0 || el.closest(".tile") || el.closest(".viewer-stage") || el.closest(".map-canvas") || el.closest(".memories-row") || el.closest(".face-crop") || el.classList.contains("slide-backdrop")) continue;
+        if (b.width === 0 || el.closest(".tile, [data-tile]") || el.closest(".viewer-stage") || el.closest(".map-canvas") || el.closest(".memories-row, [data-scroll-row]") || el.closest(".face-crop") || el.classList.contains("slide-backdrop")) continue;
         if (b.right > w + 0.5 || b.left < -0.5) {
           bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} "${(el.textContent ?? "").trim().slice(0, 24)}" [${Math.round(b.left)}..${Math.round(b.right)}]`);
         }
       }
       if (document.documentElement.scrollWidth > w) {
         for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
-          if (el.scrollWidth > w + 0.5 && !el.closest(".tile") && !el.closest(".viewer-stage") && !el.closest(".map-canvas") && !el.closest(".memories-row") && !el.closest(".face-crop") && !el.classList.contains("slide-backdrop")) {
+          if (el.scrollWidth > w + 0.5 && !el.closest(".tile, [data-tile]") && !el.closest(".viewer-stage") && !el.closest(".map-canvas") && !el.closest(".memories-row, [data-scroll-row]") && !el.closest(".face-crop") && !el.classList.contains("slide-backdrop")) {
             bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} scrollWidth ${el.scrollWidth}`);
           }
         }

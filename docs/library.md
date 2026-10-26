@@ -456,11 +456,12 @@ and 1280 px.
 
 ## What the user sees
 
-- **Map** is the third tab beside "All photos" and "Favorites" (`/map`; three pills fit at 320 px, so the top bar
-  gained no button). It shows the user's geotagged photos on a map: a single photo is a round thumbnail, photos that
+- **Places** (`/map`; the sidebar's "Places", and "Map" on the Collections page's Recent places) is the map filling the page under a
+  frosted header. It shows the user's geotagged photos: a single photo is a round thumbnail, photos that
   are close together are a count bubble. Tapping a bubble zooms to the photos in it; tapping a thumbnail opens the
   photo in the same lightbox as the library (favorite, download, add to album, trash with undo).
-- Under the map on a phone, beside it on a wide screen, a list shows the photos in the part of the map on screen,
+- On a phone a sheet over the map's bottom (folded to the count, dragged to half or full height; the map stays usable behind it), on a
+  wide screen a panel at the map's right, lists the photos in the part of the map on screen,
   newest first, loading more as you scroll. Panning or zooming starts the list again for the new area.
 - Hidden RAW files and trashed photos are not on the map, exactly as in the library.
 - The lightbox caption shows where a photo was taken ("Paris, Île-de-France, France") once the worker has looked it up.
@@ -1328,9 +1329,10 @@ the server, in every query that can return a photo; the web app only decides wha
   it was, as in the trash). Archived photos leave the timeline, the map and memories, and stay in albums, Favorites, search (with an
   "Archived" badge) and the *Archive* view, where *Restore* puts them back. Search has an **Include archived** filter, on by default
   (off shows a "Without archived" chip).
-- **On this day.** A strip at the top of All photos, one card per earlier year ("3 years ago", with the count); a tap opens the page
-  with all of them, a section per year. *Select* there, then *Not this one*, takes photos out of memories (with Undo); the strip has
-  *Hide* (turn it off; the page has the switch to turn it on again). Nothing for today: **no strip at all**.
+- **On this day.** The first row of the Collections page (the home page): one large card per earlier year ("3 years ago", with the
+  count), followed by the recent trips; a tap opens the page with all of them, a section per year. *Select* there, then *Not this
+  one*, takes photos out of memories (with Undo); the page's ⋯ menu turns the row off ("Hide from Collections") and on again.
+  Nothing for today (and no recent trip): **no row at all**.
 - **Recently added.** *More*, *Recently added*: the library by **upload time**, with day headers of the day of upload. The header of
   All photos has a **Date taken | Date added** toggle, remembered per user. (Which import batch a photo came from is not shown: nothing
   records a batch, and grouping by upload time would only guess.)
@@ -1459,6 +1461,13 @@ that week's photos. Nothing is stored: like On this day they are **computed when
 |---|---|
 | `GET /assets/trips?date=YYYY-MM-DD&limit=12&before=YYYY-MM-DD` | `{enabled, trips: [{id, from, to, ongoing, title, date_label, place: {name, level: "city" \| "region" \| "country", city?, region?, country, country_code}, photos, cover_id, cover}], next_before}`, newest first. `date` is the user's today (UTC today when absent), `limit` 1 to 50, `before` returns the trips that ended before that day and `next_before` is its value for the next page (null on the last). `id` is `<from>_<to>`; `from` and `to` are local dates; `cover` is a list item (thumbnail fields) like the library's. |
 | `GET /assets?from=YYYY-MM-DD&to=YYYY-MM-DD&memories=true` | A trip's photos in the library's own list (same items, `limit`, `cursor`, stacks): photos whose local date is within the range (either bound may be omitted; photos without a capture time are left out then), and with `memories=true` without the dismissed ones. Its length is the trip's `photos`. |
+
+## Where they show
+
+The Collections page (`/`) has them twice: the trips that are going on or ended within six weeks as large cards in the Memories row (after
+the On this day cards), and all of the recent ones (12) in the **Recent places** row with a "Map" link to Places. A card opens
+`/trips/<id>`: a page titled with the place, the date range and the photo count, listing `GET /assets?from=&to=&memories=true` and a
+way back to Collections; a link opened cold fetches the trip with `before` the day after its end. With memories off, there are none.
 
 ## How it stays fast
 

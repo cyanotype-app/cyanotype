@@ -1,4 +1,5 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MapPin } from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { pointFromSearch } from "../detailsText";
 import { api, ApiError, type AssetListItem, type MapCluster, type TilesInstalled } from "../api";
@@ -6,13 +7,16 @@ import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
 import { ShareDialog } from "../components/ShareDialog";
 import { Grid } from "../components/Grid";
-import { LibraryTabs } from "../components/LibraryTabs";
 import { Lightbox } from "../components/Lightbox";
 import { useToast } from "../components/Toast";
 import { similarUrl } from "../searchText";
 import { bboxParam, clusterZoom, extent, WORLD, type Bounds } from "../map/geo";
 import type { MapViewport } from "../map/MapCanvas";
+import { MapPanel } from "../map/MapPanel";
 import { useViewportPhotos } from "../map/useViewportPhotos";
+import { PageHeader } from "../shell/PageHeader";
+import { Button } from "../ui/Button";
+import { useDesktop } from "../ui/useMedia";
 
 // maplibre-gl and pmtiles are big; they load only when the map page opens.
 const MapCanvas = lazy(() => import("../map/MapCanvas"));
@@ -26,6 +30,7 @@ const photos = (n: number) => `${n.toLocaleString()} photo${n === 1 ? "" : "s"}`
 /** Where the geotagged photos are: a clustered map and, beside or under it, the photos in the part on screen. */
 export function MapPage() {
   const navigate = useNavigate();
+  const desktop = useDesktop();
   // /map?lat=&lon= (from a photo's details) opens centred on that spot instead of on the whole library.
   const [search] = useSearchParams();
   const focus = pointFromSearch(search);
@@ -217,99 +222,118 @@ export function MapPage() {
 
   if (loadError) {
     return (
-      <div className="library map-page">
-        <LibraryTabs />
-        <div className="empty" role="alert">
-          <h1>Couldn’t load the map</h1>
-          <p className="muted">{loadError}</p>
-        </div>
-      </div>
+      <>
+        <PageHeader title="Places" />
+        <Message title="Couldn’t load the map" body={loadError} alert />
+      </>
     );
   }
   if (!overview || !tiles) {
     return (
-      <div className="library map-page">
-        <LibraryTabs />
-        <p className="center muted" role="status">
-          Loading the map…
-        </p>
-      </div>
+      <>
+        <PageHeader title="Places" />
+        <div className="mx-4 mt-4 h-[50dvh] animate-pulse rounded-card bg-surface md:mx-8" role="status" aria-label="Loading the map" />
+      </>
     );
   }
   const basemap = tiles;
   if (overview.total === 0) {
     return (
-      <div className="library map-page">
-        <LibraryTabs />
-        <div className="empty">
-          <h1>No photos with a location yet</h1>
-          <p>
-            Photos that carry a GPS position in their EXIF data show up here once they are processed. Phone photos
-            usually do; most camera files do not.
-          </p>
-        </div>
-      </div>
+      <>
+        <PageHeader title="Places" />
+        <Message
+          icon={<MapPin className="size-7" aria-hidden="true" />}
+          title="No photos with a location yet"
+          body="Photos that carry a GPS position in their EXIF data show up here once they are processed. Phone photos usually do; most camera files do not."
+        />
+      </>
     );
   }
 
+  // What the bars and the panel cover, so the first view is fitted to what is left.
+  const inset = desktop ? { top: 88, right: 368, bottom: 0, left: 0 } : { top: 72, right: 0, bottom: 100, left: 0 };
+  const notice = mapError
+    ? { text: `The map can’t be drawn in this browser (${mapError}). The photos with a location are listed below.`, alert: true }
+    : !basemap.world
+      ? {
+          text: "No basemap is installed on this server, so photos are drawn on a plain background. The admin can add one (see “Map” in the deploy guide).",
+          alert: false,
+        }
+      : null;
+
   return (
-    <div className="library map-page">
-      <LibraryTabs />
-      <h1 className="sr-only">Map</h1>
-      {!basemap.world && !mapError && (
-        <p className="map-notice muted small" role="note">
-          No basemap is installed on this server, so photos are drawn on a plain background. The admin can add one
-          (see “Map” in the deploy guide).
+    <div
+      className={
+        "relative h-[calc(100dvh-var(--tabbar-h))] overflow-hidden bg-surface " +
+        "[--hdr:calc(4.25rem_+_env(safe-area-inset-top,0px))] md:[--hdr:5.25rem]"
+      }
+    >
+      <PageHeader title="Places" className="absolute inset-x-0 top-0 border-line" />
+      {!mapError && (
+        <section
+          aria-label="Map of your photos"
+          className={
+            "absolute inset-0 [&_.maplibregl-ctrl-top-right]:top-(--hdr)! " +
+            "md:[&_.maplibregl-ctrl-top-right]:right-[22.75rem]! [&_.maplibregl-ctrl-top-right]:mr-2.5"
+          }
+        >
+          <Suspense
+            fallback={
+              <p className="flex h-full items-center justify-center text-muted" role="status">
+                Loading the map…
+              </p>
+            }
+          >
+            <MapCanvas
+              clusters={clusters}
+              basemap={basemap}
+              dark={dark}
+              fitTo={focusBounds ?? overview.fit}
+              onViewport={setView}
+              onOpenPhoto={(id) => void openPhoto(id)}
+              onUnavailable={setMapError}
+              inset={inset}
+            />
+          </Suspense>
+          <p className="absolute top-(--hdr) left-0 z-[2] mt-1 max-w-[70%] rounded-r-md bg-bg/80 px-2 py-0.5 text-[0.6875rem] leading-snug text-muted backdrop-blur md:top-auto md:bottom-0 md:mt-0 md:max-w-[60%] md:rounded-r-none md:rounded-tr-md">
+            {basemap.world && (
+              <>
+                © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer" className="text-inherit">OpenStreetMap contributors</a>
+                {" · "}
+                <a href="https://protomaps.com" target="_blank" rel="noopener noreferrer" className="text-inherit">Protomaps</a>
+                {" · "}
+              </>
+            )}
+            Places ©{" "}
+            <a href="https://www.geonames.org" target="_blank" rel="noopener noreferrer" className="text-inherit">GeoNames</a>
+          </p>
+        </section>
+      )}
+      {notice && (
+        <p
+          data-map-notice=""
+          role={notice.alert ? "alert" : "note"}
+          className="absolute inset-x-3 top-(--hdr) z-[3] mt-2 rounded-card bg-card px-4 py-3 text-sm text-muted shadow-float [overflow-wrap:anywhere] md:right-auto md:max-w-md"
+        >
+          {notice.text}
         </p>
       )}
-      {mapError && (
-        <p className="map-notice small" role="alert">
-          The map can’t be drawn in this browser ({mapError}). The photos with a location are listed below.
-        </p>
-      )}
-      <div className="map-layout">
-        {!mapError && (
-          <section className="map-pane" aria-label="Map of your photos">
-            <Suspense
-              fallback={
-                <p className="map-loading muted" role="status">
-                  Loading the map…
-                </p>
-              }
-            >
-              <MapCanvas
-                clusters={clusters}
-                basemap={basemap}
-                dark={dark}
-                fitTo={focusBounds ?? overview.fit}
-                onViewport={setView}
-                onOpenPhoto={(id) => void openPhoto(id)}
-                onUnavailable={setMapError}
-              />
-            </Suspense>
-            <p className="map-attrib">
-              {basemap.world && (
-                <>
-                  © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a>
-                  {" · "}
-                  <a href="https://protomaps.com" target="_blank" rel="noopener noreferrer">Protomaps</a>
-                  {" · "}
-                </>
-              )}
-              Places ©{" "}
-              <a href="https://www.geonames.org" target="_blank" rel="noopener noreferrer">GeoNames</a>
-            </p>
-          </section>
-        )}
-        <section className="map-list" aria-label="Photos in view" ref={listEl}>
-          <p className="muted small map-count" role="status">
+      <MapPanel
+        label="Photos in view"
+        listRef={listEl}
+        open={Boolean(mapError)}
+        heading={
+          <p className="text-[0.9375rem] font-medium" role="status">
             {inView
               ? `${photos(inView.total)} ${mapError ? "with a location" : "in view"}${inView.truncated ? " (zoom in to see them all)" : ""}`
               : "Looking for photos…"}
           </p>
-          {items.length === 0 && done && !loading && inView && inView.total === 0 && (
-            <p className="muted center small">Nothing here. Pan or zoom the map.</p>
-          )}
+        }
+      >
+        {items.length === 0 && done && !loading && inView && inView.total === 0 && (
+          <p className="px-4 py-8 text-center text-sm text-muted">Nothing here. Pan or zoom the map.</p>
+        )}
+        <div className="[&_.grid]:grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] [&_.grid]:gap-0.5">
           <Grid
             items={items}
             onOpen={(i) => setLightbox({ items, index: i })}
@@ -319,17 +343,17 @@ export function MapPage() {
               if (it) void setFavorite(it, favorite);
             }}
           />
-          {listError && (
-            <p className="center small" role="alert">
-              {listError}{" "}
-              <button type="button" className="btn btn-quiet" onClick={() => void loadMore()}>
-                Retry
-              </button>
-            </p>
-          )}
-          <div ref={sentinel} className="map-sentinel" aria-hidden="true" />
-        </section>
-      </div>
+        </div>
+        {listError && (
+          <p className="px-4 py-4 text-center text-sm" role="alert">
+            {listError}{" "}
+            <Button size="sm" onClick={() => void loadMore()}>
+              Retry
+            </Button>
+          </p>
+        )}
+        <div ref={sentinel} className="h-px" aria-hidden="true" />
+      </MapPanel>
       {lightbox && (
         <Lightbox
           items={lightbox.items}
@@ -359,6 +383,17 @@ export function MapPage() {
         />
       )}
       {toast}
+    </div>
+  );
+}
+
+
+function Message({ title, body, icon, alert }: { title: string; body: string; icon?: ReactNode; alert?: boolean }) {
+  return (
+    <div className="mx-auto flex max-w-sm flex-col items-center gap-3 px-6 py-20 text-center" role={alert ? "alert" : undefined}>
+      {icon && <span className="flex size-16 items-center justify-center rounded-full bg-accent/12 text-accent">{icon}</span>}
+      <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+      <p className="text-[0.9375rem] text-muted">{body}</p>
     </div>
   );
 }

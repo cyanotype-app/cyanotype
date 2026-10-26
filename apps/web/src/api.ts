@@ -1317,6 +1317,41 @@ export interface Memories {
   years: MemoryYear[];
 }
 
+/** The place a trip is named after (docs/library.md, "Trips"). */
+export interface TripPlace {
+  name: string;
+  level: "city" | "region" | "country";
+  city?: string;
+  region?: string;
+  country: string;
+  country_code: string;
+}
+
+/** A trip of GET /assets/trips: a week in New York, computed from the photos and their places. `id` is `<from>_<to>`. */
+export interface Trip {
+  id: string;
+  /** Local dates, `YYYY-MM-DD`. */
+  from: string;
+  to: string;
+  /** Reaches yesterday or today: it still grows as photos arrive. */
+  ongoing: boolean;
+  /** "New York". */
+  title: string;
+  /** "October 2026", "Sep – Oct 2026". */
+  date_label: string;
+  place: TripPlace;
+  photos: number;
+  cover_id: string;
+  cover: AssetListItem;
+}
+export interface Trips {
+  /** Off when the user turned memories off: the list is then empty. */
+  enabled: boolean;
+  trips: Trip[];
+  /** Pass as `before` for the next page; null on the last. */
+  next_before: string | null;
+}
+
 /** The per-user switches (GET/PUT /assets/prefs). */
 export interface Prefs {
   memories_enabled: boolean;
@@ -1382,6 +1417,13 @@ export const api = {
     const q = new URLSearchParams({ date: opts.date ?? localToday() });
     if (opts.all) q.set("all", "true");
     return request<Memories>(`/assets/memories?${q}`);
+  },
+  /** The owner's recent trips, newest first ("Recent places"). `date` is the user's today. */
+  trips: (opts: { limit?: number; before?: string | null; date?: string } = {}) => {
+    const q = new URLSearchParams({ date: opts.date ?? localToday() });
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts.before) q.set("before", opts.before);
+    return request<Trips>(`/assets/trips?${q}`);
   },
   /** "Not this one" (a photo of a burst takes its burst along); `dismissed: false` takes it back. */
   dismissMemories: (ids: readonly string[], dismissed = true) =>
@@ -1517,10 +1559,23 @@ export const api = {
   cliDeviceDeny: (userCode: string) =>
     request<{ approved: boolean; device: string }>("/auth/cli/device/deny", json({ user_code: userCode })),
   listAssets: (
-    opts: { cursor?: string | null; before?: string | null; limit?: number; bbox?: string } & LibraryView = {},
+    opts: {
+      cursor?: string | null;
+      before?: string | null;
+      limit?: number;
+      bbox?: string;
+      /** Local dates (`YYYY-MM-DD`) bounding the photos' own date: a trip's photos. */
+      from?: string;
+      to?: string;
+      /** Without the photos taken out of memories ("Not this one"): a trip's photos are listed this way. */
+      memories?: boolean;
+    } & LibraryView = {},
   ) => {
     const q = new URLSearchParams();
     if (opts.bbox) q.set("bbox", opts.bbox);
+    if (opts.from) q.set("from", opts.from);
+    if (opts.to) q.set("to", opts.to);
+    if (opts.memories) q.set("memories", "true");
     if (opts.limit !== undefined) q.set("limit", String(opts.limit));
     viewQuery(opts, q);
     if (opts.cursor) q.set("cursor", opts.cursor);

@@ -652,7 +652,7 @@ function makeCheck(page: Page, prefix: string, problems: string[]) {
         const b = el.getBoundingClientRect();
         // Tiles clip their hover-zoomed image; map markers sit wherever the map puts them and the pane clips them.
         // The On this day cards scroll sideways inside their own row (clipped by it, on purpose).
-        if (b.width === 0 || el.closest("[data-tile]") || el.closest(".map-canvas") || el.closest(".memories-row")) continue;
+        if (b.width === 0 || el.closest("[data-tile]") || el.closest(".map-canvas") || el.closest(".memories-row, [data-scroll-row]")) continue;
         if (b.right > w + 0.5 || b.left < -0.5) {
           bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} "${(el.textContent ?? "").trim().slice(0, 24)}" [${Math.round(b.left)}..${Math.round(b.right)}]`);
         }
@@ -660,7 +660,7 @@ function makeCheck(page: Page, prefix: string, problems: string[]) {
       // The page can also be pushed wide by something whose own box fits but whose content spills (scrollWidth): name those.
       if (document.documentElement.scrollWidth > w) {
         for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
-          if (el.scrollWidth > w + 0.5 && !el.closest("[data-tile]") && !el.closest(".map-canvas") && !el.closest(".memories-row")) {
+          if (el.scrollWidth > w + 0.5 && !el.closest("[data-tile]") && !el.closest(".map-canvas") && !el.closest(".memories-row, [data-scroll-row]")) {
             bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} scrollWidth ${el.scrollWidth}`);
           }
         }
@@ -759,7 +759,7 @@ for (const { width, scheme } of RUNS) {
 
       // Map: with a basemap, a photo from a marker in the lightbox, and the plain-background fallback without one
       const mapReady = () =>
-        page.locator(".map-thumb, .map-bubble, .map-notice[role=alert]").first().waitFor({ timeout: 20_000 });
+        page.locator("[data-marker], [data-map-notice][role=alert]").first().waitFor({ timeout: 20_000 });
       basemapInstalled = true;
       await open("/map", "Photos in view");
       await mapReady();
@@ -767,10 +767,10 @@ for (const { width, scheme } of RUNS) {
       await check("map");
       // A thumbnail that is inside the pane and not under another marker (they overlap at world zoom).
       let shown = null;
-      for (const t of await page.locator(".map-thumb").all()) {
+      for (const t of await page.locator("[data-marker=photo]").all()) {
         const onTop = await t.evaluate((el) => {
           const r = el.getBoundingClientRect();
-          const pane = document.querySelector(".map-pane")!.getBoundingClientRect();
+          const pane = document.querySelector("section[aria-label='Map of your photos']")!.getBoundingClientRect();
           const inside = r.left > pane.left && r.right < pane.right && r.top > pane.top && r.bottom < pane.bottom;
           return inside && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === el;
         });
@@ -785,6 +785,9 @@ for (const { width, scheme } of RUNS) {
         await check("map-lightbox");
         await page.keyboard.press("Escape");
       }
+      // On a phone the photos wait in a folded sheet.
+      const unfold = page.getByRole("button", { name: "Show photos in view" });
+      if (await unfold.isVisible()) await unfold.click();
       await page.getByRole("button", { name: /Open IMG_1000/ }).click();
       await page.getByRole("dialog").waitFor();
       await check("map-list-lightbox");
