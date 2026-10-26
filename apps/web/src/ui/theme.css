@@ -46,7 +46,6 @@
   }
   body {
     font-family: var(--font-sans);
-    font-feature-settings: "ss01", "cv11";
   }
   :focus-visible {
     outline: 2px solid var(--focus);

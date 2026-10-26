@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { MAX_ZIP_IDS, isScope, zipApi, zipBody, type Target } from "../api";
+import { buttonVariants } from "../ui/Button";
 import { submitZip, zipStartedMessage } from "../zipDownload";
 
 interface Options {
@@ -44,7 +45,7 @@ interface Props extends Options {
 }
 
 /** "Download" for a whole album or a page's selection: one ZIP of the originals, streamed by the browser. */
-export function ZipButton({ target, name, disabled, className = "btn btn-quiet", onStarted, onError, submit }: Props) {
+export function ZipButton({ target, name, disabled, className = buttonVariants({ variant: "quiet", size: "sm" }), onStarted, onError, submit }: Props) {
   const { start, busy } = useZip({ target, name, onStarted, onError, submit });
   return (
     <button

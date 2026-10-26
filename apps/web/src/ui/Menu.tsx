@@ -1,17 +1,44 @@
 import { DropdownMenu } from "radix-ui";
-import { forwardRef, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import { forwardRef, useRef, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { cn } from "./cn";
 
 /**
  * A dropdown menu (Radix). Always non-modal: the modal kind locks scrolling by injecting a style element, which the
- * gateway's CSP refuses. Outside clicks and Escape still close it, and focus still moves through its items.
+ * gateway's CSP refuses. Outside clicks and Escape still close it, and focus still moves through its items. Focus goes back to the
+ * trigger when the menu closes; after a click or tap alone it goes back without the focus ring (the ring is for the keyboard).
  */
 export function Menu({ trigger, children, align = "end", label }: { trigger: ReactNode; children: ReactNode; align?: "start" | "end"; label?: string }) {
+  const opener = useRef<{ el: HTMLElement; pointer: boolean } | null>(null);
+  const outside = useRef(false);
   return (
     <DropdownMenu.Root modal={false}>
-      <DropdownMenu.Trigger asChild>{trigger}</DropdownMenu.Trigger>
+      <DropdownMenu.Trigger
+        asChild
+        onPointerDown={(e) => {
+          opener.current = { el: e.currentTarget, pointer: true };
+        }}
+        onKeyDown={(e) => {
+          opener.current = { el: e.currentTarget, pointer: false };
+        }}
+      >
+        {trigger}
+      </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
+          onKeyDown={() => {
+            if (opener.current) opener.current.pointer = false;
+          }}
+          onInteractOutside={() => {
+            outside.current = true;
+          }}
+          onCloseAutoFocus={(e) => {
+            const o = opener.current;
+            if (!o?.pointer) return;
+            // As Radix does, but quietly: the trigger gets focus back unless the menu closed because something else was clicked.
+            e.preventDefault();
+            if (!outside.current && o.el.isConnected) o.el.focus({ focusVisible: false } as FocusOptions);
+            outside.current = false;
+          }}
           align={align}
           sideOffset={6}
           collisionPadding={8}

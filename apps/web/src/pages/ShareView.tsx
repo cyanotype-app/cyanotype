@@ -227,7 +227,7 @@ function Photos({ token, info, onLocked }: { token: string; info: PublicInfo; on
         <Logo size={22} />
         <span className="text-[0.9375rem] font-semibold tracking-tight">Cyanotype</span>
       </header>
-      <main className="mx-auto max-w-6xl px-1 pb-12 md:px-8">
+      <main className="mx-auto max-w-6xl px-1 pt-[clamp(0.5rem,2vw,1.25rem)] pb-12 md:px-8">
         <div className="flex flex-col gap-4 px-3 pt-5 pb-5 md:px-0 md:pt-8">
           <div>
             <h1 className="text-[1.75rem] leading-tight font-bold tracking-[-0.02em] break-words md:text-[2rem]">{info.title ?? "Shared photos"}</h1>

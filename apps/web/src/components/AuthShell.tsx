@@ -12,7 +12,7 @@ export function AuthShell({ title, children, footer, wide }: { title: ReactNode;
       <div className={cn("w-full", wide ? "max-w-md" : "max-w-sm")}>
         <div className="flex flex-col items-center gap-3 pb-6 text-center">
           <Logo size={44} />
-          <h1 className="text-[1.5rem] font-bold tracking-[-0.02em]">{title}</h1>
+          <h1 className="text-[1.5rem] leading-[1.2] font-bold tracking-[-0.02em]">{title}</h1>
         </div>
         <div className="rounded-sheet bg-card p-5 ring-1 ring-line [overflow-wrap:anywhere] sm:p-7">{children}</div>
         {footer && <p className="mt-5 text-center text-sm text-muted [&_a]:text-accent">{footer}</p>}

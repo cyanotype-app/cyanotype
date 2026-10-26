@@ -156,7 +156,7 @@ export function MemoriesPage() {
               setPicked(new Set());
             }}
           >
-            <Button variant="primary" disabled={picked.size === 0} onClick={() => void dismiss()}>
+            <Button variant="primary" className="flex-1 md:flex-none" disabled={picked.size === 0} onClick={() => void dismiss()}>
               Not this one
             </Button>
           </SelectionBar>

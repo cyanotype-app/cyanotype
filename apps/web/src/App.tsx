@@ -112,7 +112,7 @@ export function App() {
 function RequireAuth() {
   const { state } = useAuth();
   const loc = useLocation();
-  if (state.status === "loading") return <p className="center muted" role="status">Loading…</p>;
+  if (state.status === "loading") return <p className="px-4 py-8 text-center text-muted" role="status">Loading…</p>;
   if (state.status === "anonymous") return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;
   // The administrator requires 2FA and this account has none: the server refuses everything else, so go and enrol.
   if (state.user.mfa_enrol_required && loc.pathname !== "/settings/security") {
@@ -143,5 +143,5 @@ function Logout() {
   useEffect(() => {
     void signOut().finally(() => navigate("/login", { replace: true }));
   }, [signOut, navigate]);
-  return <p className="center muted" role="status">Signing out…</p>;
+  return <p className="px-4 py-8 text-center text-muted" role="status">Signing out…</p>;
 }
