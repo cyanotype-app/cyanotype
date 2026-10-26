@@ -73,6 +73,10 @@ export function Sheet({ open, onOpenChange, title, description, hideTitle, foote
       role={role}
       aria-labelledby={titleId}
       aria-describedby={description ? descId : undefined}
+      // Escape closes the sheet (the dialog's own "cancel"): the page or viewer behind must not hear the key as well.
+      onKeyDown={(e) => {
+        if (e.key === "Escape") e.stopPropagation();
+      }}
       className="fixed inset-0 m-0 h-dvh max-h-none w-full max-w-none overflow-hidden bg-transparent p-0 text-fg backdrop:bg-transparent"
     >
       <AnimatePresence
@@ -118,7 +122,7 @@ export function Sheet({ open, onOpenChange, title, description, hideTitle, foote
                 <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-line md:hidden" aria-hidden="true" />
                 <div className="flex items-start gap-3">
                   <div className={cn("min-w-0 flex-1", hideTitle && "sr-only")}>
-                    <h2 id={titleId} className="text-[1.0625rem] font-semibold tracking-tight text-balance">
+                    <h2 id={titleId} className="text-[1.0625rem] font-semibold tracking-tight text-balance [overflow-wrap:anywhere]">
                       {title}
                     </h2>
                     {description && (

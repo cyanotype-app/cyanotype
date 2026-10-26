@@ -67,15 +67,18 @@ export function Switch({
         <span className="block text-[0.9375rem]">{label}</span>
         {hint && <span className="block text-sm text-muted">{hint}</span>}
       </label>
-      <RSwitch.Root
-        id={id}
-        checked={checked}
-        onCheckedChange={onChange}
-        disabled={disabled}
-        className="relative h-7 w-12 shrink-0 rounded-full bg-line transition-colors duration-200 data-[state=checked]:bg-accent disabled:opacity-45"
-      >
-        <RSwitch.Thumb className="block size-6 translate-x-0.5 rounded-full bg-white shadow-[0_1px_3px_rgb(0_0_0/0.25)] transition-transform duration-200 ease-soft data-[state=checked]:translate-x-[1.375rem]" />
-      </RSwitch.Root>
+      {/* Inside a form Radix adds a hidden input beside the switch; this keeps it next to the switch, not off the page's edge. */}
+      <span className="relative inline-flex shrink-0">
+        <RSwitch.Root
+          id={id}
+          checked={checked}
+          onCheckedChange={onChange}
+          disabled={disabled}
+          className="relative h-7 w-12 shrink-0 rounded-full bg-line transition-colors duration-200 data-[state=checked]:bg-accent disabled:opacity-45"
+        >
+          <RSwitch.Thumb className="block size-6 translate-x-0.5 rounded-full bg-white shadow-[0_1px_3px_rgb(0_0_0/0.25)] transition-transform duration-200 ease-soft data-[state=checked]:translate-x-[1.375rem]" />
+        </RSwitch.Root>
+      </span>
     </div>
   );
 }

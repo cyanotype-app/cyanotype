@@ -3,6 +3,7 @@ import {
   forwardRef,
   useEffect,
   useEffectEvent,
+  useState,
   type ComponentProps,
   type InputHTMLAttributes,
   type ReactNode,
@@ -23,8 +24,9 @@ import { Sheet } from "../ui/Sheet";
  */
 export function Modal({ onClose, ...sheet }: Omit<ComponentProps<typeof Sheet>, "open" | "onOpenChange"> & { onClose: () => void }) {
   const close = useEffectEvent(onClose);
+  // Where focus was before the sheet opened: read while rendering, since opening the dialog moves focus into it.
+  const [prev] = useState(() => document.activeElement as HTMLElement | null);
   useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
     // The sheet slides in from below: focusing a field now must not scroll the (overflow-hidden) dialog to bring it into view, and
     // nothing may leave it scrolled afterwards.
     const dialogs = document.querySelectorAll<HTMLDialogElement>("dialog[open]");
@@ -46,7 +48,7 @@ export function Modal({ onClose, ...sheet }: Omit<ComponentProps<typeof Sheet>, 
       dialog?.removeEventListener("scroll", stay);
       prev?.focus?.();
     };
-  }, []);
+  }, [prev]);
   return <Sheet open onOpenChange={(o) => !o && onClose()} {...sheet} title={<span className="[overflow-wrap:anywhere]">{sheet.title}</span>} />;
 }
 

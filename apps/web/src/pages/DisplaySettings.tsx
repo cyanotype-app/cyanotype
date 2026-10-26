@@ -29,7 +29,17 @@ export function DisplaySettings() {
               ]}
             />
           </Row>
-          {/* The grid's style (square or justified, `grid_style`) is a Row of the same kind: a Segmented in this group. */}
+          <Row label="Layout" detail="Square tiles, or rows that keep each photo's shape.">
+            <Segmented
+              label="Layout"
+              value={prefs.grid_style}
+              onChange={(v) => void update({ grid_style: v })}
+              options={[
+                { value: "square", label: "Square" },
+                { value: "justified", label: "Justified" },
+              ]}
+            />
+          </Row>
         </Group>
       </Section>
 

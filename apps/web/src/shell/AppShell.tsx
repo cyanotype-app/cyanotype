@@ -66,7 +66,7 @@ function Sidebar() {
 function SideLink({ item, end, strong }: { item: NavItem; end?: boolean; strong?: boolean }) {
   const { pathname } = useLocation();
   const Icon = item.icon;
-  const active = strong ? primaryFor(pathname) === item.to && (item.to !== "/" || !isLibraryPath(pathname)) : undefined;
+  const active = strong ? primaryFor(pathname) === item.to && (item.to !== "/" || isCollectionsPath(pathname)) : undefined;
   return (
     <NavLink
       to={item.to}
@@ -85,9 +85,12 @@ function SideLink({ item, end, strong }: { item: NavItem; end?: boolean; strong?
   );
 }
 
-/** A library view (Albums, Trash, …) is its own sidebar row, so Collections is not lit as well. */
-function isLibraryPath(path: string): boolean {
-  return [...LIBRARY, ...UTILITIES].some((i) => path === i.to || path.startsWith(`${i.to}/`));
+/**
+ * Collections is lit in the sidebar only on its own pages (home, a trip): a library view (Albums, Trash, …) is its own row,
+ * and Settings or Admin belong to the account menu, not to any row.
+ */
+function isCollectionsPath(path: string): boolean {
+  return path === "/" || path.startsWith("/trips/");
 }
 
 function TabBar() {

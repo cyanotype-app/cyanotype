@@ -6,10 +6,13 @@ afterEach(() => {
 });
 
 function tile(id: string, rect: Partial<DOMRect>) {
+  const wrap = document.createElement("div");
+  wrap.setAttribute("data-tile", "");
   const el = document.createElement("div");
   el.setAttribute("data-asset-id", id);
+  wrap.append(el);
   el.getBoundingClientRect = () => ({ left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}), ...rect }) as DOMRect;
-  document.body.append(el);
+  document.body.append(wrap);
   return el;
 }
 
