@@ -652,7 +652,7 @@ function makeCheck(page: Page, prefix: string, problems: string[]) {
         const b = el.getBoundingClientRect();
         // Tiles clip their hover-zoomed image; map markers sit wherever the map puts them and the pane clips them.
         // The On this day cards scroll sideways inside their own row (clipped by it, on purpose).
-        if (b.width === 0 || el.closest(".tile") || el.closest(".map-canvas") || el.closest(".memories-row")) continue;
+        if (b.width === 0 || el.closest("[data-tile]") || el.closest(".map-canvas") || el.closest(".memories-row")) continue;
         if (b.right > w + 0.5 || b.left < -0.5) {
           bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} "${(el.textContent ?? "").trim().slice(0, 24)}" [${Math.round(b.left)}..${Math.round(b.right)}]`);
         }
@@ -660,7 +660,7 @@ function makeCheck(page: Page, prefix: string, problems: string[]) {
       // The page can also be pushed wide by something whose own box fits but whose content spills (scrollWidth): name those.
       if (document.documentElement.scrollWidth > w) {
         for (const el of Array.from(document.querySelectorAll<HTMLElement>("body *"))) {
-          if (el.scrollWidth > w + 0.5 && !el.closest(".tile") && !el.closest(".map-canvas") && !el.closest(".memories-row")) {
+          if (el.scrollWidth > w + 0.5 && !el.closest("[data-tile]") && !el.closest(".map-canvas") && !el.closest(".memories-row")) {
             bad.push(`${el.tagName.toLowerCase()}.${String(el.className).split(" ")[0]} scrollWidth ${el.scrollWidth}`);
           }
         }
@@ -670,6 +670,17 @@ function makeCheck(page: Page, prefix: string, problems: string[]) {
     if (r.scroll > r.w || r.bad.length) problems.push(`${name}: scrollWidth ${r.scroll} > ${r.w}; offenders: ${r.bad.join("; ")}`);
     if (SHOT_DIR) await page.screenshot({ path: join(SHOT_DIR, `${prefix}-${name}.png`) });
   };
+}
+
+/** Press an action of the Photos selection bar: on the bar if it fits there, else in its "More actions" menu. */
+async function pressBar(page: Page, name: string) {
+  const bar = page.getByRole("toolbar", { name: "Selection" });
+  const direct = bar.getByRole("button", { name, exact: true });
+  if (await direct.count()) await direct.click();
+  else {
+    await bar.getByRole("button", { name: "More actions" }).click();
+    await page.getByRole("menuitem", { name, exact: true }).click();
+  }
 }
 
 for (const { width, scheme } of RUNS) {
@@ -701,7 +712,7 @@ for (const { width, scheme } of RUNS) {
       await page.unroute("**/auth/me");
 
       // Library
-      await open("/library", /Open IMG_1000/);
+      await open("/photos", /Open IMG_1000/);
       await check("library");
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_1000/ }).click();
@@ -710,7 +721,7 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: "Select all" }).click();
       await check("library-select-all");
       // Edit the selection: choose what, then a shift of the dates, one location, one caption
-      await page.getByRole("button", { name: "Edit", exact: true }).click();
+      await pressBar(page, "Edit");
       await page.getByRole("dialog", { name: "Edit photos" }).waitFor();
       await check("dialog-edit-menu");
       await page.getByRole("button", { name: "Adjust date and time" }).click();
@@ -718,6 +729,7 @@ for (const { width, scheme } of RUNS) {
       await check("dialog-edit-shift");
       await page.keyboard.press("Escape");
       await page.getByRole("dialog").waitFor({ state: "detached" });
+      await page.getByRole("button", { name: "Add to album" }).waitFor();
       await page.getByRole("button", { name: "Add to album" }).click();
       await page.getByRole("dialog").waitFor();
       await check("dialog-add-to-album");
@@ -734,7 +746,7 @@ for (const { width, scheme } of RUNS) {
 
       // Processing indicator: banner while photos are processed, the failures panel, and after a retry
       processing = BUSY;
-      await open("/library", /Open IMG_1000/);
+      await open("/photos", /Open IMG_1000/);
       await page.getByText("Processing 20,617 photos…").waitFor();
       await check("library-processing");
       await page.getByRole("button", { name: "1,234 failed" }).click();
@@ -785,7 +797,7 @@ for (const { width, scheme } of RUNS) {
       basemapInstalled = true;
 
       // Lightbox
-      await open("/library", /Open IMG_1000/);
+      await open("/photos", /Open IMG_1000/);
       await page.getByRole("button", { name: /Open IMG_20240615/ }).click();
       await page.getByText("In albums:").waitFor();
       await check("lightbox-long-name");
@@ -833,8 +845,8 @@ for (const { width, scheme } of RUNS) {
       await check("lightbox-info-closed");
 
       // Upload tray (the mocked check endpoint refuses, so every file shows as failed)
-      await open("/library", /Open IMG_1000/);
-      await page.locator('input[aria-label="Choose photos"]').setInputFiles([
+      await open("/photos", /Open IMG_1000/);
+      await page.locator('input[aria-label="Choose photos"]').first().setInputFiles([
         { name: LONG_NAME, mimeType: "image/jpeg", buffer: Buffer.from("x") },
         { name: "second.jpg", mimeType: "image/jpeg", buffer: Buffer.from("y") },
       ]);
@@ -889,7 +901,7 @@ for (const { width, scheme } of RUNS) {
 
       // Share links: the dialog (with and without the originals warning, and once created), the owner's list with its
       // edit and revoke dialogs, and the public viewer (grid, viewer with a RAW + JPEG download menu, password form, gone).
-      await open("/library", /Open IMG_1000/);
+      await open("/photos", /Open IMG_1000/);
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_1000/ }).click();
       await page.getByRole("button", { name: "Share", exact: true }).click();
@@ -936,18 +948,19 @@ for (const { width, scheme } of RUNS) {
 
       // Timeline of a larger library: month and day headers, the scrubber (resting and dragged), hearts, downloads.
       await installLibrary(page, makeAssets(4000), (r) => r.fallback());
-      await open("/library", /Open IMG_00000/);
-      await page.locator(".scrubber").waitFor();
+      await open("/photos", /Open IMG_00000/);
+      await page.locator("[data-scrubber]").waitFor();
+      await page.evaluate(() => window.dispatchEvent(new Event("scroll"))); // the rail wakes with the page's scrolling
       await check("timeline");
       const handle = (await page.getByRole("slider").boundingBox())!;
-      const rail = (await page.locator(".scrubber").boundingBox())!;
+      const rail = (await page.locator("[data-scrubber]").boundingBox())!;
       await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
       await page.mouse.down();
       await page.mouse.move(handle.x + handle.width / 2, rail.y + rail.height * 0.55, { steps: 6 });
-      await page.locator(".scrubber-bubble").waitFor();
+      await page.locator("[data-scrubber] [role=status]").filter({ hasText: /\d{4}/ }).waitFor();
       await check("timeline-scrubber-drag");
       await page.mouse.up();
-      await page.locator(".tile-cell img").first().waitFor();
+      await page.locator("[data-tile] img").first().waitFor();
       await check("timeline-scrolled");
       await page.evaluate(() => window.scrollTo(0, 0));
       await page.getByRole("button", { name: "Select", exact: true }).click();
@@ -988,22 +1001,18 @@ for (const { width, scheme } of RUNS) {
       const flagged = assets.map((a, i) => (i % 5 === 1 ? { ...a, archived: true } : a));
       await page.route("**/assets?*", (r) => (new URL(r.request().url()).pathname === "/assets" ? r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pageOf(flagged as FakeAsset[], new URL(r.request().url()).searchParams)) }) : r.fallback()));
 
-      // The library: the On this day strip on top, the sort toggle and the More menu in the header.
-      await page.goto("/library");
+      // The library: grid style, sort, stacks and the slideshow in the header's view menu.
+      await page.goto("/photos");
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
-      await page.getByRole("heading", { name: "On this day" }).waitFor();
-      await check("library-strip");
-      await page.getByRole("button", { name: "Date added" }).waitFor();
-      await page.locator("summary[aria-label='More views']").click();
-      await page.getByRole("link", { name: "Hidden", exact: true }).waitFor();
-      await check("more-menu");
+      await page.getByRole("button", { name: "View options" }).click();
+      await page.getByRole("menuitemradio", { name: "Date added" }).waitFor();
+      await check("view-menu");
       await page.keyboard.press("Escape");
-      await page.locator("summary[aria-label='More views']").click();
 
       // Selection bar with the new actions, and the viewer menu.
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_1000/ }).click();
-      await page.getByRole("button", { name: "Archive", exact: true }).waitFor();
+      await page.getByRole("toolbar", { name: "Selection" }).waitFor();
       await check("select-archive-hide");
       await page.getByRole("button", { name: "Done" }).click();
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().click();
@@ -1036,7 +1045,7 @@ for (const { width, scheme } of RUNS) {
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_1000/ }).click();
-      await page.getByRole("button", { name: "Restore", exact: true }).waitFor();
+      await page.getByRole("toolbar", { name: "Selection" }).waitFor();
       await check("archive-select");
 
       // Hidden: the password first (a wrong one shows its error), then the view with its lock bar.
@@ -1054,7 +1063,7 @@ for (const { width, scheme } of RUNS) {
       await check("hidden-open");
       await page.getByRole("button", { name: "Select", exact: true }).click();
       await page.getByRole("button", { name: /Select IMG_1000/ }).click();
-      await page.getByRole("button", { name: "Unhide", exact: true }).waitFor();
+      await page.getByRole("toolbar", { name: "Selection" }).waitFor();
       await check("hidden-select");
       hiddenUnlocked = false;
 
@@ -1093,7 +1102,7 @@ for (const { width, scheme } of RUNS) {
         await field.waitFor({ state: "visible" });
       };
 
-      await page.goto("/library");
+      await page.goto("/photos");
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
       await check("bar-collapsed");
       expect(await page.getByRole("link").filter({ hasText: /^(All photos|Favorites|Map)$/ }).count()).toBe(3);
@@ -1297,9 +1306,9 @@ for (const { width, scheme } of RUNS) {
           }),
         }),
       );
-      await page.goto("/library");
+      await page.goto("/photos");
       await page.getByRole("button", { name: /Open IMG_1000/ }).first().waitFor();
-      await page.locator('input[aria-label="Choose photos"]').setInputFiles([
+      await page.locator('input[aria-label="Choose photos"]').first().setInputFiles([
         { name: LONG_NAME, mimeType: "image/jpeg", buffer: Buffer.from("x") },
         { name: "second.jpg", mimeType: "image/jpeg", buffer: Buffer.from("y") },
         { name: "third.jpg", mimeType: "image/jpeg", buffer: Buffer.from("z") },

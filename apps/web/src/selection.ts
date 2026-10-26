@@ -1,7 +1,7 @@
 // Selection state for photo grids, as pure functions so the range / select-all rules are easy to test.
 // `anchor` is the last item clicked without Shift; Shift+click selects everything between it and the target.
 // Nothing here knows what the selection is used for (trash today, albums later).
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Scope, Target } from "./api";
 
 export interface Selection {
@@ -106,6 +106,13 @@ export interface SelectionApi {
   begin: (id: string) => void;
   /** Enter selection mode with these selected (long-press on a collapsed burst). */
   beginMany: (ids: readonly string[]) => void;
+  /**
+   * A long press on a tile (touch): selection mode starts (or goes on) with the tile selected, and `dragOver` then selects
+   * everything from it to the tile under the finger, in either direction, until `dragEnd`.
+   */
+  dragStart: (id: string) => void;
+  dragOver: (id: string) => void;
+  dragEnd: () => void;
   setSelecting: (on: boolean) => void;
   selectAll: () => void;
   clear: () => void;
@@ -141,6 +148,38 @@ export function useSelection(order: readonly string[], total?: number): Selectio
     setSelectingState(true);
     setSel({ ids: new Set(ids), anchor: ids[0] ?? null });
   }, []);
+  // The latest state for the drag, which runs between renders.
+  const live = useRef({ raw, order });
+  useEffect(() => {
+    live.current = { raw, order };
+  });
+  const drag = useRef<{ base: Selection; anchor: string } | null>(null);
+  const dragStart = useCallback((id: string) => {
+    const base = live.current.raw;
+    drag.current = { base, anchor: id };
+    setSelectingState(true);
+    const ids = new Set(base.ids);
+    if (base.all) ids.delete(id);
+    else ids.add(id);
+    setSel({ ids, anchor: id, all: base.all });
+  }, []);
+  const dragOver = useCallback((id: string) => {
+    const d = drag.current;
+    if (!d) return;
+    const { order: o } = live.current;
+    const a = o.indexOf(d.anchor);
+    const b = o.indexOf(id);
+    if (a < 0 || b < 0) return;
+    const ids = new Set(d.base.ids);
+    for (const x of o.slice(Math.min(a, b), Math.max(a, b) + 1)) {
+      if (d.base.all) ids.delete(x);
+      else ids.add(x);
+    }
+    setSel({ ids, anchor: d.anchor, all: d.base.all });
+  }, []);
+  const dragEnd = useCallback(() => {
+    drag.current = null;
+  }, []);
   const hasTotal = total !== undefined;
   const selectAllInView = useCallback(
     () => setSel(hasTotal ? { ...everything, anchor: order.at(-1) ?? null } : selectAll(order)),
@@ -167,6 +206,9 @@ export function useSelection(order: readonly string[], total?: number): Selectio
     selectMany,
     begin,
     beginMany,
+    dragStart,
+    dragOver,
+    dragEnd,
     setSelecting,
     selectAll: selectAllInView,
     clear,

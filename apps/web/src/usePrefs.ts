@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type Prefs } from "./api";
 
-const DEFAULTS: Prefs = { memories_enabled: true, library_sort: "taken", stacks_collapsed: true };
+const DEFAULTS: Prefs = { memories_enabled: true, library_sort: "taken", stacks_collapsed: true, grid_style: "square" };
 
 /**
  * The per-user switches (the On this day strip, the library's order), read once from the server. `prefs` is null while

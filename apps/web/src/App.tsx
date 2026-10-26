@@ -119,7 +119,7 @@ function RequireAuth() {
     <SlideshowProvider>
     <UploadPickerProvider>
       <AppShell>
-        <main>
+        <main className="p-0">
           <Outlet />
         </main>
       </AppShell>

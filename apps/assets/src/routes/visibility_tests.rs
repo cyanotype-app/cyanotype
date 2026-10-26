@@ -1045,7 +1045,7 @@ async fn the_sort_order_and_the_memories_strip_are_remembered_per_user() {
     let (_, p) = get(&app, &c, "/assets/prefs").await;
     assert_eq!(
         p,
-        json!({"memories_enabled": true, "library_sort": "taken", "stacks_collapsed": true})
+        json!({"memories_enabled": true, "library_sort": "taken", "stacks_collapsed": true, "grid_style": "square"})
     );
     let (st, p) = send_cookie(
         &app,
@@ -1069,14 +1069,14 @@ async fn the_sort_order_and_the_memories_strip_are_remembered_per_user() {
     .await;
     assert_eq!(
         p,
-        json!({"memories_enabled": false, "library_sort": "added", "stacks_collapsed": true})
+        json!({"memories_enabled": false, "library_sort": "added", "stacks_collapsed": true, "grid_style": "square"})
     );
     let (_, again) = get(&app, &c, "/assets/prefs").await;
     assert_eq!(again, p);
     let (_, theirs) = get(&app, &other, "/assets/prefs").await;
     assert_eq!(
         theirs,
-        json!({"memories_enabled": true, "library_sort": "taken", "stacks_collapsed": true})
+        json!({"memories_enabled": true, "library_sort": "taken", "stacks_collapsed": true, "grid_style": "square"})
     );
     let (st, _) = send_cookie(
         &app,
@@ -1084,6 +1084,47 @@ async fn the_sort_order_and_the_memories_strip_are_remembered_per_user() {
         "/assets/prefs",
         Some(&c),
         Some(json!({"library_sort": "sideways"})),
+    )
+    .await;
+    assert!(st.is_client_error());
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn the_grid_style_is_remembered_per_user_and_only_two_values_are_taken() {
+    let Some(t) = TestDb::new().await else { return };
+    let (_, c) = session(&t.pool, "a@example.com", "member").await;
+    let (_, other) = session(&t.pool, "b@example.com", "member").await;
+    let app = app()(&t.pool);
+    let (_, p) = get(&app, &c, "/assets/prefs").await;
+    assert_eq!(p["grid_style"], json!("square"));
+    let (st, p) = send_cookie(
+        &app,
+        "PUT",
+        "/assets/prefs",
+        Some(&c),
+        Some(json!({"grid_style": "justified"})),
+    )
+    .await;
+    assert_eq!((st, &p["grid_style"]), (StatusCode::OK, &json!("justified")));
+    // Another switch leaves it alone.
+    let (_, p) = send_cookie(
+        &app,
+        "PUT",
+        "/assets/prefs",
+        Some(&c),
+        Some(json!({"library_sort": "added"})),
+    )
+    .await;
+    assert_eq!(p["grid_style"], json!("justified"));
+    let (_, theirs) = get(&app, &other, "/assets/prefs").await;
+    assert_eq!(theirs["grid_style"], json!("square"));
+    let (st, _) = send_cookie(
+        &app,
+        "PUT",
+        "/assets/prefs",
+        Some(&c),
+        Some(json!({"grid_style": "masonry"})),
     )
     .await;
     assert!(st.is_client_error());

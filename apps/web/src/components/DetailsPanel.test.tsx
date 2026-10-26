@@ -113,7 +113,7 @@ describe("DetailsPanel", () => {
     expect(await go("Apple iPhone 15")).toBe("/search?camera=Apple+iPhone+15");
     expect(await go("iPhone 15 back camera 6.765mm f/1.78")).toBe("/search?lens=iPhone+15+back+camera+6.765mm+f%2F1.78");
     expect(await go("Lisbon, Portugal")).toBe("/search?place=Lisbon");
-    expect(await go("Tuesday, July 4, 2023")).toBe("/library?day=2023-07-04");
+    expect(await go("Tuesday, July 4, 2023")).toBe("/photos?day=2023-07-04");
     expect(await go("Open the map at this photo")).toBe("/map?lat=38.7223&lon=-9.1393");
     // Each followed link took the panel's history entry off first.
     expect(p.onLeave).toHaveBeenCalledTimes(5);

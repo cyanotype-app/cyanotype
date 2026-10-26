@@ -1551,15 +1551,17 @@ async fn restore_prefs(cx: &mut Ctx<'_>, user: Uuid, m: &UserManifest) -> Result
         return Ok(());
     }
     let sort = p.library_sort.as_deref().filter(|s| matches!(*s, "taken" | "added"));
+    let grid = p.grid_style.as_deref().filter(|s| matches!(*s, "square" | "justified"));
     sqlx::query(
-        "INSERT INTO user_prefs (user_id, memories_enabled, library_sort, stacks_collapsed)
-         SELECT id, coalesce($2, true), coalesce($3, 'taken'), coalesce($4, true) FROM users WHERE id = $1
+        "INSERT INTO user_prefs (user_id, memories_enabled, library_sort, stacks_collapsed, grid_style)
+         SELECT id, coalesce($2, true), coalesce($3, 'taken'), coalesce($4, true), coalesce($5, 'square') FROM users WHERE id = $1
          ON CONFLICT DO NOTHING",
     )
     .bind(user)
     .bind(p.memories_enabled)
     .bind(sort)
     .bind(p.stacks_collapsed)
+    .bind(grid)
     .execute(cx.db)
     .await?;
     Ok(())

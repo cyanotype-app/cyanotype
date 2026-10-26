@@ -53,7 +53,7 @@ describe("small texts and links", () => {
     expect(searchHref({ lens: "RF 24-70mm F2.8 L" })).toBe("/search?lens=RF+24-70mm+F2.8+L");
     expect(searchHref({ place: "Lisbon" })).toBe("/search?place=Lisbon");
     expect(mapHref(38.7, -9.1)).toBe("/map?lat=38.7&lon=-9.1");
-    expect(dayHref("2023-07-04")).toBe("/library?day=2023-07-04");
+    expect(dayHref("2023-07-04")).toBe("/photos?day=2023-07-04");
   });
   it("reads the map and library parameters strictly", () => {
     expect(pointFromSearch(new URLSearchParams("lat=38.7&lon=-9.1"))).toEqual({ lat: 38.7, lon: -9.1 });

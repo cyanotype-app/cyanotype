@@ -71,7 +71,7 @@ export const searchHref = (p: SearchParams) => `/search?${urlFromParams(p)}`;
 export const mapHref = (lat: number, lon: number) => `/map?${new URLSearchParams({ lat: String(lat), lon: String(lon) })}`;
 
 /** The library scrolled to a day (`YYYY-MM-DD`). */
-export const dayHref = (day: string) => `/library?${new URLSearchParams({ day })}`;
+export const dayHref = (day: string) => `/photos?${new URLSearchParams({ day })}`;
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const num = (v: string | null) => (v !== null && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : null);

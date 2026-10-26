@@ -1767,7 +1767,7 @@ async fn stacks_and_the_stacks_switch_come_back_with_a_rebuilt_database() {
         .execute(&fx.pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO user_prefs (user_id, stacks_collapsed, library_sort) VALUES ($1, false, 'added')")
+    sqlx::query("INSERT INTO user_prefs (user_id, stacks_collapsed, library_sort, grid_style) VALUES ($1, false, 'added', 'justified')")
         .bind(fx.user)
         .execute(&fx.pool)
         .await
@@ -1781,6 +1781,7 @@ async fn stacks_and_the_stacks_switch_come_back_with_a_rebuilt_database() {
     assert_eq!(text.matches("\"stack_unlinked\":true").count(), 1, "{text}");
     assert_eq!(text.matches("\"stack_cover\":false").count(), 0, "{text}");
     assert_eq!(text.matches("\"t\":\"prefs\"").count(), 1, "{text}");
+    assert_eq!(text.matches("\"grid_style\":\"justified\"").count(), 1, "{text}");
     assert!(text.contains("\"v\":4"), "{text}");
 
     async fn snapshot(pool: &PgPool) -> Vec<(String, Option<Uuid>, bool, bool)> {
@@ -1809,13 +1810,14 @@ async fn stacks_and_the_stacks_switch_come_back_with_a_rebuilt_database() {
     let r = fx.run(|o| o.apply = true).await;
     assert_eq!((r.orphans_recreated, r.stacked_restored, r.errors), (5, 3, 0));
     assert_eq!(snapshot(&fx.pool).await, before);
-    let prefs: (bool, String, bool) =
-        sqlx::query_as("SELECT stacks_collapsed, library_sort, memories_enabled FROM user_prefs WHERE user_id = $1")
-            .bind(fx.user)
-            .fetch_one(&fx.pool)
-            .await
-            .unwrap();
-    assert_eq!(prefs, (false, "added".to_string(), true));
+    let prefs: (bool, String, bool, String) = sqlx::query_as(
+        "SELECT stacks_collapsed, library_sort, memories_enabled, grid_style FROM user_prefs WHERE user_id = $1",
+    )
+    .bind(fx.user)
+    .fetch_one(&fx.pool)
+    .await
+    .unwrap();
+    assert_eq!(prefs, (false, "added".to_string(), true, "justified".to_string()));
 
     // The worker's side: all five photos get one camera, one capture time and the same vector, so the regroup puts them in one
     // burst. It and the sweep write only `burst_id` and `burst_version`; the owner's columns are as they were.

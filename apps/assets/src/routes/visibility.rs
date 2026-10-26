@@ -221,6 +221,8 @@ pub(super) struct Prefs {
     library_sort: String,
     /// Stacks (bursts and the ones made by hand) show as one tile in the timeline; off lists every photo.
     pub(super) stacks_collapsed: bool,
+    /// `square` or `justified`: how the web grid lays photos out.
+    grid_style: String,
 }
 
 pub(super) async fn prefs(State(s): State<AppState>, user: AuthUser) -> ApiResult<Json<Prefs>> {
@@ -229,7 +231,7 @@ pub(super) async fn prefs(State(s): State<AppState>, user: AuthUser) -> ApiResul
 
 pub(super) async fn load_prefs(db: &PgPool, user: Uuid) -> ApiResult<Prefs> {
     Ok(sqlx::query_as::<_, Prefs>(
-        "SELECT memories_enabled, library_sort, stacks_collapsed FROM user_prefs WHERE user_id = $1",
+        "SELECT memories_enabled, library_sort, stacks_collapsed, grid_style FROM user_prefs WHERE user_id = $1",
     )
     .bind(user)
     .fetch_optional(db)
@@ -238,6 +240,7 @@ pub(super) async fn load_prefs(db: &PgPool, user: Uuid) -> ApiResult<Prefs> {
         memories_enabled: true,
         library_sort: "taken".into(),
         stacks_collapsed: true,
+        grid_style: "square".into(),
     }))
 }
 
@@ -246,6 +249,14 @@ pub(super) struct PrefsPatch {
     memories_enabled: Option<bool>,
     library_sort: Option<Sort>,
     stacks_collapsed: Option<bool>,
+    grid_style: Option<GridStyle>,
+}
+
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum GridStyle {
+    Square,
+    Justified,
 }
 
 pub(super) async fn set_prefs(
@@ -257,17 +268,23 @@ pub(super) async fn set_prefs(
         Sort::Taken => "taken",
         Sort::Added => "added",
     });
+    let grid = p.grid_style.map(|g| match g {
+        GridStyle::Square => "square",
+        GridStyle::Justified => "justified",
+    });
     sqlx::query(
-        "INSERT INTO user_prefs (user_id, memories_enabled, library_sort, stacks_collapsed)
-         VALUES ($1, coalesce($2, true), coalesce($3, 'taken'), coalesce($4, true))
+        "INSERT INTO user_prefs (user_id, memories_enabled, library_sort, stacks_collapsed, grid_style)
+         VALUES ($1, coalesce($2, true), coalesce($3, 'taken'), coalesce($4, true), coalesce($5, 'square'))
          ON CONFLICT (user_id) DO UPDATE SET memories_enabled = coalesce($2, user_prefs.memories_enabled),
                                              library_sort = coalesce($3, user_prefs.library_sort),
-                                             stacks_collapsed = coalesce($4, user_prefs.stacks_collapsed)",
+                                             stacks_collapsed = coalesce($4, user_prefs.stacks_collapsed),
+                                             grid_style = coalesce($5, user_prefs.grid_style)",
     )
     .bind(user.id)
     .bind(p.memories_enabled)
     .bind(sort)
     .bind(p.stacks_collapsed)
+    .bind(grid)
     .execute(&s.db)
     .await?;
     // The switches are in the recovery manifest.

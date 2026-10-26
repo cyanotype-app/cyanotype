@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type HiddenState } from "../api";
 import { useAuth } from "../auth";
-import { LibraryTabs } from "../components/LibraryTabs";
+import { EyeOff } from "lucide-react";
+import { PageHeader } from "../shell/PageHeader";
+import { Button } from "../ui/Button";
 import { msUntil, unlockedUntil } from "../viewText";
 import { Library } from "./Library";
 
@@ -36,25 +38,35 @@ export function HiddenPage() {
     return () => clearTimeout(t);
   }, [state, lock]);
 
-  if (state === null) return <p className="center muted" role="status">Loading…</p>;
+  if (state === null) {
+    return (
+      <div>
+        <PageHeader title="Hidden" />
+        <p className="py-24 text-center text-muted" role="status">Loading…</p>
+      </div>
+    );
+  }
   if (!state.unlocked) return <UnlockPrompt onUnlocked={setState} />;
   return (
-    <div className="hidden-open">
-      <div className="hidden-bar" role="status">
-        <span className="muted small">{state.expires_at ? unlockedUntil(state.expires_at) : "Unlocked"}</span>
-        <button
-          type="button"
-          className="btn btn-quiet"
-          onClick={() => {
-            void api.lockHidden().catch(() => undefined);
-            lock();
-          }}
-        >
-          Lock now
-        </button>
-      </div>
-      <Library hidden onLocked={lock} />
-    </div>
+    <Library
+      hidden
+      onLocked={lock}
+      subbar={
+        <div className="flex items-center gap-2 px-4 py-1.5 md:px-8" role="status">
+          <span className="min-w-0 flex-1 text-sm text-muted">{state.expires_at ? unlockedUntil(state.expires_at) : "Unlocked"}</span>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              void api.lockHidden().catch(() => undefined);
+              lock();
+            }}
+          >
+            Lock now
+          </Button>
+        </div>
+      }
+    />
   );
 }
 
@@ -87,16 +99,27 @@ export function UnlockPrompt({ onUnlocked }: { onUnlocked: (s: HiddenState) => v
   };
 
   return (
-    <div className="library">
-      <LibraryTabs />
-      <form className="unlock card" onSubmit={(e) => void submit(e)} aria-labelledby="unlock-title">
-        <h1 id="unlock-title">Hidden</h1>
-        <p className="muted">Enter your password to open the photos you hid. They stay open for 10 minutes.</p>
-        <label htmlFor="unlock-password">Password</label>
+    <div>
+      <PageHeader title="Hidden" />
+      <form
+        className="mx-auto flex max-w-sm flex-col items-center px-6 pt-[10vh] pb-10 text-center"
+        onSubmit={(e) => void submit(e)}
+        aria-labelledby="unlock-title"
+      >
+        <span className="mb-5 grid size-16 grid-cols-1 place-items-center rounded-full bg-surface text-accent">
+          <EyeOff className="size-7" strokeWidth={1.6} aria-hidden="true" />
+        </span>
+        <h2 id="unlock-title" className="text-[1.1875rem] font-semibold tracking-tight">
+          Hidden photos
+        </h2>
+        <p className="mt-1.5 text-[0.9375rem] text-muted">Enter your password to open the photos you hid. They stay open for 10 minutes.</p>
+        <label htmlFor="unlock-password" className="mt-6 self-start text-sm font-medium">
+          Password
+        </label>
         <input
           id="unlock-password"
           ref={input}
-          className="text-input"
+          className="mt-1.5 h-11 w-full rounded-xl border border-line bg-card px-3.5 text-[0.9375rem] text-fg"
           type="password"
           autoComplete="current-password"
           value={password}
@@ -105,13 +128,13 @@ export function UnlockPrompt({ onUnlocked }: { onUnlocked: (s: HiddenState) => v
           aria-describedby={error ? "unlock-error" : undefined}
         />
         {error && (
-          <p id="unlock-error" className="form-error" role="alert">
+          <p id="unlock-error" className="mt-2 self-start text-sm text-danger" role="alert">
             {error}
           </p>
         )}
-        <button type="submit" className="btn btn-primary" disabled={!password || busy}>
+        <Button type="submit" variant="primary" className="mt-5 w-full" disabled={!password || busy}>
           {busy ? "Opening…" : "Open Hidden"}
-        </button>
+        </Button>
       </form>
     </div>
   );

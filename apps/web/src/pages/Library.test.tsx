@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "../api";
 import { AuthProvider } from "../auth";
 import { UploadProvider } from "../upload/UploadProvider";
+import { UploadPickerProvider } from "../shell/UploadPicker";
+import "../test/dialogs";
 import { detail, item, withRaw } from "../test/fixtures";
 import { fakeLibrary } from "../test/fakeLibrary";
 import { Library } from "./Library";
@@ -23,7 +25,9 @@ const renderLibrary = (favorites = false) =>
     <MemoryRouter initialEntries={[favorites ? "/favorites" : "/photos"]}>
       <AuthProvider>
         <UploadProvider deps={{ api, hash: async () => "0".repeat(64) }}>
-          <Library favorites={favorites} />
+          <UploadPickerProvider>
+            <Library favorites={favorites} />
+          </UploadPickerProvider>
         </UploadProvider>
       </AuthProvider>
     </MemoryRouter>,
@@ -98,7 +102,7 @@ describe("Library", () => {
     const lib = fakeLibrary(many);
     renderLibrary();
     await screen.findByAltText("photo-0.jpg");
-    const tiles = () => document.querySelectorAll(".tile-cell").length;
+    const tiles = () => document.querySelectorAll("[data-tile]").length;
     expect(tiles()).toBeGreaterThan(5);
     expect(tiles()).toBeLessThan(80);
     expect(screen.queryByAltText("photo-300.jpg")).not.toBeInTheDocument();
@@ -109,7 +113,7 @@ describe("Library", () => {
     await waitFor(() => expect(lib.listAssets.mock.calls.length).toBeGreaterThan(1));
     const jumped = lib.listAssets.mock.calls.at(-1)![0] as { before?: string; cursor?: string };
     expect(jumped.before ?? jumped.cursor).toBeTruthy();
-    await waitFor(() => expect(document.querySelectorAll(".tile-cell img").length).toBeGreaterThan(5));
+    await waitFor(() => expect(document.querySelectorAll("[data-tile] img").length).toBeGreaterThan(5));
     expect(screen.queryByAltText("photo-0.jpg")).not.toBeInTheDocument();
     expect(tiles()).toBeLessThan(100);
   });
@@ -194,7 +198,7 @@ describe("Library", () => {
       expect(present(1) && present(3)).toBe(true);
       expect(trash).toHaveBeenCalledWith(["id-2", "id-4"]);
       expect(await screen.findByText("2 moved to trash")).toBeInTheDocument();
-      expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument()); // it slides out
 
       await user.click(screen.getByRole("button", { name: "Undo" }));
       expect(restore).toHaveBeenCalledWith(["id-2", "id-4"]);
@@ -271,7 +275,7 @@ describe("Library", () => {
       await user.keyboard("{Escape}");
       expect(screen.getByText("Select photos")).toBeInTheDocument();
       await user.keyboard("{Escape}");
-      expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument()); // it slides out
       expect(tile(1)).toHaveAttribute("aria-label", "Open photo-1.jpg");
     });
 
@@ -350,7 +354,8 @@ describe("Library", () => {
       await user.keyboard("{Delete}");
       expect(await screen.findByRole("dialog", { name: "photo-3.jpg" })).toBeInTheDocument();
 
-      await user.click(screen.getByRole("button", { name: "Undo" }));
+      // (the toast of the first trashing may still be sliding out)
+      await user.click((await screen.findAllByRole("button", { name: "Undo" })).at(-1)!);
       expect(restore).toHaveBeenLastCalledWith(["id-4"]);
     });
 
@@ -438,7 +443,7 @@ describe("Library", () => {
       await user.click(screen.getByRole("button", { name: "Favorite" }));
       expect(api.favoriteAssets).toHaveBeenCalledWith(["id-1", "id-2"], true);
       expect(await screen.findByText("2 added to favorites")).toBeInTheDocument();
-      expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument()); // it slides out
       expect(heart(1, true)).toBeInTheDocument();
 
       // All favorites now: the same button un-hearts them.
@@ -487,8 +492,8 @@ describe("Library", () => {
       fakeLibrary([item(1)]);
       renderLibrary(true);
       expect(await screen.findByRole("heading", { name: "No favorites yet" })).toBeInTheDocument();
-      expect(screen.getByRole("link", { name: "Favorites" })).toHaveAttribute("aria-current", "page");
-      expect(screen.getByRole("link", { name: "All photos" })).toHaveAttribute("href", "/photos");
+      expect(screen.getByRole("heading", { level: 1, name: "Favorites" })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Browse photos" })).toHaveAttribute("href", "/photos");
     });
   });
 

@@ -1,14 +1,12 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { MAX_ZIP_IDS, isScope, zipApi, zipBody, type Target } from "../api";
 import { submitZip, zipStartedMessage } from "../zipDownload";
 
-interface Props {
+interface Options {
   /** Which photos: the selection (ids, or a whole view), or `{ scope: { album }, except: [] }` for a whole album. */
   target: Target;
   /** Names the file (the album's title); without it the server uses "cyanotype-photos.zip". */
   name?: string;
-  disabled?: boolean;
-  className?: string;
   /** The archive is on its way (the browser shows the progress); the page tells the owner. */
   onStarted: (message: string) => void;
   /** The server refused (nothing to download, too many files) or could not be reached. */
@@ -17,11 +15,10 @@ interface Props {
   submit?: (body: Record<string, unknown>) => void;
 }
 
-/** "Download" for a whole album or the selection bar: one ZIP of the originals, streamed by the browser. */
-export function ZipButton({ target, name, disabled, className = "btn btn-quiet", onStarted, onError, submit = submitZip }: Props) {
+/** Starts one ZIP of the originals, streamed by the browser: the call behind any button or menu row that downloads. */
+export function useZip({ target, name, onStarted, onError, submit = submitZip }: Options) {
   const [busy, setBusy] = useState(false);
-
-  async function start() {
+  const start = useCallback(async () => {
     if (!isScope(target) && target.length > MAX_ZIP_IDS) {
       onError(new Error(`Pick at most ${MAX_ZIP_IDS.toLocaleString("en-US")} photos by hand, or use Select all.`));
       return;
@@ -37,8 +34,18 @@ export function ZipButton({ target, name, disabled, className = "btn btn-quiet",
     } finally {
       setBusy(false);
     }
-  }
+  }, [target, name, onStarted, onError, submit]);
+  return { start, busy };
+}
 
+interface Props extends Options {
+  disabled?: boolean;
+  className?: string;
+}
+
+/** "Download" for a whole album or a page's selection: one ZIP of the originals, streamed by the browser. */
+export function ZipButton({ target, name, disabled, className = "btn btn-quiet", onStarted, onError, submit }: Props) {
+  const { start, busy } = useZip({ target, name, onStarted, onError, submit });
   return (
     <button
       type="button"
