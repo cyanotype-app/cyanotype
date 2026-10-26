@@ -48,10 +48,10 @@ comparing the table before and after):
 | Smart albums | ✅ | ✅ the album, its rules and its share link as of the newest manifest (a change rewrites it within about 30 seconds); `reindex` reports `smart albums (saved rules)` |
 | Near-duplicate groups | ✅ | ✅ re-found by the first check (automatic after the re-embedding) |
 | Stacks: bursts | ✅ | ✅ found again by the worker |
-| Stacks: made by hand, photos taken out of a burst, chosen covers (migration 0033) | ✅ | ✅ as of the newest manifest (a change rewrites it within about 30 seconds): `reindex` puts each photo back in its stack (same stack id), as taken out, or as cover, in the transaction that recreates its row, and the worker's regroup never touches these columns; `reindex` reports `stacked / unlinked / covers`. A stack whose other photos had no original left in the bucket comes back with fewer members |
+| Stacks: made by hand, photos taken out of a burst, chosen covers (migration 0033) | ✅ | ✅ as of the newest manifest (a change rewrites it within about 30 seconds): `reindex` puts each photo back in its stack (same stack id), as taken out, or as cover, in the transaction that recreates its row, and the worker's regroup never touches these columns; `reindex` reports `stacked / unlinked / covers`. If some of a stack's photos have no original left in the bucket (or are in the trash), a stack left with fewer than two live photos is not recreated (its photos come back unstacked), and a stack whose chosen cover is gone gets another (first favorite, else earliest, among the live photos); `reindex` reports `stacks dropped / covers replaced` |
 | "Not duplicates" dismissals | ✅ | ❌ not in the bucket: dismissed groups come back for review |
 | The On this day, sort and stacks settings (`user_prefs`) | ✅ | ✅ as of the newest manifest (one `prefs` line per user who has changed a setting; a user with none has the defaults; a row the user already has is not overwritten); `reindex` reports `user preferences` |
-| Memory dismissals (`assets.memory_dismissed`) | ✅ | ❌ not in the bucket: dismissed memories can show again |
+| Memory dismissals (`assets.memory_dismissed`) | ✅ | ✅ as of the newest manifest (a dismissal rewrites it within about 30 seconds): put back with the photo's row; `reindex` reports `memories dismissed` |
 | Albums and their members, covers | ✅ | ✅ as of the newest manifest |
 | RAW + JPEG pairs | ✅ | ✅ (manifest, and the worker re-pairs) |
 | Photo edits (date, location, caption, rotate/crop recipe) | ✅ | ✅ from `edits/`, as new as the last edit (a restored recipe is rendered again by the worker) |
@@ -193,13 +193,13 @@ Object metadata is written once at upload and can never say "this photo is now i
 X", and old objects have none. So the assets service also writes, once a day and per user,
 `manifests/{user}/originals-YYYYMMDD.jsonl` (the first pass runs 15 minutes after start-up): one JSON object per
 line, a `meta` header, every `asset` (id, hash, key, name, content type, size, created/mtime/taken times, trash
-time, favorite flag when the schema has one, the `hidden` and `archived` flags (optional; absent in manifests from before they existed, which read as neither), the hash of its JPEG if it is a stacked RAW, and, only where set, the owner's stack decisions: `stack` (the id shared by the members of a stack made by hand), `stack_unlinked` and `stack_cover`) and every `album` (id,
+time, favorite flag when the schema has one, the `hidden` and `archived` flags (optional; absent in manifests from before they existed, which read as neither), the hash of its JPEG if it is a stacked RAW, and, only where set, the owner's stack decisions: `stack` (the id shared by the members of a stack made by hand), `stack_unlinked` and `stack_cover`, and `memory_dismissed`) and every `album` (id,
 title, description, cover and members by hash) and every share link (`share`: id, token, kind, album or photos by hash,
 title, settings; **never a password**), every tag and, when the user has changed one, a `prefs` line (the On this day, sort and stacks switches). Next to them, one account manifest for the whole server,
 `manifests/accounts/accounts-YYYYMMDD.jsonl`: every account (id, email, role, created, disabled, the three limits) and the
 server's default limits; **never a password hash, API key or session** (it is not written while the users table is empty, so
 a freshly created database cannot push the real accounts out). Manifest format 2 adds the `share` lines; a version 1 manifest
-(no shares) and the older `reindex` reading a version 2 one (it counts the lines it does not know) both keep working. Format 4 adds the `prefs` line and the stack fields; the same holds both ways: a manifest without them restores with no stacks and default switches, and an older `reindex` ignores the fields and counts the `prefs` line as one it does not know.
+(no shares) and the older `reindex` reading a version 2 one (it counts the lines it does not know) both keep working. Format 4 adds the `prefs` line and the stack fields; the same holds both ways: a manifest without them restores with no stacks and default switches, and an older `reindex` ignores the fields and counts the `prefs` line as one it does not know. `memory_dismissed` is another optional field of format 4 rather than a format 5: `reindex` does not branch on the format version for it (only for tags), a manifest without it reads as nothing dismissed, and an older `reindex` ignores it.
 `MANIFEST_KEEP` (default 14, `0` turns it off) is how many daily
 files are kept. `cyanotype manifest` writes today's immediately.
 

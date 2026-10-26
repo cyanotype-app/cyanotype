@@ -1926,3 +1926,127 @@ async fn old_manifests_without_stack_fields_restore_and_stacks_never_cross_accou
     );
     fx.teardown().await;
 }
+
+/// Memory dismissals (migration 0020) come back with a rebuilt database, only on the photos where set, and a manifest from before
+/// the field restores nothing dismissed.
+#[tokio::test]
+async fn memory_dismissals_come_back_with_a_rebuilt_database() {
+    let Some(fx) = Fx::new().await else { return };
+    for (name, body) in [
+        ("alpha.jpg", &b"alpha"[..]),
+        ("bravo.jpg", b"bravo"),
+        ("plain.jpg", b"plain"),
+    ] {
+        let (k, s) = fx.put_original(fx.user, name, body, None).await;
+        fx.insert_row(fx.user, &k, &s, name).await;
+    }
+    sqlx::query("UPDATE assets SET memory_dismissed = true WHERE original_name IN ('alpha.jpg', 'bravo.jpg')")
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    manifest::write_user(&fx.pool, &fx.storage, fx.user, 14).await.unwrap();
+    let key = manifest::list_all(&fx.storage).await.unwrap()[&fx.user][0].clone();
+    let text = String::from_utf8(fx.storage.get_bytes_limited(&key, 1 << 20).await.unwrap().to_vec()).unwrap();
+    assert_eq!(text.matches("\"memory_dismissed\":true").count(), 2, "{text}");
+    assert_eq!(text.matches("\"memory_dismissed\":false").count(), 0, "{text}");
+    assert!(
+        text.contains("\"v\":4"),
+        "the field is optional data of format 4: {text}"
+    );
+
+    async fn dismissed(pool: &PgPool) -> Vec<String> {
+        sqlx::query_scalar("SELECT original_name FROM assets WHERE memory_dismissed ORDER BY original_name")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+    sqlx::query("DELETE FROM assets").execute(&fx.pool).await.unwrap();
+    let dry = fx.run(|_| {}).await;
+    assert_eq!(dry.dismissed_restored, 2);
+    assert_eq!(fx.count("assets").await, 0);
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!((r.orphans_recreated, r.dismissed_restored, r.errors), (3, 2, 0));
+    assert_eq!(dismissed(&fx.pool).await, ["alpha.jpg", "bravo.jpg"]);
+
+    // A manifest without the field (written before it existed) restores nothing dismissed.
+    sqlx::query("DELETE FROM assets").execute(&fx.pool).await.unwrap();
+    let old = text.replace(",\"memory_dismissed\":true", "");
+    fx.storage
+        .put_bytes(&key, old.into_bytes(), "application/x-ndjson")
+        .await
+        .unwrap();
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!((r.orphans_recreated, r.dismissed_restored, r.errors), (3, 0, 0));
+    assert!(dismissed(&fx.pool).await.is_empty());
+    fx.teardown().await;
+}
+
+/// A restored stack that lost photos (no original in the bucket) is not recreated with fewer than two live photos, and gets a
+/// surviving cover when the chosen one is gone.
+#[tokio::test]
+async fn a_restored_stack_that_lost_photos_is_dropped_or_gets_a_new_cover() {
+    let Some(fx) = Fx::new().await else { return };
+    // Stack a: four photos, the cover a2 is lost with a4; a1 and a3 survive. Stack b: three photos, only b1 survives.
+    // Stack c: three photos, the cover c1 is lost and c3 is a favorite.
+    let names = [
+        "a1.jpg", "a2.jpg", "a3.jpg", "a4.jpg", "b1.jpg", "b2.jpg", "b3.jpg", "c1.jpg", "c2.jpg", "c3.jpg",
+    ];
+    let mut objects = Vec::new();
+    for n in names {
+        let (k, s) = fx.put_original(fx.user, n, n.as_bytes(), None).await;
+        fx.insert_row(fx.user, &k, &s, n).await;
+        objects.push((n, k));
+    }
+    let (sa, sb, sc) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    for (stack, group) in [(sa, 'a'), (sb, 'b'), (sc, 'c')] {
+        sqlx::query("UPDATE assets SET stack_id = $1 WHERE original_name LIKE $2")
+            .bind(stack)
+            .bind(format!("{group}%"))
+            .execute(&fx.pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("UPDATE assets SET stack_cover = true WHERE original_name IN ('a2.jpg', 'c1.jpg')")
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE assets SET favorite = true WHERE original_name = 'c3.jpg'")
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    manifest::write_user(&fx.pool, &fx.storage, fx.user, 14).await.unwrap();
+    sqlx::query("DELETE FROM assets").execute(&fx.pool).await.unwrap();
+    for (n, k) in &objects {
+        if ["a2.jpg", "a4.jpg", "b2.jpg", "b3.jpg", "c1.jpg"].contains(n) {
+            fx.storage.delete_all_versions(std::slice::from_ref(k)).await.unwrap();
+        }
+    }
+
+    let dry = fx.run(|_| {}).await;
+    assert_eq!((dry.stacks_dropped, dry.covers_replaced), (1, 2));
+    assert_eq!(fx.count("assets").await, 0);
+    let r = fx.run(|o| o.apply = true).await;
+    assert_eq!(
+        (r.orphans_recreated, r.stacks_dropped, r.covers_replaced, r.errors),
+        (5, 1, 2, 0)
+    );
+    let rows: Vec<(String, Option<Uuid>, bool)> =
+        sqlx::query_as("SELECT original_name, stack_id, stack_cover FROM assets ORDER BY original_name COLLATE \"C\"")
+            .fetch_all(&fx.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        rows,
+        [
+            ("a1.jpg".to_string(), Some(sa), true), // the earliest survivor
+            ("a3.jpg".to_string(), Some(sa), false),
+            ("b1.jpg".to_string(), None, false), // alone: no stack
+            ("c2.jpg".to_string(), Some(sc), false),
+            ("c3.jpg".to_string(), Some(sc), true), // the favorite
+        ]
+    );
+    // A second run has nothing to recreate and changes nothing.
+    let again = fx.run(|o| o.apply = true).await;
+    assert_eq!((again.orphans, again.stacks_dropped, again.covers_replaced), (0, 0, 0));
+    fx.teardown().await;
+}
