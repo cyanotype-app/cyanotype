@@ -12,35 +12,37 @@
   --pb-900: #001e33;
   --pb-950: #00131f;
 
-  --bg: var(--pb-50);
+  /* The refresh's palette (src/ui/theme.css holds the same values for Tailwind); these names stay for the older styles. */
+  --bg: #fbfcfd;
   --surface: #ffffff;
-  --surface-2: var(--pb-100);
-  --text: #0c1b26;
-  --muted: #55697a;
-  --border: #d3e0ea;
-  --accent: var(--pb-800);
-  --accent-hover: var(--pb-700);
+  --surface-2: #eef2f6;
+  --text: #0b1520;
+  --muted: #5e6b78;
+  --border: #dbe2e9;
+  --accent: #1d4f91;
+  --accent-hover: #173f75;
   --on-accent: #ffffff;
-  --link: var(--pb-600);
-  --focus: var(--pb-500);
+  --link: #1d4f91;
+  --focus: #2f7cb5;
   --danger: #b3261e;
   --on-danger: #ffffff;
-  --shadow: 0 1px 2px rgb(0 19 31 / 0.06), 0 8px 24px rgb(0 19 31 / 0.08);
+  --shadow: 0 1px 2px rgb(11 21 32 / 0.05), 0 8px 24px rgb(11 21 32 / 0.07);
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #08121a;
-    --surface: #0f1d28;
-    --surface-2: #14283a;
-    --text: #e6eef5;
-    --muted: #8da3b5;
-    --border: #1d3347;
-    --accent: var(--pb-600);
-    --accent-hover: var(--pb-500);
-    --link: var(--pb-300);
-    --focus: var(--pb-300);
+    --bg: #06090d;
+    --surface: #0d131a;
+    --surface-2: #111821;
+    --text: #e7edf3;
+    --muted: #8393a4;
+    --border: #1d2834;
+    --accent: #86b4ea;
+    --accent-hover: #a3c6f0;
+    --on-accent: #06090d;
+    --link: #86b4ea;
+    --focus: #86b4ea;
     --danger: #ff8a80;
     --on-danger: #1c0705;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.35);
@@ -64,7 +66,7 @@ body {
   overflow-x: clip; /* a backstop only: the layouts below are built not to overflow */
   background: var(--bg);
   color: var(--text);
-  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  font: 16px/1.5 var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
 

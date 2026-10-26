@@ -50,7 +50,7 @@ export function Register() {
     };
   }, [linked]);
 
-  if (state.status === "authenticated") return <Navigate to="/library" replace />;
+  if (state.status === "authenticated") return <Navigate to="/" replace />;
 
   const needsInvite = info?.invite_required === true && !linked;
   const refused = closed || (info !== null && !info.open && !info.invite_required);
@@ -123,7 +123,7 @@ export function Register() {
           throw e;
         }
         await refresh();
-        navigate("/library", { replace: true });
+        navigate("/", { replace: true });
       }}
       footer={
         <>

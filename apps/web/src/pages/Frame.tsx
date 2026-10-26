@@ -213,7 +213,7 @@ function FrameSetup({ initial }: { initial: FrameConfig | null }) {
           <button type="submit" className="btn btn-primary" disabled={!config}>
             Start the frame
           </button>
-          <Link className="btn btn-quiet" to="/library">
+          <Link className="btn btn-quiet" to="/photos">
             Back to my library
           </Link>
         </div>
@@ -352,7 +352,7 @@ function FrameShow({ config }: { config: FrameConfig }) {
             className="btn btn-glass"
             onClick={() => {
               void exitFullscreen();
-              navigate("/library");
+              navigate("/photos");
             }}
           >
             Exit the frame

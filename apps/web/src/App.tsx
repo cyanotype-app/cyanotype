@@ -1,9 +1,9 @@
 import { useEffect } from "react";
-import { Link, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "./auth";
-import { Logo } from "./components/Logo";
 import { AlbumPage } from "./pages/Album";
 import { Albums } from "./pages/Albums";
+import { Collections } from "./pages/Collections";
 import { Activate } from "./pages/Activate";
 import { ApiKeys } from "./pages/ApiKeys";
 import { CliAuthorize } from "./pages/CliAuthorize";
@@ -40,6 +40,8 @@ import { SlideshowProvider } from "./slideshow/SlideshowHost";
 import { PeopleProvider } from "./usePeople";
 import { UploadProvider } from "./upload/UploadProvider";
 import { UploadTray } from "./upload/UploadTray";
+import { AppShell } from "./shell/AppShell";
+import { UploadPickerProvider } from "./shell/UploadPicker";
 
 // Client routes must not start with /auth or /assets: the gateway sends those to the API. /cli/authorize is the one client
 // route under /cli (the rest of /cli is the CLI download); the gateway and the web container name it explicitly.
@@ -58,7 +60,10 @@ export function App() {
       {/* The photo frame: a wall tablet's view. Signed in, but outside the shell (no bar, nothing to click). */}
       <Route path="/frame" element={<Frame />} />
       <Route element={<RequireAuth />}>
-        <Route path="/library" element={<Library key="all" />} />
+        <Route path="/" element={<Collections />} />
+        <Route path="/photos" element={<Library key="all" />} />
+        {/* The grid's old address, from bookmarks and older links. */}
+        <Route path="/library" element={<Navigate to="/photos" replace />} />
         <Route path="/favorites" element={<Library key="favorites" favorites />} />
         <Route path="/recent" element={<Library key="recent" recent />} />
         <Route path="/archive" element={<Library key="archive" archive />} />
@@ -94,13 +99,13 @@ export function App() {
           <Route path="*" element={<NotFound />} />
         </Route>
       </Route>
-      <Route path="*" element={<Navigate to="/library" replace />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }
 
 function RequireAuth() {
-  const { state, signOut } = useAuth();
+  const { state } = useAuth();
   const loc = useLocation();
   if (state.status === "loading") return <p className="center muted" role="status">Loading…</p>;
   if (state.status === "anonymous") return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;
@@ -112,38 +117,14 @@ function RequireAuth() {
     <UploadProvider>
     <PeopleProvider>
     <SlideshowProvider>
-    <div className="shell">
-      <header className="topbar">
-        <Link to="/library" className="brand">
-          <Logo size={26} />
-          <span>Cyanotype</span>
-        </Link>
-        <div className="topbar-right">
-          <Link to="/albums" className="btn btn-quiet">
-            Albums
-          </Link>
-          <Link to="/trash" className="btn btn-quiet">
-            Trash
-          </Link>
-          <Link to="/settings" className="btn btn-quiet">
-            Settings
-          </Link>
-          {state.user.role === "admin" && (
-            <Link to="/admin" className="btn btn-quiet">
-              Admin
-            </Link>
-          )}
-          <span className="muted email">{state.user.email}</span>
-          <button type="button" className="btn btn-quiet" onClick={() => void signOut()}>
-            Sign out
-          </button>
-        </div>
-      </header>
-      <main>
-        <Outlet />
-      </main>
+    <UploadPickerProvider>
+      <AppShell>
+        <main>
+          <Outlet />
+        </main>
+      </AppShell>
       <UploadTray />
-    </div>
+    </UploadPickerProvider>
     </SlideshowProvider>
     </PeopleProvider>
     </UploadProvider>

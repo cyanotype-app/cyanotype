@@ -175,7 +175,7 @@ export function Duplicates() {
           <h2>{scan?.state === "never" ? "Nothing checked yet" : "No duplicates to review"}</h2>
           <p>
             Photos that are the same picture twice, such as a resized or re-saved copy, show up here after a check. Bursts are not
-            duplicates: they stay together in the library. <Link to="/library">Back to the library</Link>
+            duplicates: they stay together in the library. <Link to="/photos">Back to the library</Link>
           </p>
         </div>
       )}

@@ -20,7 +20,7 @@ afterEach(() => {
 
 const renderLibrary = (favorites = false) =>
   render(
-    <MemoryRouter initialEntries={[favorites ? "/favorites" : "/library"]}>
+    <MemoryRouter initialEntries={[favorites ? "/favorites" : "/photos"]}>
       <AuthProvider>
         <UploadProvider deps={{ api, hash: async () => "0".repeat(64) }}>
           <Library favorites={favorites} />
@@ -488,7 +488,7 @@ describe("Library", () => {
       renderLibrary(true);
       expect(await screen.findByRole("heading", { name: "No favorites yet" })).toBeInTheDocument();
       expect(screen.getByRole("link", { name: "Favorites" })).toHaveAttribute("aria-current", "page");
-      expect(screen.getByRole("link", { name: "All photos" })).toHaveAttribute("href", "/library");
+      expect(screen.getByRole("link", { name: "All photos" })).toHaveAttribute("href", "/photos");
     });
   });
 

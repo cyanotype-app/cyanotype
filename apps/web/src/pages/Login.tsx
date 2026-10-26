@@ -12,7 +12,7 @@ export function Login() {
   const { state, refresh } = useAuth();
   const navigate = useNavigate();
   const returnTo = returnToOf(useLocation().state);
-  const from = returnTo ?? "/library";
+  const from = returnTo ?? "/";
   // An account that must set up two-factor authentication goes there first, and is sent on to where it was headed.
   const enrolState = returnTo ? { from: returnTo } : undefined;
   const [challenge, setChallenge] = useState<string | null>(null);

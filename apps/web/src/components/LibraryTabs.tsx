@@ -13,7 +13,7 @@ export function LibraryTabs() {
   return (
     <div className="library-header" data-searching={searching}>
       <nav className="library-tabs" aria-label="Library views">
-        <NavLink to="/library" end className="library-tab library-tab-all">
+        <NavLink to="/photos" end className="library-tab library-tab-all">
           All photos
         </NavLink>
         <NavLink to="/favorites" end className="library-tab">

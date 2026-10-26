@@ -192,7 +192,7 @@ export function TakeoutImport() {
             still get their details.
           </p>
           <div className="actions">
-            <Link className="btn btn-primary" to="/library">
+            <Link className="btn btn-primary" to="/photos">
               Go to the library
             </Link>
             <button type="button" className="btn btn-quiet" onClick={reset}>

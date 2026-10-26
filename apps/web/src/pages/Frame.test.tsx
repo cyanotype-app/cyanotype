@@ -22,7 +22,7 @@ function renderFrame(path: string) {
         <Routes>
           <Route path="/frame" element={<Frame />} />
           <Route path="/login" element={<Where />} />
-          <Route path="/library" element={<Where />} />
+          <Route path="/photos" element={<Where />} />
         </Routes>
       </AuthProvider>
     </MemoryRouter>,
@@ -280,7 +280,7 @@ describe("the tap menu", () => {
 
     fireEvent.click(document.querySelector(".frame")!);
     fireEvent.click(screen.getByRole("button", { name: "Exit the frame" }));
-    expect(screen.getByTestId("where")).toHaveTextContent("/library");
+    expect(screen.getByTestId("where")).toHaveTextContent("/photos");
   });
 
   it("Change what is shown opens the setup", async () => {

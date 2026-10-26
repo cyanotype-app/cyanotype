@@ -59,7 +59,7 @@ export function SearchBar({ onOpenChange }: { onOpenChange?: (open: boolean) => 
     setOpen(false);
     setFocused(false);
     // Leaving an empty search page by closing the field returns to the library.
-    if (onSearchPage && !current.q && Object.keys(current).length === 0) navigate("/library");
+    if (onSearchPage && !current.q && Object.keys(current).length === 0) navigate("/photos");
   }
 
   const suggestions = suggestionsFor(typed, recent);
