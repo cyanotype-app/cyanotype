@@ -193,6 +193,10 @@ async fn set_flag(tx: &mut sqlx::PgConnection, owner: Uuid, ids: &[Uuid], column
     .bind(on)
     .fetch_all(&mut *tx)
     .await?;
+    if column == "hidden" && on {
+        // A hidden photo leaves its manual stack (a stack that is down to one photo dissolves). Unhiding does not put it back.
+        cyanotype_core::stacks::leave(&mut *tx, owner, &changed).await?;
+    }
     if !changed.is_empty() {
         sqlx::query(&format!(
             "UPDATE assets SET {column} = $3 WHERE owner_id = $1 AND primary_id = ANY($2)"

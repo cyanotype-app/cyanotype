@@ -24,6 +24,7 @@ pub mod places;
 pub mod recipe;
 pub mod reindex;
 pub mod scan;
+pub mod stacks;
 pub mod storage;
 pub mod tags;
 pub mod takeout;

@@ -564,3 +564,245 @@ fn the_sql_helpers_name_one_rule() {
     assert!(c.contains("NOT hidden AND NOT archived"), "{c}");
     assert!(c.contains("m.owner_id = assets.owner_id"), "{c}");
 }
+
+/// Photos with a stack id or cover flag set: what is left of manual stacks in the database.
+async fn stacked_rows(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM assets WHERE stack_id IS NOT NULL OR stack_cover")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn owner_of(pool: &PgPool, asset: Uuid) -> Uuid {
+    sqlx::query_scalar("SELECT owner_id FROM assets WHERE id = $1")
+        .bind(asset)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Owner "alpha" with a manual stack of three (s1 s2 s3, the first the cover) and nothing else.
+async fn manual_three(t: &TestDb) -> (axum::Router, String, [Uuid; 3]) {
+    let app = app(&t.pool);
+    let (alpha, key) = user(&t.pool, "alpha@example.com").await;
+    let s1 = photo(&t.pool, alpha, "s1.jpg", "2026-03-01T09:00:00Z").await;
+    let s2 = photo(&t.pool, alpha, "s2.jpg", "2026-03-02T09:00:00Z").await;
+    let s3 = photo(&t.pool, alpha, "s3.jpg", "2026-03-03T09:00:00Z").await;
+    let (st, _) = send(&app, "POST", "/assets/stacks", &key, Some(json!({"ids": [s1, s2, s3]}))).await;
+    assert_eq!(st, StatusCode::OK);
+    (app, key, [s1, s2, s3])
+}
+
+#[tokio::test]
+async fn trashing_down_to_one_live_photo_dissolves_the_stack_but_two_keep_it_for_a_restore() {
+    let Some(t) = TestDb::new().await else { return };
+    let (app, key, [s1, s2, s3]) = manual_three(&t).await;
+    // One of three trashed: the stack stays and keeps the trashed member, which a restore puts back.
+    send(&app, "POST", "/assets/trash", &key, Some(json!({"ids": [s1]}))).await;
+    assert_eq!(stacked_rows(&t.pool).await, 3);
+    send(&app, "POST", "/assets/restore", &key, Some(json!({"ids": [s1]}))).await;
+    let (_, stack) = get(&app, &key, &format!("/assets/{s2}/stack")).await;
+    assert_eq!(names(&stack), ["s1.jpg", "s2.jpg", "s3.jpg"]);
+    // Two of three trashed (one call): one live photo is no stack, the trashed members are freed too.
+    send(&app, "POST", "/assets/trash", &key, Some(json!({"ids": [s1, s2]}))).await;
+    assert_eq!(stacked_rows(&t.pool).await, 0);
+    let (st, _) = get(&app, &key, &format!("/assets/{s3}/stack")).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    // A restored photo is an ordinary one: it does not rejoin a stack that is gone.
+    send(&app, "POST", "/assets/restore", &key, Some(json!({"ids": [s1, s2]}))).await;
+    assert_eq!(total(&app, &key, "").await, 3);
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn trashing_one_at_a_time_dissolves_at_the_last_step_the_cover_included() {
+    let Some(t) = TestDb::new().await else { return };
+    let (app, key, [s1, s2, _]) = manual_three(&t).await;
+    send(&app, "POST", "/assets/trash", &key, Some(json!({"ids": [s2]}))).await;
+    assert_eq!(stacked_rows(&t.pool).await, 3);
+    send(&app, "POST", "/assets/trash", &key, Some(json!({"ids": [s1]}))).await;
+    assert_eq!(
+        stacked_rows(&t.pool).await,
+        0,
+        "the cover left and the stack fell below two"
+    );
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn when_the_cover_leaves_the_earliest_photo_covers() {
+    let Some(t) = TestDb::new().await else { return };
+    let (app, key, [s1, s2, s3]) = manual_three(&t).await;
+    send(&app, "POST", &format!("/assets/{s3}/stack/cover"), &key, None).await;
+    send(&app, "POST", &format!("/assets/{s3}/stack/remove"), &key, None).await;
+    let (_, stack) = get(&app, &key, &format!("/assets/{s2}/stack")).await;
+    assert_eq!(names(&stack), ["s1.jpg", "s2.jpg"]);
+    assert_eq!(stack["cover_id"], json!(s1.to_string()));
+    assert_eq!(
+        stacked_rows(&t.pool).await,
+        2,
+        "no stale cover flag is left on the photo that left"
+    );
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn hiding_takes_a_photo_out_of_its_stack_and_dissolves_a_stack_of_one() {
+    let Some(t) = TestDb::new().await else { return };
+    let (app, key, [s1, s2, s3]) = manual_three(&t).await;
+    send(
+        &app,
+        "POST",
+        "/assets/hide",
+        &key,
+        Some(json!({"ids": [s1], "hidden": true})),
+    )
+    .await;
+    assert_eq!(stacked_rows(&t.pool).await, 2);
+    send(
+        &app,
+        "POST",
+        "/assets/hide",
+        &key,
+        Some(json!({"ids": [s2], "hidden": true})),
+    )
+    .await;
+    assert_eq!(stacked_rows(&t.pool).await, 0, "s3 alone is no stack");
+    let (st, _) = get(&app, &key, &format!("/assets/{s3}/stack")).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn a_photo_that_becomes_the_raw_of_another_leaves_the_stack() {
+    let Some(t) = TestDb::new().await else { return };
+    let (_, _, [s1, s2, s3]) = manual_three(&t).await;
+    let owner = owner_of(&t.pool, s1).await;
+    sqlx::query("UPDATE assets SET primary_id = $2 WHERE id = $1")
+        .bind(s2)
+        .bind(s3)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let mut conn = t.pool.acquire().await.unwrap();
+    cyanotype_core::stacks::leave(&mut conn, owner, &[s2]).await.unwrap();
+    drop(conn);
+    // s1 and s3 are live: the stack of two stays; then s3 joins s1 as a RAW and the last photo is alone.
+    assert_eq!(stacked_rows(&t.pool).await, 2);
+    sqlx::query("UPDATE assets SET primary_id = $2 WHERE id = $1")
+        .bind(s3)
+        .bind(s1)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let mut conn = t.pool.acquire().await.unwrap();
+    cyanotype_core::stacks::leave(&mut conn, owner, &[s3]).await.unwrap();
+    drop(conn);
+    assert_eq!(stacked_rows(&t.pool).await, 0);
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn undo_of_stacking_puts_every_photo_back_exactly_including_the_stacks_it_merged() {
+    let Some(t) = TestDb::new().await else { return };
+    let (app, key, [s1, _, s3]) = manual_three(&t).await;
+    let alpha = owner_of(&t.pool, s1).await;
+    let s4 = photo(&t.pool, alpha, "s4.jpg", "2026-03-04T09:00:00Z").await;
+    let s5 = photo(&t.pool, alpha, "s5.jpg", "2026-03-05T09:00:00Z").await;
+    send(&app, "POST", "/assets/stacks", &key, Some(json!({"ids": [s5, s4]}))).await;
+    // Before: two manual stacks (s1 s2 s3, s1 the cover; s5 s4, s5 the cover).
+    let state = "SELECT id, stack_id, stack_cover, stack_unlinked FROM assets ORDER BY id";
+    let before: Vec<(Uuid, Option<Uuid>, bool, bool)> = sqlx::query_as(state).fetch_all(&t.pool).await.unwrap();
+    // Stack s4 (of the second) and s3 (of the first): both stacks merge, s4 covers.
+    let (st, r) = send(&app, "POST", "/assets/stacks", &key, Some(json!({"ids": [s4, s3]}))).await;
+    assert_eq!((st, r["size"].as_i64()), (StatusCode::OK, Some(5)));
+    assert_eq!(r["previous"].as_array().unwrap().len(), 5);
+    assert_eq!(get(&app, &key, "/assets").await.1["items"].as_array().unwrap().len(), 1);
+
+    let body = Some(json!({"items": r["previous"]}));
+    let (st, _) = send(&app, "POST", "/assets/stacks/restore", &key, body).await;
+    assert_eq!(st, StatusCode::OK);
+    let after: Vec<(Uuid, Option<Uuid>, bool, bool)> = sqlx::query_as(state).fetch_all(&t.pool).await.unwrap();
+    assert_eq!(before, after, "the same stack ids, covers and flags as before");
+    assert_eq!(names(&get(&app, &key, "/assets").await.1), ["s5.jpg", "s1.jpg"]);
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn undo_after_a_member_was_trashed_dissolves_what_fell_below_two_and_ignores_foreign_photos() {
+    let Some(t) = TestDb::new().await else { return };
+    let app = app(&t.pool);
+    let (alpha, key) = user(&t.pool, "alpha@example.com").await;
+    let (bravo, bravo_key) = user(&t.pool, "bravo@example.com").await;
+    let a1 = photo(&t.pool, alpha, "a1.jpg", "2026-03-01T09:00:00Z").await;
+    let a2 = photo(&t.pool, alpha, "a2.jpg", "2026-03-02T09:00:00Z").await;
+    let a3 = photo(&t.pool, alpha, "a3.jpg", "2026-03-03T09:00:00Z").await;
+    let b1 = photo(&t.pool, bravo, "b1.jpg", "2026-03-01T09:00:00Z").await;
+    send(&app, "POST", "/assets/stacks", &key, Some(json!({"ids": [a1, a2]}))).await;
+    let (_, r) = send(&app, "POST", "/assets/stacks", &key, Some(json!({"ids": [a3, a1]}))).await;
+    assert_eq!(r["size"], json!(3));
+    // a3 is trashed, then Undo: a1 and a2 are a stack of two again, a3 is in none.
+    send(&app, "POST", "/assets/trash", &key, Some(json!({"ids": [a3]}))).await;
+    let mut items = r["previous"].as_array().unwrap().clone();
+    // A forged entry for another account's photo must not touch it.
+    items.push(json!({"id": b1, "stack_id": Uuid::new_v4(), "stack_cover": true}));
+    let (st, _) = send(
+        &app,
+        "POST",
+        "/assets/stacks/restore",
+        &key,
+        Some(json!({"items": items})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let (_, stack) = get(&app, &key, &format!("/assets/{a2}/stack")).await;
+    assert_eq!(names(&stack), ["a1.jpg", "a2.jpg"]);
+    let theirs: (Option<Uuid>, bool) = sqlx::query_as("SELECT stack_id, stack_cover FROM assets WHERE id = $1")
+        .bind(b1)
+        .fetch_one(&t.pool)
+        .await
+        .unwrap();
+    assert_eq!(theirs, (None, false));
+    assert_eq!(names(&get(&app, &bravo_key, "/assets").await.1), ["b1.jpg"]);
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn the_migration_frees_stacks_with_fewer_than_two_live_photos() {
+    let Some(t) = TestDb::new().await else { return };
+    let (alpha, _) = user(&t.pool, "alpha@example.com").await;
+    let a = photo(&t.pool, alpha, "a.jpg", "2026-03-01T09:00:00Z").await;
+    let b = photo(&t.pool, alpha, "b.jpg", "2026-03-02T09:00:00Z").await;
+    let c = photo(&t.pool, alpha, "c.jpg", "2026-03-03T09:00:00Z").await;
+    let d = photo(&t.pool, alpha, "d.jpg", "2026-03-04T09:00:00Z").await;
+    let (lone, kept) = (Uuid::new_v4(), Uuid::new_v4());
+    for (id, stack) in [(a, lone), (b, lone), (c, kept), (d, kept)] {
+        sqlx::query("UPDATE assets SET stack_id = $2, stack_cover = ($1 = $3) WHERE id = $1")
+            .bind(id)
+            .bind(stack)
+            .bind(a)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("UPDATE assets SET deleted_at = now() WHERE id = $1")
+        .bind(b)
+        .execute(&t.pool)
+        .await
+        .unwrap();
+    let sql = include_str!("../../../../crates/cyanotype-core/migrations/0035_single_member_stacks.sql");
+    sqlx::raw_sql(sql).execute(&t.pool).await.unwrap();
+    let mut rows: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM assets WHERE stack_id IS NOT NULL")
+        .fetch_all(&t.pool)
+        .await
+        .unwrap();
+    rows.sort();
+    let mut want = vec![c, d];
+    want.sort();
+    assert_eq!(
+        rows, want,
+        "a stack with one live photo is freed, its trashed member too; a stack of two stays"
+    );
+    assert_eq!(stacked_rows(&t.pool).await, 2, "and the freed cover flag is gone");
+    t.teardown().await;
+}

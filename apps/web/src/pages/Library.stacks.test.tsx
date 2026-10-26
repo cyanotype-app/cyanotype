@@ -116,7 +116,7 @@ describe("stacks in the library", () => {
     vi.spyOn(api, "getStack").mockResolvedValue(stackDetail());
     const remove = vi.spyOn(api, "removeFromStack").mockResolvedValue({ removed: "id-4" });
     const unstack = vi.spyOn(api, "unstack").mockResolvedValue({ count: 3 });
-    const stackAgain = vi.spyOn(api, "stackAssets").mockResolvedValue({ size: 3, cover_id: "id-2" });
+    const stackAgain = vi.spyOn(api, "stackAssets").mockResolvedValue({ size: 3, cover_id: "id-2", previous: [] });
     const user = userEvent.setup();
     renderLibrary();
     let dialog = await open(user);
@@ -138,7 +138,12 @@ describe("stacks in the library", () => {
 
   it("stacks the selected tiles by hand, sending every photo a collapsed stack stands for", async () => {
     fakeLibrary([item(1), stackTile(), item(5)]);
-    const stack = vi.spyOn(api, "stackAssets").mockResolvedValue({ size: 5, cover_id: "id-1" });
+    const previous = [
+      { id: "id-1", stack_id: null, stack_cover: false },
+      { id: "id-2", stack_id: "burst-x", stack_cover: true },
+    ];
+    const stack = vi.spyOn(api, "stackAssets").mockResolvedValue({ size: 5, cover_id: "id-1", previous });
+    const restore = vi.spyOn(api, "restoreStacking").mockResolvedValue({ count: 2 });
     const user = userEvent.setup();
     renderLibrary();
     await user.click(await screen.findByRole("button", { name: "Select" }));
@@ -152,6 +157,9 @@ describe("stacks in the library", () => {
     await user.click(within(bar).getByRole("button", { name: "Stack" }));
     await waitFor(() => expect(stack).toHaveBeenCalledWith(["id-1", "id-2", "id-3", "id-4"]));
     expect(await screen.findByText("5 photos stacked")).toBeInTheDocument();
+    // Undo hands back what the server said the photos were before, so merged stacks return too.
+    await user.click(await screen.findByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(restore).toHaveBeenCalledWith(previous));
   });
 
   it("trashes every photo a selected stack tile stands for", async () => {
