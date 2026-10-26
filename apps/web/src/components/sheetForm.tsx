@@ -2,7 +2,6 @@ import { ChevronDown } from "lucide-react";
 import {
   forwardRef,
   useEffect,
-  useEffectEvent,
   useState,
   type ComponentProps,
   type InputHTMLAttributes,
@@ -18,12 +17,11 @@ import { Sheet } from "../ui/Sheet";
  */
 
 /**
- * A sheet for a dialog that its page mounts and unmounts (`{naming && <NameDialog …/>}`). Escape closes it before the viewer or
- * the page behind hears it, focus goes to the first `data-autofocus` control (else the sheet picks), and back to where it was
+ * A sheet for a dialog that its page mounts and unmounts (`{naming && <NameDialog …/>}`). Escape closes it (the Sheet keeps the
+ * key from the viewer or page behind), focus goes to the first `data-autofocus` control (else the sheet picks), and back to where it was
  * when the sheet goes.
  */
 export function Modal({ onClose, ...sheet }: Omit<ComponentProps<typeof Sheet>, "open" | "onOpenChange"> & { onClose: () => void }) {
-  const close = useEffectEvent(onClose);
   // Where focus was before the sheet opened: read while rendering, since opening the dialog moves focus into it.
   const [prev] = useState(() => document.activeElement as HTMLElement | null);
   useEffect(() => {
@@ -36,15 +34,7 @@ export function Modal({ onClose, ...sheet }: Omit<ComponentProps<typeof Sheet>, 
     };
     dialog?.addEventListener("scroll", stay);
     dialog?.querySelector<HTMLElement>("[data-autofocus]")?.focus({ preventScroll: true });
-    function onKey(e: KeyboardEvent) {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      e.stopPropagation();
-      close();
-    }
-    document.addEventListener("keydown", onKey, true);
     return () => {
-      document.removeEventListener("keydown", onKey, true);
       dialog?.removeEventListener("scroll", stay);
       prev?.focus?.();
     };

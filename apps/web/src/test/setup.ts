@@ -23,11 +23,12 @@ if (typeof HTMLDialogElement !== "undefined" && !HTMLDialogElement.prototype.sho
     if (e.key !== "Escape") return;
     const open = Array.from(document.querySelectorAll("dialog[open]"));
     const top = open.at(-1) as HTMLDialogElement | undefined;
-    if (!top || !top.contains(e.target as Node)) return;
+    // A modal dialog makes the rest of the page inert, so the key comes from inside it, or from nowhere (the body).
+    if (!top || (!top.contains(e.target as Node) && e.target !== document.body)) return;
     const cancel = new Event("cancel", { cancelable: true });
     top.dispatchEvent(cancel);
     if (!cancel.defaultPrevented) top.close();
-  });
+  }, true); // capture: the browser cancels the dialog whatever the page's own key handlers do with the event
 }
 
 afterEach(() => cleanup());
