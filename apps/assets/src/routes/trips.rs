@@ -509,7 +509,7 @@ pub(super) async fn list(
 
     let collapsed = visibility::stacks_collapsed(&s.db, user.id, None).await?;
     let view = VIEW;
-    let mut trips = Vec::with_capacity(found.len());
+    let mut trips = Vec::new(); // `found` was cut to `limit` (at most MAX_LIMIT) above
     for t in found {
         let range = range_sql(Some(&day_text(t.from)), Some(&day_text(t.to)))?;
         let collapse = if collapsed {
