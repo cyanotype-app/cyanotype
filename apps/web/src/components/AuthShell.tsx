@@ -11,7 +11,7 @@ export function AuthShell({ title, children, footer, wide }: { title: ReactNode;
     <main className="flex min-h-dvh items-center justify-center bg-bg px-4 py-10 text-fg">
       <div className={cn("w-full", wide ? "max-w-md" : "max-w-sm")}>
         <div className="flex flex-col items-center gap-3 pb-6 text-center">
-          <Logo size={44} />
+          <Logo size={44} className="text-accent" />
           <h1 className="text-[1.5rem] leading-[1.2] font-bold tracking-[-0.02em]">{title}</h1>
         </div>
         <div className="rounded-sheet bg-card p-5 ring-1 ring-line [overflow-wrap:anywhere] sm:p-7">{children}</div>

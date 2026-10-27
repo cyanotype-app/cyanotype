@@ -1,4 +1,9 @@
-# Cyanotype
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/readme-dark.svg">
+    <img src="docs/brand/readme-light.svg" alt="Cyanotype" height="80">
+  </picture>
+</h1>
 
 An open-source, self-hosted photo library. S3 is the source of truth, Postgres is the
 only other dependency, and the backend is a handful of small stateless Rust services in one repo.

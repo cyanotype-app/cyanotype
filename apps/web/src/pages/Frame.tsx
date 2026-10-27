@@ -90,7 +90,7 @@ function useSessionProbe(anonymous: boolean, refresh: () => Promise<void>): "che
 function FrameMessage({ title, text, children }: { title: string; text: string; children?: React.ReactNode }) {
   return (
     <main className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-bg px-6 py-10 text-center text-fg">
-      <Logo size={40} />
+      <Logo size={40} className="text-accent" />
       <h1 className="text-[1.5rem] leading-[1.2] font-bold tracking-[-0.02em]">{title}</h1>
       <p className="max-w-md text-[0.9375rem] text-muted" role="status">
         {text}
@@ -159,7 +159,7 @@ function FrameSetup({ initial }: { initial: FrameConfig | null }) {
   return (
     <main className="mx-auto w-full max-w-lg px-4 pt-8 pb-14 text-fg">
       <header className="flex items-center gap-3">
-        <Logo size={32} />
+        <Logo size={32} className="text-accent" />
         <h1 className="text-[1.75rem] leading-[1.2] font-bold tracking-[-0.02em]">Photo frame</h1>
       </header>
       <p className="mt-3 text-sm text-muted">

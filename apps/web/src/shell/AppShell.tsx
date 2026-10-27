@@ -36,8 +36,8 @@ function Sidebar() {
   const library = useVisible(LIBRARY);
   return (
     <aside className="app-sidebar sticky top-0 hidden h-dvh flex-col gap-6 overflow-y-auto border-r border-line px-3 py-4 md:flex">
-      <Link to="/" className="flex items-center gap-2.5 px-2.5 text-[0.9375rem] font-semibold tracking-tight text-fg no-underline">
-        <Logo size={26} />
+      <Link to="/" className="flex items-center gap-2.5 px-2.5 text-[0.9375rem] font-semibold tracking-[-0.02em] text-fg no-underline">
+        <Logo size={24} className="text-accent" />
         Cyanotype
       </Link>
       <nav aria-label="Main" className="flex flex-col gap-0.5">
