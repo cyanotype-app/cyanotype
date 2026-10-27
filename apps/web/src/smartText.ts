@@ -2,6 +2,7 @@
 // check the editor runs before it asks the server. The server's own validation (`smart.rs`) is the last word. Unit tested.
 import type { SmartRule, SmartRules } from "./api";
 import { MAX_FILTER_PEOPLE, peopleRuleLabel } from "./peopleText";
+import { petRuleLabel } from "./petsText";
 import { ratingFilterLabel } from "./ratingText";
 import { nameProblem } from "./tagText";
 
@@ -23,10 +24,12 @@ export const RULE_FIELDS: { field: RuleField; label: string }[] = [
   { field: "has_text", label: "Text in the photo" },
   { field: "caption", label: "Caption contains" },
   { field: "people", label: "People" },
+  { field: "pets", label: "Pets" },
 ];
 
-/** The kinds of rule to offer: People's only while People is on. */
-export const ruleFieldsFor = (people: boolean) => RULE_FIELDS.filter((f) => f.field !== "people" || people);
+/** The kinds of rule to offer: People's only while People is on, Pets' only while Pets is on. */
+export const ruleFieldsFor = (people: boolean, pets = false) =>
+  RULE_FIELDS.filter((f) => (f.field !== "people" || people) && (f.field !== "pets" || pets));
 
 /** Why a semantic text search cannot be a rule; the editor shows it next to "Add rule". */
 export const NO_TEXT_QUERY_NOTE =
@@ -55,6 +58,8 @@ export function blankRule(field: RuleField): SmartRule {
       return { field, text: "" };
     case "people":
       return { field, ids: [] };
+    case "pets":
+      return { field, kind: "any" };
   }
 }
 
@@ -91,6 +96,8 @@ export function ruleLabel(r: SmartRule): string {
       return `Caption has “${r.text}”`;
     case "people":
       return peopleRuleLabel(r.ids);
+    case "pets":
+      return petRuleLabel(r.kind);
   }
 }
 

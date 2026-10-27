@@ -6,6 +6,7 @@ import { api, type Facets, type SmartPreview, type SmartRules } from "../api";
 import { AuthProvider } from "../auth";
 import { album, item, person } from "../test/fixtures";
 import { PeopleProvider } from "../usePeople";
+import { PetsProvider } from "../usePets";
 import { AlbumPage } from "../pages/Album";
 import { Albums } from "../pages/Albums";
 import { Route, Routes } from "react-router-dom";
@@ -250,5 +251,51 @@ describe("SmartAlbumEditor people rule", () => {
     await waitFor(() => expect(api.peopleStatus).toHaveBeenCalled());
     expect(within(screen.getByLabelText("Kind of rule to add")).queryByRole("option", { name: "People" })).not.toBeInTheDocument();
     expect(loadPeople).not.toHaveBeenCalled();
+  });
+});
+
+describe("SmartAlbumEditor pets rule", () => {
+  const renderEditor = (onSubmit = () => {}) =>
+    render(
+      <PetsProvider>
+        <SmartAlbumEditor
+          title="New smart album"
+          submitLabel="Create smart album"
+          initialRules={{ match: "all", archived: "include", rules: [{ field: "favorite", value: true }] }}
+          onSubmit={onSubmit}
+          onCancel={() => {}}
+          preview={async (rules) => previewOf(2, rules)}
+          loadFacets={noFacets}
+        />
+      </PetsProvider>,
+    );
+
+  it("is offered with Pets on, chooses a kind, and saves it", async () => {
+    vi.spyOn(api, "petsStatus").mockResolvedValue({ enabled: true });
+    vi.spyOn(api, "pets").mockResolvedValue({ any: 1, kinds: [], scanned: 1, total: 1 });
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    renderEditor(onSubmit);
+    await user.type(screen.getByLabelText("Title"), "Good dogs");
+    await waitFor(() => expect(within(screen.getByLabelText("Kind of rule to add")).getByRole("option", { name: "Pets" })).toBeInTheDocument());
+    await user.selectOptions(screen.getByLabelText("Kind of rule to add"), "pets");
+    await user.click(screen.getByRole("button", { name: "Add rule" }));
+    await user.selectOptions(screen.getByLabelText("Pets"), "dog");
+    await user.click(screen.getByRole("button", { name: "Create smart album" }));
+    expect(onSubmit).toHaveBeenCalledWith("Good dogs", {
+      match: "all",
+      archived: "include",
+      rules: [
+        { field: "favorite", value: true },
+        { field: "pets", kind: "dog" },
+      ],
+    });
+  });
+
+  it("does not offer the rule while Pets is off", async () => {
+    vi.spyOn(api, "petsStatus").mockResolvedValue({ enabled: false });
+    renderEditor();
+    await waitFor(() => expect(api.petsStatus).toHaveBeenCalled());
+    expect(within(screen.getByLabelText("Kind of rule to add")).queryByRole("option", { name: "Pets" })).not.toBeInTheDocument();
   });
 });

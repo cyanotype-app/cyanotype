@@ -9,6 +9,7 @@ import {
   LayoutGrid,
   Link2,
   MapPin,
+  PawPrint,
   Search,
   Sparkles,
   Tag,
@@ -23,6 +24,8 @@ export interface NavItem {
   icon: LucideIcon;
   /** Shown only when face recognition is on. */
   people?: boolean;
+  /** Shown only when Pets is on and a photo has a dog or a cat. */
+  pets?: boolean;
 }
 
 /** The three places the app is organised around: the tab bar on a phone, the top of the sidebar on a desktop. */
@@ -36,6 +39,7 @@ export const PRIMARY: readonly NavItem[] = [
 export const LIBRARY: readonly NavItem[] = [
   { to: "/albums", label: "Albums", icon: BookImage },
   { to: "/people", label: "People", icon: Users, people: true },
+  { to: "/pets", label: "Pets", icon: PawPrint, pets: true },
   { to: "/map", label: "Places", icon: MapPin },
   { to: "/memories", label: "Memories", icon: Sparkles },
   { to: "/favorites", label: "Favorites", icon: Heart },

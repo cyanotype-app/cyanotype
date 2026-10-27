@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Processing } from "./api";
+import { searchQuery, type Processing } from "./api";
 import {
   RECENT_MAX,
   addSkip,
@@ -83,6 +83,28 @@ describe("search URL", () => {
     expect(hasFilters({ q: "cat", favorite: true })).toBe(true);
     expect(urlFromParams({ has_location: true })).toBe("has_location=true");
     expect(urlFromParams({})).toBe("");
+  });
+});
+
+describe("the pets filter", () => {
+  it("round-trips a kind and drops anything else", () => {
+    expect(paramsFromUrl(new URLSearchParams({ pets: "dog" }))).toEqual({ pets: "dog" });
+    expect(paramsFromUrl(new URLSearchParams({ pets: "any", place: "Lisbon" }))).toEqual({ place: "Lisbon", pets: "any" });
+    expect(paramsFromUrl(new URLSearchParams({ pets: "bird" }))).toEqual({});
+    expect(urlFromParams({ pets: "cat", place: "Lisbon" })).toBe("place=Lisbon&pets=cat");
+    expect(hasFilters({ pets: "any" })).toBe(true);
+    expect(searchQuery({ pets: "dog", favorite: true })).toBe("favorite=true&pets=dog");
+  });
+
+  it("is one chip that clears it, named for the kind", () => {
+    expect(chipsOf({ pets: "dog" })).toEqual([{ clears: ["pets"], label: "Dogs" }]);
+    expect(chipsOf({ pets: "cat" })[0]!.label).toBe("Cats");
+    expect(chipsOf({ pets: "any" })[0]!.label).toBe("Pets");
+  });
+
+  it("is one of the things the server may be told not to read out of the words", () => {
+    expect(parseSkip("pets, DATE")).toBe("date,pets");
+    expect(addSkip("people", "pets")).toBe("people,pets");
   });
 });
 

@@ -2,7 +2,7 @@ import { ChevronRight, ImagePlus, Link2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useMemo } from "react";
 import { api, localToday, type Trip } from "../api";
-import { AlbumCard, MemoryCard, PersonCard, TripCard } from "../collections/cards";
+import { AlbumCard, MemoryCard, PersonCard, PetCard, TripCard } from "../collections/cards";
 import { Cover } from "../collections/Cover";
 import { ScrollRow } from "../collections/ScrollRow";
 import { Reveal, RowSkeleton, Section } from "../collections/Section";
@@ -17,6 +17,7 @@ import { shareName } from "../shareText";
 import { photoCount } from "../albumText";
 import { Button } from "../ui/Button";
 import { usePeopleEnabled } from "../usePeople";
+import { usePetsEnabled } from "../usePets";
 import { hasMemories, memoryCount, yearsAgo } from "../viewText";
 
 /** Library views with no section of their own on this page (or whose section can be empty): reachable from the list at the bottom. */
@@ -30,12 +31,14 @@ const MORE = ["/favorites", "/tags", "/map", "/memories", "/shared"];
  */
 export function Collections() {
   const people = usePeopleEnabled();
+  const petsOn = usePetsEnabled();
   const memories = useLoad(() => api.memories());
   const trips = useLoad(() => api.trips({ limit: 12 }));
   const albums = useLoad(() => api.listAlbums());
   const recent = useLoad(() => api.listAssets({ sort: "added", limit: 14 }));
   const faces = useLoad(() => api.listPeople(), people === true);
   const shares = useLoad(() => shareApi.list());
+  const pets = useLoad(() => api.pets(), petsOn === true);
 
   const today = useMemo(() => localToday(), []);
   const fresh = useMemo(
@@ -67,6 +70,7 @@ export function Collections() {
                 <SharedSection shares={liveShares} />
               </div>
             )}
+            <PetsSection pets={pets} />
             <RecentSection recent={recent} />
           </>
         )}
@@ -201,6 +205,23 @@ function PeopleSection({ faces }: { faces: Load<Awaited<ReturnType<typeof api.li
             ))}
           </ScrollRow>
         )}
+      </Reveal>
+    </Section>
+  );
+}
+
+/** Dogs and cats, only while Pets is on and at least one photo has one (the load is not even asked while it is off). */
+function PetsSection({ pets }: { pets: Load<Awaited<ReturnType<typeof api.pets>>> }) {
+  if (pets.status !== "ready" || pets.data.any === 0) return null;
+  const shown = pets.data.kinds.filter((k) => k.photos > 0);
+  return (
+    <Section title="Pets" to="/pets">
+      <Reveal>
+        <ScrollRow label="Pets">
+          {shown.map((k) => (
+            <PetCard key={k.kind} kind={k.kind} photos={k.photos} cover={k.cover} />
+          ))}
+        </ScrollRow>
       </Reveal>
     </Section>
   );

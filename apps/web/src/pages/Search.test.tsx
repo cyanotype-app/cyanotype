@@ -7,6 +7,7 @@ import { AuthProvider } from "../auth";
 import { UploadProvider } from "../upload/UploadProvider";
 import { detail, item, person } from "../test/fixtures";
 import { PeopleProvider } from "../usePeople";
+import { PetsProvider } from "../usePets";
 import { SearchPage } from "./Search";
 
 const hit = (n: number, score: number | null = 0.3): SearchItem => ({ ...item(n), score });
@@ -328,6 +329,82 @@ describe("Search page", () => {
       await userEvent.click(screen.getByRole("button", { name: "Move to trash" }));
       await waitFor(() => expect(trash).toHaveBeenCalledWith(["id-1", "id-2", "id-3", "id-4"]));
     });
+  });
+});
+
+describe("Search page pets", () => {
+  const withPets = (on: boolean) => {
+    vi.spyOn(api, "peopleStatus").mockResolvedValue({ enabled: false });
+    vi.spyOn(api, "petsStatus").mockResolvedValue({ enabled: on });
+    vi.spyOn(api, "pets").mockResolvedValue({ any: 3, kinds: [], scanned: 3, total: 3 });
+  };
+  const renderWithPets = (url: string) =>
+    render(
+      <MemoryRouter initialEntries={[url]}>
+        <AuthProvider>
+          <PetsProvider>
+            <UploadProvider deps={{ api, hash: async () => "0".repeat(64) }}>
+              <Routes>
+                <Route path="/search" element={<SearchPage />} />
+              </Routes>
+              <Where />
+            </UploadProvider>
+          </PetsProvider>
+        </AuthProvider>
+      </MemoryRouter>,
+    );
+
+  it("shows the pets filter as a chip, sends it, and clears it", async () => {
+    withPets(true);
+    const search = vi.spyOn(api, "search").mockResolvedValue(result([hit(1), hit(2)], { ranked: false, total: 2 }));
+    renderWithPets("/search?pets=dog&favorite=true");
+    expect(await screen.findByText("2 photos")).toBeInTheDocument();
+    expect(search).toHaveBeenCalledWith({ pets: "dog", favorite: true }, expect.anything());
+    const chips = screen.getByRole("list", { name: "Active filters" });
+    await userEvent.click(within(chips).getByRole("button", { name: "Remove filter Dogs" }));
+    expect(screen.getByTestId("where")).toHaveTextContent("/search?favorite=true");
+  });
+
+  it("shows what was read out of the query, and turning it off keeps the words", async () => {
+    withPets(true);
+    const search = vi.spyOn(api, "search").mockResolvedValue(
+      result([hit(1)], { ranked: false, total: 1, parsed: { text: "on the sofa", chips: [{ kind: "pets", label: "Cats", matched: "cats", pets: "cat" }] } }),
+    );
+    renderWithPets("/search?q=cats%20on%20the%20sofa");
+    const chips = await screen.findByRole("list", { name: "Understood from your search" });
+    expect(within(chips).getByText("Cats")).toBeInTheDocument();
+    expect(within(chips).getByText("Cats").closest("span[title]")).toHaveAttribute("title", "Read “cats” as pets");
+    expect(search).toHaveBeenCalledWith({ q: "cats on the sofa" }, expect.anything());
+    await userEvent.click(within(chips).getByRole("button", { name: "Remove pets Cats" }));
+    expect(screen.getByTestId("where")).toHaveTextContent("/search?q=cats+on+the+sofa&skip=pets");
+  });
+
+  it("selects what the words meant by the filter, for a bulk action", async () => {
+    withPets(true);
+    vi.spyOn(api, "search").mockResolvedValue(
+      result([hit(1), hit(2)], { ranked: false, total: 2, parsed: { text: "", chips: [{ kind: "pets", label: "Dogs", matched: "dogs", pets: "dog" }] } }),
+    );
+    vi.spyOn(api, "createAlbum").mockResolvedValue({ id: "al1", title: "Dogs", description: null, photo_count: 0, cover: null, first_at: null, last_at: null, created_at: "", updated_at: "" });
+    const add = vi.spyOn(api, "addToAlbum").mockResolvedValue({ count: 2 });
+    renderWithPets("/search?q=dogs");
+    await userEvent.click(await screen.findByRole("button", { name: "Save as album" }));
+    const dialog = screen.getByRole("dialog", { name: "Save 2 photos as an album" });
+    await userEvent.type(within(dialog).getByLabelText("Album title"), "Dogs");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create album" }));
+    await waitFor(() => expect(add).toHaveBeenCalledWith("al1", { scope: { search: { pets: "dog" } }, except: [] }));
+  });
+
+  it("ignores pets in the address while Pets is off, and shows no pets control", async () => {
+    withPets(false);
+    const search = vi.spyOn(api, "search").mockResolvedValue(result([hit(1)], { ranked: false, total: 1 }));
+    vi.spyOn(api, "searchFacets").mockResolvedValue({ total: 1, favorites: 0, with_location: 0, types: [], cameras: [], lenses: [], places: [], years: [] });
+    vi.spyOn(api, "listAlbums").mockResolvedValue({ items: [] });
+    renderWithPets("/search?pets=dog&favorite=true");
+    await screen.findByText("1 photo");
+    expect(search).toHaveBeenCalledWith({ favorite: true }, expect.anything());
+    await userEvent.click(screen.getByRole("button", { name: /Filters/ }));
+    await screen.findByRole("dialog", { name: "Filters" });
+    expect(screen.queryByRole("group", { name: "Pets" })).not.toBeInTheDocument();
   });
 });
 

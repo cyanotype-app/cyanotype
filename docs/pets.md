@@ -14,6 +14,7 @@ service must agree): no job is queued, nothing is read, the Pets routes answer `
 - [The check, and what the numbers said](#the-check-and-what-the-numbers-said)
 - [In search](#in-search)
 - [In the API](#in-the-api)
+- [In the app](#in-the-app)
 - [Privacy](#privacy)
 - [Models, licences and provenance](#models-licences-and-provenance)
 - [Bake-off](#bake-off)
@@ -162,6 +163,25 @@ Pick names for a UI from these: the Pets entry of the library menu is shown when
 covers), `/assets/pets/photos` and `/assets/pets/timeline` for the grid (the library's own timeline component), bulk actions through `{"pets": kind}`, "Search with filters"
 through `pets=`; the viewer's boxes come from `/assets/{id}/pets`.
 
+## In the app
+
+Everything below is shown only while Pets is on (`GET /assets/pets/status`, read once when the app opens; a failed answer counts as off) and the entry points only once at least one photo has
+a pet. While it is off `/pets` is a "Page not found", the sidebar has no Pets, Collections has no Pets row, and `pets` in a search address, the Pets filter and the Pets rule do not exist.
+
+- **Pets** (`/pets`, `?kind=dog|cat`). A page of its own: the photos with a dog or a cat as the library's timeline (months and days, the scrubber, selection, the viewer, the slideshow). Under
+  the title a switch **All / Dogs / Cats** (a kind with no photos is not offered, and with one kind there is no switch). The menu has **Save as album** and **Search with filters** (`/search?pets=`).
+  Selecting works like a person's page: "Select all" selects the whole view by the scope `{"pets": kind}` (favorite, rate, tag, archive, hide, add to or save as an album, share, download as a
+  zip, move to trash), not by the photos the browser happened to load. The page reads the counts again every 15 seconds and the timeline follows them. Boxes are not drawn in the viewer yet.
+- **While the library is being looked through** the page says how far the worker has got ("Looked at 1,200 of 5,000 photos", a progress bar): as the only content while nothing is found yet,
+  above the photos once some are. When the whole library has been looked at and nothing was found, it says so.
+- **Collections** has a **Pets** row: one round card per kind that has photos ("Dogs, 6 photos"), cropped by CSS from the cover's box like a person's face (nothing is made on the server),
+  with a link to the page. The sidebar's Library list has **Pets** next to People.
+- **Search.** The words "dogs", "cat on the sofa" show the parsed chip (**Dogs**, **Cats**, **Pets**); its x searches again with `skip=pets`. The Filters sheet has **Pets**: Any, Dogs or cats,
+  Dogs, Cats, with the facet's counts. "Select all" and "Save as album" in the results use the `pets` filter in the `search` scope, also when it came from the words.
+- **Smart albums.** The rule editor offers a **Pets** rule (Dogs or cats, Dogs, Cats) and words it "Pets: dogs".
+- **Progress.** The Pets page shows the scan (above). `GET /assets/processing` also reports `pets`; the library's processing banner does not draw it (like search indexing and text it is reported apart
+  from the work in progress), but a failed `pets` job is in its list of failures as "Finding pets", and "Retry failed" requeues it.
+
 ## Privacy
 
 - **It finds animals, not people.** `pet_detections` and `pet_scans` hold a kind, a box, a score and two shares per photo: no fingerprint, no face and no name. A box that happens to
@@ -301,6 +321,10 @@ Metrics (`docs/observability.md`): `cyanotype.pets.model_loaded` (gauge), `cyano
 `cyanotype.pets.found` (tag `kind`), `cyanotype.pets.unlocated`, `cyanotype.pets.model_load_ms`, and the `pets` kind of `queue.*` and `jobs.*`.
 
 ## Tests
+
+- `apps/web`: `petsText.test.ts` (kinds, counts, the scan), `pages/PetsPage.test.tsx` (off is not found, the switch and its kinds, the link's kind, the scope of a bulk action, save as album, scanning and
+  none found, a retry, and the sidebar entry), `Collections.test.tsx` (the row), `searchText.test.ts` and `pages/Search.test.tsx` (the address, the chip and `skip=pets`, off), `FilterSheet.test.tsx`,
+  `smartText.test.ts` and `SmartAlbumEditor.test.tsx` (the rule); `e2e/pets-layout.spec.ts` at phone and desktop widths, light and dark.
 
 - `crates/cyanotype-clip`: `zeroshot.rs` unit tests with no model (an embedding on a dog prompt is a dog, one between a dog and a horse splits its share, a wrong-sized embedding is refused, the shipped file
   holds every prompt as a unit vector); `tests/model.rs` with the real models: the committed prompt vectors are the text tower's, and the check finds the dog and the cat and nothing in the 19 other

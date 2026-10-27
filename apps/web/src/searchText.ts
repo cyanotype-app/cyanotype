@@ -2,6 +2,7 @@
 // the recent-searches list. Kept apart from the components so the rules are unit tested.
 import type { Processing, SearchParams } from "./api";
 import { peopleFilterLabel, peopleIdsOf } from "./peopleText";
+import { PET_LABEL, petKindOf } from "./petsText";
 import { ratingFilterLabel } from "./ratingText";
 import { tagFilterLabel, tagListOf } from "./tagText";
 
@@ -46,6 +47,8 @@ export function paramsFromUrl(search: URLSearchParams): SearchParams {
   if (place) out.place = place;
   const people = peopleIdsOf(search.get("people"));
   if (people.length > 0) out.people = people.join(",");
+  const pets = petKindOf(search.get("pets"));
+  if (pets) out.pets = pets;
   const type = search.get("type");
   if (type && (TYPES as readonly string[]).includes(type)) out.type = type as SearchParams["type"];
   const album = search.get("album");
@@ -68,15 +71,15 @@ export function paramsFromUrl(search: URLSearchParams): SearchParams {
   return out;
 }
 
-/** `skip=place,date,x` to the canonical `date,place,people` (only the kinds the server knows, each once), or undefined. */
+/** `skip=place,date,x` to the canonical `date,place,people,pets` (only the kinds the server knows, each once), or undefined. */
 export function parseSkip(v: string | null): string | undefined {
   const kinds = new Set((v ?? "").split(",").map((k) => k.trim().toLowerCase()));
-  const out = (["date", "place", "people"] as const).filter((k) => kinds.has(k));
+  const out = (["date", "place", "people", "pets"] as const).filter((k) => kinds.has(k));
   return out.length ? out.join(",") : undefined;
 }
 
 /** `skip` with one more kind turned off. */
-export const addSkip = (skip: string | undefined, kind: "date" | "place" | "people") => parseSkip(`${skip ?? ""},${kind}`);
+export const addSkip = (skip: string | undefined, kind: "date" | "place" | "people" | "pets") => parseSkip(`${skip ?? ""},${kind}`);
 
 /** Params to the `/search` URL's query string (the same names as the API). */
 export function urlFromParams(p: SearchParams): string {
@@ -93,6 +96,7 @@ export function urlFromParams(p: SearchParams): string {
   if (p.lens) q.set("lens", p.lens);
   if (p.place) q.set("place", p.place);
   if (p.people) q.set("people", p.people);
+  if (p.pets) q.set("pets", p.pets);
   if (p.type) q.set("type", p.type);
   if (p.album) q.set("album", p.album);
   if (p.has_location !== undefined) q.set("has_location", String(p.has_location));
@@ -151,6 +155,7 @@ export function chipsOf(p: SearchParams, albumTitle?: string, people: readonly {
   if (p.lens) chips.push({ clears: ["lens"], label: p.lens });
   if (p.place) chips.push({ clears: ["place"], label: p.place });
   if (p.people) chips.push({ clears: ["people"], label: peopleFilterLabel(peopleIdsOf(p.people), people) });
+  if (p.pets) chips.push({ clears: ["pets"], label: PET_LABEL[p.pets] });
   if (p.type) chips.push({ clears: ["type"], label: TYPE_LABEL[p.type] });
   if (p.has_location !== undefined) chips.push({ clears: ["has_location"], label: p.has_location ? "Has location" : "No location" });
   if (p.has_text !== undefined) chips.push({ clears: ["has_text"], label: p.has_text ? "Has text" : "No text" });

@@ -575,6 +575,8 @@ export interface Processing {
     serving_model?: string;
   };
   /** Reading text off photos, reported apart from `active` (a backfill takes hours). Absent on older servers. */
+  /** Finding dogs and cats, reported apart from `active` (a backfill takes a while). Present only while Pets is on. */
+  pets?: { scanned: number; total: number; found: number; queued: number; running: number; failed: number; model: string; percent: number };
   text?: { read: number; total: number; queued: number; running: number; failed: number; model: string; percent: number };
 }
 
@@ -607,7 +609,9 @@ export interface SearchParams {
   has_location?: boolean;
   /** Only photos with (true) or without (false) text read off them. */
   has_text?: boolean;
-  /** Dates, places and people the server should not read out of `q`: `date`, `place`, `people`, or several (what a chip's "x" sets). */
+  /** Photos with a dog, a cat or either (Pets only; the server ignores it while Pets is off). */
+  pets?: PetKind;
+  /** Dates, places, people and pets the server should not read out of `q`: `date`, `place`, `people`, `pets`, or several (what a chip's "x" sets). */
   skip?: string;
   /** "More like this": list photos similar to this photo (`GET /assets/{id}/similar`) instead of searching for `q`. */
   similar?: string;
@@ -636,7 +640,7 @@ export interface BurstMember extends AssetListItem {
 /** What the server read out of the query besides the words to search for. */
 export interface ParsedChip {
   /** The `skip` value that turns it off. */
-  kind: "date" | "place" | "people";
+  kind: "date" | "place" | "people" | "pets";
   label: string;
   /** The words of the query it replaced ("in June 2023"). */
   matched: string;
@@ -646,6 +650,8 @@ export interface ParsedChip {
   place_kind?: "city" | "region" | "country";
   /** For `people`: who was read out of the query, in the order written. */
   people?: { id: string; name: string }[];
+  /** For `pets`: which animals the words meant. */
+  pets?: PetKind;
 }
 
 /** GET /assets/search */
@@ -689,6 +695,8 @@ export interface Facets {
   lenses?: Facet[];
   places: (Facet & { kind: "country" | "region" | "city" })[];
   years: Facet[];
+  /** Photos with a dog, a cat or either (`any`, `dog`, `cat`). Present only while Pets is on. */
+  pets?: Facet[];
 }
 
 /** One photo of a duplicate group, with what the review compares. */
@@ -764,7 +772,9 @@ export type SmartRule =
   | { field: "has_location" | "has_text"; value: boolean }
   | { field: "caption"; text: string }
   /** All of these people are in the photo (People only). */
-  | { field: "people"; ids: string[] };
+  | { field: "people"; ids: string[] }
+  /** A dog, a cat or either was found in the photo (Pets only). */
+  | { field: "pets"; kind: PetKind };
 
 /** The saved definition of a smart album: its rules, how they are joined, and whether archived photos are in. */
 export interface SmartRules {
@@ -834,6 +844,25 @@ export interface Person {
   /** "Is this X?" suggestions waiting for an answer (named, shown people only; 0 or absent otherwise). */
   pending?: number;
   cover: PersonCover | null;
+}
+
+/** `any` is a dog or a cat. */
+export type PetKind = "any" | "dog" | "cat";
+
+/** The animal a kind is shown by: the box is in the picture `preview_url` serves, like a person's face. */
+export interface PetCover {
+  asset_id: string;
+  box: FaceBox;
+  preview_url: string;
+}
+
+/** GET /assets/pets: every kind is listed (`photos: 0` and `cover: null` when there is none). */
+export interface PetsSummary {
+  any: number;
+  kinds: { kind: "dog" | "cat"; photos: number; cover: PetCover | null }[];
+  /** How far the scan has got, of the photos that can be scanned (a preview and a search embedding). */
+  scanned: number;
+  total: number;
 }
 
 /** A face a person's cover can be chosen from (GET /assets/people/{id}/faces). */
@@ -1221,6 +1250,8 @@ export type Scope =
   | { album: string }
   /** One of the owner's people (People only): the photos their page lists. */
   | { person: string }
+  /** The photos of the Pets view for a kind (Pets only). */
+  | { pets: PetKind }
   | { trash_batch: string }
   | { archive_batch: string }
   /** Every photo a filter-only search lists (no text query: a ranked search selects what it loaded). */
@@ -1264,8 +1295,8 @@ export function searchQuery(
   // (`similar` is part of the path of "More like this", and that endpoint takes neither `q` nor `skip`.)
   const keys = (
     params.similar
-      ? ["from", "to", "favorite", "tags", "tag_mode", "rating", "include_archived", "camera", "lens", "place", "people", "type", "album", "has_location", "has_text"]
-      : ["q", "from", "to", "favorite", "tags", "tag_mode", "rating", "include_archived", "camera", "lens", "place", "people", "type", "album", "has_location", "has_text", "skip"]
+      ? ["from", "to", "favorite", "tags", "tag_mode", "rating", "include_archived", "camera", "lens", "place", "people", "pets", "type", "album", "has_location", "has_text"]
+      : ["q", "from", "to", "favorite", "tags", "tag_mode", "rating", "include_archived", "camera", "lens", "place", "people", "pets", "type", "album", "has_location", "has_text", "skip"]
   ) as readonly (keyof SearchParams)[];
   for (const k of keys) {
     const v = params[k];
@@ -1289,12 +1320,14 @@ export interface LibraryView {
   sort?: "taken" | "added";
   /** One person's photos (People): the list and the day counts of `/assets/people/{id}`, nothing else of the view applies. */
   person?: string;
+  /** The Pets view: the photos with a dog, a cat or either (Pets only); like `person`, nothing else of the view applies. */
+  pets?: PetKind;
   /** Stacks in the timeline: one tile each (`collapsed`) or every photo. Absent: the user's setting. */
   stacks?: "collapsed" | "expanded";
 }
 
 function viewQuery(v: LibraryView, q: URLSearchParams) {
-  if (v.stacks && !v.favorite && !v.archived && !v.hidden && !v.person) q.set("stacks", v.stacks);
+  if (v.stacks && !v.favorite && !v.archived && !v.hidden && !v.person && !v.pets) q.set("stacks", v.stacks);
   if (v.favorite) q.set("favorite", "true");
   if (v.archived) q.set("archived", "true");
   if (v.hidden) q.set("hidden", "true");
@@ -1576,18 +1609,20 @@ export const api = {
     if (opts.memories) q.set("memories", "true");
     if (opts.limit !== undefined) q.set("limit", String(opts.limit));
     viewQuery(opts, q);
+    if (opts.pets) q.set("kind", opts.pets);
     if (opts.cursor) q.set("cursor", opts.cursor);
     else if (opts.before) q.set("before", opts.before);
     const qs = q.toString();
-    const base = opts.person ? `/assets/people/${encodeURIComponent(opts.person)}/photos` : "/assets";
+    const base = opts.person ? `/assets/people/${encodeURIComponent(opts.person)}/photos` : opts.pets ? "/assets/pets/photos" : "/assets";
     return request<AssetList>(`${base}${qs ? `?${qs}` : ""}`);
   },
   /** Photos per day, newest first (the library's layout; `favorite` limits it to favorites). */
   timeline: (opts: LibraryView = {}) => {
     const q = new URLSearchParams();
     viewQuery(opts, q);
+    if (opts.pets) q.set("kind", opts.pets);
     const qs = q.toString();
-    const base = opts.person ? `/assets/people/${encodeURIComponent(opts.person)}/timeline` : "/assets/timeline";
+    const base = opts.person ? `/assets/people/${encodeURIComponent(opts.person)}/timeline` : opts.pets ? "/assets/pets/timeline" : "/assets/timeline";
     return request<Timeline>(`${base}${qs ? `?${qs}` : ""}`);
   },
   /** The geotagged photos in `bbox` (`west,south,east,north`) as markers for a map at `zoom`. */
@@ -1597,6 +1632,10 @@ export const api = {
   tiles: () => request<TilesInstalled>("/assets/tiles"),
   /** Favorite or unfavorite photos. `count` is how many changed. */
   favoriteAssets: (target: Target, favorite: boolean) => bulk("/assets/favorite", target, { favorite }),
+  /** Is Pets switched on (`PETS_ENABLED`)? The only Pets route that answers while it is off. */
+  petsStatus: () => request<{ enabled: boolean }>("/assets/pets/status"),
+  /** The Pets view's header: how many photos have a pet, per kind, with a cover each, and how far the scan has got. */
+  pets: () => request<PetsSummary>("/assets/pets"),
   /** Is People switched on (`FACES_ENABLED`)? The only People route that answers while it is off. */
   peopleStatus: () => request<{ enabled: boolean }>("/assets/people/status"),
   listPeople: () => request<{ items: Person[] }>("/assets/people"),

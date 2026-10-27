@@ -432,6 +432,25 @@ describe("people in lists, scopes and searches", () => {
     expect(f).toHaveBeenLastCalledWith("/assets/s1/similar?people=a", expect.anything());
   });
 
+  it("lists and counts the photos of a kind of pet through the Pets endpoints, and sends its scope and filter", async () => {
+    const f = mockFetchJson({ total: 1, days: [{ day: "2026-10-14", count: 1 }] });
+    await api.timeline({ pets: "dog" });
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/timeline?kind=dog", expect.anything());
+    await api.listAssets({ pets: "cat", before: "2026-10-15T00:00:00.000Z", limit: 120 });
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/photos?limit=120&kind=cat&before=2026-10-15T00%3A00%3A00.000Z", expect.anything());
+    await api.listAssets({ pets: "any", cursor: "6162|x" });
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/photos?kind=any&cursor=6162%7Cx", expect.anything());
+    await api.petsStatus();
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/status", expect.anything());
+    await api.pets();
+    expect(f).toHaveBeenLastCalledWith("/assets/pets", expect.anything());
+    await api.favoriteAssets({ scope: { pets: "dog" }, except: [] }, true);
+    const [, init] = f.mock.calls.at(-1)! as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ scope: { pets: "dog" }, except: [], favorite: true });
+    await api.search({ pets: "cat", place: "Lisbon", skip: "pets" });
+    expect(f).toHaveBeenLastCalledWith("/assets/search?place=Lisbon&pets=cat&skip=pets", expect.anything());
+  });
+
   it("asks for trips by the user's today, a page size and the day to page from", async () => {
     const f = mockFetch(jsonRes(200, { enabled: true, trips: [], next_before: null }));
     await api.trips({ limit: 12, before: "2026-09-01", date: "2026-10-26" });
