@@ -70,7 +70,7 @@ pub(super) async fn slideshow(
         serde_json::from_str(&q.scope).map_err(|_| ApiError::BadRequest("scope must be JSON".into()))?;
     let selector: scope::Selector = serde_json::from_value(serde_json::json!({ "scope": scope_json }))
         .map_err(|_| ApiError::BadRequest("unknown scope".into()))?;
-    let pick = selector.validated(unlock, s.faces_enabled)?;
+    let pick = selector.validated(unlock, s.features())?;
     if let scope::Pick::Scope(scope::Scope::Trash | scope::Scope::TrashBatch(_) | scope::Scope::ArchiveBatch(_), ..) =
         &pick
     {

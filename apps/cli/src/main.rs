@@ -6,6 +6,8 @@ mod faces;
 mod import;
 mod login;
 #[cfg(feature = "server-tools")]
+mod pets;
+#[cfg(feature = "server-tools")]
 mod places;
 mod qr;
 #[cfg(feature = "server-tools")]
@@ -53,6 +55,10 @@ enum Command {
     #[cfg(feature = "server-tools")]
     #[command(subcommand)]
     Faces(faces::FacesCommand),
+    /// Manage the data of the dog-and-cat-finding feature (on unless PETS_ENABLED is 0). Runs where `migrate` runs.
+    #[cfg(feature = "server-tools")]
+    #[command(subcommand)]
+    Pets(pets::PetsCommand),
     /// Log in to a Cyanotype server and store an API key for the other commands.
     Login(LoginArgs),
     /// Import photos and videos from files and directories (resumable; safe to re-run).
@@ -148,6 +154,8 @@ async fn dispatch(command: Command) -> Result<ExitCode> {
         Command::ResetLink(a) => reindex::reset_link(a).await?,
         #[cfg(feature = "server-tools")]
         Command::Faces(c) => return faces::run(c).await,
+        #[cfg(feature = "server-tools")]
+        Command::Pets(c) => return pets::run(c).await,
         Command::Update(a) => update::run(a).await?,
         Command::Login(a) => login(a).await?,
         Command::Status => status().await?,

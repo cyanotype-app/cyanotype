@@ -295,7 +295,7 @@ pub(super) async fn apply(
     if add.is_empty() && remove.is_empty() {
         return Err(ApiError::BadRequest("nothing to do: send add or remove".into()));
     }
-    let pick = req.pick.validated(unlock, s.faces_enabled)?;
+    let pick = req.pick.validated(unlock, s.features())?;
     let mut tx = s.db.begin().await?;
     let ids: Vec<Uuid> = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();
     // The visible photos the request names (a RAW id means its primary), not hidden unless unlocked.

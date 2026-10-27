@@ -40,6 +40,20 @@ pub async fn store(db: &PgPool, asset_id: Uuid, model: &str, version: i32, embed
     Ok(())
 }
 
+/// A photo's vector for `(model, version)`, as the worker stored it (half precision: the same numbers the search compares). `None`
+/// when the photo has none.
+pub async fn get(db: impl PgExecutor<'_>, asset_id: Uuid, model: &str, version: i32) -> Result<Option<Vec<f32>>> {
+    let text: Option<String> = sqlx::query_scalar(
+        "SELECT embedding::text FROM asset_embeddings WHERE asset_id = $1 AND model = $2 AND version = $3",
+    )
+    .bind(asset_id)
+    .bind(model)
+    .bind(version)
+    .fetch_optional(db)
+    .await?;
+    Ok(text.and_then(|t| crate::people_math::parse_literal(&t)))
+}
+
 /// How many visible photos with derived images have no vector for `(model, version)` (what the sweep would queue).
 pub async fn missing_count(db: impl PgExecutor<'_>, model: &str, version: i32) -> Result<i64> {
     let (n,): (i64,) = sqlx::query_as(

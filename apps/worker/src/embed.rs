@@ -331,6 +331,13 @@ async fn store(ctx: &Arc<Ctx>, model: Model, job: &jobs::Job, v: &[f32]) -> Resu
     {
         tracing::warn!(error = %format!("{e:#}"), "could not queue the faces job");
     }
+    // ... and its dogs and cats, unless the feature is off (it is on by default).
+    if cyanotype_core::pets::enabled()
+        && let Err(e) =
+            cyanotype_core::pets::enqueue_for_asset(&ctx.db, job.asset_id, cyanotype_core::pets::VERSION).await
+    {
+        tracing::warn!(error = %format!("{e:#}"), "could not queue the pets job");
+    }
     // The photo can be compared with its neighbours now: regroup its burst (a failure here is not the embedding's).
     if let Err(e) = bursts::requeue_after_embed(&ctx.db, job.asset_id).await {
         tracing::warn!(error = %format!("{e:#}"), "could not queue the burst regroup");

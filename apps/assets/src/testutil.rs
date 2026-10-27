@@ -85,11 +85,22 @@ pub fn app_with(
         text,
         search,
         faces_enabled: false,
+        pets_enabled: false,
     })
 }
 
 /// An app with People switched on (`FACES_ENABLED`), for the tests of its routes.
 pub fn app_with_people(pool: &PgPool) -> Router {
+    app_with_features(pool, true, false)
+}
+
+/// An app with Pets switched on (`PETS_ENABLED`), for the tests of its routes.
+pub fn app_with_pets(pool: &PgPool) -> Router {
+    app_with_features(pool, false, true)
+}
+
+/// An app with People and Pets each on or off.
+pub fn app_with_features(pool: &PgPool, faces: bool, pets: bool) -> Router {
     crate::routes::routes().with_state(AppState {
         db: pool.clone(),
         storage: dummy_storage(),
@@ -97,7 +108,8 @@ pub fn app_with_people(pool: &PgPool) -> Router {
         purge_wake: Default::default(),
         text: Arc::new(FakeText::default()),
         search: default_search(),
-        faces_enabled: true,
+        faces_enabled: faces,
+        pets_enabled: pets,
     })
 }
 
@@ -114,6 +126,7 @@ pub fn app_with_s3(pool: &PgPool) -> Option<(Router, Storage)> {
         text: Arc::new(FakeText::default()),
         search: default_search(),
         faces_enabled: false,
+        pets_enabled: false,
     });
     Some((app, storage))
 }

@@ -24,6 +24,14 @@ use tokio::sync::Notify;
 
 const SERVICE: &str = "cyanotype-assets";
 
+/// Which of the optional features are on, for what builds SQL from stored rules or takes a scope: a smart album's people rule matches
+/// nothing while People is off, its pets rule nothing while Pets is off, and a bulk action never reads a scope of an off feature as "no filter".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Features {
+    pub faces: bool,
+    pub pets: bool,
+}
+
 #[derive(Clone, FromRef)]
 pub struct AppState {
     pub db: PgPool,
@@ -38,6 +46,18 @@ pub struct AppState {
     pub search: Arc<search::SearchState>,
     /// People (docs/faces.md) is on: `FACES_ENABLED`. Off, its routes answer as if they did not exist.
     pub faces_enabled: bool,
+    /// Pets (docs/pets.md) is on: `PETS_ENABLED`, on unless it says otherwise. Off, its routes answer as if they did not exist.
+    #[from_ref(skip)]
+    pub pets_enabled: bool,
+}
+
+impl AppState {
+    pub fn features(&self) -> Features {
+        Features {
+            faces: self.faces_enabled,
+            pets: self.pets_enabled,
+        }
+    }
 }
 
 #[tokio::main]
@@ -51,6 +71,16 @@ async fn main() -> Result<()> {
     tracing::info!(trash_retention_days, "trash retention");
     tracing::info!(database = %config::redact_url(&db_cfg.url), s3_bucket = %s3_cfg.bucket, bind_addr = %addr, "starting");
     // Schema is owned by `cyanotype migrate`; services never migrate on boot.
+    let search = Arc::new(search::SearchState::from_env()?);
+    // The check reads SigLIP 2's embeddings: with another search model there is nothing to read them with, and Pets is off.
+    let pets_enabled =
+        cyanotype_core::pets::enabled() && cyanotype_clip::zeroshot::PetCheck::for_model(search.model).is_some();
+    if cyanotype_core::pets::enabled() && !pets_enabled {
+        tracing::warn!(
+            model = search.model.name(),
+            "Pets is off: it reads SigLIP 2's embeddings and this search model has no pet prompts (docs/pets.md)"
+        );
+    }
     let state = AppState {
         db: db::connect(&db_cfg.url).await?,
         storage: Storage::new(&s3_cfg),
@@ -62,8 +92,9 @@ async fn main() -> Result<()> {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(2),
         )),
-        search: Arc::new(search::SearchState::from_env()?),
+        search,
         faces_enabled: cyanotype_core::faces::enabled(),
+        pets_enabled,
     };
     tracing::info!(
         model = state.search.model.name(),

@@ -33,7 +33,7 @@ use axum::{
     extract::{Query, State},
 };
 use cyanotype_clip::Model;
-use cyanotype_core::{embeddings::pg_literal, keys, metrics, pairing::RAW_EXTS};
+use cyanotype_core::{embeddings::pg_literal, keys, metrics, pairing::RAW_EXTS, pets::Which};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Postgres, QueryBuilder};
 use time::{Date, OffsetDateTime, Time};
@@ -119,6 +119,8 @@ pub(super) struct SearchQuery {
     /// Ids of the owner's people, comma-separated: photos where all of them are (`FACES_ENABLED`; ignored while it is off). An id that
     /// is not one of the owner's people matches nothing.
     pub people: Option<String>,
+    /// Photos a dog or a cat was found in (`PETS_ENABLED`; ignored while it is off): `any`, `dog` or `cat`.
+    pub pets: Option<String>,
     /// `jpeg`, `heic` (HEIC, HEIF and AVIF), `raw` (a RAW file, or a photo with a RAW paired behind it) or `other`.
     #[serde(rename = "type")]
     pub kind: Option<String>,
@@ -134,7 +136,7 @@ pub(super) struct SearchQuery {
     /// `false`: no cut-off, the whole ranked list (up to 300) with every result's tier shown. For tooling and tests; the
     /// app uses the default.
     pub cutoff: Option<bool>,
-    /// Do not read this kind of thing out of `q`: `date`, `place`, `people`, or several (`date,place`). What the chips' "x" sends.
+    /// Do not read this kind of thing out of `q`: `date`, `place`, `people`, `pets`, or several (`date,place`). What the chips' "x" sends.
     pub skip: Option<String>,
 }
 
@@ -165,13 +167,15 @@ pub(super) struct Filters {
     place: Option<String>,
     /// Photos with all of these people in them (the owner's own; `FACES_ENABLED`).
     people: Vec<Uuid>,
+    /// Photos with a dog, a cat or either found in them (`PETS_ENABLED`).
+    pets: Option<Which>,
     kind: Option<FileType>,
     album: Option<Uuid>,
     has_location: Option<bool>,
     has_text: Option<bool>,
     /// The caption contains this text (case-insensitive). Not a search parameter: smart albums use it.
     caption_contains: Option<String>,
-    /// Matches nothing: a smart album's people rule while People is off (a stored rule is never read as "no rule").
+    /// Matches nothing: a smart album's people or pets rule while that feature is off (a stored rule is never read as "no rule").
     never: bool,
     /// Rules joined by AND (`all`) or OR (smart albums): each member is a `Filters` of its own, of which only the filters count.
     group: Option<Group>,
@@ -258,6 +262,12 @@ impl Filters {
         if people.len() > MAX_PEOPLE_FILTERS {
             return Err(ApiError::BadRequest(format!("at most {MAX_PEOPLE_FILTERS} people")));
         }
+        let pets = match clean(&q.pets) {
+            None => None,
+            Some(p) => {
+                Some(Which::parse(&p).ok_or_else(|| ApiError::BadRequest("pets must be any, dog or cat".into()))?)
+            }
+        };
         let midnight = |d: Date| d.with_time(Time::MIDNIGHT).assume_utc();
         Ok(Self {
             from: from.map(midnight),
@@ -271,6 +281,7 @@ impl Filters {
             lens: clean(&q.lens),
             place: clean(&q.place),
             people,
+            pets,
             kind,
             album: q.album,
             has_location: q.has_location,
@@ -333,6 +344,10 @@ impl Filters {
         self.people = ids;
         self
     }
+    pub(super) fn with_pets(mut self, which: Which) -> Self {
+        self.pets = Some(which);
+        self
+    }
     /// A filter that matches no photo.
     pub(super) fn nothing(mut self) -> Self {
         self.never = true;
@@ -373,6 +388,7 @@ impl Filters {
             || self.lens.is_some()
             || self.place.is_some()
             || !self.people.is_empty()
+            || self.pets.is_some()
             || self.never
             || self.kind.is_some()
             || self.album.is_some()
@@ -487,6 +503,9 @@ impl Filters {
                 .push_bind(*person)
                 .push(format!(" AND {})", super::people::SCANNED));
         }
+        if let Some(which) = self.pets {
+            push_pets_test(qb, owner, which);
+        }
         if let Some(k) = self.kind {
             qb.push(" AND ");
             push_type_test(qb, k);
@@ -515,6 +534,17 @@ impl Filters {
             None => {}
         }
     }
+}
+
+/// ` AND` a photo `a` with a dog, a cat or either found in it (through `pet_detections_owner_kind_idx`: the owner's detections of the
+/// kind, then the photos). A detection counts when its photo has a scan by the detection's model.
+pub(super) fn push_pets_test(qb: &mut QueryBuilder<'_, Postgres>, owner: Uuid, which: Which) {
+    qb.push(" AND a.id IN (SELECT d.asset_id FROM pet_detections d WHERE d.owner_id = ")
+        .push_bind(owner);
+    if let Some(kind) = which.kind() {
+        qb.push(" AND d.kind = ").push_bind(kind);
+    }
+    qb.push(format!(" AND {})", cyanotype_core::pets::SCANNED));
 }
 
 fn ext_list(exts: &[&str]) -> String {
@@ -602,7 +632,7 @@ pub(super) struct ParsedQuery {
 
 #[derive(Serialize)]
 pub(super) struct Chip {
-    /// `date`, `place` or `people`; the `skip` value that turns it off.
+    /// `date`, `place`, `people` or `pets`; the `skip` value that turns it off.
     kind: &'static str,
     /// What the chip says: "June 2023", "Maui", "Person A and Person B".
     label: String,
@@ -620,6 +650,9 @@ pub(super) struct Chip {
     /// For people: who was read out of the query (the owner's own people, in the order written).
     #[serde(skip_serializing_if = "Option::is_none")]
     people: Option<Vec<ChipPerson>>,
+    /// For pets: `any`, `dog` or `cat`, the `pets` filter's value the words became.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pets: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -781,12 +814,16 @@ async fn named_people(db: &sqlx::PgPool, owner: Uuid) -> ApiResult<Vec<query_par
         .collect())
 }
 
-/// Read the dates, places and people out of `q` (unless the request already filters on them or turned them off), and return the
-/// request as it is to be run, with what was understood. While People is off, `people` is ignored and never read out of the query.
+/// Read the dates, places, people and pets out of `q` (unless the request already filters on them or turned them off), and return the
+/// request as it is to be run, with what was understood. While People is off, `people` is ignored and never read out of the query;
+/// likewise `pets` while Pets is off.
 async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(SearchQuery, Option<ParsedQuery>)> {
     let mut q = q.clone();
     if !s.faces_enabled {
         q.people = None;
+    }
+    if !s.pets_enabled {
+        q.pets = None;
     }
     let q = &q;
     let Some(text) = clean(&q.q) else {
@@ -807,7 +844,9 @@ async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(Se
     } else {
         named_people(&s.db, owner).await?
     };
-    let parsed = query_parse::parse_with(&text, query_parse::today(), &places, &people, skip);
+    // A pets filter chosen in the filters wins, like the others.
+    let read_pets = s.pets_enabled && clean(&q.pets).is_none();
+    let parsed = query_parse::parse_full(&text, query_parse::today(), &places, &people, read_pets, skip);
     let mut eff = q.clone();
     let mut chips = Vec::new();
     if let Some(d) = &parsed.date {
@@ -823,6 +862,7 @@ async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(Se
             value: None,
             place_kind: None,
             people: None,
+            pets: None,
         });
     }
     if let Some(p) = &parsed.place {
@@ -836,6 +876,7 @@ async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(Se
             value: Some(p.value.clone()),
             place_kind: Some(p.kind),
             people: None,
+            pets: None,
         });
     }
     if !parsed.people.is_empty() {
@@ -875,6 +916,26 @@ async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(Se
                     })
                     .collect(),
             ),
+            pets: None,
+        });
+    }
+    if let Some(p) = &parsed.pets {
+        eff.pets = Some(p.which.name().to_string());
+        chips.push(Chip {
+            kind: "pets",
+            label: match p.which {
+                Which::Any => "Pets",
+                Which::Kind(cyanotype_core::pets::DOG) => "Dogs",
+                Which::Kind(_) => "Cats",
+            }
+            .to_string(),
+            matched: p.matched.clone(),
+            from: None,
+            to: None,
+            value: None,
+            place_kind: None,
+            people: None,
+            pets: Some(p.which.name()),
         });
     }
     eff.q = (!parsed.text.is_empty()).then(|| parsed.text.clone());
@@ -1648,6 +1709,10 @@ pub(super) struct Facets {
     places: Vec<PlaceFacet>,
     /// Calendar years (UTC) of the photo's timeline time, newest first.
     years: Vec<Facet>,
+    /// Photos with a pet found in them, by the `pets` filter's values: `any`, `dog`, `cat` (0 entries left out). Present only while
+    /// Pets is on (`PETS_ENABLED`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pets: Option<Vec<Facet>>,
 }
 
 const MAX_CAMERAS: i64 = 50;
@@ -1756,6 +1821,41 @@ pub(super) async fn facets(State(s): State<AppState>, user: AuthUser) -> ApiResu
     .fetch_all(&s.db)
     .await?;
 
+    let pets = if s.pets_enabled {
+        let by_kind: Vec<(String, i64)> = sqlx::query_as(&format!(
+            "SELECT d.kind, count(DISTINCT d.asset_id) FROM pet_detections d JOIN assets a ON a.id = d.asset_id
+             WHERE d.owner_id = $1 AND a.deleted_at IS NULL AND a.primary_id IS NULL AND NOT a.hidden AND {}
+             GROUP BY d.kind",
+            cyanotype_core::pets::SCANNED
+        ))
+        .bind(user.id)
+        .fetch_all(&s.db)
+        .await?;
+        let (any,): (i64,) = sqlx::query_as(&format!(
+            "SELECT count(DISTINCT d.asset_id) FROM pet_detections d JOIN assets a ON a.id = d.asset_id
+             WHERE d.owner_id = $1 AND a.deleted_at IS NULL AND a.primary_id IS NULL AND NOT a.hidden AND {}",
+            cyanotype_core::pets::SCANNED
+        ))
+        .bind(user.id)
+        .fetch_one(&s.db)
+        .await?;
+        let mut out = vec![Facet {
+            value: "any".into(),
+            count: any,
+        }];
+        for kind in cyanotype_core::pets::KINDS {
+            let count = by_kind.iter().find(|(k, _)| k == kind).map_or(0, |(_, n)| *n);
+            out.push(Facet {
+                value: kind.into(),
+                count,
+            });
+        }
+        out.retain(|f| f.count > 0);
+        Some(out)
+    } else {
+        None
+    };
+
     Ok(Json(Facets {
         total,
         favorites,
@@ -1767,5 +1867,6 @@ pub(super) async fn facets(State(s): State<AppState>, user: AuthUser) -> ApiResu
         lenses,
         places,
         years,
+        pets,
     }))
 }

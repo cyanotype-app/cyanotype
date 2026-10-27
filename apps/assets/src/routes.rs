@@ -56,6 +56,9 @@ mod pair_tests;
 mod people;
 #[cfg(test)]
 mod people_tests;
+mod pets;
+#[cfg(test)]
+mod pets_tests;
 mod processing;
 mod ratings;
 #[cfg(test)]
@@ -194,6 +197,10 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
             "/assets/faces/{id}/not-a-face",
             post(people::not_a_face).delete(people::is_a_face),
         )
+        .route("/assets/pets/status", get(pets::status))
+        .route("/assets/pets", get(pets::summary))
+        .route("/assets/pets/photos", get(pets::photos))
+        .route("/assets/pets/timeline", get(pets::timeline))
         .route("/assets/duplicates", get(duplicates::list))
         .route("/assets/duplicates/scan", post(duplicates::scan))
         .route("/assets/duplicates/{id}/keep", post(duplicates::keep))
@@ -247,6 +254,7 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/{id}/details", get(details::get))
         .route("/assets/{id}/text", get(text::get))
         .route("/assets/{id}/faces", get(people::of_photo))
+        .route("/assets/{id}/pets", get(pets::of_photo))
         .route("/assets/{id}/download", get(download::download))
         .route("/assets/{id}/download/edited", get(download::download_edited))
         .route("/assets/{id}", get(get_one))
@@ -1546,6 +1554,7 @@ mod tests {
             text: std::sync::Arc::new(crate::testutil::FakeText::default()),
             search: crate::testutil::default_search(),
             faces_enabled: false,
+            pets_enabled: false,
         });
 
         let mut seen = Vec::new();
@@ -1705,6 +1714,7 @@ mod tests {
             text: std::sync::Arc::new(crate::testutil::FakeText::default()),
             search: crate::testutil::default_search(),
             faces_enabled: false,
+            pets_enabled: false,
         });
         let url = |n: i32| proxy_part_url(upload_id, n);
 
@@ -1960,6 +1970,7 @@ mod tests {
             text: std::sync::Arc::new(crate::testutil::FakeText::default()),
             search: crate::testutil::default_search(),
             faces_enabled: false,
+            pets_enabled: false,
         });
 
         let list = get_json(&app, "/assets", key).await;

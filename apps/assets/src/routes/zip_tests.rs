@@ -48,6 +48,7 @@ impl Env {
             text: std::sync::Arc::new(FakeText::default()),
             search: default_search(),
             faces_enabled: false,
+            pets_enabled: false,
         })
     }
 

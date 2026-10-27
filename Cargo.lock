@@ -1242,6 +1242,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cyanotype-pets"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "cyanotype-clip",
+ "fast_image_resize",
+ "image",
+ "ort",
+ "serde_json",
+]
+
+[[package]]
 name = "cyanotype-service"
 version = "0.0.1"
 dependencies = [
@@ -1278,6 +1290,7 @@ dependencies = [
  "cyanotype-core",
  "cyanotype-faces",
  "cyanotype-ocr",
+ "cyanotype-pets",
  "fast_image_resize",
  "image",
  "jpeg-decoder",

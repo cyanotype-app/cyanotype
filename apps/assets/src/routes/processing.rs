@@ -9,7 +9,7 @@
 //! "Processing..." banner is about getting photos on screen). Failed embed jobs do show in `failed` and `failures`, like
 //! any other failure, and "Retry failed" requeues them.
 use axum::{Json, extract::State};
-use cyanotype_core::{embeddings, faces, ocr};
+use cyanotype_core::{embeddings, faces, ocr, pets};
 use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -61,6 +61,23 @@ pub(super) struct Processing {
     /// (`FACES_ENABLED`, off by default); nothing about faces is reported otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     faces: Option<FacesProgress>,
+    /// Finding dogs and cats in photos (`pets` jobs), reported apart too. Present only while the feature is on (`PETS_ENABLED`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pets: Option<PetsProgress>,
+}
+
+#[derive(Serialize, Debug)]
+pub(super) struct PetsProgress {
+    /// Photos the current model has looked at, and photos that can be looked at (they have a preview and a search vector).
+    scanned: i64,
+    total: i64,
+    /// Animals found so far.
+    found: i64,
+    queued: i64,
+    running: i64,
+    failed: i64,
+    model: &'static str,
+    percent: u8,
 }
 
 #[derive(Serialize, Debug)]
@@ -130,7 +147,7 @@ pub(super) async fn status(State(s): State<AppState>, user: ImportUser) -> ApiRe
          FROM jobs j JOIN assets a ON a.id = j.asset_id
          WHERE a.owner_id = $1 AND a.purging_at IS NULL AND j.state <> 'done'
            AND j.kind NOT IN ('share_copy', 'burst') -- share_copy is made on demand for share links; burst grouping is background work
-           AND (j.kind NOT IN ('embed', 'ocr', 'faces') OR j.state = 'failed') -- indexing for search, reading text and finding faces are reported separately
+           AND (j.kind NOT IN ('embed', 'ocr', 'faces', 'pets') OR j.state = 'failed') -- indexing for search, reading text and finding faces and pets are reported separately
          GROUP BY j.kind ORDER BY j.kind",
     )
     .bind(user.id)
@@ -207,6 +224,7 @@ pub(super) async fn status(State(s): State<AppState>, user: ImportUser) -> ApiRe
     };
 
     let faces = faces_progress(&s.db, user.id, faces::enabled()).await?;
+    let pets = pets_progress(&s.db, user.id, s.pets_enabled.then(|| pets_basis(model))).await?;
 
     let (queued, running, failed) = by_kind
         .iter()
@@ -242,6 +260,54 @@ pub(super) async fn status(State(s): State<AppState>, user: ImportUser) -> ApiRe
             percent: text_percent,
         },
         faces,
+        pets,
+    }))
+}
+
+/// The search vectors the pets check reads (`pets::Basis`).
+pub(super) fn pets_basis(model: cyanotype_clip::Model) -> pets::Basis<'static> {
+    pets::Basis {
+        model: model.id(),
+        version: model.version(),
+    }
+}
+
+/// How far finding dogs and cats has got for one owner; `None` while the feature is off (`basis` is `None`).
+async fn pets_progress(
+    db: &sqlx::PgPool,
+    owner: Uuid,
+    basis: Option<pets::Basis<'_>>,
+) -> ApiResult<Option<PetsProgress>> {
+    let Some(basis) = basis else {
+        return Ok(None);
+    };
+    let (queued, running, failed): (i64, i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE j.state = 'queued'), count(*) FILTER (WHERE j.state = 'running'),
+                count(*) FILTER (WHERE j.state = 'failed')
+         FROM jobs j JOIN assets a ON a.id = j.asset_id
+         WHERE a.owner_id = $1 AND a.purging_at IS NULL AND j.kind = 'pets' AND j.version = $2",
+    )
+    .bind(owner)
+    .bind(pets::VERSION)
+    .fetch_one(db)
+    .await?;
+    let p = pets::progress(db, owner, pets::MODEL, pets::VERSION, basis)
+        .await
+        .map_err(cyanotype_service::ApiError::Internal)?;
+    let percent = if p.total <= 0 {
+        100
+    } else {
+        (p.scanned * 100 / p.total).clamp(0, 100) as u8
+    };
+    Ok(Some(PetsProgress {
+        scanned: p.scanned,
+        total: p.total,
+        found: p.found,
+        queued,
+        running,
+        failed,
+        model: pets::MODEL,
+        percent,
     }))
 }
 

@@ -13,6 +13,7 @@ mod duplicates;
 mod image_tower;
 pub mod split;
 mod text_tower;
+pub mod zeroshot;
 
 use std::path::PathBuf;
 

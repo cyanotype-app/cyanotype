@@ -393,7 +393,7 @@ pub(super) async fn edit(
     Json(req): Json<EditRequest>,
 ) -> ApiResult<Json<EditResult>> {
     let plan = std::sync::Arc::new(Plan::from(&req)?);
-    let pick = req.pick.validated(unlock, s.faces_enabled)?;
+    let pick = req.pick.validated(unlock, s.features())?;
     let mut tx = s.db.begin().await?;
     let ids: Vec<Uuid> = pick.resolve(&mut tx, user.id).await?.unwrap_or_default();
     tx.commit().await?;

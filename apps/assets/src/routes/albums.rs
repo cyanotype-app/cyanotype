@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 use super::scope::Selector;
 use super::{ListQuery, ListResponse, ListRow, decode_cursor, encode_cursor, list_items, thumb_fields, trash::MAX_IDS};
-use crate::AppState;
+use crate::{AppState, Features};
 use cyanotype_service::{ApiError, ApiResult, AuthUser, Unlock};
 
 const MAX_TITLE: usize = 200;
@@ -154,7 +154,7 @@ const SMART_COUNT_CAP: i64 = 10_000;
 /// of the timeline), and the newest one as the cover.
 async fn smart_summary(
     db: &sqlx::PgPool,
-    faces: bool,
+    features: Features,
     owner: Uuid,
     rules: &super::smart::Rules,
 ) -> ApiResult<(
@@ -163,7 +163,7 @@ async fn smart_summary(
     Option<OffsetDateTime>,
     Option<(Uuid, Option<Vec<u8>>)>,
 )> {
-    let filters = rules.filters(faces);
+    let filters = rules.filters(features);
     let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT count(*) FROM (SELECT 1 FROM assets a WHERE");
     filters.push_where(&mut qb, owner);
     qb.push(" LIMIT ").push_bind(SMART_COUNT_CAP + 1).push(") c");
@@ -202,7 +202,7 @@ async fn to_albums(s: &AppState, owner: Uuid, rows: Vec<AlbumRow>) -> ApiResult<
     for mut r in rows {
         // A smart album has no members: what it shows is looked up from its rules each time.
         if let Some(rules) = r.rules.as_ref().and_then(|v| super::smart::Rules::from_json(v).ok()) {
-            let (n, first, last, cover) = smart_summary(&s.db, s.faces_enabled, owner, &rules).await?;
+            let (n, first, last, cover) = smart_summary(&s.db, s.features(), owner, &rules).await?;
             (r.photo_count, r.hidden_count, r.first_at, r.last_at) = (n, 0, first, last);
             (r.cover_id, r.cover_thumbhash) = cover.map_or((None, None), |(id, th)| (Some(id), th));
         }
@@ -282,6 +282,10 @@ pub(super) struct PreviewBody {
 /// The people a smart album's rules name must be the caller's own, and People must be on: anything else is a `404`, as for an
 /// unknown person anywhere else (another owner's id is not told apart from one that never existed).
 async fn check_people(s: &AppState, owner: Uuid, rules: &super::smart::Rules) -> ApiResult<()> {
+    // A pets rule needs Pets (its kind is not an id: there is nothing of anyone else's to check).
+    if rules.has_pets() && !s.pets_enabled {
+        return Err(ApiError::NotFound);
+    }
     let ids = rules.people();
     if ids.is_empty() {
         return Ok(());
@@ -313,8 +317,8 @@ pub(super) async fn preview(
 ) -> ApiResult<Json<serde_json::Value>> {
     let rules = super::smart::Rules::from_json(&req.rules)?;
     check_people(&s, user.id, &rules).await?;
-    let filters = rules.filters(s.faces_enabled);
-    let (count, _, _, _) = smart_summary(&s.db, s.faces_enabled, user.id, &rules).await?;
+    let filters = rules.filters(s.features());
+    let (count, _, _, _) = smart_summary(&s.db, s.features(), user.id, &rules).await?;
     let rows = super::search::timeline_rows(&s.db, user.id, &filters, 8, None).await?;
     let items = list_items(&s, user.id, rows.into_iter().map(|r| r.row).collect()).await?;
     Ok(Json(serde_json::json!({
@@ -513,7 +517,7 @@ pub(super) async fn assets(
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
     if let Some(rules) = rules {
         // A smart album lists what its rules match now, newest first, with the search's own SQL and cursor.
-        let filters = super::smart::Rules::from_json(&rules)?.filters(s.faces_enabled);
+        let filters = super::smart::Rules::from_json(&rules)?.filters(s.features());
         let after = match &q.cursor {
             Some(c) => Some(decode_cursor(c).ok_or_else(|| ApiError::BadRequest("invalid cursor".into()))?),
             None => None,
@@ -585,7 +589,7 @@ pub(super) async fn add(
     Path(id): Path<Uuid>,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated(unlock, s.faces_enabled)?;
+    let pick = req.validated(unlock, s.features())?;
     let mut tx = s.db.begin().await?;
     lock_album(&mut tx, user.id, id).await?;
     refuse_smart(&mut tx, id).await?;
@@ -609,7 +613,7 @@ pub(super) async fn remove_assets(
     Path(id): Path<Uuid>,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated(unlock, s.faces_enabled)?;
+    let pick = req.validated(unlock, s.features())?;
     let mut tx = s.db.begin().await?;
     lock_album(&mut tx, user.id, id).await?;
     refuse_smart(&mut tx, id).await?;

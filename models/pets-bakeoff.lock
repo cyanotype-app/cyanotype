@@ -1,0 +1,15 @@
+# The other detectors of the bake-off (docs/pets.md), for the bake-off only: nothing installs them.
+#   LOCK=models/pets-bakeoff.lock scripts/fetch-models.sh models/pets-bakeoff
+# (the shipped D-FINE-N is in models/pets.lock and is the fourth). All Apache 2.0:
+#   yolox-s.onnx        YOLOX-s (Megvii; 40.5 AP on COCO as the Zoo measures it), the OpenCV Zoo's export, at the opencv_zoo commit that models/faces.lock pins too
+#                       (2026-05-22); the Zoo's directory states Apache 2.0.
+#   nanodet-plus.onnx   NanoDet-Plus-m-1.5x at 416 px (RangiLyu; 30.4 AP as the Zoo measures it), the same Zoo, the same commit.
+#   rtdetr-r18vd.onnx   RT-DETR R18vd (Baidu), the ONNX export of https://huggingface.co/PekingU/rtdetr_r18vd (model card:
+#                       Apache 2.0) that transformers.js published in https://huggingface.co/onnx-community/rtdetr_r18vd, pinned to one commit.
+# The OpenCV Zoo also publishes block-quantised 8-bit variants of the first two; ONNX Runtime does not load or run them (a Resize without
+# sizes or scales, a DequantizeLinear with a block size), so they are not candidates.
+#
+# sha256                                                            file                url
+c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063  yolox-s.onnx        https://media.githubusercontent.com/media/opencv/opencv_zoo/26cc381e4d2594bb9f47a26eb8fd96c94a13660d/models/object_detection_yolox/object_detection_yolox_2022nov.onnx
+4b82da9944b88577175ee23a459dce2e26e6e4be573def65b1055dc2d9720186  nanodet-plus.onnx   https://media.githubusercontent.com/media/opencv/opencv_zoo/26cc381e4d2594bb9f47a26eb8fd96c94a13660d/models/object_detection_nanodet/object_detection_nanodet_2022nov.onnx
+11843b02455cc24009aed24d4c40db721b1093be5ccd6bbe7b9c441abb1d0558  rtdetr-r18vd.onnx   https://huggingface.co/onnx-community/rtdetr_r18vd/resolve/f2bee7444f4c29003df7e9ef07c4c1c6632eca6f/onnx/model.onnx
