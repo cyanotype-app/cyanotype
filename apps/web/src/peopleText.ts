@@ -107,9 +107,10 @@ export function peopleIdsOf(v: string | null | undefined): string[] {
 export const filterablePeople = (people: readonly Person[]): Person[] => people.filter((p) => !p.hidden && (p.name?.trim() ?? "") !== "");
 
 /** The picker's list for what is typed: the chosen people first, then the others whose name contains it (case-insensitive). */
-export function matchingPeople(people: readonly Person[], typed: string, chosen: readonly string[]): Person[] {
+export function matchingPeople<T extends { id: string; name: string | null }>(people: readonly T[], typed: string, chosen: readonly string[]): T[] {
+  // (Named pets use it too: the same rule, whatever has an id and a name.)
   const t = typed.trim().toLowerCase();
-  const hit = (p: Person) => t === "" || (p.name ?? "").toLowerCase().includes(t);
+  const hit = (p: T) => t === "" || (p.name ?? "").toLowerCase().includes(t);
   return [...people.filter((p) => chosen.includes(p.id)), ...people.filter((p) => !chosen.includes(p.id) && hit(p))];
 }
 

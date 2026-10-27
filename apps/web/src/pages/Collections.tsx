@@ -2,7 +2,7 @@ import { ChevronRight, ImagePlus, Link2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useMemo } from "react";
 import { api, localToday, type Trip } from "../api";
-import { AlbumCard, MemoryCard, PersonCard, PetCard, TripCard } from "../collections/cards";
+import { AlbumCard, MemoryCard, NamedPetCard, PersonCard, PetCard, TripCard } from "../collections/cards";
 import { Cover } from "../collections/Cover";
 import { ScrollRow } from "../collections/ScrollRow";
 import { Reveal, RowSkeleton, Section } from "../collections/Section";
@@ -39,6 +39,7 @@ export function Collections() {
   const faces = useLoad(() => api.listPeople(), people === true);
   const shares = useLoad(() => shareApi.list());
   const pets = useLoad(() => api.pets(), petsOn === true);
+  const named = useLoad(() => api.namedPets(), petsOn === true);
 
   const today = useMemo(() => localToday(), []);
   const fresh = useMemo(
@@ -70,7 +71,7 @@ export function Collections() {
                 <SharedSection shares={liveShares} />
               </div>
             )}
-            <PetsSection pets={pets} />
+            <PetsSection pets={pets} named={named} />
             <RecentSection recent={recent} />
           </>
         )}
@@ -211,13 +212,18 @@ function PeopleSection({ faces }: { faces: Load<Awaited<ReturnType<typeof api.li
 }
 
 /** Dogs and cats, only while Pets is on and at least one photo has one (the load is not even asked while it is off). */
-function PetsSection({ pets }: { pets: Load<Awaited<ReturnType<typeof api.pets>>> }) {
+function PetsSection({ pets, named }: { pets: Load<Awaited<ReturnType<typeof api.pets>>>; named: Load<Awaited<ReturnType<typeof api.namedPets>>> }) {
   if (pets.status !== "ready" || pets.data.any === 0) return null;
   const shown = pets.data.kinds.filter((k) => k.photos > 0);
+  // The pets the owner named come first, each its own card; the kinds follow.
+  const mine = named.status === "ready" ? named.data.items.filter((p) => !p.hidden) : [];
   return (
     <Section title="Pets" to="/pets">
       <Reveal>
         <ScrollRow label="Pets">
+          {mine.map((p) => (
+            <NamedPetCard key={p.id} pet={p} />
+          ))}
           {shown.map((k) => (
             <PetCard key={k.kind} kind={k.kind} photos={k.photos} cover={k.cover} />
           ))}

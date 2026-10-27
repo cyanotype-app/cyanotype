@@ -1,7 +1,7 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
-import { api, type Album, type Facets, type Person, type SearchParams, type Tag } from "../api";
+import { api, type Album, type Facets, type NamedPet, type Person, type SearchParams, type Tag } from "../api";
 import { MAX_FILTER_PEOPLE, NO_NAMED_PEOPLE, PEOPLE_FILTER_NOTE, peopleIdsOf } from "../peopleText";
-import { PET_KINDS, PET_LABEL, petKindOf } from "../petsText";
+import { MAX_FILTER_PETS, NO_NAMED_PETS, PET_FILTER_NOTE, PET_KINDS, PET_LABEL, petIdsOf, petKindOf } from "../petsText";
 import { ratingFilterLabel } from "../ratingText";
 import { tagListOf } from "../tagText";
 import { Button } from "../ui/Button";
@@ -33,6 +33,8 @@ interface Props {
   people?: readonly Person[];
   /** Pets is on: offer the Pets filter (Any, Dogs or cats, Dogs, Cats). */
   pets?: boolean;
+  /** The pets the owner named (not hidden): the filter can choose them. Undefined while Pets is off: the filter is not offered then. */
+  namedPets?: readonly NamedPet[];
 }
 
 const defaultLoad = async () => {
@@ -51,7 +53,7 @@ const fieldCls = "h-11 w-full min-w-0 rounded-xl bg-surface px-3 text-base text-
  * location, text and album. A bottom sheet on a phone, a dialog on a wide screen; edits apply together with "Show
  * photos", and the choices come from what the library has (`GET /assets/search/facets`) with counts.
  */
-export function FilterSheet({ open = true, value, onApply, onClose, load = defaultLoad, tagLoad = defaultTagLoad, people, pets }: Props) {
+export function FilterSheet({ open = true, value, onApply, onClose, load = defaultLoad, tagLoad = defaultTagLoad, people, pets, namedPets }: Props) {
   const [draft, setDraft] = useState<Filters>(value);
   const [options, setOptions] = useState<{ facets: Facets; albums: Album[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -216,6 +218,25 @@ export function FilterSheet({ open = true, value, onApply, onClose, load = defau
               ]}
             </Choices>
           )}
+          {namedPets !== undefined &&
+            (namedPets.length === 0 && !draft.pet ? (
+              <div>
+                <span className="mb-1.5 block text-sm font-medium">Named pets</span>
+                <p className="text-sm text-muted">{NO_NAMED_PETS}</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                <PeoplePicker
+                  pets
+                  label="Named pets"
+                  people={namedPets}
+                  value={petIdsOf(draft.pet)}
+                  max={MAX_FILTER_PETS}
+                  onChange={(ids) => set({ pet: ids.length ? ids.join(",") : undefined })}
+                />
+                <p className="text-sm text-muted">{PET_FILTER_NOTE}</p>
+              </div>
+            ))}
           <Field label="Rating" htmlFor={`${id}-rating`}>
             <select
               id={`${id}-rating`}

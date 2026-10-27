@@ -2,7 +2,7 @@
 // check the editor runs before it asks the server. The server's own validation (`smart.rs`) is the last word. Unit tested.
 import type { SmartRule, SmartRules } from "./api";
 import { MAX_FILTER_PEOPLE, peopleRuleLabel } from "./peopleText";
-import { petRuleLabel } from "./petsText";
+import { MAX_FILTER_PETS, petIdsRuleLabel, petRuleLabel } from "./petsText";
 import { ratingFilterLabel } from "./ratingText";
 import { nameProblem } from "./tagText";
 
@@ -25,11 +25,12 @@ export const RULE_FIELDS: { field: RuleField; label: string }[] = [
   { field: "caption", label: "Caption contains" },
   { field: "people", label: "People" },
   { field: "pets", label: "Pets" },
+  { field: "pet", label: "Pet is" },
 ];
 
 /** The kinds of rule to offer: People's only while People is on, Pets' only while Pets is on. */
 export const ruleFieldsFor = (people: boolean, pets = false) =>
-  RULE_FIELDS.filter((f) => (f.field !== "people" || people) && (f.field !== "pets" || pets));
+  RULE_FIELDS.filter((f) => (f.field !== "people" || people) && (f.field !== "pets" || pets) && (f.field !== "pet" || pets));
 
 /** Why a semantic text search cannot be a rule; the editor shows it next to "Add rule". */
 export const NO_TEXT_QUERY_NOTE =
@@ -60,6 +61,8 @@ export function blankRule(field: RuleField): SmartRule {
       return { field, ids: [] };
     case "pets":
       return { field, kind: "any" };
+    case "pet":
+      return { field, ids: [] };
   }
 }
 
@@ -98,6 +101,8 @@ export function ruleLabel(r: SmartRule): string {
       return peopleRuleLabel(r.ids);
     case "pets":
       return petRuleLabel(r.kind);
+    case "pet":
+      return petIdsRuleLabel(r.ids);
   }
 }
 
@@ -129,6 +134,10 @@ export function rulesProblem(rules: SmartRules): string | null {
       case "people":
         if (r.ids.length === 0) return "The people rule needs at least one person.";
         if (r.ids.length > MAX_FILTER_PEOPLE) return `The people rule takes at most ${MAX_FILTER_PEOPLE} people.`;
+        break;
+      case "pet":
+        if (r.ids.length === 0) return "The pet rule needs at least one pet.";
+        if (r.ids.length > MAX_FILTER_PETS) return `The pet rule takes at most ${MAX_FILTER_PETS} pets.`;
         break;
       case "tags": {
         if (r.names.length === 0) return "The tags rule needs at least one tag.";

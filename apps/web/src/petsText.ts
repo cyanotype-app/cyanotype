@@ -1,5 +1,6 @@
 // Pure helpers of Pets: the words (kinds, counts, progress), reading a kind out of a URL, and which kinds the page offers. Unit tested.
-import type { PetKind, PetsSummary } from "./api";
+import type { NamedPet, PetAdded, PetKind, PetsSummary, PhotoPet, SkipReason } from "./api";
+import { MAX_FILTER_PEOPLE, nameProblem as personNameProblem, peopleIdsOf, pendingLabel } from "./peopleText";
 
 const n = (v: number) => v.toLocaleString("en-US");
 
@@ -48,3 +49,77 @@ export const scanLine = (s: Pick<PetsSummary, "scanned" | "total">) => `Looked a
 
 /** A smart album's Pets rule in words: "Pets: dogs or cats", "Pets: dogs", "Pets: cats". */
 export const petRuleLabel = (kind: PetKind) => `Pets: ${kind === "any" ? "dogs or cats" : kind === "dog" ? "dogs" : "cats"}`;
+
+// Named pets (docs/pets.md, "Named pets"): the words and the small rules around a pet the owner made.
+
+/** Most named pets one search or smart-album rule can name together (the server's limit, the same as people). */
+export const MAX_FILTER_PETS = MAX_FILTER_PEOPLE;
+export const NO_NAMED_PETS = "Name a pet on the Pets page to filter by it.";
+export const FIND_A_PET = "Find a pet";
+export const PET_FILTER_NOTE = "Photos with all of the chosen pets in them.";
+
+/** "Dog" / "Cat", for a label. */
+export const KIND_TITLE: Record<"dog" | "cat", string> = { dog: "Dog", cat: "Cat" };
+
+/** Why `name` cannot be a pet's name, or null when it can. A pet is always named: blank is a problem. */
+export function petNameProblem(name: string): string | null {
+  if (name.trim() === "") return "Give your pet a name.";
+  return personNameProblem(name);
+}
+
+/** The ids in a `pet` URL parameter: valid ids only, each once, at most [`MAX_FILTER_PETS`] (the same rules as people). */
+export const petIdsOf = peopleIdsOf;
+
+/** What a named pet's card is called for assistive technology: the name, how many photos, and what waits for an answer. */
+export const namedPetLabel = (p: Pick<NamedPet, "name" | "photos" | "pending">) =>
+  `${p.name}, ${petPhotos(p.photos)}${p.pending > 0 ? `, ${pendingLabel(p.pending)}` : ""}`;
+
+/** The question over a proposed animal. */
+export const petQuestion = (p: Pick<NamedPet, "name">) => `Is this ${p.name}?`;
+
+/** The pets a filter or a rule can choose: not hidden, in the order given (most photos first). */
+export const filterablePets = (pets: readonly NamedPet[]): NamedPet[] => pets.filter((p) => !p.hidden);
+
+/** "Pet A", "Pet A and Pet B", "Pet A, Pet B and Pet C": the chip of a pet filter. A pet that is gone says so. */
+export function petFilterLabel(ids: readonly string[], pets: readonly { id: string; name: string }[]): string {
+  const names = ids.map((id) => pets.find((p) => p.id === id)?.name.trim() || "Unknown pet");
+  return names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/** A smart-album rule in words: "Pet is Name", "Pet is Name and Name" (or, without the names, "Pet: 2 pets together"). */
+export function petIdsRuleLabel(ids: readonly string[], pets: readonly { id: string; name: string }[] = []): string {
+  if (pets.length > 0 && ids.length > 0 && ids.every((id) => pets.some((p) => p.id === id))) return `Pet is ${petFilterLabel(ids, pets)}`;
+  return ids.length === 1 ? "Pet: 1 pet" : `Pet: ${ids.length} pets together`;
+}
+
+/** The named pets the Info panel lists for a photo: each once, however many of its animals are in it. */
+export function petsNamed(animals: readonly PhotoPet[] | undefined): { id: string; name: string }[] {
+  const out: { id: string; name: string }[] = [];
+  for (const a of animals ?? []) if (a.pet && !out.some((p) => p.id === a.pet!.id)) out.push(a.pet);
+  return out;
+}
+
+/** The toast after a pet was made or photos were added: how many photos joined. */
+export const addedToPetMessage = (name: string, photos: number, made: boolean) =>
+  made ? (photos === 0 ? `Made ${name}` : `Made ${name} with ${petPhotos(photos)}`) : `Added ${petPhotos(photos)} to ${name}`;
+
+/** The toast after "Not this pet". */
+export const removedFromPetMessage = (photos: number, name: string) => `Took ${petPhotos(photos)} out of ${name}`;
+
+/** The toast after a merge. */
+export const mergedPetMessage = (into: string) => `Merged into ${into}`;
+
+/** Why a photo was left out, in plain words, one line per reason ("2 photos have no dog that was found"). */
+export function skippedLines(skipped: readonly PetAdded["skipped"][number][], pet: { name: string; kind: "dog" | "cat" }): string[] {
+  const count = (r: SkipReason) => skipped.filter((s) => s.reason === r).length;
+  const lines: string[] = [];
+  const none = count("no_animal");
+  if (none > 0) lines.push(`${petPhotos(none)} ${none === 1 ? "has" : "have"} no ${pet.kind} that was found`);
+  const unseen = count("not_scanned");
+  if (unseen > 0) lines.push(`${petPhotos(unseen)} ${unseen === 1 ? "has" : "have"} not been looked through for pets yet`);
+  const already = count("already");
+  if (already > 0) lines.push(`${petPhotos(already)} ${already === 1 ? "is" : "are"} already in ${pet.name}`);
+  const other = count("in_other_pet");
+  if (other > 0) lines.push(`${petPhotos(other)} ${other === 1 ? "belongs" : "belong"} to another pet already`);
+  return lines;
+}

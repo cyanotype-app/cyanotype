@@ -21,8 +21,11 @@ import {
   Share,
   Trash2,
 } from "lucide-react";
-import { api, downloadHref, editedHref, type AssetDetail, type AssetListItem, type DismissedFace, type PhotoDetails, type PhotoFace, type PhotoTag, type PhotoText } from "../api";
+import { api, downloadHref, editedHref, type AssetDetail, type AssetListItem, type DismissedFace, type PhotoDetails, type PhotoFace, type PhotoPet, type PhotoTag, type PhotoText } from "../api";
 import { usePeopleEnabled } from "../usePeople";
+import { usePetsEnabled } from "../usePets";
+import { removedFromPetMessage } from "../petsText";
+import { NamePetSheet, petNamedToast } from "./NamePetSheet";
 import { AssignFaceDialog } from "./FaceChips";
 import { FaceRegions, namedFace } from "./FaceRegions";
 import { useToast } from "./Toast";
@@ -203,6 +206,34 @@ export function Lightbox({
     };
   }, [peopleOn, loadDetails, currentId, facesVersion]);
   const faceHere = currentId ? facesById[currentId] : undefined;
+  // The animals in the photo (when Pets is on): the Info panel lists them with the named pet each is in, to name or take out.
+  const petsOn = usePetsEnabled() === true;
+  const [animalsById, setAnimalsById] = useState<Record<string, PhotoPet[]>>({});
+  const [animalsVersion, setAnimalsVersion] = useState(0);
+  const [namingAnimal, setNamingAnimal] = useState<PhotoPet | null>(null);
+  useEffect(() => {
+    if (!petsOn || !loadDetails || !currentId) return;
+    let live = true;
+    const id = currentId;
+    api.assetPets(id).then(
+      (r) => live && setAnimalsById((m) => ({ ...m, [id]: r.items })),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [petsOn, loadDetails, currentId, animalsVersion]);
+  const notThisPet = async (animal: PhotoPet) => {
+    if (!animal.pet) return;
+    const { id, name } = animal.pet;
+    try {
+      await api.removeFromPet(id, { detection_ids: [animal.id] });
+      showToast({ message: removedFromPetMessage(1, name) });
+    } catch (e) {
+      showToast({ tone: "error", message: `Couldn’t take it out. ${e instanceof Error ? e.message : ""}`.trim() });
+    }
+    setAnimalsVersion((v) => v + 1);
+  };
   const openFace = (face: PhotoFace) => {
     if (namedFace(face)) void info.leave().then(() => {
       onClose();
@@ -1124,6 +1155,16 @@ export function Lightbox({
             onBringBack={peopleOn && dismissedById[item.id]?.length ? () => void bringBack(dismissedById[item.id]!) : undefined}
             faceBoxes={faceBoxes}
             onFaceBoxes={peopleOn ? setFaceBoxes : undefined}
+            pets={
+              petsOn && animalsById[item.id]?.length
+                ? {
+                    animals: animalsById[item.id]!,
+                    picture: src,
+                    onAdd: (animal) => setNamingAnimal(animal),
+                    onNot: (animal) => void notThisPet(animal),
+                  }
+                : undefined
+            }
           />
         )}
         {text.enabled && (
@@ -1164,8 +1205,26 @@ export function Lightbox({
           }}
         />
       )}
-      {peopleOn && <NavBridge navRef={navigateRef} />}
-      {peopleOn && toast}
+      {namingAnimal && (
+        <NamePetSheet
+          detectionIds={[namingAnimal.id]}
+          kind={namingAnimal.kind}
+          onClose={() => setNamingAnimal(null)}
+          onDone={(r) => {
+            setNamingAnimal(null);
+            setAnimalsVersion((v) => v + 1);
+            const t = petNamedToast(r, (petId) =>
+              void info.leave().then(() => {
+                onClose();
+                navigateRef.current?.(`/pets/${encodeURIComponent(petId)}`);
+              }),
+            );
+            showToast(t);
+          }}
+        />
+      )}
+      {(peopleOn || petsOn) && <NavBridge navRef={navigateRef} />}
+      {(peopleOn || petsOn) && toast}
       {tagging && (
         <TagDialog
           target={[item.id]}

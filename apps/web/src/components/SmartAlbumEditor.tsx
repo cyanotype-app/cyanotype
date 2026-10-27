@@ -1,11 +1,11 @@
 import { Plus, X } from "lucide-react";
 import { useEffect, useId, useState, type FormEvent, type ReactNode } from "react";
-import { api, type Facets, type Person, type SmartPreview, type SmartRule, type SmartRules } from "../api";
+import { api, type Facets, type NamedPet, type Person, type SmartPreview, type SmartRule, type SmartRules } from "../api";
 import { MAX_FILTER_PEOPLE, NO_NAMED_PEOPLE, filterablePeople } from "../peopleText";
 import { MAX_RULES, NO_TEXT_QUERY_NOTE, RULE_FIELDS, blankRule, cleanRules, ruleFieldsFor, rulesProblem, smartCount, type RuleField } from "../smartText";
 import { usePeopleEnabled } from "../usePeople";
 import { usePetsEnabled } from "../usePets";
-import { PET_KINDS, PET_LABEL, petKindOf } from "../petsText";
+import { MAX_FILTER_PETS, NO_NAMED_PETS, PET_KINDS, PET_LABEL, filterablePets, petKindOf } from "../petsText";
 import { Button } from "../ui/Button";
 import { Segmented } from "../ui/Controls";
 import { cn } from "../ui/cn";
@@ -29,10 +29,13 @@ interface Props {
   loadFacets?: () => Promise<Facets>;
   /** The owner's people, for the People rule (asked only while People is on). */
   loadPeople?: () => Promise<Person[]>;
+  /** The owner's named pets, for the Pet rule (asked only while Pets is on). */
+  loadPets?: () => Promise<NamedPet[]>;
 }
 
 const defaultPreview = (rules: SmartRules, signal: AbortSignal) => api.previewSmartAlbum(rules, signal);
 const defaultPeople = () => api.listPeople().then((r) => r.items);
+const defaultPets = () => api.namedPets().then((r) => r.items);
 
 /**
  * The editor of a smart album: a title, "match all / any" over a list of rules, whether archived photos are in, and a live preview
@@ -50,6 +53,7 @@ export function SmartAlbumEditor({
   preview = defaultPreview,
   loadFacets = api.searchFacets,
   loadPeople = defaultPeople,
+  loadPets = defaultPets,
 }: Props) {
   const id = useId();
   const [title, setTitle] = useState(initialTitle);
@@ -58,6 +62,7 @@ export function SmartAlbumEditor({
   const peopleOn = usePeopleEnabled() === true;
   const petsOn = usePetsEnabled() === true;
   const [people, setPeople] = useState<Person[] | null>(null);
+  const [pets, setPets] = useState<NamedPet[] | null>(null);
   const [shown, setShown] = useState<SmartPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [add, setAdd] = useState<RuleField>("place");
@@ -83,6 +88,17 @@ export function SmartAlbumEditor({
       live = false;
     };
   }, [peopleOn, loadPeople]);
+  useEffect(() => {
+    if (!petsOn) return;
+    let live = true;
+    loadPets().then(
+      (p) => live && setPets(filterablePets(p)),
+      () => live && setPets([]),
+    );
+    return () => {
+      live = false;
+    };
+  }, [petsOn, loadPets]);
 
   const problem = rulesProblem(rules);
   const cleaned = cleanRules(rules);
@@ -151,7 +167,7 @@ export function SmartAlbumEditor({
           {rules.rules.map((r, i) => (
             <li key={i} className="flex items-start gap-2 rounded-card bg-surface p-3">
               <div className="min-w-0 flex-1">
-                <RuleRow rule={r} facets={facets} people={people} onChange={(n) => setRule(i, n)} disabled={busy} index={i} />
+                <RuleRow rule={r} facets={facets} people={people} pets={pets} onChange={(n) => setRule(i, n)} disabled={busy} index={i} />
               </div>
               <Button
                 variant="quiet"
@@ -223,6 +239,7 @@ function RuleRow({
   rule,
   facets,
   people,
+  pets,
   onChange,
   disabled,
   index,
@@ -230,6 +247,7 @@ function RuleRow({
   rule: SmartRule;
   facets: Facets | null;
   people: Person[] | null;
+  pets: NamedPet[] | null;
   onChange: (r: SmartRule) => void;
   disabled: boolean;
   index: number;
@@ -361,6 +379,27 @@ function RuleRow({
               </option>
             ))}
           </SelectBox>
+        </Body>
+      );
+    case "pet":
+      return (
+        <Body>
+          {pets !== null && pets.length === 0 && rule.ids.length === 0 ? (
+            <>
+              <span className="text-[0.8125rem] font-medium text-muted">{label}</span>
+              <span className="text-sm text-muted">{NO_NAMED_PETS}</span>
+            </>
+          ) : (
+            <PeoplePicker
+              pets
+              label={`Pets together (rule ${n})`}
+              people={pets ?? []}
+              value={rule.ids}
+              max={MAX_FILTER_PETS}
+              onChange={(ids) => onChange({ ...rule, ids })}
+              disabled={disabled}
+            />
+          )}
         </Body>
       );
     case "people":

@@ -1,16 +1,18 @@
 import { lazy, Suspense, useEffect, useState, type MouseEvent, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, type PhotoDetails, type PhotoFace, type PhotoTag, type TilesInstalled } from "../api";
+import { api, type PhotoDetails, type PhotoFace, type PhotoPet, type PhotoTag, type TilesInstalled } from "../api";
 import { burstText, coordinatesText, dayHref, mapHref, resolutionText, searchHref, whenText } from "../detailsText";
 import { placeLine } from "../map/geo";
 import { fileSize } from "../pairText";
 import { peopleNamed } from "../peopleText";
+import { KIND_TITLE } from "../petsText";
 import { fromServer, recipeText } from "../recipeText";
 import { tagSearchHref } from "../tagText";
 import { Button } from "../ui/Button";
 import { Switch } from "../ui/Controls";
 import { cn } from "../ui/cn";
 import type { EditKind } from "./EditDialog";
+import { FaceCrop } from "./FaceCrop";
 import { RatingStars } from "./Stars";
 import { TagChip } from "./TagChip";
 import { ViewerPanel } from "./ViewerPanel";
@@ -56,6 +58,19 @@ interface Props {
   /** Whether the faces are outlined on the photo, and the switch for it (offered when the photo has faces to click). */
   faceBoxes?: boolean;
   onFaceBoxes?: (on: boolean) => void;
+  /** The animals found in the photo (Pets is on): each with the pet it is in, or a way to put it in one. */
+  pets?: PetsPanel;
+}
+
+/** What the panel's Pets row needs: the animals, the picture to crop them from, and what can be done with one. */
+export interface PetsPanel {
+  animals: PhotoPet[];
+  /** The photo's picture (its preview), cropped to each animal; without it the animals are listed without a crop. */
+  picture: string | null;
+  /** Put the (unnamed) animal in a pet. */
+  onAdd: (animal: PhotoPet) => void;
+  /** "Not this pet": take the animal out of the pet it is in. */
+  onNot: (animal: PhotoPet) => void;
 }
 
 type Follow = (e: MouseEvent<HTMLAnchorElement>, to: string) => void;
@@ -107,7 +122,7 @@ function EditButton({ label, onClick }: { label: string; onClick: () => void }) 
  * place and date are links to the search or the timeline for the same thing. A bottom sheet on a phone, a column beside the
  * photo on a desktop.
  */
-export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, open = true, onEdit, rating, onRate, tags, onTag, onUntag, onEditPicture, faces, dismissed, onBringBack, faceBoxes, onFaceBoxes }: Props) {
+export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, open = true, onEdit, rating, onRate, tags, onTag, onUntag, onEditPicture, faces, dismissed, onBringBack, faceBoxes, onFaceBoxes, pets }: Props) {
   const navigate = useNavigate();
   const follow: Follow = (e, to) => {
     // Let the browser handle new-tab clicks and the like.
@@ -135,7 +150,7 @@ export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavi
         </div>
       )}
       {state.status === "ready" && (
-        <Body d={state.details} follow={follow} onEdit={onEdit} rating={rating} onRate={onRate} tags={tags} onTag={onTag} onUntag={onUntag} onEditPicture={onEditPicture} faces={faces} dismissed={dismissed} onBringBack={onBringBack} faceBoxes={faceBoxes} onFaceBoxes={onFaceBoxes} />
+        <Body d={state.details} follow={follow} onEdit={onEdit} rating={rating} onRate={onRate} tags={tags} onTag={onTag} onUntag={onUntag} onEditPicture={onEditPicture} faces={faces} dismissed={dismissed} onBringBack={onBringBack} faceBoxes={faceBoxes} onFaceBoxes={onFaceBoxes} pets={pets} />
       )}
     </ViewerPanel>
   );
@@ -156,6 +171,7 @@ function Body({
   onBringBack,
   faceBoxes,
   onFaceBoxes,
+  pets,
 }: {
   d: PhotoDetails;
   follow: Follow;
@@ -171,6 +187,7 @@ function Body({
   onBringBack?: () => void;
   faceBoxes?: boolean;
   onFaceBoxes?: (on: boolean) => void;
+  pets?: PetsPanel;
 }) {
   const when = whenText(d.date);
   const loc = d.location;
@@ -180,6 +197,7 @@ function Body({
   const pair = d.files.length > 1;
   const named = peopleNamed(faces);
   const hasCamera = !!(d.camera?.label || d.camera?.lens || x?.line || x?.focal_length_35mm || x?.flash || x?.white_balance || x?.metering || x?.program);
+  const hasPets = (pets?.animals.length ?? 0) > 0;
   const hasPeople = named.length > 0 || (onFaceBoxes && (faces?.length ?? 0) > 0) || (onBringBack && (dismissed ?? 0) > 0);
 
   return (
@@ -232,7 +250,7 @@ function Body({
         )}
       </Group>
 
-      {(onTag || hasPeople || d.albums.length > 0) && (
+      {(onTag || hasPeople || hasPets || d.albums.length > 0) && (
         <Group>
           {onTag && (
             <Row label="Tags">
@@ -270,6 +288,54 @@ function Body({
                   Bring back {dismissed === 1 ? "1 detection" : `${dismissed} detections`} marked “Not a face”
                 </Button>
               )}
+            </Row>
+          )}
+
+          {pets && hasPets && (
+            <Row label="Pets">
+              <ul className="mt-1 flex flex-col gap-2">
+                {pets.animals.map((a, i) => {
+                  const many = pets.animals.length > 1;
+                  return (
+                    <li key={a.id} className="flex items-center gap-3">
+                      {pets.picture && <FaceCrop url={pets.picture} box={a.box} className="size-10 shrink-0" />}
+                      <span className="min-w-0 flex-1">
+                        {a.pet ? (
+                          <PanelLink to={`/pets/${a.pet.id}`} follow={follow} className="text-fg">
+                            {a.pet.name}
+                          </PanelLink>
+                        ) : (
+                          <span>
+                            {KIND_TITLE[a.kind]}
+                            {many ? ` ${i + 1}` : ""} <span className={sub}>not named</span>
+                          </span>
+                        )}
+                      </span>
+                      {a.pet ? (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="shrink-0 bg-card hover:bg-card/70"
+                          aria-label={many ? `Not ${a.pet.name}, ${a.kind} ${i + 1}` : undefined}
+                          onClick={() => pets.onNot(a)}
+                        >
+                          Not {a.pet.name}
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="shrink-0 bg-card hover:bg-card/70"
+                          aria-label={many ? `Add to pet…, ${a.kind} ${i + 1}` : undefined}
+                          onClick={() => pets.onAdd(a)}
+                        >
+                          Add to pet…
+                        </Button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
             </Row>
           )}
 

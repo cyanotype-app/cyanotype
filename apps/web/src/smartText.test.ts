@@ -23,6 +23,15 @@ describe("smart album words", () => {
     expect(ruleFieldsFor(true).map((f) => f.field)).toContain("people");
     expect(ruleFieldsFor(false).map((f) => f.field)).not.toContain("people");
   });
+  it("offers the pet rule (a named pet) only while Pets is on, and words it", () => {
+    expect(ruleFieldsFor(false, true).map((f) => f.field)).toContain("pet");
+    expect(ruleFieldsFor(true, false).map((f) => f.field)).not.toContain("pet");
+    expect(blankRule("pet")).toEqual({ field: "pet", ids: [] });
+    expect(ruleLabel({ field: "pet", ids: ["a", "b"] })).toBe("Pet: 2 pets together");
+    expect(rulesProblem({ match: "all", archived: "include", rules: [{ field: "pet", ids: [] }] })).toBe("The pet rule needs at least one pet.");
+    expect(rulesProblem({ match: "all", archived: "include", rules: [{ field: "pet", ids: Array.from({ length: 11 }, (_, i) => String(i)) }] })).toMatch(/at most 10/);
+    expect(rulesProblem({ match: "all", archived: "include", rules: [{ field: "pet", ids: ["a"] }] })).toBeNull();
+  });
   it("offers the pets rule only while Pets is on, and words it", () => {
     expect(ruleFieldsFor(false, true).map((f) => f.field)).toContain("pets");
     expect(ruleFieldsFor(true).map((f) => f.field)).not.toContain("pets");

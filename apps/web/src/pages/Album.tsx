@@ -14,7 +14,9 @@ import { TagTools } from "../components/TagTools";
 import { Field, FormError, Modal, TextInput } from "../components/sheetForm";
 import { SmartAlbumEditor } from "../components/SmartAlbumEditor";
 import { describeRules, smartCount } from "../smartText";
+import { NamePetSheet, petNamedToast } from "../components/NamePetSheet";
 import { ShareDialog, type ShareTarget } from "../components/ShareDialog";
+import { usePetsEnabled } from "../usePets";
 import { useToast } from "../components/Toast";
 import { similarUrl } from "../searchText";
 import { dateRange, hiddenNote, photoCount } from "../albumText";
@@ -47,6 +49,8 @@ function AlbumView({ id }: { id: string }) {
   const [editingRules, setEditingRules] = useState(false);
   const [ruleError, setRuleError] = useState<string | null>(null);
   const [sharing, setSharing] = useState<ShareTarget | null>(null);
+  const [namingPet, setNamingPet] = useState<string[] | null>(null);
+  const petsOn = usePetsEnabled() === true;
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
   const { toast, show } = useToast();
@@ -221,7 +225,7 @@ function AlbumView({ id }: { id: string }) {
 
   // Keyboard: Escape clears the selection, then leaves selection mode.
   useEffect(() => {
-    if (open !== null || confirmDelete || adding || editing || editingRules || sharing) return;
+    if (open !== null || confirmDelete || adding || editing || editingRules || sharing || namingPet !== null) return;
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t?.closest("input, textarea, select, [contenteditable]")) return;
@@ -232,7 +236,7 @@ function AlbumView({ id }: { id: string }) {
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, confirmDelete, adding, editing, editingRules, sharing, sel]);
+  }, [open, confirmDelete, adding, editing, editingRules, sharing, namingPet, sel]);
 
   const select = useCallback(
     (i: number) => {
@@ -417,6 +421,17 @@ function AlbumView({ id }: { id: string }) {
             <Button variant="quiet" size="sm" disabled={sel.ids.length === 0 || busy} onClick={() => setSharing({ kind: "photos", ids: sel.ids })}>
               Share
             </Button>
+            {petsOn && (
+              <Button
+                variant="quiet"
+                size="sm"
+                disabled={sel.ids.length === 0 || busy || sel.all}
+                title={sel.all ? "Choose the photos one by one to name a pet" : undefined}
+                onClick={() => setNamingPet([...sel.ids])}
+              >
+                Name pet…
+              </Button>
+            )}
             {!album.smart && (
               <Button variant="primary" size="sm" disabled={sel.count === 0 || busy} onClick={() => void removeSelected()}>
                 Remove from album
@@ -484,6 +499,17 @@ function AlbumView({ id }: { id: string }) {
         </ConfirmSheet>
       )}
       {sharing && <ShareDialog target={sharing} onClose={() => setSharing(null)} />}
+      {namingPet !== null && (
+        <NamePetSheet
+          assetIds={namingPet}
+          onClose={() => setNamingPet(null)}
+          onDone={(r) => {
+            setNamingPet(null);
+            sel.setSelecting(false);
+            show(petNamedToast(r, (pid) => navigate(`/pets/${encodeURIComponent(pid)}`)));
+          }}
+        />
+      )}
       {editing && <AlbumForm album={album} busy={busy} onSave={(p) => void save(p)} onCancel={() => setEditing(false)} />}
       {editingRules && album.rules && (
         <SmartAlbumEditor

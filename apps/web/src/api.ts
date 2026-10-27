@@ -611,7 +611,9 @@ export interface SearchParams {
   has_text?: boolean;
   /** Photos with a dog, a cat or either (Pets only; the server ignores it while Pets is off). */
   pets?: PetKind;
-  /** Dates, places, people and pets the server should not read out of `q`: `date`, `place`, `people`, `pets`, or several (what a chip's "x" sets). */
+  /** Named pet ids, comma-separated: photos where all of them are together (Pets only; the server ignores it while Pets is off). */
+  pet?: string;
+  /** Dates, places, people, pets and named pets the server should not read out of `q`: `date`, `place`, `people`, `pets`, `pet`, or several (what a chip's "x" sets). */
   skip?: string;
   /** "More like this": list photos similar to this photo (`GET /assets/{id}/similar`) instead of searching for `q`. */
   similar?: string;
@@ -640,7 +642,7 @@ export interface BurstMember extends AssetListItem {
 /** What the server read out of the query besides the words to search for. */
 export interface ParsedChip {
   /** The `skip` value that turns it off. */
-  kind: "date" | "place" | "people" | "pets";
+  kind: "date" | "place" | "people" | "pets" | "pet";
   label: string;
   /** The words of the query it replaced ("in June 2023"). */
   matched: string;
@@ -652,6 +654,8 @@ export interface ParsedChip {
   people?: { id: string; name: string }[];
   /** For `pets`: which animals the words meant. */
   pets?: PetKind;
+  /** For `pet`: which named pets were read out of the query, in the order written. */
+  pet?: { id: string; name: string }[];
 }
 
 /** GET /assets/search */
@@ -774,7 +778,9 @@ export type SmartRule =
   /** All of these people are in the photo (People only). */
   | { field: "people"; ids: string[] }
   /** A dog, a cat or either was found in the photo (Pets only). */
-  | { field: "pets"; kind: PetKind };
+  | { field: "pets"; kind: PetKind }
+  /** All of these named pets are in the photo (Pets only). */
+  | { field: "pet"; ids: string[] };
 
 /** The saved definition of a smart album: its rules, how they are joined, and whether archived photos are in. */
 export interface SmartRules {
@@ -863,6 +869,71 @@ export interface PetsSummary {
   /** How far the scan has got, of the photos that can be scanned (a preview and a search embedding). */
   scanned: number;
   total: number;
+}
+
+/** The animal a named pet is shown by: the box is in the picture `preview_url` serves, like a person's face. */
+export interface NamedPetCover {
+  detection_id: string;
+  asset_id: string;
+  box: FaceBox;
+  preview_url: string;
+}
+
+/** A pet the owner named (docs/pets.md, "Named pets"). Counts are of the photos this session may see. */
+export interface NamedPet {
+  id: string;
+  name: string;
+  kind: "dog" | "cat";
+  hidden: boolean;
+  photos: number;
+  detections: number;
+  /** "Is this X?" proposals waiting for an answer (0 for a hidden pet). */
+  pending: number;
+  cover: NamedPetCover | null;
+}
+
+/** One photo with several animals of the kind: which one is the pet? */
+export interface AmbiguousPhoto {
+  asset_id: string;
+  preview_url: string;
+  candidates: { detection_id: string; box: FaceBox }[];
+}
+
+export type SkipReason = "no_animal" | "not_scanned" | "already" | "in_other_pet";
+
+/** What making a pet, or adding photos to one, did (`assigned` counts the photos that joined). */
+export interface PetAdded {
+  pet: NamedPet | null;
+  assigned: number;
+  ambiguous: AmbiguousPhoto[];
+  skipped: { asset_id: string; reason: SkipReason }[];
+}
+
+/** An animal nobody has claimed that looks like the pet ("Is this X?"). */
+export interface PetSuggestion {
+  detection_id: string;
+  asset_id: string;
+  box: FaceBox;
+  preview_url: string;
+  similarity: number;
+  tier: "likely" | "maybe";
+}
+
+/** An animal a pet's cover can be chosen from (GET /assets/pets/named/{id}/detections). */
+export interface PetDetection {
+  detection_id: string;
+  asset_id: string;
+  box: FaceBox;
+  preview_url: string;
+}
+
+/** An animal found in one photo (GET /assets/{id}/pets); `pet` is the named pet it was put in, if any. */
+export interface PhotoPet {
+  id: string;
+  kind: "dog" | "cat";
+  box: FaceBox;
+  score: number;
+  pet: { id: string; name: string } | null;
 }
 
 /** A face a person's cover can be chosen from (GET /assets/people/{id}/faces). */
@@ -1252,6 +1323,8 @@ export type Scope =
   | { person: string }
   /** The photos of the Pets view for a kind (Pets only). */
   | { pets: PetKind }
+  /** One of the owner's named pets (Pets only): the photos its page lists. */
+  | { pet: string }
   | { trash_batch: string }
   | { archive_batch: string }
   /** Every photo a filter-only search lists (no text query: a ranked search selects what it loaded). */
@@ -1295,8 +1368,8 @@ export function searchQuery(
   // (`similar` is part of the path of "More like this", and that endpoint takes neither `q` nor `skip`.)
   const keys = (
     params.similar
-      ? ["from", "to", "favorite", "tags", "tag_mode", "rating", "include_archived", "camera", "lens", "place", "people", "pets", "type", "album", "has_location", "has_text"]
-      : ["q", "from", "to", "favorite", "tags", "tag_mode", "rating", "include_archived", "camera", "lens", "place", "people", "pets", "type", "album", "has_location", "has_text", "skip"]
+      ? ["from", "to", "favorite", "tags", "tag_mode", "rating", "include_archived", "camera", "lens", "place", "people", "pets", "pet", "type", "album", "has_location", "has_text"]
+      : ["q", "from", "to", "favorite", "tags", "tag_mode", "rating", "include_archived", "camera", "lens", "place", "people", "pets", "pet", "type", "album", "has_location", "has_text", "skip"]
   ) as readonly (keyof SearchParams)[];
   for (const k of keys) {
     const v = params[k];
@@ -1322,12 +1395,14 @@ export interface LibraryView {
   person?: string;
   /** The Pets view: the photos with a dog, a cat or either (Pets only); like `person`, nothing else of the view applies. */
   pets?: PetKind;
+  /** One named pet's photos (Pets): the list and the day counts of `/assets/pets/named/{id}`, nothing else of the view applies. */
+  pet?: string;
   /** Stacks in the timeline: one tile each (`collapsed`) or every photo. Absent: the user's setting. */
   stacks?: "collapsed" | "expanded";
 }
 
 function viewQuery(v: LibraryView, q: URLSearchParams) {
-  if (v.stacks && !v.favorite && !v.archived && !v.hidden && !v.person && !v.pets) q.set("stacks", v.stacks);
+  if (v.stacks && !v.favorite && !v.archived && !v.hidden && !v.person && !v.pets && !v.pet) q.set("stacks", v.stacks);
   if (v.favorite) q.set("favorite", "true");
   if (v.archived) q.set("archived", "true");
   if (v.hidden) q.set("hidden", "true");
@@ -1613,7 +1688,13 @@ export const api = {
     if (opts.cursor) q.set("cursor", opts.cursor);
     else if (opts.before) q.set("before", opts.before);
     const qs = q.toString();
-    const base = opts.person ? `/assets/people/${encodeURIComponent(opts.person)}/photos` : opts.pets ? "/assets/pets/photos" : "/assets";
+    const base = opts.person
+      ? `/assets/people/${encodeURIComponent(opts.person)}/photos`
+      : opts.pet
+        ? `/assets/pets/named/${encodeURIComponent(opts.pet)}/photos`
+        : opts.pets
+          ? "/assets/pets/photos"
+          : "/assets";
     return request<AssetList>(`${base}${qs ? `?${qs}` : ""}`);
   },
   /** Photos per day, newest first (the library's layout; `favorite` limits it to favorites). */
@@ -1622,7 +1703,13 @@ export const api = {
     viewQuery(opts, q);
     if (opts.pets) q.set("kind", opts.pets);
     const qs = q.toString();
-    const base = opts.person ? `/assets/people/${encodeURIComponent(opts.person)}/timeline` : opts.pets ? "/assets/pets/timeline" : "/assets/timeline";
+    const base = opts.person
+      ? `/assets/people/${encodeURIComponent(opts.person)}/timeline`
+      : opts.pet
+        ? `/assets/pets/named/${encodeURIComponent(opts.pet)}/timeline`
+        : opts.pets
+          ? "/assets/pets/timeline"
+          : "/assets/timeline";
     return request<Timeline>(`${base}${qs ? `?${qs}` : ""}`);
   },
   /** The geotagged photos in `bbox` (`west,south,east,north`) as markers for a map at `zoom`. */
@@ -1636,6 +1723,54 @@ export const api = {
   petsStatus: () => request<{ enabled: boolean }>("/assets/pets/status"),
   /** The Pets view's header: how many photos have a pet, per kind, with a cover each, and how far the scan has got. */
   pets: () => request<PetsSummary>("/assets/pets"),
+  /** The owner's named pets, most photos first. */
+  namedPets: () => request<{ items: NamedPet[] }>("/assets/pets/named"),
+  namedPet: (id: string) => request<NamedPet>(`/assets/pets/named/${encodeURIComponent(id)}`),
+  /** Make a pet from photos (`asset_ids`) or animals (`detection_ids`). */
+  createPet: (what: { name: string; kind: "dog" | "cat"; asset_ids?: readonly string[]; detection_ids?: readonly string[] }) =>
+    request<PetAdded>("/assets/pets/named", json(what)),
+  /** Rename, hide or show, choose the cover animal. */
+  updatePet: (id: string, patch: { name?: string; hidden?: boolean; cover_detection_id?: string }) =>
+    request<NamedPet>(`/assets/pets/named/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  /** The animals go free (they stay, with their fingerprints) and the photos are untouched. */
+  deletePet: (id: string) => request<void>(`/assets/pets/named/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  /** Give every animal of the pet to `into` (the same kind), then delete the pet. */
+  mergePet: (id: string, into: string) => request<unknown>(`/assets/pets/named/${encodeURIComponent(id)}/merge`, json({ into })),
+  /** The animals a pet's cover can be chosen from, clearest first, a page at a time. */
+  petDetections: (id: string, opts: { cursor?: string | null; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts.cursor) q.set("cursor", opts.cursor);
+    const qs = q.toString();
+    return request<{ items: PetDetection[]; next_cursor: string | null }>(`/assets/pets/named/${encodeURIComponent(id)}/detections${qs ? `?${qs}` : ""}`);
+  },
+  /** Add photos or animals to a pet (the same answer as making one). */
+  addToPet: (id: string, what: { asset_ids?: readonly string[]; detection_ids?: readonly string[] }) =>
+    request<PetAdded>(`/assets/pets/named/${encodeURIComponent(id)}/photos`, json(what)),
+  /** "Not this pet": the pet's animals in these photos (or these animals) are freed and never proposed for it again. */
+  removeFromPet: (id: string, what: { asset_ids?: readonly string[]; detection_ids?: readonly string[] }) =>
+    request<{ removed: number }>(`/assets/pets/named/${encodeURIComponent(id)}/photos/remove`, json(what)),
+  /** "Is this X?": the best proposals (all tiers, or one), with how many of each there are. */
+  petSuggestions: (id: string, opts: { tier?: "likely" | "maybe"; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    if (opts.tier) q.set("tier", opts.tier);
+    const qs = q.toString();
+    return request<{ items: PetSuggestion[]; counts: { likely: number; maybe: number } }>(
+      `/assets/pets/named/${encodeURIComponent(id)}/suggestions${qs ? `?${qs}` : ""}`,
+    );
+  },
+  /** Answer many proposals at once: `confirm` puts the animals in the pet, `reject` refuses them for it. */
+  answerPetSuggestions: (id: string, what: { confirm?: readonly string[]; reject?: readonly string[] }) =>
+    request<{ confirmed: number; rejected: number; skipped: number }>(`/assets/pets/named/${encodeURIComponent(id)}/suggestions/answer`, json(what)),
+  /** This animal is that pet (another pet's animal moves). */
+  assignPetDetection: (detection: string, petId: string) =>
+    request<{ pet: NamedPet | null }>(`/assets/pets/detections/${encodeURIComponent(detection)}/assign`, json({ pet_id: petId })),
+  /** "No, not that pet": the animal is not proposed for it again. */
+  rejectPetDetection: (detection: string, petId: string) =>
+    request<void>(`/assets/pets/detections/${encodeURIComponent(detection)}/reject`, json({ pet_id: petId })),
+  /** The animals found in one photo, with the named pet each is in. */
+  assetPets: (asset: string) => request<{ items: PhotoPet[]; scanned: boolean }>(`/assets/${encodeURIComponent(asset)}/pets`),
   /** Is People switched on (`FACES_ENABLED`)? The only People route that answers while it is off. */
   peopleStatus: () => request<{ enabled: boolean }>("/assets/people/status"),
   listPeople: () => request<{ items: Person[] }>("/assets/people"),

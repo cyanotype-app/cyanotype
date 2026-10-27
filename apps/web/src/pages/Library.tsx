@@ -14,6 +14,7 @@ import {
   Layers,
   Loader2,
   Pencil,
+  PawPrint,
   Play,
   Share2,
   SlidersHorizontal,
@@ -43,6 +44,8 @@ import { useZip } from "../components/ZipButton";
 import { TagDialog } from "../components/TagDialog";
 import { EditDialog, type EditKind } from "../components/EditDialog";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
+import { NamePetSheet, petNamedToast } from "../components/NamePetSheet";
+import { usePetsEnabled } from "../usePets";
 import { MAX_BULK_IDS } from "../api";
 import { useHeaderHeight } from "../components/headerHeight";
 import { TimelineGrid } from "../components/TimelineGrid";
@@ -153,6 +156,8 @@ function LibraryView({
   const [addIds, setAddIds] = useState<{ target: Target; count: number } | null>(null);
   // What the share dialog is creating a link for (explicit ids, or the whole view in "select all" mode).
   const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
+  const [namingPet, setNamingPet] = useState<string[] | null>(null);
+  const petsOn = usePetsEnabled() === true;
   const [albumsVersion, setAlbumsVersion] = useState(0);
   const { toast, show } = useToast();
   // "Edit" of the selection: choose what, then the editor (a date shift, one location, one caption for all).
@@ -638,7 +643,7 @@ function LibraryView({
 
   // Keyboard: Escape clears the selection (then leaves selection mode); Delete asks, then trashes the selection.
   useEffect(() => {
-    if (open !== null || confirmTrash || addIds !== null || shareTarget !== null || rateOpen || tagOpen || editMenu || editKind !== null) return; // the lightbox and the dialogs own the keyboard
+    if (open !== null || confirmTrash || addIds !== null || shareTarget !== null || namingPet !== null || rateOpen || tagOpen || editMenu || editKind !== null) return; // the lightbox and the dialogs own the keyboard
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t?.closest("input, textarea, select, [contenteditable]")) return;
@@ -653,7 +658,7 @@ function LibraryView({
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, confirmTrash, addIds, shareTarget, rateOpen, tagOpen, editMenu, editKind, sel]);
+  }, [open, confirmTrash, addIds, shareTarget, namingPet, rateOpen, tagOpen, editMenu, editKind, sel]);
 
   // Stacking by hand: the selected tiles (a stack's tile brings its photos along) become one stack with the first as its cover.
   const stackSelected = useCallback(async () => {
@@ -832,6 +837,19 @@ function LibraryView({
     { id: "tag", label: "Tag", icon: <Tag />, onSelect: () => setTagOpen(true), disabled: none },
     { id: "rate", label: "Rate", icon: <Star />, onSelect: () => setRateOpen(true), disabled: none },
   ];
+  if (petsOn) {
+    actions.push({
+      id: "pet",
+      label: "Name pet…",
+      icon: <PawPrint />,
+      title: sel.all ? "Choose the photos one by one to name a pet" : undefined,
+      onSelect: () => {
+        const t = bulkTarget();
+        if (!isScope(t)) setNamingPet([...t]);
+      },
+      disabled: none || sel.all,
+    });
+  }
   if (kind === "library") {
     actions.push({
       id: "stack",
@@ -1094,6 +1112,17 @@ function LibraryView({
         />
       )}
       {shareTarget !== null && <ShareDialog target={shareTarget} onClose={() => setShareTarget(null)} />}
+      {namingPet !== null && (
+        <NamePetSheet
+          assetIds={namingPet}
+          onClose={() => setNamingPet(null)}
+          onDone={(r) => {
+            setNamingPet(null);
+            sel.setSelecting(false);
+            show(petNamedToast(r, (id) => navigate(`/pets/${encodeURIComponent(id)}`)));
+          }}
+        />
+      )}
       {overlays}
     </div>
   );

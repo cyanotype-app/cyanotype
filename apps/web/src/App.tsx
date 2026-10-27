@@ -24,6 +24,7 @@ import { Login } from "./pages/Login";
 import { MapPage } from "./pages/MapPage";
 import { NotFound } from "./pages/NotFound";
 import { PeoplePage } from "./pages/People";
+import { PetPage } from "./pages/PetPage";
 import { PetsPage } from "./pages/PetsPage";
 import { PersonPage } from "./pages/PersonPage";
 import { Register } from "./pages/Register";
@@ -83,6 +84,7 @@ export function App() {
         <Route path="/people" element={<PeoplePage />} />
         <Route path="/people/:id" element={<PersonPage />} />
         <Route path="/pets" element={<PetsPage />} />
+        <Route path="/pets/:id" element={<PetPage />} />
         <Route path="/albums" element={<Albums />} />
         <Route path="/albums/:id" element={<AlbumPage />} />
         <Route path="/shared" element={<SharedLinks />} />
