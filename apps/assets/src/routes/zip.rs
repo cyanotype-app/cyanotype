@@ -193,7 +193,7 @@ pub(super) async fn plan_selection(
     body: Bytes,
 ) -> ApiResult<axum::Json<serde_json::Value>> {
     let (sel, name) = parse(&headers, &body)?;
-    let pick = sel.validated(unlock, s.faces_enabled)?;
+    let pick = sel.validated(unlock, s.features())?;
     let a = plan(&s, user.id, unlock.0, pick, name).await?;
     Ok(axum::Json(serde_json::json!({
         "files": a.files.len(),
@@ -211,7 +211,7 @@ pub(super) async fn selection(
     body: Bytes,
 ) -> ApiResult<Response> {
     let (sel, name) = parse(&headers, &body)?;
-    let pick = sel.validated(unlock, s.faces_enabled)?;
+    let pick = sel.validated(unlock, s.features())?;
     let source = if pick.is_scope() { "scope" } else { "ids" };
     let a = plan(&s, user.id, unlock.0, pick, name).await?;
     stream_owner(&s, user.id, a, source)
@@ -224,7 +224,7 @@ pub(super) async fn album(
     unlock: Unlock,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
-    let pick = Pick::Scope(Scope::Album(id), Vec::new(), unlock.0, s.faces_enabled);
+    let pick = Pick::Scope(Scope::Album(id), Vec::new(), unlock.0, s.features());
     let a = plan(&s, user.id, unlock.0, pick, None).await?;
     stream_owner(&s, user.id, a, "album")
 }

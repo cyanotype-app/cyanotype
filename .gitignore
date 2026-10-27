@@ -16,6 +16,9 @@ apps/web/playwright-report/
 /models/ocr/
 /models/faces/
 /models/face-eval/
+/models/pets/
+/models/pets-eval/
+/models/pets-bakeoff/
 /cli-dist-out/
 # Reports written by scripts/restore-drill.sh (the real-data mode's report describes a real library: never commit it)
 /.restore-drill/

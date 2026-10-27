@@ -278,7 +278,7 @@ impl ShareRow {
             ("album", Some(_)) if self.album_rules.is_some() => {
                 let rules = super::smart::Rules::from_json(self.album_rules.as_ref().expect("checked"))?;
                 let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT a.id FROM assets a WHERE");
-                rules.filters(s.faces_enabled).push_where(&mut qb, self.owner_id);
+                rules.filters(s.features()).push_where(&mut qb, self.owner_id);
                 qb.push(" ORDER BY coalesce(a.taken_at, a.file_modified_at, a.created_at) DESC, a.id DESC LIMIT ")
                     .push_bind(SMART_SHARE_MAX);
                 let ids = qb

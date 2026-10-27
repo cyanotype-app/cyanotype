@@ -19,7 +19,7 @@
 //!   channel order or a wrong mean drops the cosine below 0.8).
 use std::{path::PathBuf, sync::Arc};
 
-use cyanotype_clip::{ImageEncoder, Model, TextEncoder, cosine, preprocess_rgb8};
+use cyanotype_clip::{ImageEncoder, Model, TextEncoder, cosine, preprocess_rgb8, zeroshot};
 use serde_json::Value;
 
 fn fixtures() -> PathBuf {
@@ -464,4 +464,56 @@ fn siglip_finds_photos_for_queries_in_other_languages() {
     assert!(misses.len() <= 1, "{misses:?}");
     let got = top3("perro en la playa");
     assert!(got.contains(&"dog") || got.contains(&"beach"), "{got:?}");
+}
+
+// ---- the pet check -----------------------------------------------------------------------------------------------------
+
+#[test]
+fn the_pet_prompt_file_matches_the_text_tower() {
+    let model = Model::Siglip2B16;
+    let Some(dir) = model_dir(model) else { return };
+    let text = TextEncoder::load(model, &dir, 1).unwrap();
+    let check = zeroshot::PetCheck::for_model(model).unwrap();
+    for (prompt, stored) in zeroshot::all_prompts().zip(check.prompt_vectors()) {
+        let now = text.embed(prompt).unwrap();
+        // The same graph on the same text: identical up to the kernel the CPU picks for the 8-bit text tower (see above).
+        assert!(
+            cosine(&now, stored) > 0.999,
+            "{prompt:?}: the committed vector is not the text tower's (cosine {}): run the pet_prompts example",
+            cosine(&now, stored)
+        );
+    }
+}
+
+/// The photos in `tests/fixtures/images`: a dog, a cat and everything else (a horse and a bird among them).
+#[test]
+fn the_pet_check_finds_the_dog_and_the_cat_and_nothing_in_the_other_fixtures() {
+    let model = Model::Siglip2B16;
+    let Some(dir) = model_dir(model) else { return };
+    let enc = ImageEncoder::load(model, &dir, 1).unwrap();
+    let check = zeroshot::PetCheck::for_model(model).unwrap();
+    let mut names: Vec<String> = std::fs::read_dir(fixtures().join("images"))
+        .unwrap()
+        .filter_map(|e| e.unwrap().path().file_stem().map(|s| s.to_string_lossy().to_string()))
+        .filter(|n| fixtures().join(format!("images/{n}.jpg")).exists())
+        .collect();
+    names.sort();
+    assert!(names.len() >= 20, "{names:?}");
+    for name in names {
+        let shares = check.shares(&embed_fixture(&enc, &name)).unwrap();
+        let want = (name == "dog", name == "cat");
+        assert_eq!(
+            shares.confirmed(),
+            want,
+            "{name}: dog share {:.3}, cat share {:.3} (confirmed at {})",
+            shares.dog,
+            shares.cat,
+            zeroshot::MIN_SHARE
+        );
+        if want != (false, false) {
+            // Well clear of the threshold, not just over it: the 8-bit kernels differ a little from CPU to CPU.
+            let own = if want.0 { shares.dog } else { shares.cat };
+            assert!(own > 0.6, "{name}: {own}");
+        }
+    }
 }

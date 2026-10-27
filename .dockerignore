@@ -17,6 +17,9 @@ scripts/
 models/clip/
 models/siglip2/
 models/eval/
+models/pets/
+models/pets-eval/
+models/pets-bakeoff/
 *.md
 docker-compose*.yml
 docker-bake.hcl

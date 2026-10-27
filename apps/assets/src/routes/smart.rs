@@ -10,6 +10,7 @@
 //!            {"field": "rating", "min": 4},
 //!            {"field": "tags", "names": ["beach", "sunset"], "mode": "all" | "any"},
 //!            {"field": "people", "ids": ["<person id>"]},
+//!            {"field": "pets", "kind": "any" | "dog" | "cat"},
 //!            {"field": "has_location" | "has_text", "value": true | false},
 //!            {"field": "caption", "text": "birthday"}]}
 //! ```
@@ -23,12 +24,17 @@
 //! id that is not the owner's is a `404`). It needs People (`FACES_ENABLED`): saving one while it is off is a `404`, and a saved rule
 //! matches no photo while it is off. The album keeps only ids, never a name, so renaming a person changes nothing; a deleted person
 //! leaves the rule matching nothing, and a merged one is not followed (edit the rule).
+//!
+//! The **pets** rule is "a dog, a cat or either was found in the photo" (`kind`: `any`, `dog` or `cat`). It needs Pets (`PETS_ENABLED`):
+//! saving one while it is off is a `404`, and a saved rule matches no photo while it is off. The album keeps the kind, nothing else.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::Date;
 use uuid::Uuid;
 
 use super::search::{FileType, Filters, MAX_PEOPLE_FILTERS};
+use crate::Features;
+use cyanotype_core::pets::Which;
 use cyanotype_service::{ApiError, ApiResult};
 
 /// Most rules in one album.
@@ -105,6 +111,10 @@ pub(super) enum Rule {
     /// Every one of these people is in the photo.
     People {
         ids: Vec<Uuid>,
+    },
+    /// A dog, a cat or either was found in the photo: `any`, `dog` or `cat`.
+    Pets {
+        kind: String,
     },
 }
 
@@ -250,6 +260,11 @@ impl Rules {
                     }
                     *ids = out;
                 }
+                Rule::Pets { kind } => {
+                    let which =
+                        Which::parse(kind).ok_or_else(|| bad("the pets rule must be any, dog or cat".into()))?;
+                    *kind = which.name().to_string();
+                }
             }
         }
         Ok(self)
@@ -267,9 +282,14 @@ impl Rules {
             .collect()
     }
 
+    /// Does a rule ask for pets (to check that Pets is on)?
+    pub(super) fn has_pets(&self) -> bool {
+        self.rules.iter().any(|r| matches!(r, Rule::Pets { .. }))
+    }
+
     /// The filters of the album: one `Filters` per rule, joined as `match` says, with the archived switch. While People is off
-    /// (`faces`) a people rule matches nothing.
-    pub(super) fn filters(&self, faces: bool) -> Filters {
+    /// a people rule matches nothing, and likewise a pets rule while Pets is off.
+    pub(super) fn filters(&self, features: Features) -> Filters {
         let members = self
             .rules
             .iter()
@@ -301,8 +321,13 @@ impl Rules {
                     Rule::HasLocation { value } => f.with_has_location(*value),
                     Rule::HasText { value } => f.with_has_text(*value),
                     Rule::Caption { text } => f.with_caption(text.clone()),
-                    Rule::People { .. } if !faces => f.nothing(),
+                    Rule::People { .. } if !features.faces => f.nothing(),
                     Rule::People { ids } => f.with_people(ids.clone()),
+                    Rule::Pets { .. } if !features.pets => f.nothing(),
+                    Rule::Pets { kind } => match Which::parse(kind) {
+                        Some(w) => f.with_pets(w),
+                        None => f.nothing(),
+                    },
                 }
             })
             .collect();

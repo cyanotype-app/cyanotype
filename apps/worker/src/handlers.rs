@@ -658,6 +658,15 @@ async fn store_render(
         )
         .await
         .context("find the faces again")?;
+        // (And the dogs and cats, the same way.)
+        cyanotype_core::pets::forget_and_requeue(
+            &ctx.db,
+            job.asset_id,
+            cyanotype_core::pets::VERSION,
+            cyanotype_core::pets::enabled(),
+        )
+        .await
+        .context("find the pets again")?;
         jobs::requeue(&ctx.db, jobs::KIND_EMBED, job.asset_id, ctx.search_model.version()).await
     } else {
         jobs::enqueue(&ctx.db, jobs::KIND_EMBED, job.asset_id, ctx.search_model.version()).await

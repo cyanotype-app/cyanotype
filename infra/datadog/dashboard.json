@@ -1579,6 +1579,206 @@
     },
     {
       "definition": {
+        "type": "timeseries",
+        "title": "Pets backlog (queued and running; off with PETS_ENABLED=0)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "queued",
+                "query": "sum:cyanotype.queue.queued{$env,kind:pets}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "running",
+                "query": "sum:cyanotype.queue.running{$env,kind:pets}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "queued"
+              },
+              {
+                "formula": "running"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 60,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Photos looked at for pets per minute, by what the search-embedding check said",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "bars",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "pet",
+                "query": "sum:cyanotype.pets.checked{$env,verdict:pet}.as_count().rollup(sum, 60)"
+              },
+              {
+                "data_source": "metrics",
+                "name": "none",
+                "query": "sum:cyanotype.pets.checked{$env,verdict:none}.as_count().rollup(sum, 60)"
+              },
+              {
+                "data_source": "metrics",
+                "name": "skipped",
+                "query": "sum:cyanotype.jobs.completed{$env,kind:pets,outcome:skipped}.as_count().rollup(sum, 60)"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "pet"
+              },
+              {
+                "formula": "none"
+              },
+              {
+                "formula": "skipped"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 60,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Pets job time per photo p50 / p95, detector time p50 / p95 (ms)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "job p50",
+                "query": "avg:cyanotype.pets.duration.median{$env}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "job p95",
+                "query": "max:cyanotype.pets.duration.95percentile{$env}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "detector p50",
+                "query": "avg:cyanotype.pets.detector_ms.median{$env}"
+              },
+              {
+                "data_source": "metrics",
+                "name": "detector p95",
+                "query": "max:cyanotype.pets.detector_ms.95percentile{$env}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "job p50"
+              },
+              {
+                "formula": "job p95"
+              },
+              {
+                "formula": "detector p50"
+              },
+              {
+                "formula": "detector p95"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 63,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Animals found per minute by kind, photos with a pet the detector could not place, detector loaded (0 or 1)",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "line",
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "dog",
+                "query": "sum:cyanotype.pets.found{$env,kind:dog}.as_count().rollup(sum, 60)"
+              },
+              {
+                "data_source": "metrics",
+                "name": "cat",
+                "query": "sum:cyanotype.pets.found{$env,kind:cat}.as_count().rollup(sum, 60)"
+              },
+              {
+                "data_source": "metrics",
+                "name": "unlocated",
+                "query": "sum:cyanotype.pets.unlocated{$env}.as_count().rollup(sum, 60)"
+              },
+              {
+                "data_source": "metrics",
+                "name": "loaded",
+                "query": "max:cyanotype.pets.model_loaded{$env}"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "dog"
+              },
+              {
+                "formula": "cat"
+              },
+              {
+                "formula": "unlocated"
+              },
+              {
+                "formula": "loaded"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 63,
+        "width": 6,
+        "height": 3
+      }
+    },
+    {
+      "definition": {
         "type": "log_stream",
         "title": "Worker errors and warnings",
         "logset": "",
@@ -1598,7 +1798,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 60,
+        "y": 66,
         "width": 12,
         "height": 5
       }

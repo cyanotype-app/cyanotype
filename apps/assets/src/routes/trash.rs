@@ -145,7 +145,7 @@ pub(super) async fn trash(
     unlock: Unlock,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated(unlock, s.faces_enabled)?;
+    let pick = req.validated(unlock, s.features())?;
     let (applied, now) = apply_pick(&s.db, user.id, Op::Trash, &pick).await?;
     let batch = (pick.is_scope() && applied.photos > 0).then_some(now);
     Ok(Json(Count {
@@ -160,7 +160,7 @@ pub(super) async fn restore(
     unlock: Unlock,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated(unlock, s.faces_enabled)?;
+    let pick = req.validated(unlock, s.features())?;
     let (applied, _) = apply_pick(&s.db, user.id, Op::Restore, &pick).await?;
     // Files that were trashed while their counterpart was uploaded were not paired then; they can be now.
     // Pairing is per file, so only look at files that have a live, unpaired namesake to pair with (a restore of
@@ -190,7 +190,7 @@ pub(super) async fn purge(
     unlock: Unlock,
     Json(req): Json<Selector>,
 ) -> ApiResult<Json<Count>> {
-    let pick = req.validated(unlock, s.faces_enabled)?;
+    let pick = req.validated(unlock, s.features())?;
     let count = apply_pick(&s.db, user.id, Op::Purge, &pick).await?.0.photos;
     if count > 0 {
         s.purge_wake.notify_one();
@@ -568,6 +568,26 @@ mod tests {
             .await
             .unwrap();
         }
+        // ... and the dogs and cats found in it (docs/pets.md).
+        for id in [gone, kept] {
+            cyanotype_core::pets::store(
+                &t.pool,
+                id,
+                cyanotype_core::pets::MODEL,
+                cyanotype_core::pets::VERSION,
+                &cyanotype_core::pets::Scan {
+                    dog_share: 0.9,
+                    cat_share: 0.0,
+                    found: vec![cyanotype_core::pets::NewDetection {
+                        kind: "dog".into(),
+                        bbox: [0.1, 0.1, 0.5, 0.5],
+                        score: 0.8,
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        }
         // ... and so must the people and rejections: the unnamed person who only had that face goes, the one the owner named stays
         // (without the photo), and the "not this person" decisions about the purged photo's face go with it.
         let face_of = |a: Uuid| {
@@ -644,6 +664,8 @@ mod tests {
             "SELECT count(*) FROM asset_embeddings WHERE asset_id = $1",
             "SELECT count(*) FROM faces WHERE asset_id = $1",
             "SELECT count(*) FROM face_scans WHERE asset_id = $1",
+            "SELECT count(*) FROM pet_detections WHERE asset_id = $1",
+            "SELECT count(*) FROM pet_scans WHERE asset_id = $1",
         ] {
             assert_eq!(count(&t.pool, sql, gone).await, 1, "{sql}");
         }
@@ -658,6 +680,8 @@ mod tests {
             "SELECT count(*) FROM asset_embeddings WHERE asset_id = $1",
             "SELECT count(*) FROM faces WHERE asset_id = $1",
             "SELECT count(*) FROM face_scans WHERE asset_id = $1",
+            "SELECT count(*) FROM pet_detections WHERE asset_id = $1",
+            "SELECT count(*) FROM pet_scans WHERE asset_id = $1",
         ] {
             assert_eq!(count(&t.pool, sql, gone).await, 0, "{sql}");
         }
@@ -698,6 +722,11 @@ mod tests {
             count(&t.pool, "SELECT count(*) FROM faces WHERE asset_id = $1", kept).await,
             1,
             "the faces of a photo that is only in the trash stay"
+        );
+        assert_eq!(
+            count(&t.pool, "SELECT count(*) FROM pet_detections WHERE asset_id = $1", kept).await,
+            1,
+            "so do its dogs and cats"
         );
         t.teardown().await;
     }

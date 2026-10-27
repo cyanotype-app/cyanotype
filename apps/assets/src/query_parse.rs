@@ -31,8 +31,15 @@
 //! filler words) counts only after one of those introducing words: "with Sky" is a person, "sky garden" is a garden. A date or a
 //! place that was read first keeps its words.
 //!
+//! **Pets** (`PETS_ENABLED`; the caller says whether they are read): the words dog, dogs, puppy, puppies, cat, cats, kitten, kittens, pet
+//! and pets (and a few pet names for them: doggo, pup, kitty) become the `pets` filter, the photos a dog or a cat was found in: "dog on
+//! the beach" is the beach among the photos with a dog. A dog word and a cat word together are "any pet". A word that is part of something
+//! else is left alone ([`PET_NOT_AFTER`], [`PET_NOT_BEFORE`]: "hot dog", "dog food", "cat tree", "big cat", "cat walk"), a person's name read
+//! first keeps its words, and the words that introduce a pet ("with a dog", "my cats") go with it.
+//!
 //! If only filler words are left once the filters are taken out ("photos from 2023"), the search is a plain filter: the
 //! timeline of that year.
+use cyanotype_core::pets::Which;
 use time::{Date, Duration, Month, OffsetDateTime};
 use uuid::Uuid;
 
@@ -58,12 +65,13 @@ pub struct Named {
     pub name: String,
 }
 
-/// Which kinds of understanding are off for this query (`skip=date,place,people`).
+/// Which kinds of understanding are off for this query (`skip=date,place,people,pets`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Skip {
     pub date: bool,
     pub place: bool,
     pub people: bool,
+    pub pets: bool,
 }
 
 impl Skip {
@@ -74,6 +82,7 @@ impl Skip {
                 "date" => skip.date = true,
                 "place" => skip.place = true,
                 "people" => skip.people = true,
+                "pets" => skip.pets = true,
                 _ => {}
             }
         }
@@ -108,6 +117,14 @@ pub struct PersonFilter {
     pub matched: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PetsFilter {
+    /// Any pet, dogs or cats: the `pets` filter's value.
+    pub which: Which,
+    /// The words of the query it came from ("with a dog").
+    pub matched: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Parsed {
     /// What is left to search for (empty: a filter-only search).
@@ -116,6 +133,8 @@ pub struct Parsed {
     pub place: Option<PlaceFilter>,
     /// The named people in the query, in the order they were written: photos where they all are.
     pub people: Vec<PersonFilter>,
+    /// Dogs, cats or pets, when the query says so.
+    pub pets: Option<PetsFilter>,
 }
 
 /// Most people one search can name (the `people` filter's limit).
@@ -671,14 +690,142 @@ fn find_people(toks: &mut [Tok], people: &[Named]) -> Vec<PersonFilter> {
     out
 }
 
-/// Take the dates and the user's own places out of `query` (the tests of those; the server reads people too: [`parse_with`]).
+const DOG_WORDS: &[&str] = &[
+    "dog", "dogs", "puppy", "puppies", "doggo", "doggos", "doggie", "doggies", "doggy", "pup", "pups",
+];
+const CAT_WORDS: &[&str] = &["cat", "cats", "kitten", "kittens", "kitty", "kitties"];
+const PET_WORDS: &[&str] = &["pet", "pets"];
+/// A pet word right after one of these is part of something else: a hot dog, a big cat, a prairie dog.
+pub const PET_NOT_AFTER: &[&str] = &[
+    "hot", "corn", "chili", "prairie", "sea", "top", "under", "wild", "big", "fat", "copy", "cool", "scaredy", "mad",
+];
+/// ... and right before one of these: dog food, a cat tree, pet shop, dog years.
+pub const PET_NOT_BEFORE: &[&str] = &[
+    "food",
+    "foods",
+    "toy",
+    "toys",
+    "bowl",
+    "bowls",
+    "bed",
+    "beds",
+    "house",
+    "houses",
+    "collar",
+    "leash",
+    "treat",
+    "treats",
+    "statue",
+    "statues",
+    "sculpture",
+    "painting",
+    "paintings",
+    "drawing",
+    "drawings",
+    "cartoon",
+    "costume",
+    "tag",
+    "tags",
+    "years",
+    "days",
+    "eared",
+    "tired",
+    "eat",
+    "litter",
+    "tree",
+    "eye",
+    "eyes",
+    "flap",
+    "burglar",
+    "shop",
+    "store",
+    "rock",
+    "peeve",
+    "name",
+    "project",
+    "hair",
+    "breath",
+];
+/// Words in front of a pet that go with it: "with a dog", "my cats", "photos of the puppy".
+const PET_DETERMINERS: &[&str] = &["a", "an", "the", "my", "our", "some", "his", "her", "their", "your"];
+/// ... and the words that join pets ("a dog or a cat") or introduce them (the words that introduce a person, and "or").
+const PET_INTRO: &[&str] = &["with", "of", "and", "featuring", "plus", "including", "or"];
+
+/// Read dogs, cats and pets out of the unused words (`pets` filter). One dog word and one cat word are any pet; "pet" alone is any pet,
+/// and next to a dog or cat word only says what that already does.
+fn find_pets(toks: &mut [Tok]) -> Option<PetsFilter> {
+    let (mut dog, mut cat, mut pet) = (false, false, false);
+    // (first word, last word) of each place a pet was named, introducing words included.
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for i in 0..toks.len() {
+        if toks[i].used {
+            continue;
+        }
+        let w = toks[i].core.as_str();
+        let (is_dog, is_cat, is_pet) = (DOG_WORDS.contains(&w), CAT_WORDS.contains(&w), PET_WORDS.contains(&w));
+        if !(is_dog || is_cat || is_pet) {
+            continue;
+        }
+        let before = i
+            .checked_sub(1)
+            .filter(|j| !toks[*j].used)
+            .map(|j| toks[j].core.as_str());
+        let after = toks.get(i + 1).filter(|t| !t.used).map(|t| t.core.as_str());
+        if before.is_some_and(|b| PET_NOT_AFTER.contains(&b))
+            || after.is_some_and(|a| PET_NOT_BEFORE.contains(&a) || (is_cat && a == "walk"))
+        {
+            continue;
+        }
+        let mut from = i;
+        if from > 0 && !toks[from - 1].used && PET_DETERMINERS.contains(&toks[from - 1].core.as_str()) {
+            from -= 1;
+        }
+        if from > 0 && !toks[from - 1].used && PET_INTRO.contains(&toks[from - 1].core.as_str()) {
+            from -= 1;
+        }
+        dog |= is_dog;
+        cat |= is_cat;
+        pet |= is_pet;
+        spans.push((from, i));
+    }
+    if spans.is_empty() {
+        return None;
+    }
+    let which = match (dog, cat) {
+        (true, true) => Which::Any,
+        (true, false) => Which::Kind(cyanotype_core::pets::DOG),
+        (false, true) => Which::Kind(cyanotype_core::pets::CAT),
+        (false, false) => {
+            debug_assert!(pet);
+            Which::Any
+        }
+    };
+    let matched = spans
+        .iter()
+        .map(|(from, to)| matched_text(toks, *from, *to + 1))
+        .collect::<Vec<_>>()
+        .join(" ");
+    for (from, to) in spans {
+        toks[from..=to].iter_mut().for_each(|t| t.used = true);
+    }
+    Some(PetsFilter { which, matched })
+}
+
+/// Take the dates and the user's own places out of `query` (the tests of those; the server reads people and pets too: [`parse_full`]).
 #[cfg(test)]
 pub fn parse(query: &str, today: Date, places: &[Place], skip: Skip) -> Parsed {
     parse_with(query, today, places, &[], skip)
 }
 
 /// Take the dates, the user's own places and the people they have named out of `query` (a date, then a place, then the people).
+#[cfg(test)]
 pub fn parse_with(query: &str, today: Date, places: &[Place], people: &[Named], skip: Skip) -> Parsed {
+    parse_full(query, today, places, people, false, skip)
+}
+
+/// Take the dates, the user's own places, the people they have named and (with `pets`) the dogs and cats out of `query`, in that order:
+/// what an earlier kind read keeps its words.
+pub fn parse_full(query: &str, today: Date, places: &[Place], people: &[Named], pets: bool, skip: Skip) -> Parsed {
     let mut toks = tokenize(query);
     let date = if skip.date { None } else { find_date(&mut toks, today) };
     let place = if skip.place {
@@ -691,8 +838,9 @@ pub fn parse_with(query: &str, today: Date, places: &[Place], people: &[Named], 
     } else {
         find_people(&mut toks, people)
     };
+    let pets = if pets && !skip.pets { find_pets(&mut toks) } else { None };
     let rest: Vec<&Tok> = toks.iter().filter(|t| !t.used).collect();
-    let filtered = date.is_some() || place.is_some() || !people.is_empty();
+    let filtered = date.is_some() || place.is_some() || !people.is_empty() || pets.is_some();
     let only_filler = rest
         .iter()
         .all(|t| t.core.is_empty() || FILLER.contains(&t.core.as_str()));
@@ -706,6 +854,7 @@ pub fn parse_with(query: &str, today: Date, places: &[Place], people: &[Named], 
         date,
         place,
         people,
+        pets,
     }
 }
 
@@ -1068,7 +1217,8 @@ mod tests {
             Skip {
                 date: true,
                 place: true,
-                people: false
+                people: false,
+                pets: false
             }
         );
         assert!(Skip::parse(Some("people")).people);
@@ -1183,6 +1333,130 @@ mod tests {
         assert_eq!(off.text, q);
         // No people known (People is off, or nobody is named): nothing is read.
         assert!(parse_with(q, TODAY, &places(), &[], Skip::default()).people.is_empty());
+    }
+
+    fn pets(q: &str) -> Parsed {
+        parse_full(q, TODAY, &places(), &[], true, Skip::default())
+    }
+
+    fn which(p: &Parsed) -> Option<&'static str> {
+        p.pets.as_ref().map(|f| f.which.name())
+    }
+
+    #[test]
+    fn dog_and_cat_words_become_the_pets_filter_and_the_rest_is_still_searched() {
+        for (q, want, text) in [
+            ("dog", "dog", ""),
+            ("dogs", "dog", ""),
+            ("Puppy", "dog", ""),
+            ("puppies", "dog", ""),
+            ("cat", "cat", ""),
+            ("kittens", "cat", ""),
+            ("kitty", "cat", ""),
+            ("pet", "any", ""),
+            ("pets", "any", ""),
+            ("dog on the beach", "dog", "on the beach"),
+            ("beach dog", "dog", "beach"),
+            ("sleeping cat sofa", "cat", "sleeping sofa"),
+            ("dog and cat", "any", ""),
+            ("a dog or a cat", "any", ""),
+            ("photos with a dog or a cat", "any", ""),
+            ("cats and dogs on the sofa", "any", "on the sofa"),
+            ("my pets at christmas", "any", "at christmas"),
+            ("pet dog", "dog", ""),
+            ("pets cat", "cat", ""),
+        ] {
+            let p = pets(q);
+            assert_eq!((which(&p), p.text.as_str()), (Some(want), text), "{q:?}");
+        }
+        // The words that introduce a pet go with it; the rest of the query reads on.
+        let p = pets("photos with a dog");
+        assert_eq!((which(&p), p.text.as_str()), (Some("dog"), ""));
+        assert_eq!(p.pets.unwrap().matched, "with a dog");
+        let p = pets("beach with my cats at dusk");
+        assert_eq!((which(&p), p.text.as_str()), (Some("cat"), "beach at dusk"));
+        // With a date and a place: all three.
+        let p = pets("dog in Lisbon june 2023");
+        assert_eq!((which(&p), p.text.as_str()), (Some("dog"), ""));
+        assert_eq!(p.place.unwrap().value, "Lisbon");
+        assert!(p.date.is_some());
+    }
+
+    #[test]
+    fn a_pet_word_that_is_part_of_something_else_is_left_to_the_search() {
+        for q in [
+            "hot dog",
+            "corn dog stand",
+            "chili dog",
+            "prairie dog",
+            "big cat",
+            "wild cat",
+            "copy cat",
+            "dog food",
+            "dog toy",
+            "cat tree",
+            "cat litter",
+            "cat walk",
+            "dog statue",
+            "pet shop",
+            "pet store",
+            "dog years",
+            "cat eyes",
+        ] {
+            let p = pets(q);
+            assert!(p.pets.is_none(), "{q:?}");
+            assert_eq!(p.text, q);
+        }
+        // ... but a dog next to something unrelated is a dog, and a walk is not a cat walk.
+        assert_eq!(which(&pets("dog walking")), Some("dog"));
+        assert_eq!(which(&pets("dog walk")), Some("dog"));
+        assert_eq!(which(&pets("black cat")), Some("cat"));
+        assert_eq!(which(&pets("hot day dog")), Some("dog"));
+        // Other words that contain these are other words.
+        for q in [
+            "catalog",
+            "dogwood",
+            "category",
+            "petal",
+            "pet-friendly cafe",
+            "scatter",
+            "dog's bed",
+        ] {
+            assert!(pets(q).pets.is_none(), "{q:?}");
+        }
+    }
+
+    #[test]
+    fn pets_are_read_only_when_asked_and_not_when_skipped_and_a_name_comes_first() {
+        // The older entry points never read them (the app's other tests of the parser stay as they were).
+        assert!(run("dog June 2023").pets.is_none());
+        assert_eq!(run("dog June 2023").text, "dog");
+        assert!(
+            parse_full("dog", TODAY, &[], &[], false, Skip::default())
+                .pets
+                .is_none()
+        );
+        let off = parse_full(
+            "dog beach",
+            TODAY,
+            &[],
+            &[],
+            true,
+            Skip {
+                pets: true,
+                ..Skip::default()
+            },
+        );
+        assert!(off.pets.is_none());
+        assert_eq!(off.text, "dog beach");
+        // `skip=pets` parses.
+        assert!(Skip::parse(Some("date, pets")).pets && !Skip::parse(Some("date")).pets);
+        // A person called Cat: introduced, it is the person.
+        let p = parse_full("beach with Cat", TODAY, &[], &named(&["Cat"]), true, Skip::default());
+        assert_eq!((who(&p), p.pets.is_none()), (vec!["Cat"], true));
+        // Not introduced, the word is the animal.
+        let p = parse_full("cat beach", TODAY, &[], &named(&["Cat"]), true, Skip::default());
+        assert_eq!((who(&p), which(&p)), (Vec::<&str>::new(), Some("cat")));
     }
 
     #[test]

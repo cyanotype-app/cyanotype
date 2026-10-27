@@ -24,6 +24,7 @@ crates/cyanotype-core      config, db, storage, job queue, telemetry (logging)
 crates/cyanotype-service   shared HTTP plumbing: AuthUser extractor, ApiError, request id + request logging
 crates/cyanotype-clip      SigLIP 2 / CLIP image and text towers (ONNX Runtime + tokenizers) for semantic search
 crates/cyanotype-faces     YuNet face detection and SFace fingerprints (ONNX Runtime); the worker finds faces only with FACES_ENABLED=1 (off by default, docs/faces.md)
+crates/cyanotype-pets      D-FINE-N dog and cat detection (ONNX Runtime); the worker finds dogs and cats unless PETS_ENABLED=0 (docs/pets.md)
 infra/caddy    gateway: Caddyfile (local :3000), Caddyfile.prod (real hostname, automatic HTTPS), shared gateway.caddy
 infra/backup   nightly Postgres backup image (pg_dump + rclone -> bucket)
 ```

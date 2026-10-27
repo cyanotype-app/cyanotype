@@ -4,7 +4,7 @@
 //!    than the retention period). From here the row is hidden from the trash, cannot be restored, and uploads of the
 //!    same content are refused until it is gone.
 //! 2. *Sweep*: for each marked row, remove every version and delete marker of the original and of everything under
-//!    its `derived/` prefix, then delete the `jobs`, `asset_embeddings`, `face_rejections`, `faces`, `face_scans` and `assets` rows in one transaction, and the
+//!    its `derived/` prefix, then delete the `jobs`, `asset_embeddings`, `face_rejections`, `faces`, `face_scans`, `pet_detections`, `pet_scans` and `assets` rows in one transaction, and the
 //!    unnamed people left without a face. If
 //!    storage fails the row stays marked and the next sweep retries; deleting what is already gone is not an error.
 use std::future::Future;
@@ -171,6 +171,15 @@ async fn purge_one<O: Objects>(
     .execute(&mut *tx)
     .await?;
     sqlx::query("DELETE FROM face_scans WHERE asset_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    // ... and the dogs and cats found in it (docs/pets.md).
+    sqlx::query("DELETE FROM pet_detections WHERE asset_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM pet_scans WHERE asset_id = $1")
         .bind(id)
         .execute(&mut *tx)
         .await?;

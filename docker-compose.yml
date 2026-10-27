@@ -148,6 +148,8 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       # Finding faces in photos is off unless set to 1 (docs/faces.md); the worker's setting must match.
       FACES_ENABLED: ${FACES_ENABLED:-0}
+      # Finding dogs and cats in photos is on unless set to 0 (docs/pets.md); the worker's setting must match.
+      PETS_ENABLED: ${PETS_ENABLED:-1}
     labels:
       com.datadoghq.ad.logs: '[{"source":"rust","service":"cyanotype-assets"}]'
     depends_on:
@@ -161,6 +163,7 @@ services:
       <<: [*app-env, *s3-env, *metrics-env]
       DD_SERVICE: cyanotype-worker
       FACES_ENABLED: ${FACES_ENABLED:-0}
+      PETS_ENABLED: ${PETS_ENABLED:-1}
     labels:
       com.datadoghq.ad.logs: '[{"source":"rust","service":"cyanotype-worker"}]'
     depends_on:

@@ -20,6 +20,7 @@ pub mod ocr;
 pub mod pairing;
 pub mod people;
 pub mod people_math;
+pub mod pets;
 pub mod places;
 pub mod recipe;
 pub mod reindex;

@@ -18,6 +18,7 @@ mod media;
 mod memcal;
 mod ocr;
 mod people;
+mod pets;
 mod raw;
 #[cfg(test)]
 mod raw_samples;
@@ -67,7 +68,7 @@ fn handled_kinds() -> impl Iterator<Item = &'static str> {
 
 /// Every kind that has queue gauges.
 fn gauge_kinds() -> impl Iterator<Item = &'static str> {
-    handled_kinds().chain([jobs::KIND_EMBED, jobs::KIND_OCR, jobs::KIND_FACES])
+    handled_kinds().chain([jobs::KIND_EMBED, jobs::KIND_OCR, jobs::KIND_FACES, jobs::KIND_PETS])
 }
 
 fn env_parse<T: std::str::FromStr>(name: &str, default: T) -> T {
@@ -173,10 +174,45 @@ async fn main() -> Result<()> {
     // Grouping the faces into people (docs/faces.md, "People"): database only, per owner, after the owner's faces have stopped arriving.
     // It runs whenever the feature is on, also while the face models are missing: what was found before can still be grouped.
     let people_task = faces_on.then(|| tokio::spawn(people::run_loop(ctx.clone())));
+    // Pets (own loop, last of all; the same permit again). On unless PETS_ENABLED says otherwise (docs/pets.md): off, no job is queued, no
+    // model is read and nothing is held. On, its model (about 60 MB resident while loaded) is outside the decode budget like the others;
+    // each job holds `pets::TRANSIENT_BYTES` of it. Without the model file the `pets` jobs stay queued.
+    let pets_on = cyanotype_core::pets::enabled();
+    let pets_finder = pets_on
+        .then(|| {
+            pets::Finder::new(
+                env_parse("WORKER_PETS_THREADS", DEFAULT_EMBED_THREADS).max(1),
+                search_model,
+            )
+        })
+        .flatten();
+    let pets_task = if let Some(finder) = pets_finder.filter(|_| pets::model_installed()) {
+        let waker = jobs::JobWaker::spawn(&db_cfg.url);
+        Some(tokio::spawn(pets::run_loop(
+            ctx.clone(),
+            Arc::new(finder),
+            waker,
+            embed_busy.clone(),
+        )))
+    } else {
+        if pets_on && pets::Finder::new(1, search_model).is_none() {
+            tracing::warn!(
+                model = search_model.name(),
+                "dogs and cats in photos will not be found: the check reads SigLIP 2's embeddings, and this search model has no pet prompts (docs/pets.md)"
+            );
+        } else if pets_on {
+            tracing::warn!(
+                dir = %pets::model_dir().display(),
+                "pet model file not found: dogs and cats in photos will not be found (run scripts/fetch-models.sh, or set PETS_MODEL_DIR)"
+            );
+        }
+        None
+    };
     let embedding = embed_task.is_some();
     let reading_text = ocr_task.is_some();
     let finding_faces = faces_task.is_some();
-    let background: Vec<tokio::task::JoinHandle<()>> = [embed_task, ocr_task, faces_task, people_task]
+    let finding_pets = pets_task.is_some();
+    let background: Vec<tokio::task::JoinHandle<()>> = [embed_task, ocr_task, faces_task, people_task, pets_task]
         .into_iter()
         .flatten()
         .collect();
@@ -191,6 +227,7 @@ async fn main() -> Result<()> {
         embedding,
         reading_text,
         finding_faces,
+        finding_pets,
         "worker started"
     );
     // Instant pickup: a dedicated LISTEN connection (not from the pool) wakes the loop below.

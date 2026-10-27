@@ -56,7 +56,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
 COPY scripts/fetch-models.sh /usr/local/bin/fetch-models
-COPY models/clip.lock models/siglip2.lock models/ocr.lock models/faces.lock /etc/models/
+COPY models/clip.lock models/siglip2.lock models/ocr.lock models/faces.lock models/pets.lock /etc/models/
 
 # The SigLIP 2 text tower is 283 MB, 197 MB of it one embedding table of which a query reads a few rows. With the table
 # moved to a side file ONNX Runtime maps it instead of copying it onto the heap (524 MB resident against about 120 MB);
@@ -86,6 +86,12 @@ RUN LOCK=/etc/models/ocr.lock fetch-models /models det.onnx rec.onnx rec.yml
 # image whether or not FACES_ENABLED is on: the models are only read when it is (docs/faces.md).
 FROM model-fetch AS faces
 RUN LOCK=/etc/models/faces.lock fetch-models /models yunet.onnx sface.onnx LICENSE-yunet.txt LICENSE-sface.txt
+
+# Dogs and cats in photos (the D-FINE-N detector, 15 MB, and its licence text), for the worker only. Carried by the image whether or not
+# PETS_ENABLED is on: the model is only read when it is (docs/pets.md). The check that decides which photos need it reads SigLIP 2's
+# embeddings the search job already made.
+FROM model-fetch AS pets
+RUN LOCK=/etc/models/pets.lock fetch-models /models dfine-n.onnx LICENSE-dfine.txt
 
 # ---- runtime base: slim, non-root, CA certs for S3/TLS ---------------------------------
 FROM debian:trixie-slim AS runtime
@@ -121,6 +127,7 @@ RUN apt-get update \
 COPY --from=siglip2-vision /models /opt/cyanotype/models/siglip2
 COPY --from=ocr /models /opt/cyanotype/models/ocr
 COPY --from=faces /models /opt/cyanotype/models/faces
+COPY --from=pets /models /opt/cyanotype/models/pets
 COPY --from=builder /out/cyanotype-worker /usr/local/bin/app
 RUN if ldd /usr/local/bin/app | grep "not found"; then echo "worker has unresolved shared libraries (see above): add their packages to this stage" >&2; exit 1; fi
 USER cyanotype

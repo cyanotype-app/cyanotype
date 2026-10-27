@@ -10,6 +10,7 @@ cyanotype-core.workspace = true
 cyanotype-clip.workspace = true
 cyanotype-ocr.workspace = true
 cyanotype-faces.workspace = true
+cyanotype-pets.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true

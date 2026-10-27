@@ -27,6 +27,7 @@ fn app_with(pool: &PgPool, st: ShareState) -> Router {
         text: std::sync::Arc::new(crate::testutil::FakeText::default()),
         search: crate::testutil::default_search(),
         faces_enabled: false,
+        pets_enabled: false,
     })
 }
 

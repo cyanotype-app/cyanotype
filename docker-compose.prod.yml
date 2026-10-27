@@ -106,6 +106,8 @@ services:
       SEARCH_SWITCH_PERCENT: ${SEARCH_SWITCH_PERCENT:-95}
       # Only decides whether the processing report mentions faces; must be the same as the worker's (docs/faces.md).
       FACES_ENABLED: ${FACES_ENABLED:-0}
+      # Whether the Pets view, the pets filter and the pets rule exist; must be the same as the worker's (docs/pets.md).
+      PETS_ENABLED: ${PETS_ENABLED:-1}
       TRASH_RETENTION_DAYS: ${TRASH_RETENTION_DAYS:-30}
       COOKIE_SECURE: "true"
     depends_on: !override
@@ -140,6 +142,10 @@ services:
       # the same trade-off. Must be the same as the assets service's.
       FACES_ENABLED: ${FACES_ENABLED:-0}
       WORKER_FACES_THREADS: ${WORKER_FACES_THREADS:-1}
+      # Finding dogs and cats in photos (docs/pets.md): ON unless set to 0. Threads of its ONNX session (the same trade-off). Must be the
+      # same as the assets service's. Its detector only runs for the few photos the search embedding says hold a dog or a cat.
+      PETS_ENABLED: ${PETS_ENABLED:-1}
+      WORKER_PETS_THREADS: ${WORKER_PETS_THREADS:-1}
       # Must be the same as the assets service's.
       SEARCH_MODEL: ${SEARCH_MODEL:-siglip2-b16}
       # The nightly storage integrity check (docs/deploy.md): UTC hour, megabytes of originals re-read per run (0 = none),

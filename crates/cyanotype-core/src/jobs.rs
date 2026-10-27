@@ -34,6 +34,9 @@ pub const KIND_OCR: &str = "ocr";
 /// Find the faces in a photo's preview and fingerprint each (`faces`, `cyanotype_core::faces`). Only when `FACES_ENABLED` is on:
 /// queued by the worker after a photo's `embed` and by its sweep, at backfill priority; one row per model version.
 pub const KIND_FACES: &str = "faces";
+/// Find the dogs and cats in a photo's preview (`pets`, `cyanotype_core::pets`). On unless `PETS_ENABLED` turns it off: queued by the
+/// worker after a photo's `embed` and by its sweep, at backfill priority; one row per model version.
+pub const KIND_PETS: &str = "pets";
 
 /// Write the full-size JPEG of a photo's edited picture (`derived/{user}/{asset}/edited.jpg`, `cyanotype_core::recipe`).
 /// Queued when someone asks to download it or opens a share link that offers downloads of an edited photo, never for

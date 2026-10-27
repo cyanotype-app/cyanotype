@@ -1,0 +1,13 @@
+# The model the worker's `pets` job runs to put a box on each dog and cat (docs/pets.md): D-FINE-N, the smallest D-FINE (a real-time DETR
+# object detector, 4 M parameters, 42.8 AP on COCO; Apache 2.0, Yansong Peng et al., https://github.com/Peterande/D-FINE), trained on COCO
+# only, as the ONNX export that Hugging Face's transformers.js team published in
+# https://huggingface.co/onnx-community/dfine_n_coco-ONNX from https://huggingface.co/ustc-community/dfine_n_coco (the Hugging Face
+# port, whose model card states Apache 2.0), pinned to one commit of the ONNX repository (2025-04-30). The licence text is the repository's
+# LICENSE at one commit (956d170, 2026-08-19; it travels with the weights and is installed next to them: Apache 2.0 requires it). Neither Hugging Face
+# repository has a licence file of its own. Both are older than 14 days.
+# `cyanotype-pets` expects exactly these files (crates/cyanotype-pets/src/lib.rs). Changing a line here is a model change: bump `MODEL`
+# (or `VERSION`) in crates/cyanotype-core/src/pets.rs in the same commit, so photos are scanned again.
+#
+# sha256                                                            file               url
+0f684f409618ee8a822410e754a29caa817d1aa16283ce89cad936d0a48e2f35  dfine-n.onnx       https://huggingface.co/onnx-community/dfine_n_coco-ONNX/resolve/380d2839c327efaf65dd0fe0c2c10ab7fadd5473/onnx/model.onnx
+c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4  LICENSE-dfine.txt  https://raw.githubusercontent.com/Peterande/D-FINE/956d1709314c2c6a4df6f34de232054578a7449f/LICENSE

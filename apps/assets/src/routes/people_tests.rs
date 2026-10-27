@@ -1203,6 +1203,7 @@ async fn a_share_link_carries_nothing_of_the_people_in_the_photos_it_shows() {
                 text: std::sync::Arc::new(crate::testutil::FakeText::default()),
                 search: crate::testutil::default_search(),
                 faces_enabled: true,
+                pets_enabled: false,
             });
     let a = photo(&t.pool, uid, "a.jpg").await;
     let f = face(&t.pool, a, Some(identity(1)), [0.1, 0.1, 0.2, 0.2]).await;
@@ -1250,6 +1251,7 @@ fn full_app(pool: &PgPool, faces: bool) -> Router {
             text: std::sync::Arc::new(crate::testutil::FakeText::default()),
             search: crate::testutil::default_search(),
             faces_enabled: faces,
+            pets_enabled: false,
         })
 }
 
