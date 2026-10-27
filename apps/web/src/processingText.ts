@@ -4,6 +4,7 @@ const KIND_LABEL: Record<string, string> = {
   metadata: "Reading details",
   thumbnail: "Making thumbnail",
   pair: "Pairing RAW + JPEG",
+  pets: "Finding pets",
 };
 
 export const kindLabel = (kind: string) => KIND_LABEL[kind] ?? kind;

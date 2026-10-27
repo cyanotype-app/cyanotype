@@ -1,6 +1,7 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { api, type Album, type Facets, type Person, type SearchParams, type Tag } from "../api";
 import { MAX_FILTER_PEOPLE, NO_NAMED_PEOPLE, PEOPLE_FILTER_NOTE, peopleIdsOf } from "../peopleText";
+import { PET_KINDS, PET_LABEL, petKindOf } from "../petsText";
 import { ratingFilterLabel } from "../ratingText";
 import { tagListOf } from "../tagText";
 import { Button } from "../ui/Button";
@@ -30,6 +31,8 @@ interface Props {
   tagLoad?: (typed: string) => Promise<Tag[]>;
   /** The people the filter can choose (named, not hidden). Undefined while People is off: the filter is not offered then. */
   people?: readonly Person[];
+  /** Pets is on: offer the Pets filter (Any, Dogs or cats, Dogs, Cats). */
+  pets?: boolean;
 }
 
 const defaultLoad = async () => {
@@ -44,11 +47,11 @@ const yearOf = (f: Filters) => (f.from && f.to && f.from === yearRange(f.from.sl
 const fieldCls = "h-11 w-full min-w-0 rounded-xl bg-surface px-3 text-base text-fg outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
 /**
- * Filters for the search: date range (or a whole year), favorites, tags, people, rating, camera, place, file type,
+ * Filters for the search: date range (or a whole year), favorites, tags, people, pets, rating, camera, place, file type,
  * location, text and album. A bottom sheet on a phone, a dialog on a wide screen; edits apply together with "Show
  * photos", and the choices come from what the library has (`GET /assets/search/facets`) with counts.
  */
-export function FilterSheet({ open = true, value, onApply, onClose, load = defaultLoad, tagLoad = defaultTagLoad, people }: Props) {
+export function FilterSheet({ open = true, value, onApply, onClose, load = defaultLoad, tagLoad = defaultTagLoad, people, pets }: Props) {
   const [draft, setDraft] = useState<Filters>(value);
   const [options, setOptions] = useState<{ facets: Facets; albums: Album[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -202,6 +205,17 @@ export function FilterSheet({ open = true, value, onApply, onClose, load = defau
                 <p className="text-sm text-muted">{PEOPLE_FILTER_NOTE}</p>
               </div>
             ))}
+          {pets === true && (
+            <Choices label="Pets" name={`${id}-pets`} value={draft.pets ?? ""} onChange={(k) => set({ pets: petKindOf(k) })}>
+              {[
+                { value: "", label: "Any" },
+                ...PET_KINDS.map((k) => {
+                  const c = facets?.pets?.find((f) => f.value === k)?.count;
+                  return { value: k, label: `${k === "any" ? "Dogs or cats" : PET_LABEL[k]}${c !== undefined ? ` (${n(c)})` : ""}` };
+                }),
+              ]}
+            </Choices>
+          )}
           <Field label="Rating" htmlFor={`${id}-rating`}>
             <select
               id={`${id}-rating`}

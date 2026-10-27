@@ -1,13 +1,14 @@
 import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, localToday, type Trip } from "../api";
+import { api, localToday, type PetsSummary, type Trip } from "../api";
 import { AuthProvider } from "../auth";
 import { UploadPickerProvider } from "../shell/UploadPicker";
 import { shareApi, type ShareLink } from "../shareApi";
 import { album, item } from "../test/fixtures";
 import { UploadProvider } from "../upload/UploadProvider";
 import { PeopleProvider } from "../usePeople";
+import { PetsProvider } from "../usePets";
 import { Collections } from "./Collections";
 
 const trip = (n: number, over: Partial<Trip> = {}): Trip => ({
@@ -49,6 +50,8 @@ interface Library {
   albums?: ReturnType<typeof album>[];
   recent?: ReturnType<typeof item>[];
   people?: boolean;
+  /** Pets is on, with these counts; absent: Pets is off. */
+  pets?: PetsSummary;
   shares?: ShareLink[];
 }
 
@@ -70,6 +73,8 @@ function setup(lib: Library = {}) {
       },
     ],
   });
+  vi.spyOn(api, "petsStatus").mockResolvedValue({ enabled: lib.pets !== undefined });
+  const petsRead = vi.spyOn(api, "pets").mockResolvedValue(lib.pets ?? { any: 0, kinds: [], scanned: 0, total: 0 });
   vi.spyOn(shareApi, "list").mockResolvedValue({ items: lib.shares ?? [] });
   render(
     <MemoryRouter>
@@ -77,13 +82,16 @@ function setup(lib: Library = {}) {
         <UploadProvider>
           <UploadPickerProvider>
             <PeopleProvider>
-              <Collections />
+              <PetsProvider>
+                <Collections />
+              </PetsProvider>
             </PeopleProvider>
           </UploadPickerProvider>
         </UploadProvider>
       </AuthProvider>
     </MemoryRouter>,
   );
+  return { petsRead };
 }
 
 beforeEach(() => {
@@ -152,6 +160,33 @@ describe("Collections", () => {
     await heading("Recently added");
     expect(screen.queryByRole("region", { name: "People" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Shared links" })).toBeNull();
+  });
+
+  it("shows the kinds of pets with a cover each when Pets is on and some photos have one", async () => {
+    const cover = { asset_id: "id-1", box: [0.1, 0.1, 0.3, 0.3] as [number, number, number, number], preview_url: "https://s3.test/pet" };
+    setup({
+      recent: [item(1)],
+      pets: { any: 5, kinds: [{ kind: "dog", photos: 4, cover }, { kind: "cat", photos: 0, cover: null }], scanned: 9, total: 9 },
+    });
+    const pets = within(await screen.findByRole("region", { name: "Pets" }));
+    expect(pets.getByRole("link", { name: "Dogs, 4 photos" })).toHaveAttribute("href", "/pets?kind=dog");
+    expect(pets.getByRole("link", { name: "Dogs, 4 photos" }).querySelector("img")).toHaveAttribute("src", "https://s3.test/pet");
+    expect(pets.queryByRole("link", { name: /^Cats/ })).toBeNull();
+    expect(pets.getByRole("link", { name: "See all" })).toHaveAttribute("href", "/pets");
+  });
+
+  it("has no Pets section while nothing has been found", async () => {
+    const on = setup({ recent: [item(1)], pets: { any: 0, kinds: [], scanned: 3, total: 90 } });
+    await heading("Recently added");
+    expect(screen.queryByRole("region", { name: "Pets" })).toBeNull();
+    expect(on.petsRead).toHaveBeenCalled();
+  });
+
+  it("has no Pets section, and never asks, while Pets is off", async () => {
+    const off = setup({ recent: [item(1)] });
+    await heading("Recently added");
+    expect(screen.queryByRole("region", { name: "Pets" })).toBeNull();
+    expect(off.petsRead).not.toHaveBeenCalled();
   });
 
   it("lists the remaining ways in at the bottom", async () => {

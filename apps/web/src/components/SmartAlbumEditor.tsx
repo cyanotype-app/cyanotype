@@ -4,6 +4,8 @@ import { api, type Facets, type Person, type SmartPreview, type SmartRule, type 
 import { MAX_FILTER_PEOPLE, NO_NAMED_PEOPLE, filterablePeople } from "../peopleText";
 import { MAX_RULES, NO_TEXT_QUERY_NOTE, RULE_FIELDS, blankRule, cleanRules, ruleFieldsFor, rulesProblem, smartCount, type RuleField } from "../smartText";
 import { usePeopleEnabled } from "../usePeople";
+import { usePetsEnabled } from "../usePets";
+import { PET_KINDS, PET_LABEL, petKindOf } from "../petsText";
 import { Button } from "../ui/Button";
 import { Segmented } from "../ui/Controls";
 import { cn } from "../ui/cn";
@@ -54,6 +56,7 @@ export function SmartAlbumEditor({
   const [rules, setRules] = useState<SmartRules>(initialRules);
   const [facets, setFacets] = useState<Facets | null>(null);
   const peopleOn = usePeopleEnabled() === true;
+  const petsOn = usePetsEnabled() === true;
   const [people, setPeople] = useState<Person[] | null>(null);
   const [shown, setShown] = useState<SmartPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -168,7 +171,7 @@ export function SmartAlbumEditor({
           </label>
           <div className="min-w-0 flex-1">
             <SelectBox id={`${id}-add`} value={add} onChange={(e) => setAdd(e.target.value as RuleField)} disabled={busy}>
-              {ruleFieldsFor(peopleOn).map((f) => (
+              {ruleFieldsFor(peopleOn, petsOn).map((f) => (
                 <option key={f.field} value={f.field}>
                   {f.label}
                 </option>
@@ -345,6 +348,19 @@ function RuleRow({
         <Body>
           <Label htmlFor={`${id}-v`}>{label}</Label>
           <input id={`${id}-v`} className={cn(inputClass, field)} value={rule.text} maxLength={200} onChange={(e) => onChange({ ...rule, text: e.target.value })} disabled={disabled} />
+        </Body>
+      );
+    case "pets":
+      return (
+        <Body>
+          <Label htmlFor={`${id}-v`}>{label}</Label>
+          <SelectBox id={`${id}-v`} className={field} value={rule.kind} onChange={(e) => onChange({ ...rule, kind: petKindOf(e.target.value) ?? "any" })} disabled={disabled}>
+            {PET_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {k === "any" ? "Dogs or cats" : PET_LABEL[k]}
+              </option>
+            ))}
+          </SelectBox>
         </Body>
       );
     case "people":

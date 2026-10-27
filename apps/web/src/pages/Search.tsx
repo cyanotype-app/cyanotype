@@ -23,6 +23,7 @@ import { PageHeader } from "../shell/PageHeader";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { usePeopleEnabled } from "../usePeople";
+import { usePetsEnabled } from "../usePets";
 import {
   addSkip,
   chipsOf,
@@ -54,15 +55,17 @@ const EXAMPLES = ["dog on the beach", "birthday cake", "red car at night", "moun
 export function SearchPage() {
   const [sp] = useSearchParams();
   const enabled = usePeopleEnabled();
+  const petsEnabled = usePetsEnabled();
   const params = useMemo(() => {
     const p = paramsFromUrl(sp);
-    // With People off a `people` in the address is not a filter: nothing about people is shown or sent.
+    // With People off a `people` in the address is not a filter: nothing about people is shown or sent. The same for `pets`.
     if (enabled !== true) delete p.people;
+    if (petsEnabled !== true) delete p.pets;
     return p;
-  }, [sp, enabled]);
+  }, [sp, enabled, petsEnabled]);
   const key = urlFromParams(params);
-  // (A link with people waits for the answer, so the first search is the right one.)
-  if (enabled === null && sp.get("people")) {
+  // (A link with people or pets waits for the answer, so the first search is the right one.)
+  if ((enabled === null && sp.get("people")) || (petsEnabled === null && sp.get("pets"))) {
     return (
       <>
         <PageHeader title="Search" />
@@ -92,6 +95,7 @@ function withParsed(filters: Omit<SearchParams, "q" | "skip" | "similar">, chips
     }
     if (c.kind === "place" && c.value) out.place = c.value;
     if (c.kind === "people" && c.people?.length) out.people = c.people.map((p) => p.id).join(",");
+    if (c.kind === "pets" && c.pets) out.pets = c.pets;
   }
   return out;
 }
@@ -104,6 +108,7 @@ function SearchView({ params }: { params: SearchParams }) {
   const [albumTitle, setAlbumTitle] = useState<string | undefined>();
   // The owner's people, for the filter sheet, the names on the chips and the suggestions (asked only while People is on).
   const peopleOn = usePeopleEnabled() === true;
+  const petsOn = usePetsEnabled() === true;
   const [people, setPeople] = useState<Person[] | undefined>();
   const filters = withoutQuery(params);
   const empty = isEmptySearch(params);
@@ -204,6 +209,7 @@ function SearchView({ params }: { params: SearchParams }) {
         onApply={apply}
         onClose={closeFilters}
         people={peopleOn ? filterablePeople(people ?? []) : undefined}
+        pets={petsOn}
       />
     </>
   );
@@ -771,7 +777,7 @@ function Results({ params, onClearFilters }: { params: SearchParams; onClearFilt
             <li key={c.kind} className="max-w-full">
               <span
                 className={cn(chipCls, "gap-0.5 bg-surface pr-1 pl-3.5")}
-                title={`Read “${c.matched}” as ${c.kind === "people" ? "people" : `a ${c.kind}`}`}
+                title={`Read “${c.matched}” as ${c.kind === "people" || c.kind === "pets" ? c.kind : `a ${c.kind}`}`}
               >
                 <span className="truncate">{c.label}</span>
                 <button
@@ -847,8 +853,8 @@ function Results({ params, onClearFilters }: { params: SearchParams; onClearFilt
               Select
             </Button>
             <SlideshowButton source={() => searchSource(params, "Search results")} />
-            {/* The photos of the people filter (a filter-only search: the server can name them all) as an album of their own. */}
-            {!meta.ranked && (peopleIdsOf(params.people).length > 0 || chips.some((c) => c.kind === "people")) && (meta.total ?? 0) > 0 && (
+            {/* The photos of the people or pets filter (a filter-only search: the server can name them all) as an album of their own. */}
+            {!meta.ranked && (peopleIdsOf(params.people).length > 0 || params.pets !== undefined || chips.some((c) => c.kind === "people" || c.kind === "pets")) && (meta.total ?? 0) > 0 && (
               <Button variant="quiet" size="sm" disabled={busy} onClick={() => setAddIds({ target: { scope, except: [] }, count: meta.total ?? 0, save: true })}>
                 Save as album
               </Button>

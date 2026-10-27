@@ -703,7 +703,8 @@ search model").
   or a date without the right context ("in Nice", "May 2023"). The rules are below.
 - **Filters** (button under the header; a bottom sheet on a phone, a dialog on a wide screen): year or a date range,
   favorites, camera, place (city, region or country), file type (JPEG, HEIC, RAW, other), has a location, album, and with People on
-  (`docs/faces.md`) the people who must all be in the photo, and with Pets on (`docs/pets.md`, on by default) the photos with a dog, a cat or either. The
+  (`docs/faces.md`) the people who must all be in the photo, and with Pets on (`docs/pets.md`, on by default) the photos with a dog, a cat or either (Pets also has a page of its
+  own, **Pets** in the sidebar and on Collections). The
   choices come from what the library has, with counts. Each active filter is a chip with an x; filters work alone (then
   they list photos newest first, with no limit) or together with the text.
 - While the worker is still embedding the library for the first time search says **"Still indexing 12,345 photos: results may

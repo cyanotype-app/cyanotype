@@ -23,6 +23,15 @@ describe("smart album words", () => {
     expect(ruleFieldsFor(true).map((f) => f.field)).toContain("people");
     expect(ruleFieldsFor(false).map((f) => f.field)).not.toContain("people");
   });
+  it("offers the pets rule only while Pets is on, and words it", () => {
+    expect(ruleFieldsFor(false, true).map((f) => f.field)).toContain("pets");
+    expect(ruleFieldsFor(true).map((f) => f.field)).not.toContain("pets");
+    expect(ruleFieldsFor(true, false).map((f) => f.field)).not.toContain("pets");
+    expect(blankRule("pets")).toEqual({ field: "pets", kind: "any" });
+    expect(ruleLabel({ field: "pets", kind: "dog" })).toBe("Pets: dogs");
+    expect(rulesProblem(blankRules())).toBeNull();
+    expect(rulesProblem({ match: "all", archived: "include", rules: [{ field: "pets", kind: "cat" }] })).toBeNull();
+  });
   it("describes the whole album with its join and the archived switch", () => {
     const r = [{ field: "place" as const, value: "Lisbon" }, { field: "favorite" as const, value: true as const }];
     expect(describeRules(rules(r))).toBe("Place: Lisbon and Favorites");

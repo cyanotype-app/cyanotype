@@ -124,6 +124,38 @@ describe("FilterSheet", () => {
   });
 });
 
+describe("FilterSheet pets", () => {
+  const withPets = () => ({ ...facets, pets: [{ value: "any", count: 9 }, { value: "dog", count: 6 }, { value: "cat", count: 3 }] });
+
+  it("is not offered while Pets is off", async () => {
+    render(<FilterSheet value={{}} onApply={() => undefined} onClose={() => undefined} load={load} />);
+    await waitFor(() => expect(screen.getByRole("option", { name: "Canon EOS R5 (70)" })).toBeInTheDocument());
+    expect(screen.queryByRole("group", { name: "Pets" })).not.toBeInTheDocument();
+  });
+
+  it("chooses dogs, cats or either, with the library's counts, and applies it with the other filters", async () => {
+    const onApply = vi.fn();
+    render(<FilterSheet value={{ favorite: true }} onApply={onApply} onClose={() => undefined} load={async () => ({ facets: withPets(), albums: [] })} pets />);
+    const group = screen.getByRole("group", { name: "Pets" });
+    expect(await within(group).findByRole("radio", { name: "Dogs (6)" })).toBeInTheDocument();
+    expect(within(group).getByRole("radio", { name: "Dogs or cats (9)" })).toBeInTheDocument();
+    expect(within(group).getByRole("radio", { name: "Any" })).toBeChecked();
+    await userEvent.click(within(group).getByRole("radio", { name: "Cats (3)" }));
+    await userEvent.click(screen.getByRole("button", { name: "Show photos" }));
+    expect(onApply).toHaveBeenCalledWith({ favorite: true, pets: "cat" });
+  });
+
+  it("starts from the kind in force and clears it with Any", async () => {
+    const onApply = vi.fn();
+    render(<FilterSheet value={{ pets: "dog" }} onApply={onApply} onClose={() => undefined} load={load} pets />);
+    const group = screen.getByRole("group", { name: "Pets" });
+    expect(within(group).getByRole("radio", { name: "Dogs" })).toBeChecked();
+    await userEvent.click(within(group).getByRole("radio", { name: "Any" }));
+    await userEvent.click(screen.getByRole("button", { name: "Show photos" }));
+    expect(onApply).toHaveBeenCalledWith({});
+  });
+});
+
 describe("FilterSheet people", () => {
   const A = "6f1c2b0e-0000-4000-8000-000000000001";
   const B = "6f1c2b0e-0000-4000-8000-000000000002";

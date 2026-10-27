@@ -24,6 +24,7 @@ import { Login } from "./pages/Login";
 import { MapPage } from "./pages/MapPage";
 import { NotFound } from "./pages/NotFound";
 import { PeoplePage } from "./pages/People";
+import { PetsPage } from "./pages/PetsPage";
 import { PersonPage } from "./pages/PersonPage";
 import { Register } from "./pages/Register";
 import { ResetPassword } from "./pages/ResetPassword";
@@ -41,6 +42,7 @@ import { Storage } from "./pages/Storage";
 import { Trash } from "./pages/Trash";
 import { SlideshowProvider } from "./slideshow/SlideshowHost";
 import { PeopleProvider } from "./usePeople";
+import { PetsProvider } from "./usePets";
 import { UploadProvider } from "./upload/UploadProvider";
 import { UploadTray } from "./upload/UploadTray";
 import { AppShell } from "./shell/AppShell";
@@ -80,6 +82,7 @@ export function App() {
         <Route path="/tags/:id" element={<TagPage />} />
         <Route path="/people" element={<PeoplePage />} />
         <Route path="/people/:id" element={<PersonPage />} />
+        <Route path="/pets" element={<PetsPage />} />
         <Route path="/albums" element={<Albums />} />
         <Route path="/albums/:id" element={<AlbumPage />} />
         <Route path="/shared" element={<SharedLinks />} />
@@ -121,6 +124,7 @@ function RequireAuth() {
   return (
     <UploadProvider>
     <PeopleProvider>
+    <PetsProvider>
     <SlideshowProvider>
     <UploadPickerProvider>
       <AppShell>
@@ -132,6 +136,7 @@ function RequireAuth() {
       <UploadTray />
     </UploadPickerProvider>
     </SlideshowProvider>
+    </PetsProvider>
     </PeopleProvider>
     </UploadProvider>
   );

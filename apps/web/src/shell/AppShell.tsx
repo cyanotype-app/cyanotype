@@ -5,6 +5,7 @@ import { Link, NavLink, useLocation } from "react-router-dom";
 import { useAuth } from "../auth";
 import { Logo } from "../components/Logo";
 import { usePeopleEnabled } from "../usePeople";
+import { useHasPets } from "../usePets";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { Menu, MenuItem, MenuLabel, MenuSeparator } from "../ui/Menu";
@@ -27,7 +28,8 @@ export function AppShell({ children }: { children: ReactNode }) {
 
 function useVisible(items: readonly NavItem[]): readonly NavItem[] {
   const people = usePeopleEnabled() === true;
-  return items.filter((i) => !i.people || people);
+  const pets = useHasPets();
+  return items.filter((i) => (!i.people || people) && (!i.pets || pets));
 }
 
 function Sidebar() {
