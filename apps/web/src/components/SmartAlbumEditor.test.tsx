@@ -4,7 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, type Facets, type SmartPreview, type SmartRules } from "../api";
 import { AuthProvider } from "../auth";
-import { album, item, person } from "../test/fixtures";
+import { album, item, namedPet, person } from "../test/fixtures";
 import { PeopleProvider } from "../usePeople";
 import { PetsProvider } from "../usePets";
 import { AlbumPage } from "../pages/Album";
@@ -288,6 +288,33 @@ describe("SmartAlbumEditor pets rule", () => {
       rules: [
         { field: "favorite", value: true },
         { field: "pets", kind: "dog" },
+      ],
+    });
+  });
+
+  it("has a 'Pet is' rule that picks named pets and saves their ids", async () => {
+    vi.spyOn(api, "petsStatus").mockResolvedValue({ enabled: true });
+    vi.spyOn(api, "pets").mockResolvedValue({ any: 1, kinds: [], scanned: 1, total: 1 });
+    vi.spyOn(api, "namedPets").mockResolvedValue({ items: [namedPet("pa", "Pet A", 4), namedPet("pb", "Pet B", 2, { hidden: true })] });
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    renderEditor(onSubmit);
+    await user.type(screen.getByLabelText("Title"), "Good dogs");
+    await waitFor(() => expect(within(screen.getByLabelText("Kind of rule to add")).getByRole("option", { name: "Pet is" })).toBeInTheDocument());
+    await user.selectOptions(screen.getByLabelText("Kind of rule to add"), "pet");
+    await user.click(screen.getByRole("button", { name: "Add rule" }));
+    const group = await screen.findByRole("group", { name: /Pets together/ });
+    // A hidden pet is not a choice.
+    expect(await within(group).findByRole("checkbox", { name: /Pet A/ })).toBeInTheDocument();
+    expect(within(group).queryByRole("checkbox", { name: /Pet B/ })).not.toBeInTheDocument();
+    await user.click(within(group).getByRole("checkbox", { name: /Pet A/ }));
+    await user.click(screen.getByRole("button", { name: "Create smart album" }));
+    expect(onSubmit).toHaveBeenCalledWith("Good dogs", {
+      match: "all",
+      archived: "include",
+      rules: [
+        { field: "favorite", value: true },
+        { field: "pet", ids: ["pa"] },
       ],
     });
   });

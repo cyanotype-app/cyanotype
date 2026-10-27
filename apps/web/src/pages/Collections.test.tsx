@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, localToday, type PetsSummary, type Trip } from "../api";
+import { api, localToday, type NamedPet, type PetsSummary, type Trip } from "../api";
 import { AuthProvider } from "../auth";
 import { UploadPickerProvider } from "../shell/UploadPicker";
 import { shareApi, type ShareLink } from "../shareApi";
@@ -52,6 +52,8 @@ interface Library {
   people?: boolean;
   /** Pets is on, with these counts; absent: Pets is off. */
   pets?: PetsSummary;
+  /** The pets the owner named. */
+  named?: NamedPet[];
   shares?: ShareLink[];
 }
 
@@ -75,6 +77,7 @@ function setup(lib: Library = {}) {
   });
   vi.spyOn(api, "petsStatus").mockResolvedValue({ enabled: lib.pets !== undefined });
   const petsRead = vi.spyOn(api, "pets").mockResolvedValue(lib.pets ?? { any: 0, kinds: [], scanned: 0, total: 0 });
+  vi.spyOn(api, "namedPets").mockResolvedValue({ items: lib.named ?? [] });
   vi.spyOn(shareApi, "list").mockResolvedValue({ items: lib.shares ?? [] });
   render(
     <MemoryRouter>
@@ -173,6 +176,31 @@ describe("Collections", () => {
     expect(pets.getByRole("link", { name: "Dogs, 4 photos" }).querySelector("img")).toHaveAttribute("src", "https://s3.test/pet");
     expect(pets.queryByRole("link", { name: /^Cats/ })).toBeNull();
     expect(pets.getByRole("link", { name: "See all" })).toHaveAttribute("href", "/pets");
+  });
+
+  it("puts the pets the owner named first in the Pets row, each with its name and what waits, and leaves hidden ones out", async () => {
+    const cover = { asset_id: "id-1", box: [0.1, 0.1, 0.3, 0.3] as [number, number, number, number], preview_url: "https://s3.test/pet" };
+    const mk = (id: string, name: string, over: Partial<NamedPet> = {}): NamedPet => ({
+      id,
+      name,
+      kind: "dog",
+      hidden: false,
+      photos: 3,
+      detections: 3,
+      pending: 0,
+      cover: { detection_id: `d${id}`, asset_id: "id-1", box: [0.1, 0.1, 0.3, 0.3], preview_url: `https://s3.test/${id}` },
+      ...over,
+    });
+    setup({
+      recent: [item(1)],
+      pets: { any: 5, kinds: [{ kind: "dog", photos: 4, cover }, { kind: "cat", photos: 0, cover: null }], scanned: 9, total: 9 },
+      named: [mk("n1", "Pet A", { pending: 2 }), mk("n2", "Pet B", { hidden: true })],
+    });
+    const pets = within(await screen.findByRole("region", { name: "Pets" }));
+    const link = await pets.findByRole("link", { name: "Pet A, 3 photos, 2 photos to confirm" });
+    expect(link).toHaveAttribute("href", "/pets/n1");
+    expect(pets.queryByRole("link", { name: /Pet B/ })).toBeNull();
+    expect(within(pets.getByRole("list", { name: "Pets" })).getAllByRole("link").map((l) => l.getAttribute("aria-label"))).toEqual(["Pet A, 3 photos, 2 photos to confirm", "Dogs, 4 photos"]);
   });
 
   it("has no Pets section while nothing has been found", async () => {

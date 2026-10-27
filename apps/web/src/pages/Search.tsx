@@ -2,7 +2,7 @@ import { Clock, Loader2, MapPin, SearchX, SlidersHorizontal, Sparkles, X, type L
 import { motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { api, ApiError, isScope, localToday, type AssetListItem, type Facets, type ParsedChip, type Person, type SearchItem, type SearchParams, type SearchResult, type Target } from "../api";
+import { api, ApiError, isScope, localToday, type AssetListItem, type Facets, type NamedPet, type ParsedChip, type Person, type SearchItem, type SearchParams, type SearchResult, type Target } from "../api";
 import { useAuth } from "../auth";
 import { AddToAlbumDialog, addedMessage } from "../components/AddToAlbumDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -19,6 +19,8 @@ import { TagTools } from "../components/TagTools";
 import { ShareDialog, shareTargetOf, type ShareTarget } from "../components/ShareDialog";
 import { useToast } from "../components/Toast";
 import { filterablePeople, peopleIdsOf, personLabel } from "../peopleText";
+import { filterablePets } from "../petsText";
+import { NamePetSheet, petNamedToast } from "../components/NamePetSheet";
 import { PageHeader } from "../shell/PageHeader";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -60,12 +62,15 @@ export function SearchPage() {
     const p = paramsFromUrl(sp);
     // With People off a `people` in the address is not a filter: nothing about people is shown or sent. The same for `pets`.
     if (enabled !== true) delete p.people;
-    if (petsEnabled !== true) delete p.pets;
+    if (petsEnabled !== true) {
+      delete p.pets;
+      delete p.pet;
+    }
     return p;
   }, [sp, enabled, petsEnabled]);
   const key = urlFromParams(params);
   // (A link with people or pets waits for the answer, so the first search is the right one.)
-  if ((enabled === null && sp.get("people")) || (petsEnabled === null && sp.get("pets"))) {
+  if ((enabled === null && sp.get("people")) || (petsEnabled === null && (sp.get("pets") || sp.get("pet")))) {
     return (
       <>
         <PageHeader title="Search" />
@@ -96,6 +101,7 @@ function withParsed(filters: Omit<SearchParams, "q" | "skip" | "similar">, chips
     if (c.kind === "place" && c.value) out.place = c.value;
     if (c.kind === "people" && c.people?.length) out.people = c.people.map((p) => p.id).join(",");
     if (c.kind === "pets" && c.pets) out.pets = c.pets;
+    if (c.kind === "pet" && c.pet?.length) out.pet = c.pet.map((p) => p.id).join(",");
   }
   return out;
 }
@@ -110,6 +116,8 @@ function SearchView({ params }: { params: SearchParams }) {
   const peopleOn = usePeopleEnabled() === true;
   const petsOn = usePetsEnabled() === true;
   const [people, setPeople] = useState<Person[] | undefined>();
+  // The pets the owner named, for the filter sheet and the names on the chips (asked only while Pets is on).
+  const [namedPets, setNamedPets] = useState<NamedPet[] | undefined>();
   const filters = withoutQuery(params);
   const empty = isEmptySearch(params);
 
@@ -136,6 +144,17 @@ function SearchView({ params }: { params: SearchParams }) {
       live = false;
     };
   }, [peopleOn]);
+  useEffect(() => {
+    if (!petsOn) return;
+    let live = true;
+    api.namedPets().then(
+      (r) => live && setNamedPets(r.items),
+      () => live && setNamedPets([]),
+    );
+    return () => {
+      live = false;
+    };
+  }, [petsOn]);
 
   const go = (next: SearchParams) => {
     const qs = urlFromParams(next);
@@ -150,7 +169,7 @@ function SearchView({ params }: { params: SearchParams }) {
     for (const k of keys) delete next[k];
     go(next);
   };
-  const chips = chipsOf(filters, albumTitle, filterablePeople(people ?? []));
+  const chips = chipsOf(filters, albumTitle, filterablePeople(people ?? []), namedPets ?? []);
   const clearFilters = () => clear(Object.keys(filters).filter((k) => k !== "skip") as (keyof SearchParams)[]);
   const closeFilters = useCallback(() => setFiltersOpen(false), []);
 
@@ -210,6 +229,7 @@ function SearchView({ params }: { params: SearchParams }) {
         onClose={closeFilters}
         people={peopleOn ? filterablePeople(people ?? []) : undefined}
         pets={petsOn}
+        namedPets={petsOn ? filterablePets(namedPets ?? []) : undefined}
       />
     </>
   );
@@ -519,6 +539,8 @@ function Results({ params, onClearFilters }: { params: SearchParams; onClearFilt
   const [confirmed, setConfirmed] = useState(false);
   const [addIds, setAddIds] = useState<{ target: Target; count: number; save?: boolean } | null>(null);
   const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
+  const [namingPet, setNamingPet] = useState<string[] | null>(null);
+  const petsOn = usePetsEnabled() === true;
   const [busy, setBusy] = useState(false);
   const { toast, show } = useToast();
   const { status } = useProcessing();
@@ -720,7 +742,7 @@ function Results({ params, onClearFilters }: { params: SearchParams; onClearFilt
   );
 
   useEffect(() => {
-    if (open !== null || confirmed || addIds !== null || shareTarget !== null) return;
+    if (open !== null || confirmed || addIds !== null || shareTarget !== null || namingPet !== null) return;
     function onKey(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
       if (t?.closest("input, textarea, select, [contenteditable]")) return;
@@ -731,7 +753,7 @@ function Results({ params, onClearFilters }: { params: SearchParams; onClearFilt
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, confirmed, addIds, shareTarget, sel]);
+  }, [open, confirmed, addIds, shareTarget, namingPet, sel]);
 
   const openAt = useCallback(
     (i: number) => {
@@ -854,7 +876,7 @@ function Results({ params, onClearFilters }: { params: SearchParams; onClearFilt
             </Button>
             <SlideshowButton source={() => searchSource(params, "Search results")} />
             {/* The photos of the people or pets filter (a filter-only search: the server can name them all) as an album of their own. */}
-            {!meta.ranked && (peopleIdsOf(params.people).length > 0 || params.pets !== undefined || chips.some((c) => c.kind === "people" || c.kind === "pets")) && (meta.total ?? 0) > 0 && (
+            {!meta.ranked && (peopleIdsOf(params.people).length > 0 || params.pets !== undefined || params.pet !== undefined || chips.some((c) => c.kind === "people" || c.kind === "pets" || c.kind === "pet")) && (meta.total ?? 0) > 0 && (
               <Button variant="quiet" size="sm" disabled={busy} onClick={() => setAddIds({ target: { scope, except: [] }, count: meta.total ?? 0, save: true })}>
                 Save as album
               </Button>
@@ -923,6 +945,17 @@ function Results({ params, onClearFilters }: { params: SearchParams; onClearFilt
               >
                 Share
               </Button>
+              {petsOn && (
+                <Button
+                  variant="quiet"
+                  size="sm"
+                  disabled={sel.count === 0 || busy || sel.all}
+                  title={sel.all ? "Choose the photos one by one to name a pet" : undefined}
+                  onClick={() => setNamingPet([...sel.ids])}
+                >
+                  Name pet…
+                </Button>
+              )}
               <Button
                 variant="danger"
                 size="sm"
@@ -1017,6 +1050,17 @@ function Results({ params, onClearFilters }: { params: SearchParams; onClearFilt
         />
       )}
       {shareTarget !== null && <ShareDialog target={shareTarget} onClose={() => setShareTarget(null)} />}
+      {namingPet !== null && (
+        <NamePetSheet
+          assetIds={namingPet}
+          onClose={() => setNamingPet(null)}
+          onDone={(r) => {
+            setNamingPet(null);
+            sel.setSelecting(false);
+            show(petNamedToast(r, (id) => navigate(`/pets/${encodeURIComponent(id)}`)));
+          }}
+        />
+      )}
       {toast}
     </>
   );

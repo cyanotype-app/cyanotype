@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, type PetsSummary } from "../api";
 import { AuthProvider } from "../auth";
 import { fakeLibrary, type FakeLibrary } from "../test/fakeLibrary";
-import { detail, item } from "../test/fixtures";
+import { detail, item, namedPet } from "../test/fixtures";
 import { PetsProvider } from "../usePets";
 import { AppShell } from "../shell/AppShell";
 import { UploadPickerProvider } from "../shell/UploadPicker";
@@ -36,6 +36,7 @@ beforeEach(() => {
   );
   vi.spyOn(api, "me").mockResolvedValue({ id: "u", email: "a@b.co", role: "member" });
   vi.spyOn(api, "getAsset").mockImplementation(async (id) => detail(Number(id.split("-")[1])));
+  vi.spyOn(api, "namedPets").mockResolvedValue({ items: [] });
   lib = fakeLibrary([item(1), item(2), item(3)]);
 });
 afterEach(() => {
@@ -50,6 +51,7 @@ const renderAt = (path = "/pets") =>
         <PetsProvider>
           <Routes>
             <Route path="/pets" element={<PetsPage />} />
+            <Route path="/pets/:id" element={<p>a pet</p>} />
           </Routes>
         </PetsProvider>
       </AuthProvider>
@@ -171,6 +173,66 @@ describe("the Pets page", () => {
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("button", { name: "Open photo-1.jpg" })).toBeInTheDocument();
     expect(pets).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("Your pets", () => {
+  const on = (named = [namedPet("p1", "Pet A", 4, { pending: 2 }), namedPet("p2", "Pet B", 1, { kind: "cat", hidden: true })]) => {
+    vi.spyOn(api, "petsStatus").mockResolvedValue({ enabled: true });
+    vi.spyOn(api, "pets").mockResolvedValue(summary(2, 1));
+    vi.spyOn(api, "namedPets").mockResolvedValue({ items: named });
+  };
+
+  it("lists the pets that were named above the photos, hidden ones last, with what waits for an answer", async () => {
+    on([namedPet("p2", "Pet B", 1, { kind: "cat", hidden: true }), namedPet("p1", "Pet A", 4, { pending: 2 })]);
+    renderAt();
+    const row = await screen.findByRole("region", { name: "Your pets" });
+    const links = await within(row).findAllByRole("link");
+    expect(links.map((l) => l.getAttribute("aria-label"))).toEqual(["Pet A, 4 photos, 2 photos to confirm", "Pet B, 1 photo"]);
+    expect(links[0]).toHaveAttribute("href", "/pets/p1");
+    expect(within(row).getByText("Hidden")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Open photo-1.jpg" })).toBeInTheDocument();
+  });
+
+  it("says how to name a pet while there is none", async () => {
+    on([]);
+    renderAt();
+    const row = await screen.findByRole("region", { name: "Your pets" });
+    expect(within(row).getByText(/Pick a few photos of your dog or cat/)).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Name a pet" })).toBeInTheDocument();
+  });
+
+  it("names a pet from photos picked after 'Name a pet' turned selection on", async () => {
+    on([]);
+    const create = vi.spyOn(api, "createPet").mockResolvedValue({ pet: namedPet("p9", "Pet C", 2), assigned: 2, ambiguous: [], skipped: [] });
+    const user = userEvent.setup();
+    renderAt();
+    await user.click(await screen.findByRole("button", { name: "Name a pet" }));
+    expect(await screen.findByText("Select photos of your pet")).toBeInTheDocument();
+    const bar = screen.getByRole("toolbar", { name: "Selection" });
+    expect(within(bar).getByRole("button", { name: "Name pet…" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Select photo-1.jpg" }));
+    await user.click(screen.getByRole("button", { name: "Select photo-2.jpg" }));
+    await user.click(within(bar).getByRole("button", { name: "Name pet…" }));
+    const dialog = await screen.findByRole("dialog", { name: "Name pet" });
+    await user.type(within(dialog).getByLabelText("Name"), "Pet C");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith({ name: "Pet C", kind: "dog", asset_ids: ["id-1", "id-2"] }));
+    expect(await screen.findByText("Made Pet C with 2 photos")).toBeInTheDocument();
+    expect(screen.queryByRole("toolbar", { name: "Selection" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    expect(await screen.findByText("a pet")).toBeInTheDocument();
+  });
+
+  it("names a pet from the menu too, and not from a whole-view selection", async () => {
+    on([]);
+    const user = userEvent.setup();
+    renderAt();
+    await user.click(await screen.findByRole("button", { name: "More" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Name a pet" }));
+    const bar = await screen.findByRole("toolbar", { name: "Selection" });
+    await user.click(within(bar).getByRole("button", { name: "Select all" }));
+    expect(within(bar).getByRole("button", { name: "Name pet…" })).toBeDisabled();
   });
 });
 

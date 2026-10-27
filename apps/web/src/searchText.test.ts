@@ -86,6 +86,24 @@ describe("search URL", () => {
   });
 });
 
+describe("the named pet filter", () => {
+  const A = "11111111-1111-4111-8111-111111111111";
+  const B = "22222222-2222-4222-8222-222222222222";
+  it("reads valid ids from the address, once each, and writes them back", () => {
+    expect(paramsFromUrl(new URLSearchParams({ pet: `${A},${A},nope,${B}` }))).toEqual({ pet: `${A},${B}` });
+    expect(paramsFromUrl(new URLSearchParams({ pet: "nope" }))).toEqual({});
+    expect(urlFromParams({ pet: A, place: "Lisbon" })).toBe(`place=Lisbon&pet=${A}`);
+    expect(hasFilters({ pet: A })).toBe(true);
+    expect(searchQuery({ pet: `${A},${B}`, favorite: true })).toBe(`favorite=true&pet=${encodeURIComponent(`${A},${B}`)}`);
+  });
+  it("is a chip with the pet's name, and gives the words back with skip=pet", () => {
+    expect(chipsOf({ pet: A }, undefined, [], [{ id: A, name: "Pet A" }])).toEqual([{ clears: ["pet"], label: "Pet A" }]);
+    expect(chipsOf({ pet: `${A},${B}` }, undefined, [], [{ id: A, name: "Pet A" }])[0]!.label).toBe("Pet A and Unknown pet");
+    expect(parseSkip("pet,pets,x")).toBe("pets,pet");
+    expect(addSkip("date", "pet")).toBe("date,pet");
+  });
+});
+
 describe("the pets filter", () => {
   it("round-trips a kind and drops anything else", () => {
     expect(paramsFromUrl(new URLSearchParams({ pets: "dog" }))).toEqual({ pets: "dog" });

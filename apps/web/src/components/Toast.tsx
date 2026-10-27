@@ -54,7 +54,7 @@ export function useToast(): { toast: ReactNode; show: (t: ToastSpec) => void; hi
               spec.tone === "error" ? "bg-danger text-on-danger ring-white/10" : "bg-[#101820] text-white ring-white/10",
             )}
           >
-            <span className="min-w-0 py-1 leading-snug">{spec.message}</span>
+            <span className="min-w-0 py-1 leading-snug [overflow-wrap:anywhere]">{spec.message}</span>
             {spec.action && (
               <button
                 type="button"

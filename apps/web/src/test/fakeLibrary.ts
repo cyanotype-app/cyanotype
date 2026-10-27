@@ -23,7 +23,7 @@ export function fakeLibrary(initial: AssetListItem[]): FakeLibrary {
     lib.photos
       .filter((p) => (v.hidden ? p.hidden === true : p.hidden !== true))
       .filter((p) => !v.favorite || p.favorite === true)
-      .filter((p) => (v.archived ? p.archived === true : v.favorite || v.hidden || v.person !== undefined || p.archived !== true))
+      .filter((p) => (v.archived ? p.archived === true : v.favorite || v.hidden || v.person !== undefined || v.pet !== undefined || p.archived !== true))
       .sort(newestFirst); // (the fake has no upload times: both orders use sort_time)
 
   lib.timeline = vi.spyOn(api, "timeline").mockImplementation(async (opts = {}) => {

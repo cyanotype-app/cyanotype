@@ -138,14 +138,18 @@ export function ConfirmFaceDialog({
   onNo,
   onNotAFace,
   onCancel,
+  label,
 }: {
   person: { name: string | null };
   previewUrl: string;
   box: FaceBox;
   onYes: () => Promise<void>;
   onNo: () => Promise<void>;
-  onNotAFace: () => Promise<void>;
+  /** Without it there is no "Not a face" (a pet's animal is refused, not dismissed). */
+  onNotAFace?: () => Promise<void>;
   onCancel: () => void;
+  /** What the picture is called when it is not a face that is outlined. */
+  label?: string;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -167,9 +171,11 @@ export function ConfirmFaceDialog({
       size="sm"
       footer={
         <>
-          <Button variant="quiet" className="md:mr-auto" disabled={busy} onClick={() => void answer(onNotAFace)}>
-            Not a face
-          </Button>
+          {onNotAFace && (
+            <Button variant="quiet" className="md:mr-auto" disabled={busy} onClick={() => void answer(onNotAFace)}>
+              Not a face
+            </Button>
+          )}
           <Button variant="secondary" aria-label={`No, this is not ${name}`} disabled={busy} onClick={() => void answer(onNo)}>
             No
           </Button>
@@ -179,7 +185,7 @@ export function ConfirmFaceDialog({
         </>
       }
     >
-      <FaceInPhoto url={previewUrl} box={box} />
+      <FaceInPhoto url={previewUrl} box={box} label={label} />
       {error && <FormError>{error}</FormError>}
     </Modal>
   );

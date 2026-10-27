@@ -1,8 +1,8 @@
 import { Link } from "react-router-dom";
-import type { Album, PetCover, Person, Trip } from "../api";
+import type { Album, NamedPet, PetCover, Person, Trip } from "../api";
 import { FaceCrop } from "../components/FaceCrop";
-import { isNamed, openPersonLabel, personLabel } from "../peopleText";
-import { PET_LABEL, petCardLabel, petPhotos } from "../petsText";
+import { badgeText, isNamed, openPersonLabel, pendingLabel, personLabel } from "../peopleText";
+import { PET_LABEL, namedPetLabel, petCardLabel, petPhotos } from "../petsText";
 import { cn } from "../ui/cn";
 import { Cover } from "./Cover";
 import { albumCount, tripLine, tripName } from "./text";
@@ -113,6 +113,40 @@ export function PetCard({ kind, photos, cover }: { kind: "dog" | "cat"; photos: 
         </span>
         <span className="w-full truncate text-center text-[0.8125rem] text-fg">{PET_LABEL[kind]}</span>
         <span className="w-full truncate text-center text-xs text-muted">{petPhotos(photos)}</span>
+      </Link>
+    </li>
+  );
+}
+
+/**
+ * A pet the owner named: the round crop of its cover, the name and how many photos; "Is this X?" proposals waiting wear a small count in the
+ * corner, like a person's card. The whole card opens the pet's page.
+ */
+export function NamedPetCard({ pet }: { pet: NamedPet }) {
+  return (
+    <li className="shrink-0 snap-start">
+      <Link
+        to={`/pets/${encodeURIComponent(pet.id)}`}
+        aria-label={namedPetLabel(pet)}
+        className="group flex w-24 flex-col items-center gap-1 rounded-card no-underline outline-offset-2 md:w-28"
+      >
+        <span className="relative mb-0.5 block size-[4.5rem] md:size-[5.5rem]">
+          <span className="block size-full overflow-hidden rounded-full bg-surface transition-transform duration-150 ease-soft group-active:scale-95">
+            {pet.cover && <FaceCrop url={pet.cover.preview_url} box={pet.cover.box} />}
+          </span>
+          {pet.pending > 0 && (
+            <span
+              data-badge=""
+              className="absolute -top-0.5 -right-0.5 flex min-w-5 items-center justify-center rounded-full bg-accent px-1.5 text-[0.6875rem] leading-5 font-semibold text-on-accent ring-2 ring-bg"
+              aria-hidden="true"
+              title={pendingLabel(pet.pending)}
+            >
+              {badgeText(pet.pending)}
+            </span>
+          )}
+        </span>
+        <span className="w-full truncate text-center text-[0.8125rem] font-medium text-fg">{pet.name}</span>
+        <span className="w-full truncate text-center text-xs text-muted">{pet.hidden ? "Hidden" : petPhotos(pet.photos)}</span>
       </Link>
     </li>
   );

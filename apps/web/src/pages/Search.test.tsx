@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, type Processing, type SearchItem, type SearchResult } from "../api";
 import { AuthProvider } from "../auth";
 import { UploadProvider } from "../upload/UploadProvider";
-import { detail, item, person } from "../test/fixtures";
+import { detail, item, namedPet, person } from "../test/fixtures";
 import { PeopleProvider } from "../usePeople";
 import { PetsProvider } from "../usePets";
 import { SearchPage } from "./Search";
@@ -377,6 +377,53 @@ describe("Search page pets", () => {
     expect(search).toHaveBeenCalledWith({ q: "cats on the sofa" }, expect.anything());
     await userEvent.click(within(chips).getByRole("button", { name: "Remove pets Cats" }));
     expect(screen.getByTestId("where")).toHaveTextContent("/search?q=cats+on+the+sofa&skip=pets");
+  });
+
+  it("shows a named pet read out of the words as a chip with its name, and turning it off keeps the words", async () => {
+    withPets(true);
+    vi.spyOn(api, "namedPets").mockResolvedValue({ items: [] });
+    const search = vi.spyOn(api, "search").mockResolvedValue(
+      result([hit(1)], { ranked: false, total: 1, parsed: { text: "at the beach", chips: [{ kind: "pet", label: "Pet A", matched: "Pet A", pet: [{ id: "pa", name: "Pet A" }] }] } }),
+    );
+    renderWithPets("/search?q=Pet%20A%20at%20the%20beach");
+    const chips = await screen.findByRole("list", { name: "Understood from your search" });
+    expect(within(chips).getByText("Pet A")).toBeInTheDocument();
+    expect(search).toHaveBeenCalledWith({ q: "Pet A at the beach" }, expect.anything());
+    await userEvent.click(within(chips).getByRole("button", { name: "Remove pet Pet A" }));
+    expect(screen.getByTestId("where")).toHaveTextContent("/search?q=Pet+A+at+the+beach&skip=pet");
+  });
+
+  it("filters by a named pet from the address: the chip says its name, it is sent, and the filter clears", async () => {
+    withPets(true);
+    const A = "6f1c2b0e-0000-4000-8000-0000000000a1";
+    vi.spyOn(api, "namedPets").mockResolvedValue({ items: [namedPet(A, "Pet A", 4)] });
+    const search = vi.spyOn(api, "search").mockResolvedValue(result([hit(1), hit(2)], { ranked: false, total: 2 }));
+    renderWithPets(`/search?pet=${A}&favorite=true`);
+    expect(await screen.findByText("2 photos")).toBeInTheDocument();
+    expect(search).toHaveBeenCalledWith({ pet: A, favorite: true }, expect.anything());
+    const chips = screen.getByRole("list", { name: "Active filters" });
+    await userEvent.click(await within(chips).findByRole("button", { name: "Remove filter Pet A" }));
+    expect(screen.getByTestId("where")).toHaveTextContent("/search?favorite=true");
+  });
+
+  it("names a pet from the photos picked in the results", async () => {
+    withPets(true);
+    vi.spyOn(api, "namedPets").mockResolvedValue({ items: [] });
+    vi.spyOn(api, "search").mockResolvedValue(result([hit(1), hit(2)], { ranked: false, total: 2 }));
+    const create = vi.spyOn(api, "createPet").mockResolvedValue({ pet: namedPet("p9", "Pet C", 1), assigned: 1, ambiguous: [], skipped: [] });
+    const user = userEvent.setup();
+    renderWithPets("/search?favorite=true");
+    await screen.findByText("2 photos");
+    await user.click(screen.getByRole("button", { name: "Select" }));
+    const bar = screen.getByRole("toolbar", { name: "Selection" });
+    expect(within(bar).getByRole("button", { name: "Name pet…" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /photo-1/ }));
+    await user.click(within(bar).getByRole("button", { name: "Name pet…" }));
+    const dialog = await screen.findByRole("dialog", { name: "Name pet" });
+    await user.type(within(dialog).getByLabelText("Name"), "Pet C");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith({ name: "Pet C", kind: "dog", asset_ids: ["id-1"] }));
+    expect(await screen.findByText("Made Pet C with 1 photo")).toBeInTheDocument();
   });
 
   it("selects what the words meant by the filter, for a bulk action", async () => {

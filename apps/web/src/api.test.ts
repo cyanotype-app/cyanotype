@@ -451,6 +451,62 @@ describe("people in lists, scopes and searches", () => {
     expect(f).toHaveBeenLastCalledWith("/assets/search?place=Lisbon&pets=cat&skip=pets", expect.anything());
   });
 
+  it("reads and changes named pets through their own endpoints", async () => {
+    const f = mockFetchJson({});
+    const last = () => f.mock.calls.at(-1)! as unknown as [string, RequestInit];
+    const body = () => JSON.parse(last()[1].body as string) as unknown;
+    const method = () => last()[1].method;
+    await api.namedPets();
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/named", expect.anything());
+    await api.namedPet("p 1");
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/named/p%201", expect.anything());
+    await api.createPet({ name: "Pet A", kind: "dog", asset_ids: ["a1"] });
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/named", expect.anything());
+    expect(body()).toEqual({ name: "Pet A", kind: "dog", asset_ids: ["a1"] });
+    await api.updatePet("p1", { name: "Pet B", cover_detection_id: "d1" });
+    expect(method()).toBe("PATCH");
+    expect(body()).toEqual({ name: "Pet B", cover_detection_id: "d1" });
+    await api.deletePet("p1");
+    expect(method()).toBe("DELETE");
+    await api.mergePet("p1", "p2");
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/named/p1/merge", expect.anything());
+    expect(body()).toEqual({ into: "p2" });
+    await api.petDetections("p1", { limit: 24, cursor: "c" });
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/named/p1/detections?limit=24&cursor=c", expect.anything());
+    await api.addToPet("p1", { detection_ids: ["d1"] });
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/named/p1/photos", expect.anything());
+    expect(body()).toEqual({ detection_ids: ["d1"] });
+    await api.removeFromPet("p1", { asset_ids: ["a1"] });
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/named/p1/photos/remove", expect.anything());
+    await api.petSuggestions("p1", { tier: "maybe", limit: 60 });
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/named/p1/suggestions?limit=60&tier=maybe", expect.anything());
+    await api.answerPetSuggestions("p1", { confirm: ["d1"], reject: ["d2"] });
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/named/p1/suggestions/answer", expect.anything());
+    expect(body()).toEqual({ confirm: ["d1"], reject: ["d2"] });
+    await api.assignPetDetection("d1", "p1");
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/detections/d1/assign", expect.anything());
+    expect(body()).toEqual({ pet_id: "p1" });
+    await api.rejectPetDetection("d1", "p1");
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/detections/d1/reject", expect.anything());
+    await api.assetPets("a1");
+    expect(f).toHaveBeenLastCalledWith("/assets/a1/pets", expect.anything());
+  });
+
+  it("lists and counts the photos of a named pet, and sends its scope and filter", async () => {
+    const f = mockFetchJson({ total: 1, days: [{ day: "2026-10-14", count: 1 }] });
+    await api.timeline({ pet: "p1" });
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/named/p1/timeline", expect.anything());
+    await api.listAssets({ pet: "p1", cursor: "6162|x", limit: 120 });
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/named/p1/photos?limit=120&cursor=6162%7Cx", expect.anything());
+    await api.trashAssets({ scope: { pet: "p1" }, except: ["a1"] });
+    const [, init] = f.mock.calls.at(-1)! as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ scope: { pet: "p1" }, except: ["a1"] });
+    await api.search({ pet: "p1,p2", place: "Lisbon", skip: "pet" });
+    expect(f).toHaveBeenLastCalledWith("/assets/search?place=Lisbon&pet=p1%2Cp2&skip=pet", expect.anything());
+    await api.search({ similar: "s1", pet: "p1" });
+    expect(f).toHaveBeenLastCalledWith("/assets/s1/similar?pet=p1", expect.anything());
+  });
+
   it("asks for trips by the user's today, a page size and the day to page from", async () => {
     const f = mockFetch(jsonRes(200, { enabled: true, trips: [], next_before: null }));
     await api.trips({ limit: 12, before: "2026-09-01", date: "2026-10-26" });

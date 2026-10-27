@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { Facets } from "../api";
-import { album, person } from "../test/fixtures";
+import { album, namedPet, person } from "../test/fixtures";
 import { FilterSheet } from "./FilterSheet";
 
 const facets: Facets = {
@@ -153,6 +153,42 @@ describe("FilterSheet pets", () => {
     await userEvent.click(within(group).getByRole("radio", { name: "Any" }));
     await userEvent.click(screen.getByRole("button", { name: "Show photos" }));
     expect(onApply).toHaveBeenCalledWith({});
+  });
+});
+
+describe("FilterSheet named pets", () => {
+  const A = "6f1c2b0e-0000-4000-8000-0000000000a1";
+  const B = "6f1c2b0e-0000-4000-8000-0000000000a2";
+  const pets = [namedPet(A, "Pet A", 12), namedPet(B, "Pet B", 5, { kind: "cat" })];
+
+  it("is not offered while Pets is off", async () => {
+    render(<FilterSheet value={{}} onApply={() => undefined} onClose={() => undefined} load={load} />);
+    await waitFor(() => expect(screen.getByRole("option", { name: "Canon EOS R5 (70)" })).toBeInTheDocument());
+    expect(screen.queryByRole("group", { name: "Named pets" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Name a pet/)).not.toBeInTheDocument();
+  });
+
+  it("chooses pets by name and applies their ids with the other filters", async () => {
+    const onApply = vi.fn();
+    render(<FilterSheet value={{ favorite: true }} onApply={onApply} onClose={() => undefined} load={load} pets namedPets={pets} />);
+    const group = screen.getByRole("group", { name: "Named pets" });
+    await userEvent.click(within(group).getByRole("checkbox", { name: /Pet B/ }));
+    await userEvent.click(within(group).getByRole("checkbox", { name: /Pet A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Show photos" }));
+    expect(onApply).toHaveBeenCalledWith({ favorite: true, pet: `${B},${A}` });
+  });
+
+  it("starts from the pets in force, and says how to name one when there is none", async () => {
+    const onApply = vi.fn();
+    const { unmount } = render(<FilterSheet value={{ pet: A }} onApply={onApply} onClose={() => undefined} load={load} pets namedPets={pets} />);
+    const group = screen.getByRole("group", { name: "Named pets" });
+    expect(within(group).getByRole("checkbox", { name: /Pet A/ })).toBeChecked();
+    await userEvent.click(within(group).getByRole("checkbox", { name: /Pet A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Show photos" }));
+    expect(onApply).toHaveBeenCalledWith({});
+    unmount();
+    render(<FilterSheet value={{}} onApply={() => undefined} onClose={() => undefined} load={load} pets namedPets={[]} />);
+    expect(screen.getByText("Name a pet on the Pets page to filter by it.")).toBeInTheDocument();
   });
 });
 

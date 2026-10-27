@@ -191,7 +191,7 @@ a pet. While it is off `/pets` is a "Page not found", the sidebar has no Pets, C
 The owner makes a pet ("Biscuit", a dog), tags a few photos of it (five to ten is plenty), and the app **proposes** more: "Is this Biscuit?", best first, in two tiers
 (*likely* and *maybe*). The owner confirms or refuses in bulk, and **every answer counts**: a confirmed animal moves the centre the next proposals are measured from, a refused
 one is never proposed for that pet again. A pet has a page of photos (a timeline like a person's), a cover, a name that can be changed, and can be hidden, merged and deleted.
-No UI is described here (the routes below are what one would be built on); everything is under `PETS_ENABLED` (off: every route a `404`) and is the signed-in owner's alone.
+The app's screens for it are described under [Named pets in the app](#named-pets-in-the-app), after the routes they use; everything is under `PETS_ENABLED` (off: every route a `404`, and none of the screens is there) and is the signed-in owner's alone.
 
 ### How it works
 
@@ -237,6 +237,29 @@ same as unknown ones.
 | smart albums: `{"field": "pet", "ids": [...]}` | "All of these pets are in the photo" (1 to 10 of the owner's own, checked when it is saved: another owner's id is a `404`). The album keeps only ids; a deleted pet leaves a rule that matches **nothing**, and a merge is not followed (edit the rule). Pets off: saving is a `404` and a saved rule matches nothing. |
 
 **The title of "Save as album" starts empty**, as for people: an album's title is shown to everyone it is shared with and is written into the recovery manifest, so a pet's name must not be put there by default.
+
+### Named pets in the app
+
+Shown only while Pets is on, like the rest of "In the app" above, and built from People's own parts (the round cover crop, the "Is this X?" question, the timeline, the selection bar, the rename and merge sheets).
+
+- **Naming a pet.** *Select* photos in the Photos, Search or an album's grid (or on the Pets page: **Name a pet**, in the page or in its menu, turns selection on and asks for the photos of the pet) and choose **Name pet…**
+  (the "⋯" of the selection bar on a phone). The sheet asks for a name and a kind (dog or cat), or offers the pets there already (**Add photos**). It needs the photos one by one, so it is off while the whole view is
+  selected. What the server answered is told in plain words: a photo with **several animals of the kind** is shown with each outlined and numbered, and the owner taps the right one (*Skip this photo* leaves it
+  out; the choices are sent as `detection_ids`); photos that could not join are listed with the reason ("1 photo has no dog that was found", "…has not been looked through for pets yet", "…is already in Name",
+  "…belongs to another pet already"). The toast says what was made and opens the pet.
+- **The Pets page** has **Your pets** above the photos: a round cover, the name and the number of photos for each pet, hidden ones last and dimmed, and a count in the corner when "Is this X?" proposals wait. With no pet
+  yet it says how to make one. Collections' Pets row starts with the named pets (not the hidden ones), then the kinds.
+- **A pet's page** (`/pets/{id}`): the cover, the name, the kind, the photos and what waits to be confirmed; the photos as the library's timeline (selection, "Select all" by the `{"pet": id}` scope, the viewer, the slideshow,
+  every bulk action). The "⋯" menu has **Rename** (a pet is never without a name), **Change cover** (the pet's animals as crops, clearest first), **Hide**/**Show**, **Save as album**, **Search with filters**
+  (`/search?pet=`), **Merge into…** (only pets of the same kind are offered) and **Delete pet** (the photos stay). Selecting photos offers **Use as cover** (one photo) and **Not this pet** (asks; the animals are freed and refused
+  for the pet, which never proposes them again; off for a whole-view selection). The page reads the counts again every 15 seconds.
+- **"Is this {name}?"** on the pet's page, under the header: the *likely* animals first, a switch to the *maybe* ones when there are both, each as a crop with **Yes** and **No**, tap the crop for the whole photo with the
+  animal outlined. **Yes to these N** / **No to these N** answer everything shown at once (after asking: the second is for good). An answer takes the tile away at once and puts it back with a message if the server
+  refuses; a Yes reads the proposals again, because it moves the pet's centre. There is no undo: the server has no way back to "not answered" (a Yes can be taken out with *Not this pet*, which refuses the animal).
+- **The viewer.** The Info panel has a **Pets** row while Pets is on and the photo has animals: each with a crop and the pet's name (a link to its page) and **Not {name}** (takes it out of the pet and refuses it for it),
+  or "not named" and **Add to pet…** (the same sheet, for one animal: a new pet, or one of its kind). Boxes are not drawn on the photo.
+- **Search.** A pet's name in the words becomes a chip with the name (its x gives the words back with `skip=pet`); `pet=<id>,<id>` in the address is a chip too ("Name and Name"); the filter sheet has **Named pets**
+  (not the hidden ones), and "Save as album" and "Select all" of the results use the filter. **Smart albums** have a **Pet is** rule (one or more named pets, all of them in the photo).
 
 ### What is not there
 
@@ -536,6 +559,10 @@ Metrics (`docs/observability.md`): `cyanotype.pets.model_loaded` (gauge), `cyano
   rename, hide, delete and merge with owner isolation and audit entries that are counts; "not this pet"; tiers, counts and exclusions; the Hidden view and its unlock; bulk and single answers; a photo's own pet;
   the page's photos, paging and timeline; the scope; Save as album; the `pet` filter, its mistakes and isolation; names in a query, chips, `skip=pet`, hidden, shared and person-owned names; the smart rule;
   a share leak test over every public response, the album and share lists and the recovery manifest; a performance test, ignored), `crates/cyanotype-core/src/manifest.rs` (a pet rule is kept out of the manifest).
+- Named pets in the web app: `petsText.test.ts` (names, labels, ids, the plain-words reasons), `components/NamePetSheet.test.tsx` (name and kind, the photo with several animals, the photos left out, one animal),
+  `AnimalPicker.test.tsx`, `PetSuggestions.test.tsx` (tiers, one by one and in bulk, optimistic with a rollback, the whole photo), `LightboxPets.test.tsx` (the Info panel's Pets row), `pages/PetPage.test.tsx`
+  (rename, hide, cover, merge, delete, "Not this pet", save as album), the "Your pets" row in `PetsPage.test.tsx`, `Library.pets.test.tsx`, the chip, filter sheet and rule tests in `Search.test.tsx`,
+  `FilterSheet.test.tsx` and `SmartAlbumEditor.test.tsx`; `e2e/pets-named-layout.spec.ts` at phone and desktop widths, light and dark.
 - `apps/assets/src/routes/pets_tests.rs`: the switch (every route a `404` while off, the filter and the words ignored, the facet and the processing entry absent, the scope and the rule refused), the summary
   (counts per kind, covers, scan progress), the Pets view and its timeline (kinds, order, paging, bad input), the trash, hidden and archived rules and the Hidden view, owner isolation, a photo's boxes,
   the search filter combined with dates, favorites, places, ratings, text and people, the typed words and their chips (compounds left alone, `skip=pets`, an explicit filter winning), the facet, "More like
