@@ -122,7 +122,7 @@ fn sorted(mut v: Vec<Uuid>) -> Vec<Uuid> {
     v
 }
 
-fn uuid_of(v: &Value) -> Uuid {
+fn id_in(v: &Value) -> Uuid {
     v.as_str().unwrap().parse().unwrap()
 }
 
@@ -255,7 +255,7 @@ async fn biscuit(app: &Router, s: &Scene) -> Uuid {
     )
     .await;
     assert_eq!((st, v["assigned"].clone()), (StatusCode::OK, json!(3)), "{v}");
-    uuid_of(&v["pet"]["id"])
+    id_in(&v["pet"]["id"])
 }
 
 // ---- the switch -----------------------------------------------------------------------------------------------------------------
@@ -382,18 +382,18 @@ async fn a_pet_is_made_from_photos_and_says_which_it_could_not_place() {
     // The photo with two dogs is not guessed: both are offered, with the photo to choose on.
     let amb = v["ambiguous"].as_array().unwrap();
     assert_eq!(amb.len(), 1, "{v}");
-    assert_eq!(uuid_of(&amb[0]["asset_id"]), s.pair);
+    assert_eq!(id_in(&amb[0]["asset_id"]), s.pair);
     assert!(amb[0]["preview_url"].as_str().unwrap().starts_with("http"));
     let cands = amb[0]["candidates"].as_array().unwrap();
     assert_eq!(cands.len(), 2);
-    assert_eq!(uuid_of(&cands[0]["detection_id"]), det(&t.pool, s.pair, 0).await);
+    assert_eq!(id_in(&cands[0]["detection_id"]), det(&t.pool, s.pair, 0).await);
     assert_box(&cands[1]["box"], [0.55, 0.1, 0.4, 0.5]);
     // A cat, a photo with nothing, a photo not looked at yet: said so, by reason.
     let skipped: Vec<(Uuid, String)> = v["skipped"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|x| (uuid_of(&x["asset_id"]), x["reason"].as_str().unwrap().to_string()))
+        .map(|x| (id_in(&x["asset_id"]), x["reason"].as_str().unwrap().to_string()))
         .collect();
     let mut want = vec![
         (s.cat, "no_animal".to_string()),
@@ -405,7 +405,7 @@ async fn a_pet_is_made_from_photos_and_says_which_it_could_not_place() {
     got.sort();
     assert_eq!(got, want);
     // Nothing was assigned in the ambiguous photo; the caller picks the second dog.
-    let id = uuid_of(&v["pet"]["id"]);
+    let id = id_in(&v["pet"]["id"]);
     let second = det(&t.pool, s.pair, 1).await;
     let (st, v) = post(
         &app,
@@ -559,7 +559,7 @@ async fn a_photo_goes_to_the_pet_by_its_free_animal_and_an_animal_of_another_pet
         json!({"name": "Mochi", "kind": "dog"}),
     )
     .await;
-    let second = uuid_of(&v["pet"]["id"]);
+    let second = id_in(&v["pet"]["id"]);
     // The photo with two dogs: one is Biscuit's; adding it to Mochi by photo offers the other alone and takes it.
     let first_dog = det(&t.pool, s.pair, 0).await;
     let (_, _) = post(
@@ -646,7 +646,7 @@ async fn the_list_has_counts_pending_proposals_and_a_cover_and_cover_can_be_chos
         json!({"name": "Pepper", "kind": "cat", "asset_ids": [s.cat]}),
     )
     .await;
-    let pepper = uuid_of(&v["pet"]["id"]);
+    let pepper = id_in(&v["pet"]["id"]);
     let (st, list) = get(&app, &s.key, "/assets/pets/named").await;
     assert_eq!(st, StatusCode::OK, "{list}");
     let items = list["items"].as_array().unwrap();
@@ -666,7 +666,7 @@ async fn the_list_has_counts_pending_proposals_and_a_cover_and_cover_can_be_chos
     let cover = &b["cover"];
     assert!(cover["preview_url"].as_str().unwrap().starts_with("http"));
     assert_box(&cover["box"], [0.1, 0.1, 0.5, 0.5]);
-    assert!(s.d.contains(&uuid_of(&cover["asset_id"])));
+    assert!(s.d.contains(&id_in(&cover["asset_id"])));
     // One pet by id: the same object.
     let (st, one) = get(&app, &s.key, &format!("/assets/pets/named/{id}")).await;
     assert_eq!(st, StatusCode::OK);
@@ -687,7 +687,7 @@ async fn the_list_has_counts_pending_proposals_and_a_cover_and_cover_can_be_chos
     .await;
     assert_eq!(rest["items"].as_array().unwrap().len(), 1);
     assert_eq!(rest["next_cursor"], json!(null));
-    let want = uuid_of(&rest["items"][0]["detection_id"]);
+    let want = id_in(&rest["items"][0]["detection_id"]);
     let (st, v) = patch(
         &app,
         &s.key,
@@ -696,7 +696,7 @@ async fn the_list_has_counts_pending_proposals_and_a_cover_and_cover_can_be_chos
     )
     .await;
     assert_eq!(st, StatusCode::OK, "{v}");
-    assert_eq!(uuid_of(&v["cover"]["detection_id"]), want);
+    assert_eq!(id_in(&v["cover"]["detection_id"]), want);
     // The cover must be one of the pet's animals, in a photo that can be seen: not a stranger's, not another pet's, not a proposal.
     let free = det(&t.pool, s.likely, 0).await;
     let other = det(&t.pool, s.cat, 0).await;
@@ -710,7 +710,7 @@ async fn the_list_has_counts_pending_proposals_and_a_cover_and_cover_can_be_chos
         .await;
         assert_eq!(st, StatusCode::BAD_REQUEST, "{bad}");
     }
-    assert_eq!(pepper, uuid_of(&items[1]["id"]));
+    assert_eq!(pepper, id_in(&items[1]["id"]));
     // A bad cover is a 400, an empty change too.
     let (st, _) = patch(&app, &s.key, &format!("/assets/pets/named/{id}"), json!({})).await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
@@ -806,7 +806,7 @@ async fn pets_merge_when_they_are_of_one_kind_and_what_was_refused_for_the_first
         json!({"name": "Mochi", "kind": "dog", "asset_ids": [s.likely]}),
     )
     .await;
-    let b = uuid_of(&v["pet"]["id"]);
+    let b = id_in(&v["pet"]["id"]);
     let (_, v) = post(
         &app,
         &s.key,
@@ -814,7 +814,7 @@ async fn pets_merge_when_they_are_of_one_kind_and_what_was_refused_for_the_first
         json!({"name": "Pepper", "kind": "cat", "asset_ids": [s.cat]}),
     )
     .await;
-    let cat = uuid_of(&v["pet"]["id"]);
+    let cat = id_in(&v["pet"]["id"]);
     // Refuse the maybe-photo's dog for Mochi, and Mochi's own dog for Biscuit.
     let maybe = det(&t.pool, s.maybe, 0).await;
     let (st, _) = post(
@@ -954,7 +954,7 @@ async fn proposals_come_in_tiers_with_counts_and_leave_out_what_does_not_belong(
     let items = v["items"].as_array().unwrap();
     let got: Vec<(Uuid, &str)> = items
         .iter()
-        .map(|i| (uuid_of(&i["asset_id"]), i["tier"].as_str().unwrap()))
+        .map(|i| (id_in(&i["asset_id"]), i["tier"].as_str().unwrap()))
         .collect();
     assert_eq!(got, vec![(s.likely, "likely"), (s.maybe, "maybe")], "{v}");
     assert_eq!(v["counts"], json!({"likely": 1, "maybe": 1}));
@@ -1045,7 +1045,7 @@ async fn the_hidden_view_holds_its_proposals_and_its_pets_back_until_it_is_unloc
         json!({"name": "Shy", "kind": "cat", "asset_ids": [s.cat]}),
     )
     .await;
-    let shy = uuid_of(&v["pet"]["id"]);
+    let shy = id_in(&v["pet"]["id"]);
     set(&t.pool, s.cat, "hidden = true").await;
     sqlx::query("UPDATE sessions SET hidden_unlocked_until = NULL WHERE token_hash = $1")
         .bind(cyanotype_service::auth::sha256(b"tok"))
@@ -1096,7 +1096,7 @@ async fn every_answer_to_the_bulk_proposals_counts_and_the_rest_is_left_alone() 
         json!({"name": "Mochi", "kind": "dog"}),
     )
     .await;
-    let mochi = uuid_of(&v["pet"]["id"]);
+    let mochi = id_in(&v["pet"]["id"]);
     let likely = det(&t.pool, s.likely, 0).await;
     let maybe = det(&t.pool, s.maybe, 0).await;
     let far = det(&t.pool, s.far, 0).await;
@@ -1167,7 +1167,7 @@ async fn one_animal_can_be_assigned_or_refused_on_its_own() {
         json!({"name": "Pepper", "kind": "cat"}),
     )
     .await;
-    let cat = uuid_of(&v["pet"]["id"]);
+    let cat = id_in(&v["pet"]["id"]);
     let likely = det(&t.pool, s.likely, 0).await;
     let (st, v) = post(
         &app,
@@ -1380,7 +1380,7 @@ async fn save_as_album_works_through_the_scope() {
     let id = biscuit(&app, &s).await;
     let (st, v) = post(&app, &s.key, "/assets/albums", json!({"title": "Dog days"})).await;
     assert_eq!(st, StatusCode::CREATED, "{v}");
-    let album = uuid_of(&v["id"]);
+    let album = id_in(&v["id"]);
     let (st, v) = post(
         &app,
         &s.key,
@@ -1408,7 +1408,7 @@ async fn the_pet_filter_finds_the_photos_where_all_the_pets_are_together() {
         json!({"name": "Mochi", "kind": "dog", "detection_ids": [det(&t.pool, s.pair, 1).await, det(&t.pool, s.far, 0).await]}),
     )
     .await;
-    let b = uuid_of(&v["pet"]["id"]);
+    let b = id_in(&v["pet"]["id"]);
     post(
         &app,
         &s.key,
@@ -1513,7 +1513,7 @@ async fn names_in_a_query_become_the_filter_and_a_chip_that_skip_takes_off() {
         json!({"name": "Mochi", "kind": "dog", "detection_ids": [det(&t.pool, s.pair, 1).await]}),
     )
     .await;
-    let b = uuid_of(&v["pet"]["id"]);
+    let b = id_in(&v["pet"]["id"]);
     post(
         &app,
         &s.key,
@@ -1642,7 +1642,7 @@ async fn a_smart_album_can_follow_named_pets() {
         json!({"field": "pet", "ids": [id]}),
         "duplicates are dropped"
     );
-    let smart: Uuid = uuid_of(&v["id"]);
+    let smart: Uuid = id_in(&v["id"]);
     assert_eq!(members(&on, &s.key, smart).await, sorted(s.d.to_vec()));
     // Live: another photo of the pet joins.
     post(
@@ -1932,7 +1932,7 @@ async fn the_pets_list_and_proposals_of_a_big_library_stay_fast() {
         "the list of 20 pets over 20,000 animals took {:?}",
         started.elapsed()
     );
-    let id = uuid_of(&v["items"][0]["id"]);
+    let id = id_in(&v["items"][0]["id"]);
     let started = std::time::Instant::now();
     let (st, v) = get(&app, &key, &format!("/assets/pets/named/{id}/suggestions")).await;
     println!(
