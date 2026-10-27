@@ -120,6 +120,7 @@ configuration in Datadog (distributions would need percentile aggregation enable
 | `cyanotype.pets.checked` | count | `verdict` (`pet`, `none`) | Photos the `pets` job read the search embedding of (`docs/pets.md`, "The check"): `pet` for a photo that holds a dog or a cat, which goes on to the detector, `none` for the rest, which are done there. |
 | `cyanotype.pets.duration` | histogram (ms) | `model` | Wall time per photo of the whole `pets` job (the check; and for a photo with a pet the download of the preview, decode, detection and store). |
 | `cyanotype.pets.detector_ms` | histogram (ms) | `model` | Wall time of the detector alone (decode of the preview and inference), per photo that needed it. |
+| `cyanotype.pets.fingerprint_ms` | histogram (ms) | `model` (the fingerprint model) | Wall time to fingerprint the animals of one photo (crop, preprocessing and the image tower), in the job that finds them and in the one that fills in animals found before named pets (`docs/pets.md`, "Telling individuals apart"). |
 | `cyanotype.pets.per_photo` | histogram | `model` | Animals kept per photo scanned (0 for most). |
 | `cyanotype.pets.found` | count | `kind` (`dog`, `cat`), `model` | Animals found, by kind. |
 | `cyanotype.pets.unlocated` | count | `model` | Photos the check said hold a dog or a cat and the detector found no box in (stored as having no pets; 2 % of the flagged photos on the evaluation set). A rising share means the two have drifted apart. |

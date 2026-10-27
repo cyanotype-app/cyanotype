@@ -14,8 +14,9 @@
 //!   they are live (archived ones too); hidden ones only with the Hidden view unlocked. A `{"pets": "any"|"dog"|"cat"}` scope
 //!   (`scope.rs`) names the same photos for the bulk actions, and the `pets` filter and rule of search and smart albums read the same
 //!   detections (hidden photos are never in a search).
-//! - `GET /assets/{id}/pets`: the animals found in one photo, `{items: [{id, kind, box, score}], scanned}`, strongest first. `scanned` says
-//!   whether the photo has been looked at (an empty list of a scanned photo is "no pets", of an unscanned one "not yet").
+//! - `GET /assets/{id}/pets`: the animals found in one photo, `{items: [{id, kind, box, score, pet}], scanned}`, strongest first. `scanned` says
+//!   whether the photo has been looked at (an empty list of a scanned photo is "no pets", of an unscanned one "not yet"). `pet` is
+//!   `{id, name}` of the named pet the owner put the animal in (`named_pets.rs`), null for any other animal and for a hidden pet's.
 //!
 //! A `kind` that is not `any`, `dog` or `cat` is a `400`; ids of someone else's photos are `404`.
 use axum::{
@@ -255,6 +256,8 @@ struct PhotoPet {
     box_w: f32,
     box_h: f32,
     score: f32,
+    pet_id: Option<Uuid>,
+    pet_name: Option<String>,
 }
 
 pub(super) async fn of_photo(
@@ -282,23 +285,31 @@ pub(super) async fn of_photo(
     .bind(pets::MODEL)
     .fetch_optional(&s.db)
     .await?;
-    let rows: Vec<PhotoPet> = match &scanned_by {
-        Some(model) => {
-            sqlx::query_as(
-                "SELECT id, kind, box_x, box_y, box_w, box_h, score FROM pet_detections
-                 WHERE asset_id = $1 AND owner_id = $2 AND model = $3 ORDER BY idx",
+    let rows: Vec<PhotoPet> =
+        match &scanned_by {
+            Some(model) => sqlx::query_as(
+                "SELECT d.id, d.kind, d.box_x, d.box_y, d.box_w, d.box_h, d.score, p.id AS pet_id, p.name AS pet_name
+                 FROM pet_detections d LEFT JOIN pets p ON p.id = d.pet_id AND NOT p.hidden
+                 WHERE d.asset_id = $1 AND d.owner_id = $2 AND d.model = $3 ORDER BY d.idx",
             )
             .bind(asset)
             .bind(user.id)
             .bind(model)
             .fetch_all(&s.db)
-            .await?
-        }
-        None => Vec::new(),
-    };
+            .await?,
+            None => Vec::new(),
+        };
     let items: Vec<Value> = rows
         .into_iter()
-        .map(|r| json!({"id": r.id, "kind": r.kind, "box": [r.box_x, r.box_y, r.box_w, r.box_h], "score": r.score}))
+        .map(|r| {
+            json!({
+                "id": r.id,
+                "kind": r.kind,
+                "box": [r.box_x, r.box_y, r.box_w, r.box_h],
+                "score": r.score,
+                "pet": r.pet_id.map(|id| json!({"id": id, "name": r.pet_name})),
+            })
+        })
         .collect();
     Ok(Json(json!({"items": items, "scanned": scanned_by.is_some()})))
 }

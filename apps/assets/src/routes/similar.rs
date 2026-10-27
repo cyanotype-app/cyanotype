@@ -51,6 +51,8 @@ pub(super) struct SimilarQuery {
     people: Option<String>,
     /// `any`, `dog` or `cat`, as in search (ignored while Pets is off).
     pets: Option<String>,
+    /// Named pet ids, as in search (ignored while Pets is off).
+    pet: Option<String>,
     #[serde(rename = "type")]
     kind: Option<String>,
     album: Option<Uuid>,
@@ -67,6 +69,7 @@ impl SimilarQuery {
         SearchQuery {
             people: self.people.clone().filter(|_| features.faces),
             pets: self.pets.clone().filter(|_| features.pets),
+            pet: self.pet.clone().filter(|_| features.pets),
             from: self.from.clone(),
             to: self.to.clone(),
             favorite: self.favorite,

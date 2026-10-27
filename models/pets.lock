@@ -5,9 +5,19 @@
 # port, whose model card states Apache 2.0), pinned to one commit of the ONNX repository (2025-04-30). The licence text is the repository's
 # LICENSE at one commit (956d170, 2026-08-19; it travels with the weights and is installed next to them: Apache 2.0 requires it). Neither Hugging Face
 # repository has a licence file of its own. Both are older than 14 days.
+#
+# The second model tells individual animals apart (named pets, docs/pets.md, "Telling individuals apart"): DINOv2-small, a self-supervised vision
+# transformer (21 M parameters; Apache 2.0, Oquab et al., Meta, https://github.com/facebookresearch/dinov2; the model card of
+# https://huggingface.co/facebook/dinov2-small states Apache 2.0), as the ONNX export that Hugging Face's transformers.js team published in
+# https://huggingface.co/onnx-community/dinov2-small, its 8-bit dynamic quantisation (`onnx/model_int8.onnx`, 24 MB; as good as the 88 MB float
+# one on the bake-off, 0.929 against 0.928 mean average precision), pinned to one commit of that repository (2024-10-08). The licence text is
+# the DINOv2 repository's LICENSE at one commit (7764ea0, 2026-06-03; it travels with the weights and is installed next to them). Both are older
+# than 14 days.
 # `cyanotype-pets` expects exactly these files (crates/cyanotype-pets/src/lib.rs). Changing a line here is a model change: bump `MODEL`
 # (or `VERSION`) in crates/cyanotype-core/src/pets.rs in the same commit, so photos are scanned again.
 #
 # sha256                                                            file               url
 0f684f409618ee8a822410e754a29caa817d1aa16283ce89cad936d0a48e2f35  dfine-n.onnx       https://huggingface.co/onnx-community/dfine_n_coco-ONNX/resolve/380d2839c327efaf65dd0fe0c2c10ab7fadd5473/onnx/model.onnx
 c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4  LICENSE-dfine.txt  https://raw.githubusercontent.com/Peterande/D-FINE/956d1709314c2c6a4df6f34de232054578a7449f/LICENSE
+dfce54a839b491f395c516350ebb4a78f947e9170a6beac0f2bc5638e0f09d61  dinov2-small-int8.onnx  https://huggingface.co/onnx-community/dinov2-small/resolve/8b1f705a3a7f6f062f6bdd21986c1583d3ef105d/onnx/model_int8.onnx
+600cc67cc4cb2f5ea317dcfc687ad1c74dc4bec8782bbe9db0afd83513b935b7  LICENSE-dinov2.txt     https://raw.githubusercontent.com/facebookresearch/dinov2/7764ea0f912e53c92e82eb78a2a1631e92725fc8/LICENSE

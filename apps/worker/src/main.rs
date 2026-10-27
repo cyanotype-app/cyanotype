@@ -203,7 +203,7 @@ async fn main() -> Result<()> {
         } else if pets_on {
             tracing::warn!(
                 dir = %pets::model_dir().display(),
-                "pet model file not found: dogs and cats in photos will not be found (run scripts/fetch-models.sh, or set PETS_MODEL_DIR)"
+                "pet model files not found: dogs and cats in photos will not be found (run scripts/fetch-models.sh, or set PETS_MODEL_DIR)"
             );
         }
         None

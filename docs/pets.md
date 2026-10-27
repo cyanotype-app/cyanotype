@@ -1,8 +1,10 @@
 # Dogs and cats in photos
 
 The worker finds the dogs and cats in every photo, so the owner can list them (a **Pets** view), search for them ("dogs", "cat on the sofa", a
-pets filter, a smart-album rule) and select them for bulk actions. For now a dog or a cat is just a *pet*: the photos are found, not the animals told apart.
-Boxes are stored for each animal so that a later feature (a page per pet, seeded by tagging) can crop them, but nothing here identifies an individual.
+pets filter, a smart-album rule) and select them for bulk actions. A dog or a cat is first just a *pet*: the photos are found, not the animals told apart.
+**Named pets** go one step further, seeded by the owner: they make "Biscuit", tag a few photos of it, and the app proposes more photos by how much the crop of
+the animal looks like the tagged ones; the owner confirms or refuses ([Named pets](#named-pets)). Nothing groups animals by itself: no open model tells individual
+animals apart well enough for that, and the measurement says how well it does tell them apart ([Telling individuals apart](#telling-individuals-apart)).
 
 **It is on by default** and costs very little: the search model's own embedding of a photo says which photos hold a dog or a cat (microseconds each, no
 photo read), and a small detector draws the boxes on those few. It stores nothing about people. `PETS_ENABLED=0` turns it off (the worker and the assets
@@ -15,9 +17,11 @@ service must agree): no job is queued, nothing is read, the Pets routes answer `
 - [In search](#in-search)
 - [In the API](#in-the-api)
 - [In the app](#in-the-app)
+- [Named pets](#named-pets)
 - [Privacy](#privacy)
 - [Models, licences and provenance](#models-licences-and-provenance)
 - [Bake-off](#bake-off)
+- [Telling individuals apart](#telling-individuals-apart)
 - [Settings](#settings)
 - [Cost: time and memory](#cost-time-and-memory)
 - [Operating it](#operating-it)
@@ -37,7 +41,7 @@ service must agree): no job is queued, nothing is read, the Pets routes answer `
    is read, no model is loaded, the photo is recorded as scanned with no pets. Details and numbers below.
 4. **The boxes.** Only for a photo with a confirmed kind, the job downloads the photo's **preview** (`preview.webp`, at most 1440 px, never the original, so
    no large decode and nothing to refuse for memory), decodes it and runs D-FINE-N, a 15 MB object detector. It keeps the boxes of the confirmed kinds
-   only, the strongest one if it reaches 0.10 and further ones only if they are surer (0.25) and not the same animal again. While it runs it holds 64 MB
+   only, the strongest one if it reaches 0.10 and further ones only if they are surer (0.25) and not the same animal again. While it runs it holds 96 MB
    of the worker's byte budget (`WORKER_MEMORY_BUDGET_MB`). A photo the check confirmed and the detector found no box in is recorded as having no pets
    (3 of 129 on the evaluation set); the detector is the proof.
 5. The result replaces the photo's rows in one transaction (`pet_detections`, one row per animal) and records that the photo was scanned, also when it
@@ -152,12 +156,12 @@ trashed, not a RAW half, archived ones too) and not hidden unless the session ha
 | `GET /assets/pets` | `{any, kinds: [{kind, photos, cover}], scanned, total}`: how many photos this session may see have a pet of any kind, and per kind (`dog`, `cat`: every kind is listed, with `photos: 0` and `cover: null` when there is none). `cover` is `{asset_id, box: [x, y, w, h], preview_url}` of the clearest animal of that kind (score times area; `box` is fractions of the preview image the URL serves, so a client crops it with CSS). `scanned` and `total` are how far the scan has got for the owner's photos that can be scanned (a preview and a search embedding). |
 | `GET /assets/pets/photos?kind=any\|dog\|cat&limit&cursor` (or `before`) | The photos with a pet of that kind (default `any`), newest first, with the items, ordering and keyset paging of `GET /assets` (`{items, next_cursor, next_before}`). |
 | `GET /assets/pets/timeline?kind=` | `{total, days: [{day, count}]}`: the same photos counted per day as `GET /assets/timeline` does, so the view can be laid out and scrubbed like the library. |
-| `GET /assets/{id}/pets` | `{items: [{id, kind, box: [x, y, w, h], score}], scanned}`: the animals found in one photo, strongest first; `scanned` is false while the photo has not been looked at (`items` is empty either way). For the viewer's boxes and, later, a pet's crop. |
+| `GET /assets/{id}/pets` | `{items: [{id, kind, box: [x, y, w, h], score, pet}], scanned}` (`pet` is `{id, name}` or null, see Named pets): the animals found in one photo, strongest first; `scanned` is false while the photo has not been looked at (`items` is empty either way). For the viewer's boxes and, later, a pet's crop. |
 | `GET /assets/search?pets=any\|dog\|cat` | The filter above. `parsed.chips[]` has `{kind: "pets", label: "Dogs" \| "Cats" \| "Pets", matched, pets: "dog" \| "cat" \| "any"}` when words became it. `skip=pets` turns the reading of words off. |
 | `GET /assets/search/facets` | `pets: [{value: "any" \| "dog" \| "cat", count}]` while Pets is on. |
 | bulk requests: `{"scope": {"pets": "any\|dog\|cat"}, "except": [...]}` | Like `{"person": id}` and `{"album": id}`: the photos of the Pets view for that kind, resolved inside the request's transaction (favorite, rating, tags, hide, archive, trash, restore, edits, albums, shares, zip). A `search` scope with a `pets` filter is **refused (404) while Pets is off**, never read as "no filter": a bulk trash must not widen to the whole library because a switch was flipped. |
 | smart albums: `{"field": "pets", "kind": "any\|dog\|cat"}` | "A dog, a cat or either was found in the photo" (the rule editor's *Pets* rule). Saving one while Pets is off is a `404` and a saved rule matches no photo while it is off, in the album, its counts, its bulk scope and its share link (never "no rule", which would be every photo). The album keeps only the kind. |
-| `GET /assets/processing` | has a `pets` entry while the feature is on: `{scanned, total, found, queued, running, failed, model, percent}`; a failed `pets` job is also in the failure list and "Retry failed" requeues it. |
+| `GET /assets/processing` | has a `pets` entry while the feature is on: `{scanned, total, found, unfingerprinted, queued, running, failed, model, percent}`; a failed `pets` job is also in the failure list and "Retry failed" requeues it. |
 
 Pick names for a UI from these: the Pets entry of the library menu is shown when `status.enabled`; the page is `/assets/pets` for the header and the kind tabs (the counts and
 covers), `/assets/pets/photos` and `/assets/pets/timeline` for the grid (the library's own timeline component), bulk actions through `{"pets": kind}`, "Search with filters"
@@ -182,9 +186,68 @@ a pet. While it is off `/pets` is a "Page not found", the sidebar has no Pets, C
 - **Progress.** The Pets page shows the scan (above). `GET /assets/processing` also reports `pets`; the library's processing banner does not draw it (like search indexing and text it is reported apart
   from the work in progress), but a failed `pets` job is in its list of failures as "Finding pets", and "Retry failed" requeues it.
 
+## Named pets
+
+The owner makes a pet ("Biscuit", a dog), tags a few photos of it (five to ten is plenty), and the app **proposes** more: "Is this Biscuit?", best first, in two tiers
+(*likely* and *maybe*). The owner confirms or refuses in bulk, and **every answer counts**: a confirmed animal moves the centre the next proposals are measured from, a refused
+one is never proposed for that pet again. A pet has a page of photos (a timeline like a person's), a cover, a name that can be changed, and can be hidden, merged and deleted.
+No UI is described here (the routes below are what one would be built on); everything is under `PETS_ENABLED` (off: every route a `404`) and is the signed-in owner's alone.
+
+### How it works
+
+1. **A fingerprint per animal.** The `pets` job crops each animal's box out of the preview (a square around the box, 10 % bigger, `cyanotype_pets::crop`), embeds the crop with **DINOv2-small**
+   (8-bit, the class token, 384 numbers) and stores it with the animal (`pet_detections.embedding`, with `embed_model`, which names the model *and* the crop recipe: a different one is
+   fingerprinted again, and numbers of two models are never compared). A crop whose shorter side is under 64 px of the preview gets none (retrieval at 64 px is 0.89 mean average precision,
+   0.93 at full size; 48 px 0.85; 32 px 0.76), and is recorded as tried. It is made in the job that finds the animal, from the same decoded preview.
+2. **Animals found before named pets** have no fingerprint: the worker's sweep queues their photos, and the job then **only fingerprints them, without finding them again** (same rows, same
+   ids), so a library is backfilled without a rescan and without disturbing anything. `GET /assets/processing` has `pets.unfingerprinted` while it goes on.
+3. **Proposals.** An animal is scored by its cosine similarity to the **centre** (the mean) of the fingerprints of the animals in the pet. Only free animals of the pet's kind count: not another
+   pet's, not one refused for this pet, not one in the trash, the Hidden view (unless unlocked), another owner's, or in a photo being scanned again. A score of at least **0.72 is *likely***,
+   **0.55 *maybe***; below that nothing is proposed (`crates/cyanotype-core/src/named_pets.rs`; the numbers are from the table in "Telling individuals apart"). At most 300 are listed.
+   The count each pet shows in the list (`pending`) is the same number, for all pets in **one** query.
+4. **Decisions are the owner's and survive a rescan.** `pet_detections.pet_id` is set only by the owner (there is no automatic assignment), `pet_rejections` holds "not this pet". A new scan of
+   a photo (a rotate or crop, a new detector or fingerprint model) replaces its animals with new rows, and `pets::store` hands what was decided to the animal that takes each one's place: matched
+   one to one within a kind, first by fingerprint (cosine at least 0.80, same model only: the same animal re-found), then by overlapping boxes (IoU at least 0.5), then, if the photo had
+   one animal of the kind and the new scan has one, those two (a Rotate moves the box and changes the crop: DINOv2 says only 0.65 for the same animal turned, against 0.34 median for
+   look-alikes, so a fingerprint cannot be trusted across a rotate; with several animals in the photo nothing is guessed). The pet it was in, the pets it was refused for and being a pet's cover
+   are carried. After a rotate or crop the animals the owner decided about wait, unread, for the new scan; the others are forgotten (`forget_and_requeue`).
+
+### The routes
+
+All under `/assets/pets/named` (`/assets/pets` itself is the summary of the kinds). Reads need a read key, changes a write key. Ids of someone else's pets, animals and photos are `404`, the
+same as unknown ones.
+
+| | |
+| --- | --- |
+| `GET /assets/pets/named`, `GET /assets/pets/named/{id}` | `{items: [{id, name, kind, hidden, photos, detections, pending, cover}]}`, most photos first; `kind` is `dog` or `cat`; `cover` is `{detection_id, asset_id, box: [x, y, w, h], preview_url}` or null (the box is fractions of the preview, cropped with CSS like a person's face; the chosen cover, else the clearest animal). Counts are of the photos this session may see (live, not a RAW half, not hidden unless the Hidden view is unlocked); a pet only hidden photos have is not listed to a locked session (its page is a `404`). `pending` is how many proposals wait (0 for a hidden pet), for all pets in one query. |
+| `POST /assets/pets/named {name, kind, asset_ids?, detection_ids?}` | Make a pet from photos. `name` is trimmed, 1 to 100 characters, no control characters, **two pets may share a name**; `kind` is `dog` or `cat`; at most 1,000 ids and 500 pets per owner. Answers `{pet, assigned, ambiguous, skipped}`: for each photo in `asset_ids` its *free* animals of the kind decide: **one** joins the pet; **several** and none joins: the photo is in `ambiguous` as `{asset_id, preview_url, candidates: [{detection_id, box}]}` for the caller to choose from (then `POST .../photos {detection_ids}`); **none** or not looked at yet: in `skipped` as `{asset_id, reason}`, `reason` being `no_animal`, `not_scanned`, `already` (the photo already has an animal of this pet) or `in_other_pet`. `detection_ids` name animals directly (the caller's explicit word: one that is another pet's moves, and is refused for the first; of the wrong kind is a `400`). A photo or animal that is not the owner's, or not visible to this session, is a `404` and **nothing** is made. The pet is made even when no photo could be placed. |
+| `PATCH /assets/pets/named/{id} {name?, hidden?, cover_detection_id?}` | Rename (a blank name is a `400`: a pet is always named), hide or show, choose the cover (must be one of the pet's animals in a photo this session may see, else `400`). `DELETE` frees the animals (they stay, with their fingerprints) and the photos are untouched; the refusals for it go with it. Audited as a count only. |
+| `POST /assets/pets/named/{id}/merge {into}` | The first pet's animals go to the other (same kind only, else `400`), which keeps its name; "not the first" becomes "not the second". Audited as a count only. |
+| `GET /assets/pets/named/{id}/detections?limit&cursor` | The animals a cover can be chosen from (`{detection_id, asset_id, box, preview_url}`, clearest first, `next_cursor` while more). |
+| `GET /assets/pets/named/{id}/photos?limit&cursor\|before`, `GET .../timeline` | The pet's photos, same items, ordering and keyset paging as `GET /assets`; `{total, days}` for the scrubber. Live photos, archived ones too, hidden ones only with the Hidden view unlocked. |
+| `POST /assets/pets/named/{id}/photos {asset_ids?, detection_ids?}` | Add photos or animals: the same answer and rules as making a pet (`{pet, assigned, ambiguous, skipped}`). |
+| `POST /assets/pets/named/{id}/photos/remove {asset_ids?, detection_ids?}` | **"Not this pet"**: the pet's animals in those photos (or those animals) are freed **and refused for the pet**, never proposed for it again; a removed cover is cleared. `{removed}`. Adding the animal again by hand forgets the refusal. |
+| `GET /assets/pets/named/{id}/suggestions?limit&tier=likely\|maybe` | `{items: [{detection_id, asset_id, box, preview_url, similarity, tier}], counts: {likely, maybe}}`, best first (`limit` default 24, at most 100; the counts are of everything proposed, not of the page). A pet with no fingerprinted animal yet has none. |
+| `POST /assets/pets/named/{id}/suggestions/answer {confirm?: [detection_id], reject?: [detection_id]}` | Answer many at once (at most 1,000): `{confirmed, rejected, skipped}`. Only free animals of the pet's kind change; one already another pet's or this one's (to confirm), or already refused (to reject), is `skipped`, and an id that is not the owner's, not visible, or of another kind is a `404` with **nothing** changed. |
+| `POST /assets/pets/detections/{id}/assign {pet_id}`, `POST /assets/pets/detections/{id}/reject {pet_id}` | The same for one animal (`{pet}` / `204`); moving an animal from another pet refuses it for that one; refusing an animal that is in the pet is a `400` (remove it instead). |
+| `GET /assets/{id}/pets` | Its items gain `pet: {id, name}` for an animal the owner put in a (not hidden) pet, else `null`. |
+| `GET /assets/search?pet=<id>,<id>` (also `similar`, and the `search` scope) | Photos where **all** the named pets are, together (at most 10 ids; `400` for a malformed one or more than 10; an id that is not the owner's matches nothing, exactly like one that never existed). Combines with every other filter, `pets=`, people and text. Ignored while Pets is off. |
+| the words of a query | The owner's **named, not hidden** pets with a photo a search can show are read out of the words like people's names (after dates, places and people; before "dog", "cat" and "pet"): at the start or end of the query or after *with, of, and, featuring, plus, including*; the longest name wins; a name two pets share, a name a person has (the person is read first) and names under three letters are never matched; single common words need an introducing word. A chip `{kind: "pet", label, matched, pet: [{id, name}]}`; `skip=pet` gives the words back; an explicit `pet` filter wins. |
+| bulk requests: `{"scope": {"pet": "<id>"}, "except": [...]}` | The pet's photos as its page lists them, resolved inside the request's transaction (so **Save as album** is `POST /assets/albums {title}` then `POST /assets/albums/{id}/assets {scope: {pet}}`). Pets off or an id that is not the owner's: `404`; a `search` scope with a `pet` filter is refused while Pets is off, never read as "no filter". |
+| smart albums: `{"field": "pet", "ids": [...]}` | "All of these pets are in the photo" (1 to 10 of the owner's own, checked when it is saved: another owner's id is a `404`). The album keeps only ids; a deleted pet leaves a rule that matches **nothing**, and a merge is not followed (edit the rule). Pets off: saving is a `404` and a saved rule matches nothing. |
+
+**The title of "Save as album" starts empty**, as for people: an album's title is shown to everyone it is shared with and is written into the recovery manifest, so a pet's name must not be put there by default.
+
+### What is not there
+
+- No automatic assignment: no job ever puts an animal in a pet. A new pet has proposals only once its photos have fingerprints (seconds after the job; a backfilled library takes the sweep's time).
+- No "not a pet" mark for a detection that is no animal (a plush toy found as a cat): refuse it for the pet, which also keeps it out of that pet's proposals.
+- A refusal is an exclusion, not a negative example: near-duplicates of a refused animal (a burst) are proposed separately and have to be refused too (the owner can do it in bulk). Not measured.
+- No pet-level merge of decisions across kinds (a dog is never a cat's) and no cross-owner anything.
+
 ## Privacy
 
-- **It finds animals, not people.** `pet_detections` and `pet_scans` hold a kind, a box, a score and two shares per photo: no fingerprint, no face and no name. A box that happens to
+- **It finds animals, not people.** `pet_detections` and `pet_scans` hold a kind, a box, a score and two shares per photo, and (for named pets, below) a fingerprint of the animal's crop: no face and no name. A box that happens to
   contain a person's face in the middle of a dog's picture is a box.
 - **Deleted with the photo.** A permanent delete (`apps/assets/src/purge.rs`) removes the photo's rows in the same transaction as the photo; the foreign keys cascade from
   `assets` and from `users` too, so deleting an account removes its detections.
@@ -193,7 +256,16 @@ a pet. While it is off `/pets` is a "Page not found", the sidebar has no Pets, C
   the signed-in owner, and a photo in the Hidden view is invisible to a session that has not unlocked it.
 - **Derived data, not backed up as such.** The detections are not in the recovery manifests (`docs/recovery.md`): they are found again by a rescan, which the worker queues by itself once
   the photos have their embeddings again. A smart album's `pets` rule is only a kind and travels with the album's rules.
-- **One command removes everything.** `cyanotype pets delete [--email ADDRESS] --apply` deletes every detection, every scan record and every queued or finished `pets` job, for one
+- **Named pets.** A pet's name is personal data: it is stored in `pets.name` (migration 0037), shown only in the owner's session, and **never written to the bucket, the audit trail (a count is) or a
+  log**. A fingerprint is a picture-derived vector of an animal's crop and holds no face of its own, but a crop can contain whatever is in the box. **Never on a public page:** a test makes a pet, a
+  smart album that follows it and an album from it by scope, shares them, and searches every public response, the owner's album and share lists and the recovery manifest for the name, the ids and the
+  boxes. Deleting the account or the photo deletes its animals, rejections and (with the account) pets.
+- **Recovery: the same as People, deliberately.** Pet names, which animals are in which pet and "not this pet" are **not in the recovery manifests** (`docs/recovery.md`): after a bucket-only rebuild
+  the animals are found and fingerprinted again, and the owner makes the pets again, which is five photos each (People's names are in the same position, `docs/faces.md`); the Postgres dumps do hold
+  them. A smart album with a `pet` rule keeps its title and everything else in the manifest, **without its rules** (their ids would mean nothing, and are private), exactly like a people rule
+  (`manifest::has_private_rule`). Putting names in the manifests would have meant a new line type, a restore that matches animals by something stable (a photo's hash and a box) and a change of the
+  manifest's privacy statement, for data that is a few minutes to make again; if that changes, the line type is the place.
+- **One command removes everything.** `cyanotype pets delete [--email ADDRESS] --apply` deletes every detection, every scan record, every named pet (names included), every "not this pet" decision and every queued or finished `pets` job, for one
   account or for all; without `--apply` it only counts. Switch Pets off and restart the worker first, or the sweep finds the photos again. Run it where `migrate` runs
   (`docs/deploy.md`: `dc run --rm reindex pets delete --apply`).
 
@@ -205,13 +277,15 @@ pinned commits; the repository itself is AGPL-3.0, so AGPL weights would have be
 | Model | Used for | Licence | Source (primary) |
 | --- | --- | --- | --- |
 | **D-FINE-N** (`dfine-n.onnx`, 15 MB, COCO only, 4 M parameters, 42.8 AP) | the boxes | **Apache 2.0** (Yansong Peng et al., `Peterande/D-FINE`) | the ONNX export that Hugging Face's transformers.js team published in `onnx-community/dfine_n_coco-ONNX` at commit `380d2839c327efaf65dd0fe0c2c10ab7fadd5473` (2025-04-30), `onnx/model.onnx`, from `ustc-community/dfine_n_coco` (the Hugging Face port, whose model card states Apache 2.0). Neither Hugging Face repository has a licence file, so the licence text shipped next to the weights is the one in `Peterande/D-FINE` at commit `956d1709314c2c6a4df6f34de232054578a7449f` (2026-08-19, `LICENSE`, Apache 2.0, which its README names for the code and the released weights) |
+| **DINOv2-small** (`dinov2-small-int8.onnx`, 24 MB, 21 M parameters, the class token, 384 numbers) | the fingerprint of each animal's crop, for named pets | **Apache 2.0** (Oquab et al., Meta; the model card of `facebook/dinov2-small` and the repository's LICENSE) | the 8-bit ONNX export that Hugging Face's transformers.js team published in `onnx-community/dinov2-small`, pinned to its commit of 2024-10-08 (`onnx/model_int8.onnx`); licence text from `facebookresearch/dinov2` at `7764ea0` |
 | **SigLIP 2 base** (the search model, 224 px) | the check: its image embedding is read against prompts embedded with its text tower | **Apache 2.0** (Google) | already in the worker and assets images for search (`models/siglip2.lock`); the prompt vectors are in the repository |
 
 Both are pinned by exact URL and sha256 in `models/pets.lock` (and `models/siglip2.lock`), fetched by `scripts/fetch-models.sh`, verified, and installed with the licence text
-(`LICENSE-dfine.txt`) in the worker image under `/opt/cyanotype/models/pets/`, as Apache 2.0 requires. Both are older than 14 days.
+(`LICENSE-dfine.txt`, `LICENSE-dinov2.txt`) in the worker image under `/opt/cyanotype/models/pets/`, as Apache 2.0 requires. All are older than 14 days. DINOv2 was trained on LVD-142M (images curated from web crawls); the
+caveat below applies to it as well.
 
 **A caveat the licence files cannot settle.** The licences cover the weights and files in those repositories. D-FINE was trained on COCO (images from Flickr under several licences,
-annotations CC BY 4.0) with an ImageNet-pretrained backbone, and SigLIP 2 on web data; those datasets have their own terms, which we cannot verify or grant. D-FINE's weights are
+annotations CC BY 4.0) with an ImageNet-pretrained backbone, DINOv2 on a curated web-image set, and SigLIP 2 on web data; those datasets have their own terms, which we cannot verify or grant. D-FINE's weights are
 distributed by its authors and Hugging Face under Apache 2.0; if that residual risk matters for your use, read the datasets' terms.
 
 **Considered and not shipped** (all measured above except where it says why not):
@@ -257,6 +331,107 @@ The set was labelled on contact sheets made by `cargo run --release -p cyanotype
 would store can be looked at the same way with `--example draw` (a red box on every dog, a blue one on every cat, a grey frame on a photo the check passes over) and its time and memory
 measured with `--example bench` (below).
 
+## Telling individuals apart
+
+The question for named pets is not "which photos have a dog" but "given a few photos the owner says are Biscuit, which other photos are Biscuit, and not the neighbour's look-alike?" It was measured
+before anything was built, as the faces and the detectors were (`crates/cyanotype-pets/tests/individuals.rs`, ignored).
+
+### The evaluation set
+
+`crates/cyanotype-pets/tests/eval/individuals.tsv` lists **266 photos of 22 individual animals** (17 dogs, 205 photos; 5 cats, 61 photos): Wikimedia Commons originals whose page marks them **Public
+domain** (212) or **CC0** (54); every other licence, CC-BY included, was rejected. Each animal has an anonymous id (`d01`..`d17`, `c01`..`c05`), a look-alike group in generic words (a breed or a colour) and the
+Commons page id of each file: **no name, owner or title is in the repository**. `scripts/fetch-pets-id-eval-set.sh [DEST]` looks each id up on the Commons API, downloads and verifies the
+files by sha256 (default `models/pets-id-eval`, 619 MB; it takes about half an hour because Commons rate-limits bots, and re-running skips what is there). The labels are the Commons category that names the
+animal, **checked by eye on contact sheets** (coat colour and markings), and a photo that shows more than one animal of its kind, or a different individual, was dropped. Where look-alikes are:
+two black Portuguese water dogs (one with white chest and paw markings, one all black; each other's impostors, the hard case), three German shepherds (black-and-tan, sable, a puppy), two black
+Scottish terriers (colour photos, old black-and-white ones), two golden and chocolate retrievers, two black cats; the other animals are alone in their group.
+
+**Limits, plainly.** It is smaller than the 25 to 40 animals aimed for (the named cats on Commons are almost all CC-BY and so excluded; there are 5, two of them with only 5 and 6 photos, all of about 600 px). Photos of one
+animal come in sessions (the same shoot, outfit and background), and the seeds are drawn from the same sessions as what is searched: **that makes the numbers kinder than a real library, where an animal
+changes with the years, the haircut and the season** (the old black-and-white photos are the least certain labels and the hardest). The pool a pet is searched in is 200 photos of other animals, not a
+library's 10,000. Puppies grow, and that is not measured. Six photos had no animal of the kind found by the detector and are not scored. One animal's identity (d16) is a border collie in training photos with a
+person in much of the frame.
+
+### The setting that matters, and what was measured
+
+For every animal with at least `k + 3` photos, 40 random draws of `k` seed photos (k = 3, 5 and 10); every other photo of the **same kind** in the set is scored against the seeds, and what would be proposed at
+a threshold is counted: precision and recall of the proposals, how many of the look-alikes' photos (same group, another animal) are proposed, and in how many draws at least one look-alike is. The
+animal in each photo is the one D-FINE-N boxes (the biggest, surest box of the kind); the crop is cut out and embedded by each candidate.
+
+**Mean average precision of the ranking** (the threshold-free figure; the centre of the seeds as the rule), over all draws:
+
+| Embedding of the crop | size / time (2 threads) | k = 3 | k = 5 | k = 10 |
+| --- | --- | --- | --- | --- |
+| SigLIP 2 image tower (the search model: already in memory, no new model), square crop 10 % bigger | 4-bit, in memory already / 307 ms | 0.806 | 0.810 | 0.856 |
+| DINOv2-small, patch-token mean | 88 MB / 148 ms | 0.662 | 0.713 | 0.778 |
+| DINOv2-small, class token + patch mean | 88 MB / 148 ms | 0.843 | 0.882 | 0.934 |
+| DINOv2-small, class token, 4-bit | 17 MB / 149 ms | 0.879 | 0.901 | 0.965 |
+| DINOv2-small, class token, float32 | 88 MB / 148 ms | 0.900 | 0.917 | 0.968 |
+| **DINOv2-small, class token, 8-bit (shipped)** | **24 MB / 140 ms** | **0.900** | **0.918** | **0.967** |
+
+DINOv2's class token is **0.09 to 0.11 better than the search model's own embedding** (which was trained to match photos with sentences, not animals with themselves) at the same crop, so the
+new model is shipped: 24 MB, 140 ms an animal, about 90 MB resident with the detector (a run of 20 photos peaked at 273 MB with large originals decoded; the job holds 96 MB of the worker's budget). The 8-bit
+build loses nothing against float32; the 4-bit one loses 0.02. The patch tokens are worse than the class token, and joining them hurts.
+
+Other choices, by the same measure (8-bit, class token): the **crop** (box alone 0.895 / 0.918 / 0.954, box + 10 % 0.910 / 0.922 / 0.954, **square + 10 % 0.900 / 0.918 / 0.967**, square + 25 % 0.894 / 0.909 / 0.961):
+within a point or two of each other, the square (which does not stretch a dog) was kept. The **rule** (centre of the seeds, best seed, mean of the best three): the centre and the mean of the best three
+are the same, the best seed is 0.01 to 0.03 worse, so the centre, which is also one `avg` in SQL. **Small crops** (the animal shrunk before it is embedded, mean average precision at k = 3 / 5 / 10): 128 px 0.874 / 0.897 / 0.958,
+96 px 0.860 / 0.892 / 0.955, **64 px 0.834 / 0.885 / 0.952**, 48 px 0.794 / 0.848 / 0.912, 32 px 0.712 / 0.795 / 0.874, full size 0.900 / 0.918 / 0.967: below 64 px nothing is fingerprinted.
+
+### The thresholds
+
+The shipped model and rule, at some thresholds (cosine to the centre of the seeds). *Look-alikes proposed* is the share of the look-alikes' photos that would be proposed; *draws with one* the share of draws in which
+at least one look-alike would be.
+
+| threshold | k | precision | recall | look-alikes proposed | draws with one | proposals per draw |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0.55 (**maybe**) | 3 | 79.5 % | 82.8 % | 34 % | 68 % | 11.2 |
+| | 5 | 80.4 % | 89.1 % | 36 % | 65 % | 13.1 |
+| | 10 | 84.7 % | 93.6 % | 42 % | 67 % | 11.9 |
+| 0.60 | 3 | 87.2 % | 72.3 % | 26 % | 51 % | 9.2 |
+| | 5 | 85.8 % | 83.4 % | 26 % | 51 % | 11.7 |
+| | 10 | 86.8 % | 90.7 % | 32 % | 65 % | 11.0 |
+| 0.65 | 3 | 91.5 % | 60.6 % | 19 % | 37 % | 7.1 |
+| | 5 | 91.0 % | 73.0 % | 17 % | 40 % | 9.5 |
+| | 10 | 93.9 % | 86.1 % | 24 % | 53 % | 9.5 |
+| 0.72 (**likely**) | 3 | 93.9 % | 41.6 % | 10 % | 23 % | 4.6 |
+| | 5 | 95.1 % | 54.3 % | 5.5 % | 28 % | 6.5 |
+| | 10 | 96.6 % | 68.9 % | 13 % | 33 % | 7.4 |
+| 0.77 | 3 | 96.6 % | 26.4 % | 3.4 % | 9 % | 2.7 |
+| | 5 | 98.1 % | 36.6 % | 0.6 % | 5 % | 4.1 |
+| | 10 | 98.3 % | 48.5 % | 4 % | 17 % | 5.3 |
+
+(Against the search model's embedding the same precision of 95 % needs a threshold of 0.91 and finds a third of the photos.) **Two tiers**, from this table: **likely at 0.72** (about 95 % of what is
+proposed is the pet at every k, and about half of the pet's photos are found), and **maybe at 0.55** (about 80 to 85 % precise, 83 to 94 % of the photos found). The owner confirms the likely ones in
+bulk, and looks at the maybe ones one by one. The threshold does not move with `k` because the centre of more photos is steadier but not differently scaled; fewer than three seeds are less reliable than the table says
+(k = 3 is the smallest measured).
+
+**How well it separates look-alikes: not reliably, and the app does not pretend it does.** At the maybe tier a third to two fifths of the look-alikes' photos are proposed, and in two draws out of three at
+least one is; at the likely tier 5 to 13 % are and in a quarter to a third of the draws one is. Results per animal and per group were not tabulated, so which look-alikes are mixed up most is not known. That is why every proposal is
+confirmed by the owner, and why the tiers exist; a look-alike's photo that was confirmed by mistake moves the centre toward the wrong animal, and removing it ("not this pet") is one click. In a real library there are
+more strangers than here (so more false proposals at a threshold) and the owner's own photos span years (so lower recall), and no number here says how that works out.
+
+### A new scan keeps the decisions
+
+The same animal in a photo that is scanned again must keep its pet, but a rotate turns the picture: each photo was turned a quarter and its animal found and embedded again, `rotate` in the output. **The crop of the
+turned photo against the crop it had**: median 0.649, 5th percentile 0.335 (DINOv2; SigLIP 2: 0.892 and 0.745), against **look-alikes' crops** median 0.341, 95th percentile 0.596, 99th 0.687, maximum 0.721
+(SigLIP 2: 0.758, 0.867, 0.913, 0.945). A fingerprint is therefore good for "found again at the same size" (a re-scan by a new model version, a crop that leaves the animal alone) and **not for a rotate**: the carried
+decision matches by fingerprint at 0.80 (above anything a stranger scored) and by overlapping boxes at 0.5, and a photo's only animal of a kind is matched to the new scan's only animal whatever the numbers say; with
+several animals nothing is guessed after a rotate and their decisions are lost with them (the owner confirms again). Tests: `crates/cyanotype-core/tests/named_pets.rs`.
+
+### Reproducing it
+
+```text
+scripts/fetch-pets-id-eval-set.sh                                     # the photos -> models/pets-id-eval
+scripts/fetch-models.sh                                               # SigLIP 2, D-FINE-N and the 8-bit DINOv2 -> models/
+LOCK=models/pets-embed-bakeoff.lock scripts/fetch-models.sh models/pets-embed   # the other builds, for the comparison
+PETS_ID_DIR=models/pets-id-eval PETS_EMBED_DIR=models/pets-embed SEARCH_MODEL_DIR=$PWD/models \
+  cargo test --release -p cyanotype-pets --test individuals -- --ignored --nocapture
+```
+
+It writes `embeddings.json` next to the photos (delete it to start over; `PETS_VARIANTS=dino-int8-cls/sq10` narrows the table, `PETS_DETAIL="dino-int8-cls/sq10:centre"` prints the threshold tables above), about 40 minutes
+the first time on a shared machine. `-- --ignored fingerprint_cost` measures the memory and time of the shipped pair alone.
+
 ## Settings
 
 | Setting | Where | Default | |
@@ -296,7 +471,7 @@ Measured with `cargo run --release -p cyanotype-pets --example bench` on the sha
 
 *Does it fit the 1280m worker?* Yes. The compose file's 1280m is the 640 MB decode budget plus the models that stay resident plus runtime slack (search 140, text about 100, faces about 75 per
 `docs/faces.md`); the detector adds about 70 MB when it is loaded after use, inside the slack that was left, and it is loaded only for a photo with a pet and dropped after five idle
-minutes. A job's transient memory (the decoded preview, 6 MB as RGBA and 5 MB as RGB, the 5 MB input tensor, the activations) is paid for out of the shared budget: 64 MB per job (the measured
+minutes. A job's transient memory (the decoded preview, 6 MB as RGBA and 5 MB as RGB, the 5 MB input tensor, the activations) is paid for out of the shared budget: 96 MB per job since named pets (64 before; the extra is DINOv2's activations and the crops) (the measured
 extra above is 31 MB plus the decoded preview). The limit is unchanged; `worker.rss_bytes` and `pets.model_loaded` show it live.
 
 *Backfill of 50,000 photos.* Every photo costs its job (claim, a database read of the embedding, the check, the write: about 10 ms), and the detector's 0.2 to 0.4 s (a shared 2 vCPU VPS with one
@@ -307,18 +482,30 @@ being embedded for the first time the two overlap and pets finish soon after the
 *Default on.* The numbers above are why it is on: the cost is a few milliseconds per photo plus a short detector run for a pet photo, the memory is inside the existing limit, and it stores nothing
 about people. If a deployment wants none of it, `PETS_ENABLED=0` and nothing runs.
 
+### Cost of named pets
+
+- **Fingerprints:** 140 ms an animal with 2 threads (8-bit DINOv2-small), in the job that finds the animal; the model is 24 MB on disk; it and the detector together are about 90 MB resident (a measured process, 8 MB before loading), loaded on first use and dropped after five idle minutes.
+  The job holds 96 MB of the worker's byte budget (was 64). The backfill of animals found earlier is one such job per photo with animals, without a detector run: 5,000 photos with a pet are about 20 to 30 minutes of
+  background work (each also downloads and decodes the preview).
+- **Proposals and the pets list** are exact (no index): one pass over the owner's free animals of the kind. Measured with 20 pets of 30 animals each and **20,000** free animals of one owner
+  (`cargo test -p cyanotype-assets named_pets_tests::the_pets_list -- --ignored --nocapture`, a debug build on a shared machine with Postgres in a container): one pet's proposals **0.13 s**, the pets list
+  (with every pet's pending count, one query) **0.67 s**. Twenty thousand free animals is a library of about 150,000 photos with a pet in one in seven; a family library is a tenth of that. A nearest-neighbour
+  index was not added: it would have answered one pet in milliseconds and made the list's count (all pets at once) no faster, for an index that costs every insert. If a library outgrows it, the place is
+  an HNSW index per `embed_model` as `faces` has (`docs/faces.md`).
+- Storage: 1.5 KB an animal (384 half-precision numbers).
+
 ## Operating it
 
-- Nothing to install: the detector is in the worker image and the prompts are in the binary. In a development checkout `just models` (or `scripts/fetch-models.sh`) installs it; without
+- Nothing to install: the detector and DINOv2 are in the worker image and the prompts are in the binary. In a development checkout `just models` (or `scripts/fetch-models.sh`) installs it; without
   the model file the worker says so and the `pets` jobs stay queued.
-- Watch: `GET /assets/processing` (`pets`: `scanned`, `total`, `found`, `queued`, `running`, `failed`, `percent`), the Datadog dashboard (backlog, photos by the check's verdict, job and detector
+- Watch: `GET /assets/processing` (`pets`: `scanned`, `total`, `found`, `unfingerprinted`, `queued`, `running`, `failed`, `percent`), the Datadog dashboard (backlog, photos by the check's verdict, job and detector
   time, animals found by kind and photos with a pet the detector could not place), and the metrics below. Failed `pets` jobs show in the failure list and "Retry failed" requeues them.
 - Turn off: `PETS_ENABLED=0` for the worker and the assets service. Existing data stays until you delete it (`cyanotype pets delete --apply`).
 - A photo with a dog that was not found: look at the check's reading, `SELECT dog_share, cat_share FROM pet_scans WHERE asset_id = ...` (below 0.25 the detector was never asked), and at the detector's
   `pets.unlocated` count (the check said yes, no box was found).
 
 Metrics (`docs/observability.md`): `cyanotype.pets.model_loaded` (gauge), `cyanotype.pets.checked` (tag `verdict`), `cyanotype.pets.duration`, `cyanotype.pets.detector_ms`, `cyanotype.pets.per_photo`,
-`cyanotype.pets.found` (tag `kind`), `cyanotype.pets.unlocated`, `cyanotype.pets.model_load_ms`, and the `pets` kind of `queue.*` and `jobs.*`.
+`cyanotype.pets.found` (tag `kind`), `cyanotype.pets.unlocated`, `cyanotype.pets.fingerprint_ms`, `cyanotype.pets.model_load_ms`, and the `pets` kind of `queue.*` and `jobs.*`.
 
 ## Tests
 
@@ -340,6 +527,15 @@ Metrics (`docs/observability.md`): `cyanotype.pets.model_loaded` (gauge), `cyano
   (a dog photo the check calls a cat has no pets); a pet the detector cannot find is a photo without pets; a photo the check says has no pet is scanned without the preview being read or the detector loaded
   (also when the preview is not in the bucket); a photo without an embedding, and one whose embedding is being made again, are skipped; skips and failure classes; the sweep and the pruning; and the real
   SigLIP 2 embeddings of a dog, a cat, a horse and a car through the whole job.
+- Named pets: `crates/cyanotype-pets/src/crop.rs` (the crop: padding, square, kept inside the picture, degenerate boxes), `crates/cyanotype-core/tests/named_pets.rs` (the decisions through a new scan: same boxes,
+  a moved animal by its fingerprint, one to one within a kind, another model's numbers not compared, nothing found, an edit forgetting only what nobody decided about, a photo's only animal after a rotate; the
+  sweep that fingerprints without finding again; proposals ranked and in tiers, answers changing the next ones, everything left out: another pet's, refused, trashed, Hidden, scanned again, another model,
+  another kind, another owner; the pending counts agreeing with the proposals; deletion cascades; `delete_all`), `apps/worker/src/pets.rs` (fingerprints in the job that finds the animal, the same dog twice is
+  alike and a cat is not, an end-to-end proposal, animals found before get theirs without being found again and keep their pet, a crop too small has none),
+  `apps/assets/src/routes/named_pets_tests.rs` (the switch; every route; making a pet from photos with one, several and no animal; validation; the cap; moving between pets; the list, covers and `pending`;
+  rename, hide, delete and merge with owner isolation and audit entries that are counts; "not this pet"; tiers, counts and exclusions; the Hidden view and its unlock; bulk and single answers; a photo's own pet;
+  the page's photos, paging and timeline; the scope; Save as album; the `pet` filter, its mistakes and isolation; names in a query, chips, `skip=pet`, hidden, shared and person-owned names; the smart rule;
+  a share leak test over every public response, the album and share lists and the recovery manifest; a performance test, ignored), `crates/cyanotype-core/src/manifest.rs` (a pet rule is kept out of the manifest).
 - `apps/assets/src/routes/pets_tests.rs`: the switch (every route a `404` while off, the filter and the words ignored, the facet and the processing entry absent, the scope and the rule refused), the summary
   (counts per kind, covers, scan progress), the Pets view and its timeline (kinds, order, paging, bad input), the trash, hidden and archived rules and the Hidden view, owner isolation, a photo's boxes,
   the search filter combined with dates, favorites, places, ratings, text and people, the typed words and their chips (compounds left alone, `skip=pets`, an explicit filter winning), the facet, "More like

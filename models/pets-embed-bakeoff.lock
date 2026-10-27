@@ -1,0 +1,9 @@
+# The other builds of DINOv2-small of the named-pets bake-off (docs/pets.md, "Telling individuals apart"), for the bake-off only: nothing installs them.
+#   LOCK=models/pets-embed-bakeoff.lock scripts/fetch-models.sh models/pets-embed
+# (the shipped one is the 8-bit build in models/pets.lock). All from https://huggingface.co/onnx-community/dinov2-small at the commit
+# models/pets.lock pins, Apache 2.0 like the model; the test reads them from `PETS_EMBED_DIR` (default models/pets-embed).
+#
+# sha256                                                            file                          url
+f22797eabf810a75e41de68d378541ebea372122b25c4ce3ef25ff618250c20a  dinov2-small-model.onnx       https://huggingface.co/onnx-community/dinov2-small/resolve/8b1f705a3a7f6f062f6bdd21986c1583d3ef105d/onnx/model.onnx
+dfce54a839b491f395c516350ebb4a78f947e9170a6beac0f2bc5638e0f09d61  dinov2-small-model_int8.onnx  https://huggingface.co/onnx-community/dinov2-small/resolve/8b1f705a3a7f6f062f6bdd21986c1583d3ef105d/onnx/model_int8.onnx
+5504f49e6b698e0b69d6bdf93a82278167cc12132588c5d1ea3f2e875efdb89d  dinov2-small-model_q4.onnx    https://huggingface.co/onnx-community/dinov2-small/resolve/8b1f705a3a7f6f062f6bdd21986c1583d3ef105d/onnx/model_q4.onnx

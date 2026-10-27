@@ -84,7 +84,7 @@ fn on(s: &AppState) -> ApiResult<()> {
 }
 
 /// A person's name as stored: trimmed, at most [`MAX_NAME`] characters, no control characters; blank means no name.
-fn clean_name(n: &str) -> ApiResult<Option<String>> {
+pub(super) fn clean_name(n: &str) -> ApiResult<Option<String>> {
     let n = n.trim();
     if n.chars().any(char::is_control) {
         return Err(ApiError::BadRequest("a name cannot hold control characters".into()));
@@ -96,7 +96,7 @@ fn clean_name(n: &str) -> ApiResult<Option<String>> {
 }
 
 /// Distinguishes an absent field (leave alone) from an explicit `null` (clear it).
-fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+pub(super) fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,

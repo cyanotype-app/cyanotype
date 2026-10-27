@@ -65,12 +65,14 @@ pub struct Named {
     pub name: String,
 }
 
-/// Which kinds of understanding are off for this query (`skip=date,place,people,pets`).
+/// Which kinds of understanding are off for this query (`skip=date,place,people,pet,pets`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Skip {
     pub date: bool,
     pub place: bool,
     pub people: bool,
+    /// The names of the owner's named pets.
+    pub pet: bool,
     pub pets: bool,
 }
 
@@ -82,6 +84,7 @@ impl Skip {
                 "date" => skip.date = true,
                 "place" => skip.place = true,
                 "people" => skip.people = true,
+                "pet" => skip.pet = true,
                 "pets" => skip.pets = true,
                 _ => {}
             }
@@ -133,6 +136,8 @@ pub struct Parsed {
     pub place: Option<PlaceFilter>,
     /// The named people in the query, in the order they were written: photos where they all are.
     pub people: Vec<PersonFilter>,
+    /// The owner's named pets in the query (their names, read like people's): photos where they all are.
+    pub named_pets: Vec<PersonFilter>,
     /// Dogs, cats or pets, when the query says so.
     pub pets: Option<PetsFilter>,
 }
@@ -825,7 +830,22 @@ pub fn parse_with(query: &str, today: Date, places: &[Place], people: &[Named], 
 
 /// Take the dates, the user's own places, the people they have named and (with `pets`) the dogs and cats out of `query`, in that order:
 /// what an earlier kind read keeps its words.
+#[cfg(test)]
 pub fn parse_full(query: &str, today: Date, places: &[Place], people: &[Named], pets: bool, skip: Skip) -> Parsed {
+    parse_all(query, today, places, people, &[], pets, skip)
+}
+
+/// [`parse_full`] and the names of the owner's named pets, read after the people (a name a person has is theirs) and before the words
+/// dog, cat and pet (a pet called Kitty is the pet).
+pub fn parse_all(
+    query: &str,
+    today: Date,
+    places: &[Place],
+    people: &[Named],
+    named_pets: &[Named],
+    pets: bool,
+    skip: Skip,
+) -> Parsed {
     let mut toks = tokenize(query);
     let date = if skip.date { None } else { find_date(&mut toks, today) };
     let place = if skip.place {
@@ -838,9 +858,14 @@ pub fn parse_full(query: &str, today: Date, places: &[Place], people: &[Named], 
     } else {
         find_people(&mut toks, people)
     };
+    let named_pets = if skip.pet {
+        Vec::new()
+    } else {
+        find_people(&mut toks, named_pets)
+    };
     let pets = if pets && !skip.pets { find_pets(&mut toks) } else { None };
     let rest: Vec<&Tok> = toks.iter().filter(|t| !t.used).collect();
-    let filtered = date.is_some() || place.is_some() || !people.is_empty() || pets.is_some();
+    let filtered = date.is_some() || place.is_some() || !people.is_empty() || !named_pets.is_empty() || pets.is_some();
     let only_filler = rest
         .iter()
         .all(|t| t.core.is_empty() || FILLER.contains(&t.core.as_str()));
@@ -854,6 +879,7 @@ pub fn parse_full(query: &str, today: Date, places: &[Place], people: &[Named], 
         date,
         place,
         people,
+        named_pets,
         pets,
     }
 }
@@ -1218,10 +1244,12 @@ mod tests {
                 date: true,
                 place: true,
                 people: false,
+                pet: false,
                 pets: false
             }
         );
         assert!(Skip::parse(Some("people")).people);
+        assert!(Skip::parse(Some("pet")).pet && !Skip::parse(Some("pet")).pets);
         assert_eq!(Skip::parse(Some("nonsense")), Skip::default());
         assert_eq!(Skip::parse(None), Skip::default());
     }

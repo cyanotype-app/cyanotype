@@ -6,6 +6,9 @@
 //! The graph takes any `[1, 3, H, W]` float tensor of RGB values 0..1 (it is run at 640 x 640, the picture squashed to fit: the size it
 //! was trained at) and returns 300 queries: 80 class logits and a centre/size box (fractions of the picture) each. Everything around the
 //! network is here and unit-tested without it: the input tensor, the decoding of the outputs and the non-maximum suppression.
+pub mod crop;
+pub mod dino;
+
 use std::{
     path::{Path, PathBuf},
     sync::Mutex,
@@ -18,8 +21,9 @@ use fast_image_resize::{
 };
 use ort::value::Tensor;
 
-/// File name in the models directory (`models/pets.lock`).
+/// File names in the models directory (`models/pets.lock`): the detector, and the model that fingerprints each animal's crop.
 pub const DETECTOR_FILE: &str = "dfine-n.onnx";
+pub const DINO_FILE: &str = "dinov2-small-int8.onnx";
 
 /// The side of the square the picture is squashed to.
 pub const INPUT_SIDE: usize = 640;
@@ -37,9 +41,9 @@ pub fn model_dir() -> PathBuf {
     )
 }
 
-/// Is the model file in `dir`?
+/// Are the model files in `dir`?
 pub fn models_installed(dir: &Path) -> bool {
-    dir.join(DETECTOR_FILE).exists()
+    dir.join(DETECTOR_FILE).exists() && dir.join(DINO_FILE).exists()
 }
 
 /// What is looked for. A kind is one line here (its COCO class) and one in `cyanotype_core::pets::KINDS`, never a new table.

@@ -71,8 +71,9 @@ pub(super) struct PetsProgress {
     /// Photos the current model has looked at, and photos that can be looked at (they have a preview and a search vector).
     scanned: i64,
     total: i64,
-    /// Animals found so far.
+    /// Animals found so far, and how many of them have no fingerprint yet (named pets compare animals by it; the job fills them in).
     found: i64,
+    unfingerprinted: i64,
     queued: i64,
     running: i64,
     failed: i64,
@@ -303,6 +304,7 @@ async fn pets_progress(
         scanned: p.scanned,
         total: p.total,
         found: p.found,
+        unfingerprinted: p.unfingerprinted,
         queued,
         running,
         failed,

@@ -214,14 +214,18 @@ pub struct UserManifest {
     pub bad_lines: usize,
 }
 
-/// Does a smart album's saved rules name people? (Their ids are the owner's private data: the manifest leaves such rules out.)
-fn has_people_rule(rules: &serde_json::Value) -> bool {
+/// Does a smart album's saved rules name people or named pets? (Their ids are the owner's private data: the manifest leaves such rules out.)
+fn has_private_rule(rules: &serde_json::Value) -> bool {
     rules
         .get("rules")
         .and_then(serde_json::Value::as_array)
         .is_some_and(|list| {
-            list.iter()
-                .any(|r| r.get("field").and_then(serde_json::Value::as_str) == Some("people"))
+            list.iter().any(|r| {
+                matches!(
+                    r.get("field").and_then(serde_json::Value::as_str),
+                    Some("people" | "pet")
+                )
+            })
         })
 }
 
@@ -334,7 +338,7 @@ pub async fn build(db: &PgPool, user: Uuid) -> Result<(Vec<u8>, u64)> {
             rules: r
                 .try_get::<Option<serde_json::Value>, _>("rules")?
                 .filter(|v| !v.is_null())
-                .filter(|v| !has_people_rule(v)),
+                .filter(|v| !has_private_rule(v)),
         }));
     }
 
@@ -628,12 +632,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_people_rule_keeps_the_album_rules_out_of_the_manifest() {
+    fn a_people_or_pet_rule_keeps_the_album_rules_out_of_the_manifest() {
         let with = serde_json::json!({"match": "all", "rules": [{"field": "favorite", "value": true}, {"field": "people", "ids": ["x"]}]});
+        let with_pet = serde_json::json!({"match": "any", "rules": [{"field": "pet", "ids": ["x"]}]});
+        let kind_only = serde_json::json!({"match": "all", "rules": [{"field": "pets", "kind": "dog"}]});
         let without = serde_json::json!({"match": "all", "rules": [{"field": "favorite", "value": true}]});
-        assert!(has_people_rule(&with));
-        assert!(!has_people_rule(&without));
-        assert!(!has_people_rule(&serde_json::json!({})));
+        assert!(has_private_rule(&with));
+        assert!(has_private_rule(&with_pet));
+        assert!(!has_private_rule(&kind_only), "a kind is not private: it names no one");
+        assert!(!has_private_rule(&without));
+        assert!(!has_private_rule(&serde_json::json!({})));
     }
 
     #[test]

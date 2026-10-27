@@ -40,6 +40,7 @@ fn found(kind: &str, bbox: [f32; 4], score: f32) -> NewDetection {
         kind: kind.into(),
         bbox,
         score,
+        embedding: None,
     }
 }
 
@@ -50,6 +51,7 @@ async fn scanned(pool: &PgPool, asset: Uuid, animals: &[NewDetection]) {
         dog_share: if has("dog") { 0.9 } else { 0.01 },
         cat_share: if has("cat") { 0.9 } else { 0.01 },
         found: animals.to_vec(),
+        fingerprinted: false,
     };
     assert!(pets::store(pool, asset, MODEL, VERSION, &scan).await.unwrap());
 }
@@ -389,6 +391,7 @@ async fn a_photos_pets_are_its_boxes_strongest_first_and_say_whether_it_was_look
         dog_share: 0.9,
         cat_share: 0.0,
         found: vec![found("dog", [0.3, 0.3, 0.3, 0.3], 0.5)],
+        fingerprinted: false,
     };
     assert!(
         pets::store(&t.pool, s.unscanned, "an-older-model", 1, &old)
@@ -958,7 +961,7 @@ async fn the_processing_report_tells_how_far_looking_for_pets_has_got_apart_from
     assert_eq!(st, StatusCode::OK, "{p}");
     assert_eq!(
         p["pets"],
-        json!({"scanned": 4, "total": 5, "found": 4, "queued": 1, "running": 1, "failed": 1, "model": MODEL, "percent": 80})
+        json!({"scanned": 4, "total": 5, "found": 4, "unfingerprinted": 4, "queued": 1, "running": 1, "failed": 1, "model": MODEL, "percent": 80})
     );
     // Finding pets is not the photos' own processing: only a failure of it is listed with the others.
     let kinds: Vec<&str> = p["by_kind"]

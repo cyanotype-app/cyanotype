@@ -10,8 +10,9 @@ use cyanotype_core::{
 
 #[derive(Subcommand)]
 pub enum PetsCommand {
-    /// Delete the dogs and cats found in photos, the record of which photos were scanned and the queued scan jobs (for one account or
-    /// for everyone). The photos and everything else are untouched. Dry run unless --apply.
+    /// Delete the dogs and cats found in photos, the record of which photos were scanned, the queued scan jobs, and the pets the owners
+    /// named with their "not this pet" decisions (for one account or for everyone). The photos and everything else are untouched. Dry
+    /// run unless --apply.
     Delete(DeleteArgs),
 }
 
@@ -57,8 +58,8 @@ async fn delete(a: DeleteArgs) -> Result<ExitCode> {
     };
     if a.apply {
         println!(
-            "Deleted {} detections, {} scan records and {} queued or finished scan jobs of {scope}.",
-            d.detections, d.scans, d.jobs
+            "Deleted {} detections, {} scan records, {} queued or finished scan jobs, {} named pets and {} \"not this pet\" decisions of {scope}.",
+            d.detections, d.scans, d.jobs, d.pets, d.rejections
         );
         if pets::enabled() {
             println!(
@@ -67,8 +68,8 @@ async fn delete(a: DeleteArgs) -> Result<ExitCode> {
         }
     } else {
         println!(
-            "Would delete {} detections, {} scan records and {} queued or finished scan jobs of {scope}. Run again with --apply to delete them.",
-            d.detections, d.scans, d.jobs
+            "Would delete {} detections, {} scan records, {} queued or finished scan jobs, {} named pets and {} \"not this pet\" decisions of {scope}. Run again with --apply to delete them.",
+            d.detections, d.scans, d.jobs, d.pets, d.rejections
         );
     }
     Ok(ExitCode::SUCCESS)
