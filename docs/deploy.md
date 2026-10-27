@@ -589,12 +589,12 @@ and restart the worker first.
 ## Dogs and cats in photos (on by default)
 
 Finding the dogs and cats in photos (`docs/pets.md`: a Pets view, the words "dog" and "cat" in a search, a pets filter and smart-album rule) is **on**: it needs nothing from
-you. The model (D-FINE-N, 15 MB, Apache 2.0, pinned in `models/pets.lock`) is already in the `worker` image, and migration 0036 only creates empty tables. After an upgrade
+you. The models (D-FINE-N, 15 MB, and DINOv2-small, 24 MB, both Apache 2.0, pinned in `models/pets.lock`) are already in the `worker` image, and migrations 0036 and 0037 only create empty tables and columns. After an upgrade
 the worker's sweep (every 15 minutes) queues every photo that has a search embedding; the job reads the embedding, which is a few microseconds, and only a photo that holds a
 dog or a cat is then decoded and given boxes, so the backfill of 50,000 photos takes minutes rather than hours (`docs/pets.md`, "Cost"). `GET /assets/processing` reports its
 progress (`pets`). It stores no information about people. `PETS_ENABLED=0` in `.env.prod` turns it off (the assets service and the worker must agree), `WORKER_PETS_THREADS`
-(default 1) sets the threads of the detector; `dc run --rm reindex pets delete` (dry run; add `--apply`) removes what was found (switch it off first, or the sweep finds
-it again). It reads SigLIP 2's embeddings, so with `SEARCH_MODEL=clip-b32` it is off (and says so in the logs).
+(default 1) sets the threads of the detector and the fingerprint model; `dc run --rm reindex pets delete` (dry run; add `--apply`) removes what was found **and every pet the owners named** (switch it off first, or the sweep finds
+it again). After the upgrade the sweep also fingerprints the animals already found (a short job each, no detector run) so that named pets can propose photos; pet names and decisions are not in the recovery manifests, like People's (`docs/recovery.md`). It reads SigLIP 2's embeddings, so with `SEARCH_MODEL=clip-b32` it is off (and says so in the logs).
 
 ## Search (nothing to install)
 

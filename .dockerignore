@@ -19,6 +19,8 @@ models/siglip2/
 models/eval/
 models/pets/
 models/pets-eval/
+models/pets-id-eval/
+models/pets-embed/
 models/pets-bakeoff/
 *.md
 docker-compose*.yml

@@ -11,6 +11,7 @@
 //!            {"field": "tags", "names": ["beach", "sunset"], "mode": "all" | "any"},
 //!            {"field": "people", "ids": ["<person id>"]},
 //!            {"field": "pets", "kind": "any" | "dog" | "cat"},
+//!            {"field": "pet", "ids": ["<named pet id>"]},
 //!            {"field": "has_location" | "has_text", "value": true | false},
 //!            {"field": "caption", "text": "birthday"}]}
 //! ```
@@ -27,6 +28,11 @@
 //!
 //! The **pets** rule is "a dog, a cat or either was found in the photo" (`kind`: `any`, `dog` or `cat`). It needs Pets (`PETS_ENABLED`):
 //! saving one while it is off is a `404`, and a saved rule matches no photo while it is off. The album keeps the kind, nothing else.
+//!
+//! The **pet** rule is "all of these named pets are in the photo" (1 to 10 ids of the owner's own pets, checked when it is saved: another
+//! owner's id is a `404`, as for people). It needs Pets like the pets rule. The album keeps only ids, never a name; a deleted pet leaves
+//! the rule matching nothing, and a merged one is not followed (edit the rule). Because ids are the owner's private data the recovery
+//! manifest leaves the rules out of an album that has a people or a pet rule.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::Date;
@@ -115,6 +121,10 @@ pub(super) enum Rule {
     /// A dog, a cat or either was found in the photo: `any`, `dog` or `cat`.
     Pets {
         kind: String,
+    },
+    /// All of these named pets are in the photo (1 to 10).
+    Pet {
+        ids: Vec<Uuid>,
     },
 }
 
@@ -265,6 +275,18 @@ impl Rules {
                         Which::parse(kind).ok_or_else(|| bad("the pets rule must be any, dog or cat".into()))?;
                     *kind = which.name().to_string();
                 }
+                Rule::Pet { ids } => {
+                    let mut out: Vec<Uuid> = Vec::new();
+                    for id in ids.iter() {
+                        if !out.contains(id) {
+                            out.push(*id);
+                        }
+                    }
+                    if out.is_empty() || out.len() > MAX_PEOPLE_FILTERS {
+                        return Err(bad(format!("the pet rule needs 1 to {MAX_PEOPLE_FILTERS} pets")));
+                    }
+                    *ids = out;
+                }
             }
         }
         Ok(self)
@@ -284,7 +306,21 @@ impl Rules {
 
     /// Does a rule ask for pets (to check that Pets is on)?
     pub(super) fn has_pets(&self) -> bool {
-        self.rules.iter().any(|r| matches!(r, Rule::Pets { .. }))
+        self.rules
+            .iter()
+            .any(|r| matches!(r, Rule::Pets { .. } | Rule::Pet { .. }))
+    }
+
+    /// The named pets the rules name (to check that they are the owner's).
+    pub(super) fn named_pets(&self) -> Vec<Uuid> {
+        self.rules
+            .iter()
+            .filter_map(|r| match r {
+                Rule::Pet { ids } => Some(ids.iter().copied()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
     }
 
     /// The filters of the album: one `Filters` per rule, joined as `match` says, with the archived switch. While People is off
@@ -323,7 +359,8 @@ impl Rules {
                     Rule::Caption { text } => f.with_caption(text.clone()),
                     Rule::People { .. } if !features.faces => f.nothing(),
                     Rule::People { ids } => f.with_people(ids.clone()),
-                    Rule::Pets { .. } if !features.pets => f.nothing(),
+                    Rule::Pets { .. } | Rule::Pet { .. } if !features.pets => f.nothing(),
+                    Rule::Pet { ids } => f.with_named_pets(ids.clone()),
                     Rule::Pets { kind } => match Which::parse(kind) {
                         Some(w) => f.with_pets(w),
                         None => f.nothing(),

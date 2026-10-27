@@ -121,6 +121,9 @@ pub(super) struct SearchQuery {
     pub people: Option<String>,
     /// Photos a dog or a cat was found in (`PETS_ENABLED`; ignored while it is off): `any`, `dog` or `cat`.
     pub pets: Option<String>,
+    /// Ids of the owner's named pets, comma-separated: photos where all of them are (`PETS_ENABLED`; ignored while it is off). An id that
+    /// is not one of the owner's pets matches nothing.
+    pub pet: Option<String>,
     /// `jpeg`, `heic` (HEIC, HEIF and AVIF), `raw` (a RAW file, or a photo with a RAW paired behind it) or `other`.
     #[serde(rename = "type")]
     pub kind: Option<String>,
@@ -169,6 +172,8 @@ pub(super) struct Filters {
     people: Vec<Uuid>,
     /// Photos with a dog, a cat or either found in them (`PETS_ENABLED`).
     pets: Option<Which>,
+    /// Photos with all of these named pets in them (the owner's own; `PETS_ENABLED`).
+    named_pets: Vec<Uuid>,
     kind: Option<FileType>,
     album: Option<Uuid>,
     has_location: Option<bool>,
@@ -262,6 +267,24 @@ impl Filters {
         if people.len() > MAX_PEOPLE_FILTERS {
             return Err(ApiError::BadRequest(format!("at most {MAX_PEOPLE_FILTERS} people")));
         }
+        let mut named_pets: Vec<Uuid> = Vec::new();
+        for p in q
+            .pet
+            .as_deref()
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
+            let id =
+                Uuid::parse_str(p).map_err(|_| ApiError::BadRequest("pet must be pet ids, comma-separated".into()))?;
+            if !named_pets.contains(&id) {
+                named_pets.push(id);
+            }
+        }
+        if named_pets.len() > MAX_PEOPLE_FILTERS {
+            return Err(ApiError::BadRequest(format!("at most {MAX_PEOPLE_FILTERS} pets")));
+        }
         let pets = match clean(&q.pets) {
             None => None,
             Some(p) => {
@@ -282,6 +305,7 @@ impl Filters {
             place: clean(&q.place),
             people,
             pets,
+            named_pets,
             kind,
             album: q.album,
             has_location: q.has_location,
@@ -348,6 +372,10 @@ impl Filters {
         self.pets = Some(which);
         self
     }
+    pub(super) fn with_named_pets(mut self, ids: Vec<Uuid>) -> Self {
+        self.named_pets = ids;
+        self
+    }
     /// A filter that matches no photo.
     pub(super) fn nothing(mut self) -> Self {
         self.never = true;
@@ -389,6 +417,7 @@ impl Filters {
             || self.place.is_some()
             || !self.people.is_empty()
             || self.pets.is_some()
+            || !self.named_pets.is_empty()
             || self.never
             || self.kind.is_some()
             || self.album.is_some()
@@ -505,6 +534,14 @@ impl Filters {
         }
         if let Some(which) = self.pets {
             push_pets_test(qb, owner, which);
+        }
+        // Together, like people: one test per pet, through the pet's own animals (`pet_detections_pet_idx`) and the owner's own pets.
+        for pet in &self.named_pets {
+            qb.push(" AND a.id IN (SELECT d.asset_id FROM pet_detections d JOIN pets pe ON pe.id = d.pet_id WHERE pe.owner_id = ")
+                .push_bind(owner)
+                .push(" AND d.pet_id = ")
+                .push_bind(*pet)
+                .push(format!(" AND {})", cyanotype_core::pets::SCANNED));
         }
         if let Some(k) = self.kind {
             qb.push(" AND ");
@@ -653,6 +690,9 @@ pub(super) struct Chip {
     /// For pets: `any`, `dog` or `cat`, the `pets` filter's value the words became.
     #[serde(skip_serializing_if = "Option::is_none")]
     pets: Option<&'static str>,
+    /// For named pets: who was read out of the query (the owner's own pets, in the order written).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pet: Option<Vec<ChipPerson>>,
 }
 
 #[derive(Serialize)]
@@ -814,6 +854,24 @@ async fn named_people(db: &sqlx::PgPool, owner: Uuid) -> ApiResult<Vec<query_par
         .collect())
 }
 
+/// The owner's named pets who are not hidden and have a photo a search can show: what `named_people` is for people.
+async fn named_pets(db: &sqlx::PgPool, owner: Uuid) -> ApiResult<Vec<query_parse::Named>> {
+    let rows: Vec<(Uuid, String)> = sqlx::query_as(&format!(
+        "SELECT p.id, p.name FROM pets p
+         WHERE p.owner_id = $1 AND NOT p.hidden
+           AND EXISTS (SELECT 1 FROM pet_detections d JOIN assets a ON a.id = d.asset_id
+                       WHERE d.pet_id = p.id AND {} AND a.deleted_at IS NULL AND a.primary_id IS NULL AND NOT a.hidden)",
+        cyanotype_core::pets::SCANNED
+    ))
+    .bind(owner)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name)| query_parse::Named { id, name })
+        .collect())
+}
+
 /// Read the dates, places, people and pets out of `q` (unless the request already filters on them or turned them off), and return the
 /// request as it is to be run, with what was understood. While People is off, `people` is ignored and never read out of the query;
 /// likewise `pets` while Pets is off.
@@ -824,6 +882,7 @@ async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(Se
     }
     if !s.pets_enabled {
         q.pets = None;
+        q.pet = None;
     }
     let q = &q;
     let Some(text) = clean(&q.q) else {
@@ -834,6 +893,7 @@ async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(Se
     skip.date |= clean(&q.from).is_some() || clean(&q.to).is_some();
     skip.place |= clean(&q.place).is_some();
     skip.people |= !s.faces_enabled || clean(&q.people).is_some();
+    skip.pet |= !s.pets_enabled || clean(&q.pet).is_some();
     let places = if skip.place {
         Default::default()
     } else {
@@ -844,9 +904,22 @@ async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(Se
     } else {
         named_people(&s.db, owner).await?
     };
+    let named_pets = if skip.pet {
+        Vec::new()
+    } else {
+        named_pets(&s.db, owner).await?
+    };
     // A pets filter chosen in the filters wins, like the others.
     let read_pets = s.pets_enabled && clean(&q.pets).is_none();
-    let parsed = query_parse::parse_full(&text, query_parse::today(), &places, &people, read_pets, skip);
+    let parsed = query_parse::parse_all(
+        &text,
+        query_parse::today(),
+        &places,
+        &people,
+        &named_pets,
+        read_pets,
+        skip,
+    );
     let mut eff = q.clone();
     let mut chips = Vec::new();
     if let Some(d) = &parsed.date {
@@ -863,6 +936,7 @@ async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(Se
             place_kind: None,
             people: None,
             pets: None,
+            pet: None,
         });
     }
     if let Some(p) = &parsed.place {
@@ -877,6 +951,7 @@ async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(Se
             place_kind: Some(p.kind),
             people: None,
             pets: None,
+            pet: None,
         });
     }
     if !parsed.people.is_empty() {
@@ -917,6 +992,48 @@ async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(Se
                     .collect(),
             ),
             pets: None,
+            pet: None,
+        });
+    }
+    if !parsed.named_pets.is_empty() {
+        eff.pet = Some(
+            parsed
+                .named_pets
+                .iter()
+                .map(|p| p.id.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        chips.push(Chip {
+            kind: "pet",
+            label: parsed
+                .named_pets
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(" and "),
+            matched: parsed
+                .named_pets
+                .iter()
+                .map(|p| p.matched.as_str())
+                .collect::<Vec<_>>()
+                .join(" "),
+            from: None,
+            to: None,
+            value: None,
+            place_kind: None,
+            people: None,
+            pets: None,
+            pet: Some(
+                parsed
+                    .named_pets
+                    .iter()
+                    .map(|p| ChipPerson {
+                        id: p.id,
+                        name: p.name.clone(),
+                    })
+                    .collect(),
+            ),
         });
     }
     if let Some(p) = &parsed.pets {
@@ -936,6 +1053,7 @@ async fn understand(s: &AppState, owner: Uuid, q: &SearchQuery) -> ApiResult<(Se
             place_kind: None,
             people: None,
             pets: Some(p.which.name()),
+            pet: None,
         });
     }
     eff.q = (!parsed.text.is_empty()).then(|| parsed.text.clone());

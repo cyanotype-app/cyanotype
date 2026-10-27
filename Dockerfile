@@ -87,11 +87,11 @@ RUN LOCK=/etc/models/ocr.lock fetch-models /models det.onnx rec.onnx rec.yml
 FROM model-fetch AS faces
 RUN LOCK=/etc/models/faces.lock fetch-models /models yunet.onnx sface.onnx LICENSE-yunet.txt LICENSE-sface.txt
 
-# Dogs and cats in photos (the D-FINE-N detector, 15 MB, and its licence text), for the worker only. Carried by the image whether or not
+# Dogs and cats in photos (the D-FINE-N detector, 15 MB, DINOv2-small that tells individual animals apart, 24 MB, and their licence texts), for the worker only. Carried by the image whether or not
 # PETS_ENABLED is on: the model is only read when it is (docs/pets.md). The check that decides which photos need it reads SigLIP 2's
 # embeddings the search job already made.
 FROM model-fetch AS pets
-RUN LOCK=/etc/models/pets.lock fetch-models /models dfine-n.onnx LICENSE-dfine.txt
+RUN LOCK=/etc/models/pets.lock fetch-models /models dfine-n.onnx LICENSE-dfine.txt dinov2-small-int8.onnx LICENSE-dinov2.txt
 
 # ---- runtime base: slim, non-root, CA certs for S3/TLS ---------------------------------
 FROM debian:trixie-slim AS runtime

@@ -82,6 +82,12 @@ pub struct Seen<'a> {
 /// model that kept the picture). One to one: an earlier face answers at most one new face, the strongest pair first.
 /// Fingerprints of another model are not compared, only boxes.
 pub fn match_faces(old: &[Seen], new: &[Seen]) -> Vec<Option<usize>> {
+    match_by(old, new, SAME_FACE, SAME_BOX_IOU)
+}
+
+/// [`match_faces`] with the two thresholds given: the cosine at least which two fingerprints of one model are the same thing, and the
+/// overlap at least which two boxes are (named pets match their animals with their own, `crate::pets`).
+pub fn match_by(old: &[Seen], new: &[Seen], same_embedding: f32, same_box: f32) -> Vec<Option<usize>> {
     let mut out: Vec<Option<usize>> = vec![None; new.len()];
     let mut taken = vec![false; old.len()];
     let mut pass = |score: &dyn Fn(&Seen, &Seen) -> Option<f32>| {
@@ -107,10 +113,12 @@ pub fn match_faces(old: &[Seen], new: &[Seen]) -> Vec<Option<usize>> {
         }
     };
     pass(&|n, o| match (n.embedding, o.embedding) {
-        (Some((ma, a)), Some((mb, b))) if ma == mb && a.len() == b.len() => Some(dot(a, b)).filter(|c| *c >= SAME_FACE),
+        (Some((ma, a)), Some((mb, b))) if ma == mb && a.len() == b.len() => {
+            Some(dot(a, b)).filter(|c| *c >= same_embedding)
+        }
         _ => None,
     });
-    pass(&|n, o| Some(iou(&n.bbox, &o.bbox)).filter(|v| *v >= SAME_BOX_IOU));
+    pass(&|n, o| Some(iou(&n.bbox, &o.bbox)).filter(|v| *v >= same_box));
     out
 }
 

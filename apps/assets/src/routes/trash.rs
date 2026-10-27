@@ -582,7 +582,9 @@ mod tests {
                         kind: "dog".into(),
                         bbox: [0.1, 0.1, 0.5, 0.5],
                         score: 0.8,
+                        embedding: None,
                     }],
+                    fingerprinted: false,
                 },
             )
             .await

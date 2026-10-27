@@ -282,9 +282,23 @@ pub(super) struct PreviewBody {
 /// The people a smart album's rules name must be the caller's own, and People must be on: anything else is a `404`, as for an
 /// unknown person anywhere else (another owner's id is not told apart from one that never existed).
 async fn check_people(s: &AppState, owner: Uuid, rules: &super::smart::Rules) -> ApiResult<()> {
-    // A pets rule needs Pets (its kind is not an id: there is nothing of anyone else's to check).
+    // A pets rule needs Pets (its kind is not an id: there is nothing of anyone else's to check); a pet rule's ids must be the owner's.
     if rules.has_pets() && !s.pets_enabled {
         return Err(ApiError::NotFound);
+    }
+    let pet_ids = rules.named_pets();
+    if !pet_ids.is_empty() {
+        let mut unique = pet_ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM pets WHERE owner_id = $1 AND id = ANY($2)")
+            .bind(owner)
+            .bind(&unique)
+            .fetch_one(&s.db)
+            .await?;
+        if n != unique.len() as i64 {
+            return Err(ApiError::NotFound);
+        }
     }
     let ids = rules.people();
     if ids.is_empty() {

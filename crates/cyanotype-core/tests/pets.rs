@@ -81,6 +81,7 @@ fn found(kind: &str, seed: usize) -> NewDetection {
         kind: kind.into(),
         bbox: [0.1 * seed as f32, 0.2, 0.2, 0.25],
         score: 0.5 + 0.1 * seed as f32,
+        embedding: None,
     }
 }
 
@@ -97,6 +98,7 @@ fn scan(found: Vec<NewDetection>) -> Scan {
             0.01
         },
         found,
+        fingerprinted: false,
     }
 }
 
@@ -255,6 +257,7 @@ async fn the_kind_is_data_any_word_is_stored_and_an_empty_one_is_not() {
         kind: "dog".into(),
         bbox: [0.1, 0.1, 0.0, 0.2],
         score: 0.5,
+        embedding: None,
     };
     assert!(
         pets::store(&t.pool, a, MODEL, VERSION, &scan(vec![bad])).await.is_err(),

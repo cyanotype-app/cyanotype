@@ -51,6 +51,9 @@ mod map;
 #[cfg(test)]
 mod map_tests;
 mod memories;
+mod named_pets;
+#[cfg(test)]
+mod named_pets_tests;
 #[cfg(test)]
 mod pair_tests;
 mod people;
@@ -201,6 +204,23 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/pets", get(pets::summary))
         .route("/assets/pets/photos", get(pets::photos))
         .route("/assets/pets/timeline", get(pets::timeline))
+        .route("/assets/pets/named", get(named_pets::list).post(named_pets::create))
+        .route(
+            "/assets/pets/named/{id}",
+            get(named_pets::get).patch(named_pets::patch).delete(named_pets::remove),
+        )
+        .route("/assets/pets/named/{id}/merge", post(named_pets::merge))
+        .route("/assets/pets/named/{id}/detections", get(named_pets::cover_detections))
+        .route(
+            "/assets/pets/named/{id}/photos",
+            get(named_pets::photos).post(named_pets::add_photos),
+        )
+        .route("/assets/pets/named/{id}/photos/remove", post(named_pets::remove_photos))
+        .route("/assets/pets/named/{id}/timeline", get(named_pets::timeline))
+        .route("/assets/pets/named/{id}/suggestions", get(named_pets::suggestions))
+        .route("/assets/pets/named/{id}/suggestions/answer", post(named_pets::answer))
+        .route("/assets/pets/detections/{id}/assign", post(named_pets::assign))
+        .route("/assets/pets/detections/{id}/reject", post(named_pets::reject))
         .route("/assets/duplicates", get(duplicates::list))
         .route("/assets/duplicates/scan", post(duplicates::scan))
         .route("/assets/duplicates/{id}/keep", post(duplicates::keep))

@@ -15,6 +15,7 @@ pub mod keys;
 pub mod limits;
 pub mod manifest;
 pub mod metrics;
+pub mod named_pets;
 pub mod objmeta;
 pub mod ocr;
 pub mod pairing;

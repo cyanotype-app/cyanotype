@@ -7,6 +7,11 @@
 //! no big decode) and the boxes of the confirmed kinds are kept. A photo the check confirmed but the detector found no box in is stored as
 //! having no pets (measured in docs/pets.md: 3 of 129).
 //!
+//! **The fingerprints** (named pets, docs/pets.md): the crop of each box is embedded with DINOv2-small (the class token of its 8-bit build, which
+//! told individual animals apart far better than the search model's tower in the bake-off) and stored with the animal, for "Is this Biscuit?" to
+//! compare. They are made in the same job, from the same decoded preview, and the model is loaded and dropped with the detector. Animals found before named pets (or before another fingerprint model) have none: the sweep queues their photos again,
+//! and the job then only fingerprints them, without finding them again, so their ids and what the owner decided about them stay.
+//!
 //! Like text reading and faces it is background work in a loop of its own, and the *least* urgent kind: it takes a job only when no
 //! thumbnail, metadata, embed, text, faces or other foreground job is runnable, and it shares the embed loop's one-at-a-time permit, so
 //! the ONNX models of all of them never work at the same time. A photo's job is queued when its embedding is stored; the sweep queues
@@ -25,7 +30,10 @@ use cyanotype_core::{
     embeddings, jobs, keys, metrics,
     pets::{self as store, Basis, NewDetection, Scan},
 };
-use cyanotype_pets::{Detection, Detector, DetectorConfig, Kind};
+use cyanotype_pets::{
+    Detection, Detector, DetectorConfig, Kind, crop,
+    dino::{self, DinoEncoder, Pooling},
+};
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 use uuid::Uuid;
@@ -38,9 +46,12 @@ use crate::{
 /// A preview is at most 1440 px on the long edge; anything bigger than this is not ours.
 const MAX_PREVIEW_BYTES: u64 = 16 << 20;
 /// Budget held while a photo is scanned: the decoded preview (RGBA, then RGB), the detector's 640 x 640 input and the network's
-/// activations. The highest process peak measured over the bake-off photos with the model loaded (docs/pets.md) is what the figure is
+/// activations, and the crops and activations of the fingerprint model (named pets: 64 MB before they, 96 MB with). The highest process peak measured over the bake-off photos with the model loaded (docs/pets.md) is what the figure is
 /// read from.
-pub const TRANSIENT_BYTES: u64 = 64 << 20;
+pub const TRANSIENT_BYTES: u64 = 96 << 20;
+/// A crop whose shorter side is under this many pixels of the preview is not fingerprinted: at 64 px the bake-off's retrieval is still 0.89
+/// mean average precision (0.93 at full size), at 48 px 0.85 and at 32 px 0.76 (docs/pets.md, "Telling individuals apart").
+pub const MIN_CROP_PX: u32 = 64;
 /// How long the model stays loaded with nothing to scan.
 const IDLE_UNLOAD: Duration = Duration::from_secs(300);
 /// How often the sweep that queues unscanned photos runs.
@@ -53,19 +64,20 @@ pub fn model_dir() -> PathBuf {
     cyanotype_pets::model_dir()
 }
 
-/// Is the model file installed? A dev checkout that skipped `scripts/fetch-models.sh` runs without scanning pets, and its `pets` jobs
-/// stay queued.
+/// Are the model files installed (the detector and the fingerprint model)? A dev checkout that skipped `scripts/fetch-models.sh` runs without
+/// scanning pets, and its `pets` jobs stay queued.
 pub fn model_installed() -> bool {
     cyanotype_pets::models_installed(&model_dir())
 }
 
-/// The check (its prompts are a few kilobytes, always at hand) and the (lazily loaded) detector.
+/// The check (its prompts are a few kilobytes, always at hand) and the (lazily loaded) detector and fingerprint model.
 pub struct Finder {
     threads: usize,
     /// The search model whose embeddings are read, and its prompts.
     model: cyanotype_clip::Model,
     check: PetCheck,
     detector: Mutex<Option<(Arc<Detector>, Instant)>>,
+    dino: Mutex<Option<(Arc<DinoEncoder>, Instant)>>,
 }
 
 impl Finder {
@@ -76,7 +88,33 @@ impl Finder {
             model,
             check: PetCheck::for_model(model)?,
             detector: Mutex::new(None),
+            dino: Mutex::new(None),
         })
+    }
+
+    async fn encoder(&self) -> Result<Arc<DinoEncoder>> {
+        if let Some((e, used)) = self.dino.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
+            *used = Instant::now();
+            return Ok(e.clone());
+        }
+        let threads = self.threads;
+        let started = Instant::now();
+        let e = tokio::task::spawn_blocking(move || {
+            DinoEncoder::load(&model_dir().join(cyanotype_pets::DINO_FILE), threads)
+        })
+        .await
+        .context("fingerprint model load task panicked")??;
+        let load_ms = started.elapsed().as_millis() as u64;
+        tracing::info!(
+            model = store::EMBED_MODEL,
+            threads,
+            load_ms,
+            "pet fingerprint model loaded"
+        );
+        metrics::global().histogram("pets.model_load_ms", load_ms as f64, &[("model", store::EMBED_MODEL)]);
+        let e = Arc::new(e);
+        *self.dino.lock().unwrap_or_else(|p| p.into_inner()) = Some((e.clone(), Instant::now()));
+        Ok(e)
     }
 
     async fn detector(&self) -> Result<Arc<Detector>> {
@@ -103,10 +141,17 @@ impl Finder {
             *guard = None;
             tracing::info!("pet model unloaded after a quiet spell");
         }
+        drop(guard);
+        let mut guard = self.dino.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.as_ref().is_some_and(|(_, used)| used.elapsed() >= IDLE_UNLOAD) {
+            *guard = None;
+            tracing::info!("pet fingerprint model unloaded after a quiet spell");
+        }
     }
 
     fn loaded(&self) -> bool {
         self.detector.lock().unwrap_or_else(|p| p.into_inner()).is_some()
+            || self.dino.lock().unwrap_or_else(|p| p.into_inner()).is_some()
     }
 }
 
@@ -261,6 +306,19 @@ async fn process(ctx: &Arc<Ctx>, finder: &Arc<Finder>, job: &jobs::Job) -> Resul
     else {
         return Ok(Outcome::Skipped("not indexed for search yet"));
     };
+    // Scanned already (by this model and version): the animals stay as they are, and only what has no fingerprint yet gets one.
+    let scanned: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pet_scans WHERE asset_id = $1 AND model = $2 AND version = $3)",
+    )
+    .bind(job.asset_id)
+    .bind(store::MODEL)
+    .bind(store::VERSION)
+    .fetch_one(&ctx.db)
+    .await
+    .context("look for the scan")?;
+    if scanned {
+        return fingerprint_existing(ctx, finder, job, r.owner_id).await;
+    }
     let shares = finder
         .check
         .shares(&embedding)
@@ -280,14 +338,26 @@ async fn process(ctx: &Arc<Ctx>, finder: &Arc<Finder>, job: &jobs::Job) -> Resul
             .context("download preview")?;
         let _held = ctx.budget.reserve(TRANSIENT_BYTES).await?;
         let detector = finder.detector().await?;
+        let encoder = finder.encoder().await?;
         let started = Instant::now();
-        let found = tokio::task::spawn_blocking(move || scan(&detector, &bytes, &confirmed))
-            .await
-            .context("pets task panicked")??;
+        let (found, detector_ms) = tokio::task::spawn_blocking(move || -> Result<(Vec<NewDetection>, f64)> {
+            let (rgb, w, h) = decode(&bytes)?;
+            drop(bytes);
+            let mut found = detect(&detector, &rgb, w, h, &confirmed)?;
+            let detector_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let boxes: Vec<[f32; 4]> = found.iter().map(|d| d.bbox).collect();
+            for (d, print) in found.iter_mut().zip(fingerprints(&encoder, &rgb, w, h, &boxes)?) {
+                d.embedding = print;
+            }
+            Ok((found, detector_ms))
+        })
+        .await
+        .context("pets task panicked")??;
+        metrics.histogram("pets.detector_ms", detector_ms, &[("model", store::MODEL)]);
         metrics.histogram(
-            "pets.detector_ms",
-            started.elapsed().as_secs_f64() * 1000.0,
-            &[("model", store::MODEL)],
+            "pets.fingerprint_ms",
+            (started.elapsed().as_secs_f64() * 1000.0 - detector_ms).max(0.0),
+            &[("model", store::EMBED_MODEL)],
         );
         if found.is_empty() {
             // Said to be in the photo, found nowhere in it: counted, so a detector that drifts from the check shows.
@@ -306,6 +376,8 @@ async fn process(ctx: &Arc<Ctx>, finder: &Arc<Finder>, job: &jobs::Job) -> Resul
         dog_share: shares.dog,
         cat_share: shares.cat,
         found,
+        // Nothing to fingerprint is as good as done.
+        fingerprinted: true,
     };
     let stored = store::store(&ctx.db, job.asset_id, store::MODEL, store::VERSION, &scan)
         .await
@@ -325,35 +397,94 @@ pub fn confirmed_kinds(shares: PetShares) -> Vec<Kind> {
         .collect()
 }
 
-/// Decode a preview and find the boxes of the `confirmed` kinds in it. A preview that cannot be decoded is a permanent failure of that
-/// photo alone.
-pub fn scan(detector: &Detector, webp: &[u8], confirmed: &[Kind]) -> Result<Vec<NewDetection>> {
+/// A preview as RGB8 (over white where it has transparency, like the other models read it). One that cannot be decoded is a permanent
+/// failure of that photo alone.
+fn decode(webp: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
     let img = webp::Decoder::new(webp)
         .decode()
         .ok_or_else(|| anyhow::Error::from(Permanent("preview is not a decodable WebP".into())))?;
     let (w, h) = (img.width(), img.height());
     let px: &[u8] = &img;
-    let rgb: std::borrow::Cow<[u8]> = if img.is_alpha() {
-        // Over white, like the other models read it.
-        std::borrow::Cow::Owned(
-            px.as_chunks::<4>()
-                .0
-                .iter()
-                .flat_map(|p| {
-                    let a = u32::from(p[3]);
-                    [0, 1, 2].map(|c| ((u32::from(p[c]) * a + 255 * (255 - a)) / 255) as u8)
-                })
-                .collect(),
-        )
+    let rgb: Vec<u8> = if img.is_alpha() {
+        px.as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| {
+                let a = u32::from(p[3]);
+                [0, 1, 2].map(|c| ((u32::from(p[c]) * a + 255 * (255 - a)) / 255) as u8)
+            })
+            .collect()
     } else {
-        std::borrow::Cow::Borrowed(px)
+        px.to_vec()
     };
+    Ok((rgb, w, h))
+}
+
+/// The boxes of the `confirmed` kinds in a decoded preview.
+pub fn detect(detector: &Detector, rgb: &[u8], w: u32, h: u32, confirmed: &[Kind]) -> Result<Vec<NewDetection>> {
     let found: Vec<Detection> = detector
-        .detect(&rgb, w, h)?
+        .detect(rgb, w, h)?
         .into_iter()
         .filter(|d| confirmed.contains(&d.kind))
         .collect();
     Ok(to_new_detections(&found, w, h))
+}
+
+/// The fingerprint of each box (fractions of the preview) in a decoded preview: the crop around the box (a square, [`crop::PAD`] bigger),
+/// DINOv2's class token. `None` for a crop too small to be worth one ([`MIN_CROP_PX`]).
+pub fn fingerprints(
+    encoder: &DinoEncoder,
+    rgb: &[u8],
+    w: u32,
+    h: u32,
+    boxes: &[[f32; 4]],
+) -> Result<Vec<Option<Vec<f32>>>> {
+    let mut out = Vec::with_capacity(boxes.len());
+    for b in boxes {
+        let crop = crop::crop(rgb, w, h, *b, crop::PAD, true).filter(|c| c.width.min(c.height) >= MIN_CROP_PX);
+        out.push(match crop {
+            Some(c) => encoder.embed(&dino::preprocess(&c)?, &[Pooling::Cls])?.pop(),
+            None => None,
+        });
+    }
+    Ok(out)
+}
+
+/// A photo that was scanned already: fingerprint the animals that have none by [`store::EMBED_MODEL`] (found before named pets, or before
+/// another fingerprint model) without finding them again, so their ids, and with them what the owner decided, stay.
+async fn fingerprint_existing(ctx: &Arc<Ctx>, finder: &Arc<Finder>, job: &jobs::Job, owner: Uuid) -> Result<Outcome> {
+    let todo = store::unfingerprinted(&ctx.db, job.asset_id, store::MODEL)
+        .await
+        .context("look for animals without a fingerprint")?;
+    if todo.is_empty() {
+        return Ok(Outcome::Done);
+    }
+    let bytes = ctx
+        .storage
+        .get_bytes_limited(&keys::preview(owner, job.asset_id), MAX_PREVIEW_BYTES)
+        .await
+        .context("download preview")?;
+    let _held = ctx.budget.reserve(TRANSIENT_BYTES).await?;
+    let encoder = finder.encoder().await?;
+    let started = Instant::now();
+    let boxes: Vec<[f32; 4]> = todo.iter().map(|d| d.bbox).collect();
+    let prints = tokio::task::spawn_blocking(move || {
+        let (rgb, w, h) = decode(&bytes)?;
+        drop(bytes);
+        fingerprints(&encoder, &rgb, w, h, &boxes)
+    })
+    .await
+    .context("pets task panicked")??;
+    metrics::global().histogram(
+        "pets.fingerprint_ms",
+        started.elapsed().as_secs_f64() * 1000.0,
+        &[("model", store::EMBED_MODEL)],
+    );
+    let rows: Vec<(Uuid, Option<Vec<f32>>)> = todo.iter().map(|d| d.id).zip(prints).collect();
+    store::set_fingerprints(&ctx.db, &rows)
+        .await
+        .context("store fingerprints")?;
+    Ok(Outcome::Done)
 }
 
 /// The stored shape of what was found: coordinates as fractions of the preview, strongest first.
@@ -373,6 +504,7 @@ pub fn to_new_detections(found: &[Detection], w: u32, h: u32) -> Vec<NewDetectio
                 kind: d.kind.name().to_string(),
                 bbox: [x, y, bw, bh],
                 score: d.score,
+                embedding: None,
             })
         })
         .collect()
@@ -888,6 +1020,7 @@ mod tests {
                 dog_share: 0.5,
                 cat_share: 0.0,
                 found: vec![],
+                fingerprinted: false,
             };
             store::store(&env.pool, id, "an-older-model", 1, &old).await.unwrap();
         }
@@ -922,6 +1055,193 @@ mod tests {
         sweep(&env.ctx, m).await;
         assert_eq!(old().await, 0);
         env.teardown().await;
+    }
+
+    async fn prints(pool: &PgPool, asset: Uuid) -> Vec<(Uuid, Option<Vec<f32>>, Option<String>)> {
+        let rows: Vec<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT id, embedding::text, embed_model FROM pet_detections WHERE asset_id = $1 ORDER BY idx",
+        )
+        .bind(asset)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        rows.into_iter()
+            .map(|(id, e, m)| {
+                (
+                    id,
+                    e.map(|t| cyanotype_core::people_math::parse_literal(&t).unwrap()),
+                    m,
+                )
+            })
+            .collect()
+    }
+
+    fn cosine(a: &[f32], b: &[f32]) -> f32 {
+        cyanotype_core::people_math::cosine(a, b)
+    }
+
+    fn real_embedding(name: &str) -> Vec<f32> {
+        let m = Model::Siglip2B16;
+        let enc = cyanotype_clip::ImageEncoder::load(m, &m.dir(), 1).unwrap();
+        let img = image::open(fixtures().join(format!("{name}.jpg"))).unwrap().to_rgb8();
+        let pre = cyanotype_clip::preprocess_rgb8(m, img.width(), img.height(), img.as_raw()).unwrap();
+        enc.embed(&[pre]).unwrap().remove(0)
+    }
+
+    /// Both models' files, or a skip (unless CI says they must be there).
+    fn models_installed() -> bool {
+        let m = Model::Siglip2B16;
+        let vision = m.dir().join(m.vision_file());
+        if !vision.exists() {
+            assert!(
+                std::env::var_os("CYANOTYPE_REQUIRE_MODEL").is_none(),
+                "CYANOTYPE_REQUIRE_MODEL is set but {} is missing",
+                vision.display()
+            );
+            return false;
+        }
+        detector_installed()
+    }
+
+    #[tokio::test]
+    async fn an_animal_is_fingerprinted_in_the_job_that_finds_it_and_the_same_dog_twice_is_alike() {
+        if !models_installed() {
+            return;
+        }
+        let Some(env) = Env::new().await else { return };
+        let owner = owner(&env.pool).await;
+        let finder = finder();
+        let dog = real_embedding("dog");
+        let mut seen = Vec::new();
+        for name in ["dog", "dog", "cat"] {
+            let embedding = if name == "dog" {
+                dog.clone()
+            } else {
+                real_embedding("cat")
+            };
+            let (id, job) = env.asset(owner, Some(preview_of(name)), Some(&embedding)).await;
+            assert!(matches!(process(&env.ctx, &finder, &job).await.unwrap(), Outcome::Done));
+            jobs::complete(&env.pool, job.id).await.unwrap();
+            seen.push(prints(&env.pool, id).await);
+        }
+        for p in seen.iter().flatten() {
+            let v = p.1.as_ref().expect("a fingerprint");
+            assert_eq!(v.len(), store::EMBED_DIM);
+            assert!((v.iter().map(|x| x * x).sum::<f32>() - 1.0).abs() < 1e-2, "unit length");
+            assert_eq!(p.2.as_deref(), Some(store::EMBED_MODEL));
+        }
+        let (d1, d2, c) = (
+            seen[0][0].1.as_ref().unwrap(),
+            seen[1][0].1.as_ref().unwrap(),
+            seen[2][0].1.as_ref().unwrap(),
+        );
+        assert!(cosine(d1, d2) > 0.99, "the same picture twice: {}", cosine(d1, d2));
+        assert!(cosine(d1, c) < 0.9, "a dog and a cat: {}", cosine(d1, c));
+        // The same dog twice is a proposal for a pet that has the first one: end to end through the stored numbers.
+        let first: Uuid = seen[0][0].0;
+        let pet: Uuid =
+            sqlx::query_scalar("INSERT INTO pets (owner_id, name, kind) VALUES ($1, 'Biscuit', 'dog') RETURNING id")
+                .bind(owner)
+                .fetch_one(&env.pool)
+                .await
+                .unwrap();
+        sqlx::query("UPDATE pet_detections SET pet_id = $2 WHERE id = $1")
+            .bind(first)
+            .bind(pet)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+        let got = cyanotype_core::named_pets::suggestions(&env.pool, owner, pet, "dog", false, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            got.iter().map(|g| g.detection_id).collect::<Vec<_>>(),
+            vec![seen[1][0].0],
+            "{got:?}"
+        );
+        assert_eq!(got[0].tier, cyanotype_core::named_pets::Tier::Likely);
+        env.teardown().await;
+    }
+
+    #[tokio::test]
+    async fn animals_found_before_fingerprints_get_them_without_being_found_again_and_keep_their_pet() {
+        if !models_installed() {
+            return;
+        }
+        let Some(env) = Env::new().await else { return };
+        let owner = owner(&env.pool).await;
+        let finder = finder();
+        let (id, job) = env
+            .asset(owner, Some(preview_of("dog")), Some(&real_embedding("dog")))
+            .await;
+        assert!(matches!(process(&env.ctx, &finder, &job).await.unwrap(), Outcome::Done));
+        let before = prints(&env.pool, id).await;
+        assert!(before.iter().all(|p| p.1.is_some()));
+        // As the library was before named pets: the animals are there, without a fingerprint, and the owner has put one in a pet.
+        let pet: Uuid =
+            sqlx::query_scalar("INSERT INTO pets (owner_id, name, kind) VALUES ($1, 'Biscuit', 'dog') RETURNING id")
+                .bind(owner)
+                .fetch_one(&env.pool)
+                .await
+                .unwrap();
+        sqlx::query("UPDATE pet_detections SET embedding = NULL, embed_model = NULL, pet_id = $2 WHERE id = $1")
+            .bind(before[0].0)
+            .bind(pet)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            store::unfingerprinted(&env.pool, id, store::MODEL).await.unwrap().len(),
+            1
+        );
+        jobs::complete(&env.pool, job.id).await.unwrap();
+        // The sweep queues the photo; the job fingerprints without finding again.
+        assert_eq!(
+            store::enqueue_missing(&env.pool, store::MODEL, store::VERSION, basis(Model::Siglip2B16))
+                .await
+                .unwrap(),
+            1
+        );
+        let job = jobs::claim(&env.pool, jobs::KIND_PETS).await.unwrap().unwrap();
+        assert!(matches!(process(&env.ctx, &finder, &job).await.unwrap(), Outcome::Done));
+        let after = prints(&env.pool, id).await;
+        assert_eq!(after[0].0, before[0].0, "the same animal, the same row");
+        assert!(cosine(after[0].1.as_ref().unwrap(), before[0].1.as_ref().unwrap()) > 0.999);
+        let pet_of: Option<Uuid> = sqlx::query_scalar("SELECT pet_id FROM pet_detections WHERE id = $1")
+            .bind(after[0].0)
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+        assert_eq!(pet_of, Some(pet));
+        assert!(
+            store::unfingerprinted(&env.pool, id, store::MODEL)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        env.teardown().await;
+    }
+
+    #[test]
+    fn a_crop_that_is_too_small_has_no_fingerprint_and_a_missing_box_none() {
+        if !model_installed() {
+            return;
+        }
+        let enc = DinoEncoder::load(&model_dir().join(cyanotype_pets::DINO_FILE), 1).unwrap();
+        let (w, h) = (800u32, 600u32);
+        let rgb: Vec<u8> = (0..w * h * 3).map(|i| (i % 251) as u8).collect();
+        // 3 % of the width is 24 px, with the padding 29: under the minimum. 20 % is 160 px: in.
+        let out = fingerprints(
+            &enc,
+            &rgb,
+            w,
+            h,
+            &[[0.1, 0.1, 0.03, 0.04], [0.1, 0.1, 0.2, 0.3], [0.5, 0.5, 0.0, 0.0]],
+        )
+        .unwrap();
+        assert!(out[0].is_none() && out[2].is_none());
+        let v = out[1].as_ref().expect("a big enough crop");
+        assert_eq!(v.len(), store::EMBED_DIM);
     }
 
     /// The real image tower and the real check on four of the search tests' fixture photos: the whole job as the worker runs it.

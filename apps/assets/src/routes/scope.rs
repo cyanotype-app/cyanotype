@@ -4,7 +4,7 @@
 //!
 //! ```json
 //! {"scope": "library" | "favorites" | "archive" | "hidden" | "trash" | {"album": "<id>"} | {"person": "<id>"}
-//!           | {"pets": "any" | "dog" | "cat"} | {"search": {"from": "2024-01-01", ...}} | {"trash_batch": "<rfc3339>"},
+//!           | {"pets": "any" | "dog" | "cat"} | {"pet": "<id>"} | {"search": {"from": "2024-01-01", ...}} | {"trash_batch": "<rfc3339>"},
 //!   "except": ["<id>"]}
 //! ```
 //!
@@ -15,6 +15,10 @@
 //! `pets` is the photos with a dog, a cat or either found in them, as the Pets view lists them (live, archived ones too, hidden ones only
 //! with the Hidden view unlocked). Pets is off (`PETS_ENABLED`): `404`, and so is a `search` scope with a `pets` filter (a bulk trash must
 //! never widen); a value that is not `any`, `dog` or `cat` is a `400`.
+//!
+//! `pet` is the photos of one of the owner's named pets, as the pet's page lists them (live, archived ones too, hidden ones only with the
+//! Hidden view unlocked). Pets is off, or the id is not the owner's: `404`. A `search` scope with a `pet` filter is refused while Pets is
+//! off, like one with `pets`.
 //!
 //! `search` takes the filters of `GET /assets/search` (never `q`: a ranked search selects what it shows, by id) and names the
 //! photos a filter-only search lists. A scope names the same photos the matching list shows: not trashed (or only trashed, for `trash`), hidden RAW
@@ -47,6 +51,8 @@ pub(super) enum Scope {
     Person(Uuid),
     /// The photos with a dog, a cat or either found in them (`PETS_ENABLED`): `any`, `dog` or `cat`.
     Pets(String),
+    /// The photos of one of the owner's named pets (`PETS_ENABLED`).
+    Pet(Uuid),
     /// Boxed: the filters are much bigger than the other scopes.
     Search(Box<super::search::SearchQuery>),
     TrashBatch(#[serde(with = "time::serde::rfc3339")] OffsetDateTime),
@@ -111,7 +117,11 @@ impl Selector {
                         Which::parse(w).ok_or_else(|| ApiError::BadRequest("pets must be any, dog or cat".into()))?;
                         true
                     }
-                    Scope::Search(q) => q.pets.as_deref().is_some_and(|p| !p.trim().is_empty()),
+                    Scope::Pet(_) => true,
+                    Scope::Search(q) => {
+                        q.pets.as_deref().is_some_and(|p| !p.trim().is_empty())
+                            || q.pet.as_deref().is_some_and(|p| !p.trim().is_empty())
+                    }
                     _ => false,
                 };
                 if pets && !features.pets {
@@ -161,6 +171,9 @@ pub(super) async fn resolve(
     }
     if let Scope::Pets(which) = scope {
         return resolve_pets(tx, owner, which, except, unlocked, features.pets).await;
+    }
+    if let Scope::Pet(pet) = scope {
+        return resolve_pet(tx, owner, *pet, except, unlocked, features.pets).await;
     }
     // A smart album has no members: its photos are what its rules match now (never a hidden one: `push_where`).
     if let Scope::Album(album) = scope {
@@ -234,7 +247,7 @@ pub(super) async fn resolve(
             None,
             Some(*at),
         ),
-        Scope::Search(_) | Scope::Person(_) | Scope::Pets(_) => unreachable!("handled above"),
+        Scope::Search(_) | Scope::Person(_) | Scope::Pets(_) | Scope::Pet(_) => unreachable!("handled above"),
         Scope::Album(album) => {
             let owned: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM albums WHERE id = $1 AND owner_id = $2")
                 .bind(album)
@@ -303,6 +316,39 @@ async fn resolve_person(
     .await?)
 }
 
+/// The photos of one of the owner's named pets, as the pet's page lists them.
+async fn resolve_pet(
+    tx: &mut sqlx::PgConnection,
+    owner: Uuid,
+    pet: Uuid,
+    except: &[Uuid],
+    unlocked: bool,
+    pets: bool,
+) -> ApiResult<Vec<Uuid>> {
+    if !pets {
+        return Err(ApiError::NotFound);
+    }
+    let owned: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM pets WHERE id = $1 AND owner_id = $2")
+        .bind(pet)
+        .bind(owner)
+        .fetch_optional(&mut *tx)
+        .await?;
+    owned.ok_or(ApiError::NotFound)?;
+    Ok(sqlx::query_scalar(&format!(
+        "SELECT x.id FROM assets x
+         WHERE x.owner_id = $1 AND {} AND x.id <> ALL($2)
+           AND EXISTS (SELECT 1 FROM pet_detections d WHERE d.asset_id = x.id AND d.pet_id = $3 AND {})",
+        super::people::seen("x", "$4"),
+        cyanotype_core::pets::SCANNED
+    ))
+    .bind(owner)
+    .bind(except)
+    .bind(pet)
+    .bind(unlocked)
+    .fetch_all(&mut *tx)
+    .await?)
+}
+
 /// The photos with a dog, a cat or either found in them, as the Pets view lists them.
 async fn resolve_pets(
     tx: &mut sqlx::PgConnection,
@@ -346,7 +392,10 @@ async fn resolve_search(
     if !features.faces && q.people.as_deref().is_some_and(|p| !p.trim().is_empty()) {
         return Err(ApiError::NotFound);
     }
-    if !features.pets && q.pets.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+    if !features.pets
+        && (q.pets.as_deref().is_some_and(|p| !p.trim().is_empty())
+            || q.pet.as_deref().is_some_and(|p| !p.trim().is_empty()))
+    {
         return Err(ApiError::NotFound);
     }
     let filters = super::search::Filters::parse(q)?;
