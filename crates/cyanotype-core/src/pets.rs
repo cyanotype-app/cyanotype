@@ -121,7 +121,7 @@ pub const SCANNED: &str = "EXISTS (SELECT 1 FROM pet_scans s WHERE s.asset_id = 
 /// pets. Nothing is stored for a photo that is gone or being deleted. Returns whether anything was stored.
 ///
 /// What the owner decided about the photo's earlier animals is carried over to the ones that take their place ([`Earlier`]): the pet
-/// each was put in, the pets it was refused for and being a pet's chosen cover. The new rows have new ids.
+/// each was put in, the pets it was refused for, being a pet's chosen cover and the kind the owner gave it. The new rows have new ids.
 pub async fn store(db: &PgPool, asset_id: Uuid, model: &str, version: i32, scan: &Scan) -> Result<bool> {
     let found = &scan.found;
     let mut tx = db.begin().await?;
@@ -202,12 +202,13 @@ struct EarlierRow {
     embedding: Option<String>,
     embed_model: Option<String>,
     pet_id: Option<Uuid>,
+    kind_by_owner: bool,
 }
 
 impl Earlier {
     async fn load(db: &mut sqlx::PgConnection, asset_id: Uuid) -> Result<Self> {
         let rows: Vec<EarlierRow> = sqlx::query_as(
-            "SELECT id, kind, box_x, box_y, box_w, box_h, embedding::text AS embedding, embed_model, pet_id
+            "SELECT id, kind, box_x, box_y, box_w, box_h, embedding::text AS embedding, embed_model, pet_id, kind_by_owner
              FROM pet_detections WHERE asset_id = $1 ORDER BY model, idx",
         )
         .bind(asset_id)
@@ -231,11 +232,56 @@ impl Earlier {
 
     /// Is there anything the owner decided?
     fn carries(&self) -> bool {
-        !self.rejections.is_empty() || !self.covers.is_empty() || self.rows.iter().any(|r| r.pet_id.is_some())
+        !self.rejections.is_empty()
+            || !self.covers.is_empty()
+            || self.rows.iter().any(|r| r.pet_id.is_some() || r.kind_by_owner)
     }
 
-    /// Hand the decisions on to the new animals `ids` (stored from `new`, in order). Animals are matched one to one within a kind, by
-    /// the fingerprint of their crops (the animal moved: a rotate or a crop), then by overlapping boxes.
+    /// Which new animal (index into `new`) takes each earlier one's place (index into `rows`): `old_ix` and `new_ix` are the candidates of one
+    /// group, matched one to one by the fingerprint of their crops (the animal moved: a rotate or a crop), then by overlapping boxes, then
+    /// (a Rotate moves the box and changes the crop) when each side has just one and `only_ones` (nothing else in the photo could be it).
+    fn match_group(
+        &self,
+        vectors: &[Option<Vec<f32>>],
+        old_ix: &[usize],
+        new: &[NewDetection],
+        new_ix: &[usize],
+        only_ones: bool,
+    ) -> Vec<(usize, usize)> {
+        let old: Vec<people_math::Seen> = old_ix
+            .iter()
+            .map(|&j| {
+                let r = &self.rows[j];
+                people_math::Seen {
+                    bbox: [r.box_x, r.box_y, r.box_w, r.box_h],
+                    embedding: match (&r.embed_model, &vectors[j]) {
+                        (Some(m), Some(v)) => Some((m.as_str(), v.as_slice())),
+                        _ => None,
+                    },
+                }
+            })
+            .collect();
+        let fresh: Vec<people_math::Seen> = new_ix
+            .iter()
+            .map(|&i| people_math::Seen {
+                bbox: new[i].bbox,
+                embedding: new[i].embedding.as_deref().map(|v| (EMBED_MODEL, v)),
+            })
+            .collect();
+        let mut matched = people_math::match_by(&old, &fresh, SAME_CROP, SAME_BOX_IOU);
+        if only_ones && old.len() == 1 && fresh.len() == 1 && matched[0].is_none() {
+            matched[0] = Some(0);
+        }
+        matched
+            .into_iter()
+            .enumerate()
+            .filter_map(|(n, from)| Some((old_ix[from?], new_ix[n])))
+            .collect()
+    }
+
+    /// Hand the decisions on to the new animals `ids` (stored from `new`, in order). Animals the owner gave a kind to are matched first, with
+    /// the new animals of either kind (the detector may call the same dog a cat again, or the other way round), and keep the owner's kind;
+    /// the rest are matched one to one within a kind.
     async fn carry(&self, db: &mut sqlx::PgConnection, new: &[NewDetection], ids: &[Uuid]) -> Result<()> {
         if !self.carries() || new.is_empty() {
             // Nothing to hand on, or nothing to hand it to: the pet stays, the animal is gone.
@@ -246,60 +292,50 @@ impl Earlier {
             .iter()
             .map(|r| r.embedding.as_deref().and_then(people_math::parse_literal))
             .collect();
+        let mut pairs: Vec<(usize, usize)> = Vec::new();
+        let mut free: Vec<usize> = (0..new.len()).collect();
+        let corrected: Vec<usize> = (0..self.rows.len()).filter(|&j| self.rows[j].kind_by_owner).collect();
+        if !corrected.is_empty() {
+            let got = self.match_group(&vectors, &corrected, new, &free, self.rows.len() == 1);
+            free.retain(|i| !got.iter().any(|(_, n)| n == i));
+            pairs.extend(got);
+        }
         for kind in KINDS {
-            let old_ix: Vec<usize> = (0..self.rows.len()).filter(|&j| self.rows[j].kind == kind).collect();
-            let new_ix: Vec<usize> = (0..new.len()).filter(|&i| new[i].kind == kind).collect();
-            let old: Vec<people_math::Seen> = old_ix
-                .iter()
-                .map(|&j| {
-                    let r = &self.rows[j];
-                    people_math::Seen {
-                        bbox: [r.box_x, r.box_y, r.box_w, r.box_h],
-                        embedding: match (&r.embed_model, &vectors[j]) {
-                            (Some(m), Some(v)) => Some((m.as_str(), v.as_slice())),
-                            _ => None,
-                        },
-                    }
-                })
+            let old_ix: Vec<usize> = (0..self.rows.len())
+                .filter(|&j| !self.rows[j].kind_by_owner && self.rows[j].kind == kind)
                 .collect();
-            let fresh: Vec<people_math::Seen> = new_ix
-                .iter()
-                .map(|&i| people_math::Seen {
-                    bbox: new[i].bbox,
-                    embedding: new[i].embedding.as_deref().map(|v| (EMBED_MODEL, v)),
-                })
-                .collect();
-            let mut matched = people_math::match_by(&old, &fresh, SAME_CROP, SAME_BOX_IOU);
-            // A photo's only animal of a kind, and the only one the new scan found: the same animal, wherever the picture put it (a Rotate).
-            if old.len() == 1 && fresh.len() == 1 && matched[0].is_none() {
-                matched[0] = Some(0);
+            let new_ix: Vec<usize> = free.iter().copied().filter(|&i| new[i].kind == kind).collect();
+            pairs.extend(self.match_group(&vectors, &old_ix, new, &new_ix, true));
+        }
+        for (j, i) in pairs {
+            let (was, to) = (&self.rows[j], ids[i]);
+            if was.kind_by_owner {
+                sqlx::query("UPDATE pet_detections SET kind = $2, kind_by_owner = true WHERE id = $1")
+                    .bind(to)
+                    .bind(&was.kind)
+                    .execute(&mut *db)
+                    .await?;
             }
-            for (n, from) in matched.into_iter().enumerate() {
-                let Some(j) = from else { continue };
-                let (was, to) = (&self.rows[old_ix[j]], ids[new_ix[n]]);
-                if let Some(pet) = was.pet_id {
-                    sqlx::query("UPDATE pet_detections SET pet_id = $2 WHERE id = $1")
-                        .bind(to)
-                        .bind(pet)
-                        .execute(&mut *db)
-                        .await?;
-                }
-                for (_, pet) in self.rejections.iter().filter(|(d, _)| *d == was.id) {
-                    sqlx::query(
-                        "INSERT INTO pet_rejections (detection_id, pet_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-                    )
+            if let Some(pet) = was.pet_id {
+                sqlx::query("UPDATE pet_detections SET pet_id = $2 WHERE id = $1")
                     .bind(to)
                     .bind(pet)
                     .execute(&mut *db)
                     .await?;
-                }
-                for (pet, _) in self.covers.iter().filter(|(_, d)| *d == was.id) {
-                    sqlx::query("UPDATE pets SET cover_detection_id = $2 WHERE id = $1")
-                        .bind(pet)
-                        .bind(to)
-                        .execute(&mut *db)
-                        .await?;
-                }
+            }
+            for (_, pet) in self.rejections.iter().filter(|(d, _)| *d == was.id) {
+                sqlx::query("INSERT INTO pet_rejections (detection_id, pet_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+                    .bind(to)
+                    .bind(pet)
+                    .execute(&mut *db)
+                    .await?;
+            }
+            for (pet, _) in self.covers.iter().filter(|(_, d)| *d == was.id) {
+                sqlx::query("UPDATE pets SET cover_detection_id = $2 WHERE id = $1")
+                    .bind(pet)
+                    .bind(to)
+                    .execute(&mut *db)
+                    .await?;
             }
         }
         Ok(())

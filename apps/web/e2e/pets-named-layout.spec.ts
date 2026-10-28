@@ -48,7 +48,7 @@ function backend(start: FakePet[], opts: { likely?: number; maybe?: number } = {
   };
   const sug = (id: string, tier: "likely" | "maybe") => {
     const n = Number(/(\d+)$/.exec(id)![1]) + (tier === "maybe" ? 10 : 0) + 3;
-    return { detection_id: id, asset_id: `a${n}`, box: [0.3, 0.3, 0.4, 0.4], preview_url: `/fixture-thumbs/${n}.svg`, similarity: tier === "likely" ? 0.8 : 0.6, tier };
+    return { detection_id: id, asset_id: `a${n}`, box: [0.3, 0.3, 0.4, 0.4], preview_url: `/fixture-thumbs/${n}.svg`, kind: "dog", similarity: tier === "likely" ? 0.8 : 0.6, tier };
   };
   const record = (route: Parameters<Handler>[0], method: string, path: string) => {
     const body = method === "GET" ? null : route.request().postDataJSON();
@@ -76,7 +76,7 @@ function backend(start: FakePet[], opts: { likely?: number; maybe?: number } = {
       proposals[pet.id] = { likely: Array.from({ length: opts.likely ?? 0 }, (_, i) => `${pet.id}-l${i}`), maybe: Array.from({ length: opts.maybe ?? 0 }, (_, i) => `${pet.id}-m${i}`) };
       // The photo a1 has two animals, a2 has none, the others one each.
       const ambiguous = b.asset_ids.includes("a1")
-        ? [{ asset_id: "a1", preview_url: "/fixture-thumbs/1.svg", candidates: [{ detection_id: "d1a", box: [0.08, 0.2, 0.3, 0.4] }, { detection_id: "d1b", box: [0.55, 0.45, 0.3, 0.35] }] }]
+        ? [{ asset_id: "a1", preview_url: "/fixture-thumbs/1.svg", candidates: [{ detection_id: "d1a", kind: "dog", box: [0.08, 0.2, 0.3, 0.4] }, { detection_id: "d1b", kind: "dog", box: [0.55, 0.45, 0.3, 0.35] }] }]
         : [];
       const skipped = b.asset_ids.includes("a2") ? [{ asset_id: "a2", reason: "no_animal" }] : [];
       pet.photos = b.asset_ids.filter((a) => a !== "a1" && a !== "a2").length;
@@ -222,18 +222,18 @@ for (const { width, scheme } of RUNS) {
       // One photo has two dogs: it is shown with each outlined, and the right one is tapped.
       const which = page.getByRole("dialog", { name: `Which one is ${LONG}?` });
       await which.waitFor();
-      await which.getByRole("button", { name: "Animal 1 of 2" }).waitFor();
+      await which.getByRole("button", { name: "Animal 1 of 2, dog" }).waitFor();
       await expect(which.getByRole("button", { name: "Add" })).toBeDisabled();
       await check("ambiguous");
-      await which.getByRole("button", { name: "Animal 2 of 2" }).click();
-      await expect(which.getByRole("button", { name: "Animal 2 of 2" })).toHaveAttribute("aria-pressed", "true");
+      await which.getByRole("button", { name: "Animal 2 of 2, dog" }).click();
+      await expect(which.getByRole("button", { name: "Animal 2 of 2, dog" })).toHaveAttribute("aria-pressed", "true");
       await check("ambiguous-chosen");
       await which.getByRole("button", { name: "Add" }).click();
 
       // One photo had no animal: said in plain words, and the pet was made with the others.
       const done = page.getByRole("dialog", { name: `Made ${LONG}` });
       await done.waitFor();
-      await done.getByText("1 photo has no dog that was found").waitFor();
+      await done.getByText("1 photo has no dog or cat that was found").waitFor();
       await check("name-skipped");
       await done.getByRole("button", { name: "Done" }).click();
       await page.getByText(/^Made .* with 2 photos$/).waitFor();

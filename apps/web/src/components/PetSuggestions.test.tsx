@@ -13,6 +13,7 @@ const sug = (n: number, tier: "likely" | "maybe" = "likely"): PetSuggestion => (
   asset_id: `a${n}`,
   box: [0.1, 0.1, 0.3, 0.3],
   preview_url: `https://s3.test/p${n}`,
+  kind: "dog",
   similarity: 0.8,
   tier,
 });
@@ -43,6 +44,15 @@ describe("PetSuggestions", () => {
     expect(within(section).getByRole("radio", { name: "Likely (2)" })).toBeChecked();
     expect(within(section).getByRole("radio", { name: "Maybe (1)" })).toBeInTheDocument();
     expect(read).toHaveBeenCalledWith("p1", { tier: "likely", limit: 60 });
+  });
+
+  it("says when an animal is marked as the other kind, and that a yes to all makes it the pet's kind", async () => {
+    serve([sug(1), { ...sug(2), kind: "cat" }]);
+    setup();
+    const section = await screen.findByRole("region", { name: "Suggestions" });
+    expect(await within(section).findAllByText("Marked as a cat")).toHaveLength(1);
+    await userEvent.click(within(section).getByRole("button", { name: "Yes to these 2" }));
+    expect(await screen.findByText(/Any marked as a cat become a dog/)).toBeInTheDocument();
   });
 
   it("shows the maybe animals when nothing is likely, and is not there when there is nothing", async () => {

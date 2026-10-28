@@ -64,11 +64,16 @@ pub fn tier_of(score: f32) -> Option<Tier> {
 pub struct Suggestion {
     pub detection_id: Uuid,
     pub asset_id: Uuid,
+    /// What the detector (or the owner) says the animal is; a pet of the other kind takes it over when the owner confirms.
+    pub kind: String,
     pub bbox: [f32; 4],
     /// Cosine similarity to the centre of the pet's confirmed animals.
     pub similarity: f32,
     pub tier: Tier,
 }
+
+/// One row of the proposals query: the animal, its photo, its kind, its box and its similarity to the centre.
+type Proposal = (Uuid, Uuid, String, f32, f32, f32, f32, f64);
 
 /// The centre (unit length) of the fingerprints of the animals in `pet`, or `None` while it has none (a new pet whose photos have not
 /// been fingerprinted yet, or one whose only animals were too small).
@@ -88,35 +93,28 @@ pub async fn centre(db: &PgPool, owner: Uuid, pet: Uuid) -> Result<Option<Vec<f3
         .and_then(|v| pm::centre([v.as_slice()])))
 }
 
-/// The free animals closest to the centre of `pet`'s animals, of the pet's kind, at least [`MAYBE`] similar, not refused for it, in live
+/// The free animals closest to the centre of `pet`'s animals, of either kind (the detector may call a dog a cat; a confirmed animal takes
+/// the pet's kind, and no animal of the other kind came near a pet's centre on the evaluation set: docs/pets.md), at least [`MAYBE`] similar, not refused for it, in live
 /// photos (hidden ones only with `unlocked`), best first, at most `limit`. Empty for a pet with no
 /// fingerprinted animal.
-pub async fn suggestions(
-    db: &PgPool,
-    owner: Uuid,
-    pet: Uuid,
-    kind: &str,
-    unlocked: bool,
-    limit: i64,
-) -> Result<Vec<Suggestion>> {
+pub async fn suggestions(db: &PgPool, owner: Uuid, pet: Uuid, unlocked: bool, limit: i64) -> Result<Vec<Suggestion>> {
     let Some(centre) = centre(db, owner, pet).await? else {
         return Ok(Vec::new());
     };
-    // One pass over the owner's free animals of the kind (`pet_detections_open_idx`): the distance to the centre, kept when it is close enough.
+    // One pass over the owner's free animals (`pet_detections_open_idx`): the distance to the centre, kept when it is close enough.
     let sql = format!(
-        "SELECT d.id, d.asset_id, d.box_x, d.box_y, d.box_w, d.box_h, 1 - (d.embedding::halfvec({EMBED_DIM}) <=> $1::text::halfvec({EMBED_DIM})) AS sim
+        "SELECT d.id, d.asset_id, d.kind, d.box_x, d.box_y, d.box_w, d.box_h, 1 - (d.embedding::halfvec({EMBED_DIM}) <=> $1::text::halfvec({EMBED_DIM})) AS sim
          FROM pet_detections d JOIN assets a ON a.id = d.asset_id
-         WHERE d.owner_id = $2 AND d.kind = $3 AND d.pet_id IS NULL AND d.embed_model = $4 AND d.embedding IS NOT NULL
-           AND d.embedding::halfvec({EMBED_DIM}) <=> $1::text::halfvec({EMBED_DIM}) <= $5
-           AND a.deleted_at IS NULL AND a.purging_at IS NULL AND a.primary_id IS NULL AND (NOT a.hidden OR $6)
+         WHERE d.owner_id = $2 AND d.pet_id IS NULL AND d.embed_model = $3 AND d.embedding IS NOT NULL
+           AND d.embedding::halfvec({EMBED_DIM}) <=> $1::text::halfvec({EMBED_DIM}) <= $4
+           AND a.deleted_at IS NULL AND a.purging_at IS NULL AND a.primary_id IS NULL AND (NOT a.hidden OR $5)
            AND {SCANNED}
-           AND NOT EXISTS (SELECT 1 FROM pet_rejections r WHERE r.detection_id = d.id AND r.pet_id = $7)
-         ORDER BY sim DESC, d.id LIMIT $8"
+           AND NOT EXISTS (SELECT 1 FROM pet_rejections r WHERE r.detection_id = d.id AND r.pet_id = $6)
+         ORDER BY sim DESC, d.id LIMIT $7"
     );
-    let rows: Vec<(Uuid, Uuid, f32, f32, f32, f32, f64)> = sqlx::query_as(&sql)
+    let rows: Vec<Proposal> = sqlx::query_as(&sql)
         .bind(pg_literal(&centre))
         .bind(owner)
-        .bind(kind)
         .bind(EMBED_MODEL)
         .bind(f64::from(1.0 - MAYBE))
         .bind(unlocked)
@@ -127,11 +125,12 @@ pub async fn suggestions(
         .await?;
     Ok(rows
         .into_iter()
-        .filter_map(|(detection_id, asset_id, x, y, w, h, s)| {
+        .filter_map(|(detection_id, asset_id, kind, x, y, w, h, s)| {
             let similarity = s as f32;
             Some(Suggestion {
                 detection_id,
                 asset_id,
+                kind,
                 bbox: [x, y, w, h],
                 similarity,
                 tier: tier_of(similarity)?,
@@ -141,8 +140,7 @@ pub async fn suggestions(
 }
 
 /// How many proposals wait for each named, shown pet of `owner` (`only` one of them): the animals [`suggestions`] would list, counted
-/// in one statement for all of them (the centre of each pet's animals is an `avg`, and each is compared with the owner's free animals of
-/// its kind), so the pets list costs one query and not one per pet. Pets without a pending proposal are left out.
+/// in one statement for all of them (the centre of each pet's animals is an `avg`, and each is compared with the owner's free animals), so the pets list costs one query and not one per pet. Pets without a pending proposal are left out.
 pub async fn pending_counts(
     db: &PgPool,
     owner: Uuid,
@@ -151,16 +149,16 @@ pub async fn pending_counts(
 ) -> Result<HashMap<Uuid, i64>> {
     let sql = format!(
         "WITH centres AS MATERIALIZED (
-             SELECT p.id AS pet_id, p.kind, avg(d.embedding::vector({EMBED_DIM})) AS c
+             SELECT p.id AS pet_id, avg(d.embedding::vector({EMBED_DIM})) AS c
              FROM pets p JOIN pet_detections d ON d.pet_id = p.id
              WHERE p.owner_id = $1 AND NOT p.hidden AND ($5::uuid IS NULL OR p.id = $5)
                AND d.embed_model = $2 AND d.embedding IS NOT NULL AND {SCANNED}
-             GROUP BY p.id, p.kind),
+             GROUP BY p.id),
          open AS MATERIALIZED (
-             SELECT d.id, d.asset_id, d.kind, d.embedding::vector({EMBED_DIM}) AS e FROM pet_detections d
+             SELECT d.id, d.asset_id, d.embedding::vector({EMBED_DIM}) AS e FROM pet_detections d
              WHERE d.owner_id = $1 AND d.pet_id IS NULL AND d.embed_model = $2 AND d.embedding IS NOT NULL),
          near AS MATERIALIZED (
-             SELECT c.pet_id, o.id, o.asset_id FROM centres c JOIN open o ON o.kind = c.kind WHERE o.e <=> c.c <= $3)
+             SELECT c.pet_id, o.id, o.asset_id FROM centres c JOIN open o ON true WHERE o.e <=> c.c <= $3)
          SELECT n.pet_id, least(count(*), {CONSIDERED}) FROM near n
          JOIN pet_detections d ON d.id = n.id JOIN assets a ON a.id = n.asset_id
          WHERE a.deleted_at IS NULL AND a.purging_at IS NULL AND a.primary_id IS NULL AND (NOT a.hidden OR $4)

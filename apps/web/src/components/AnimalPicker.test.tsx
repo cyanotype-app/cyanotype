@@ -20,6 +20,17 @@ describe("AnimalPicker", () => {
     expect(two).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("names the kind each animal is called, in its label and (when asked) on the photo", () => {
+    const kinds = [
+      { ...candidates[0]!, kind: "dog" as const },
+      { ...candidates[1]!, kind: "cat" as const },
+    ];
+    const { rerender } = render(<AnimalPicker url="https://s3.test/p" candidates={kinds} value={null} onChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Animal 1 of 2, dog" })).toHaveTextContent(/^1$/);
+    rerender(<AnimalPicker url="https://s3.test/p" candidates={kinds} value={null} onChange={vi.fn()} showKinds />);
+    expect(screen.getByRole("button", { name: "Animal 2 of 2, cat" })).toHaveTextContent("2 Cat");
+  });
+
   it("tells the caller which animal was tapped", async () => {
     const onChange = vi.fn();
     render(<AnimalPicker url="https://s3.test/p" candidates={candidates} value={null} onChange={onChange} />);

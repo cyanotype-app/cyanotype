@@ -31,9 +31,6 @@ export function offeredKinds(s: PetsSummary): PetKind[] {
   return PET_KINDS.filter((k) => k === "any" || petCount(s, k) > 0);
 }
 
-/** The accessible name of a kind's card: "Dogs, 12 photos". */
-export const petCardLabel = (kind: PetKind, photos: number) => `${PET_LABEL[kind]}, ${petPhotos(photos)}`;
-
 /** Is the scan of the library still going? (`total` counts the photos that can be scanned.) */
 export const scanning = (s: Pick<PetsSummary, "scanned" | "total">) => s.total > 0 && s.scanned < s.total;
 
@@ -110,11 +107,11 @@ export const removedFromPetMessage = (photos: number, name: string) => `Took ${p
 export const mergedPetMessage = (into: string) => `Merged into ${into}`;
 
 /** Why a photo was left out, in plain words, one line per reason ("2 photos have no dog that was found"). */
-export function skippedLines(skipped: readonly PetAdded["skipped"][number][], pet: { name: string; kind: "dog" | "cat" }): string[] {
+export function skippedLines(skipped: readonly PetAdded["skipped"][number][], pet: { name: string }): string[] {
   const count = (r: SkipReason) => skipped.filter((s) => s.reason === r).length;
   const lines: string[] = [];
   const none = count("no_animal");
-  if (none > 0) lines.push(`${petPhotos(none)} ${none === 1 ? "has" : "have"} no ${pet.kind} that was found`);
+  if (none > 0) lines.push(`${petPhotos(none)} ${none === 1 ? "has" : "have"} no dog or cat that was found`);
   const unseen = count("not_scanned");
   if (unseen > 0) lines.push(`${petPhotos(unseen)} ${unseen === 1 ? "has" : "have"} not been looked through for pets yet`);
   const already = count("already");

@@ -6,6 +6,7 @@ import { placeLine } from "../map/geo";
 import { fileSize } from "../pairText";
 import { peopleNamed } from "../peopleText";
 import { KIND_TITLE } from "../petsText";
+import { PetKindMenu } from "./PetKindMenu";
 import { fromServer, recipeText } from "../recipeText";
 import { tagSearchHref } from "../tagText";
 import { Button } from "../ui/Button";
@@ -71,6 +72,8 @@ export interface PetsPanel {
   onAdd: (animal: PhotoPet) => void;
   /** "Not this pet": take the animal out of the pet it is in. */
   onNot: (animal: PhotoPet) => void;
+  /** "It's a dog" / "It's a cat": the owner's word on what the animal is. */
+  onKind: (animal: PhotoPet, kind: "dog" | "cat") => void;
 }
 
 type Follow = (e: MouseEvent<HTMLAnchorElement>, to: string) => void;
@@ -332,6 +335,7 @@ function Body({
                           Add to pet…
                         </Button>
                       )}
+                      <PetKindMenu animal={a} label={`${KIND_TITLE[a.kind]}${many ? ` ${i + 1}` : ""}`} onKind={pets.onKind} />
                     </li>
                   );
                 })}

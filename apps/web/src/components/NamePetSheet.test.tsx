@@ -66,8 +66,8 @@ describe("NamePetSheet", () => {
 
   it("asks which animal when a photo has several, then adds the one that was tapped", async () => {
     const candidates = [
-      { detection_id: "d1", box: [0.1, 0.1, 0.2, 0.2] as [number, number, number, number] },
-      { detection_id: "d2", box: [0.6, 0.5, 0.3, 0.3] as [number, number, number, number] },
+      { detection_id: "d1", kind: "dog" as const, box: [0.1, 0.1, 0.2, 0.2] as [number, number, number, number] },
+      { detection_id: "d2", kind: "dog" as const, box: [0.6, 0.5, 0.3, 0.3] as [number, number, number, number] },
     ];
     vi.spyOn(api, "createPet").mockResolvedValue(
       added({ assigned: 1, ambiguous: [{ asset_id: "a2", preview_url: "https://s3.test/p2", candidates }] }),
@@ -80,11 +80,11 @@ describe("NamePetSheet", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     const dialog = await screen.findByRole("dialog", { name: "Which one is Pet A?" });
-    expect(within(dialog).getByText(/This photo has 2 dogs/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/This photo has 2 animals/)).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Add" })).toBeDisabled();
-    await user.click(within(dialog).getByRole("button", { name: "Animal 2 of 2" }));
-    expect(within(dialog).getByRole("button", { name: "Animal 2 of 2" })).toHaveAttribute("aria-pressed", "true");
-    expect(within(dialog).getByRole("button", { name: "Animal 1 of 2" })).toHaveAttribute("aria-pressed", "false");
+    await user.click(within(dialog).getByRole("button", { name: "Animal 2 of 2, dog" }));
+    expect(within(dialog).getByRole("button", { name: "Animal 2 of 2, dog" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(dialog).getByRole("button", { name: "Animal 1 of 2, dog" })).toHaveAttribute("aria-pressed", "false");
     await user.click(within(dialog).getByRole("button", { name: "Add" }));
 
     await waitFor(() => expect(done).toHaveBeenCalled());
@@ -94,7 +94,7 @@ describe("NamePetSheet", () => {
 
   it("skipping a photo with several animals adds nothing for it", async () => {
     vi.spyOn(api, "createPet").mockResolvedValue(
-      added({ assigned: 1, ambiguous: [{ asset_id: "a2", preview_url: "https://s3.test/p2", candidates: [{ detection_id: "d1", box: [0, 0, 0.5, 0.5] }, { detection_id: "d2", box: [0.5, 0.5, 0.5, 0.5] }] }] }),
+      added({ assigned: 1, ambiguous: [{ asset_id: "a2", preview_url: "https://s3.test/p2", candidates: [{ detection_id: "d1", kind: "dog", box: [0, 0, 0.5, 0.5] }, { detection_id: "d2", kind: "dog", box: [0.5, 0.5, 0.5, 0.5] }] }] }),
     );
     const add = vi.spyOn(api, "addToPet");
     const done = vi.fn();
@@ -112,7 +112,7 @@ describe("NamePetSheet", () => {
       added({
         assigned: 1,
         skipped: [{ asset_id: "a3", reason: "no_animal" }],
-        ambiguous: [{ asset_id: "a2", preview_url: "https://s3.test/p2", candidates: [{ detection_id: "d1", box: [0, 0, 0.5, 0.5] }, { detection_id: "d2", box: [0.5, 0.5, 0.5, 0.5] }] }],
+        ambiguous: [{ asset_id: "a2", preview_url: "https://s3.test/p2", candidates: [{ detection_id: "d1", kind: "dog", box: [0, 0, 0.5, 0.5] }, { detection_id: "d2", kind: "dog", box: [0.5, 0.5, 0.5, 0.5] }] }],
       }),
     );
     vi.spyOn(api, "addToPet").mockResolvedValue(added({ assigned: 1 }));
@@ -121,11 +121,11 @@ describe("NamePetSheet", () => {
     render(<NamePetSheet assetIds={["a1", "a2", "a3"]} onClose={vi.fn()} onDone={done} />);
     await user.type(await screen.findByLabelText("Name"), "Pet A");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await user.click(await screen.findByRole("button", { name: "Animal 2 of 2" }));
+    await user.click(await screen.findByRole("button", { name: "Animal 2 of 2, dog" }));
     await user.click(screen.getByRole("button", { name: "Add" }));
     const dialog = await screen.findByRole("dialog", { name: "Made Pet A" });
     expect(within(dialog).getByText("2 photos added.")).toBeInTheDocument();
-    expect(within(dialog).getByText("1 photo has no dog that was found")).toBeInTheDocument();
+    expect(within(dialog).getByText("1 photo has no dog or cat that was found")).toBeInTheDocument();
     expect(done).not.toHaveBeenCalled();
   });
 
@@ -147,7 +147,7 @@ describe("NamePetSheet", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
     const dialog = await screen.findByRole("dialog", { name: "Made Pet A" });
     expect(within(dialog).getByText("1 photo added.")).toBeInTheDocument();
-    expect(within(dialog).getByText("1 photo has no dog that was found")).toBeInTheDocument();
+    expect(within(dialog).getByText("1 photo has no dog or cat that was found")).toBeInTheDocument();
     expect(within(dialog).getByText("1 photo has not been looked through for pets yet")).toBeInTheDocument();
     expect(within(dialog).getByText("1 photo belongs to another pet already")).toBeInTheDocument();
     expect(done).not.toHaveBeenCalled();
@@ -155,17 +155,43 @@ describe("NamePetSheet", () => {
     expect(done).toHaveBeenCalledWith(expect.objectContaining({ name: "Pet A", assigned: 1 }));
   });
 
-  it("names one animal of a photo (a known kind is not asked, other kinds are not offered)", async () => {
+  it("names one animal of a photo: every pet is offered, and the kind starts as what the animal is called but can be changed", async () => {
     vi.spyOn(api, "namedPets").mockResolvedValue({ items: [namedPet("p1", "Pet A"), namedPet("p2", "Pet B", 2, { kind: "cat" })] });
     const create = vi.spyOn(api, "createPet").mockResolvedValue(added({ assigned: 1 }));
     const user = userEvent.setup();
     render(<NamePetSheet detectionIds={["d9"]} kind="cat" onClose={vi.fn()} onDone={vi.fn()} />);
     const dialog = await screen.findByRole("dialog", { name: "Add to pet" });
-    expect(within(await within(dialog).findByLabelText("Pet")).getAllByRole("option").map((o) => o.textContent)).toEqual(["A new pet", "Pet B (cat)"]);
-    expect(within(dialog).queryByRole("radio", { name: "Dog" })).not.toBeInTheDocument();
+    expect(within(await within(dialog).findByLabelText("Pet")).getAllByRole("option").map((o) => o.textContent)).toEqual(["A new pet", "Pet A (dog)", "Pet B (cat)"]);
+    expect(within(dialog).getByRole("radio", { name: "Cat" })).toBeChecked();
     await user.type(within(dialog).getByLabelText("Name"), "Pet C");
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(create).toHaveBeenCalledWith({ name: "Pet C", kind: "cat", detection_ids: ["d9"] }));
+    // The detector called it a cat, the owner says it is a dog: a dog pet.
+    create.mockClear();
+    await user.click(within(dialog).getByRole("radio", { name: "Dog" }));
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith({ name: "Pet C", kind: "dog", detection_ids: ["d9"] }));
+  });
+
+  it("asks about a photo whose only animal is called the other kind, with it chosen already, and says it will change", async () => {
+    vi.spyOn(api, "namedPets").mockResolvedValue({ items: [namedPet("p1", "Pet A")] });
+    const candidates = [{ detection_id: "d7", kind: "cat" as const, box: [0.1, 0.1, 0.4, 0.4] as [number, number, number, number] }];
+    vi.spyOn(api, "addToPet").mockResolvedValueOnce(added({ assigned: 0, ambiguous: [{ asset_id: "a2", preview_url: "https://s3.test/p2", candidates }] }));
+    const add = vi.mocked(api.addToPet);
+    add.mockResolvedValueOnce(added({ assigned: 1 }));
+    const done = vi.fn();
+    const user = userEvent.setup();
+    render(<NamePetSheet assetIds={["a2"]} onClose={vi.fn()} onDone={done} />);
+    await user.selectOptions(await screen.findByLabelText("Pet"), "p1");
+    await user.click(screen.getByRole("button", { name: "Add photos" }));
+    const dialog = await screen.findByRole("dialog", { name: "Which one is Pet A?" });
+    expect(within(dialog).getByText(/no dog that was found, but it has this animal/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Pet A is a dog. An animal marked as the other kind becomes a dog/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Animal 1 of 1, cat" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(dialog).getByText(/1 Cat/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(add).toHaveBeenLastCalledWith("p1", { detection_ids: ["d7"] }));
+    await waitFor(() => expect(done).toHaveBeenCalledWith(expect.objectContaining({ assigned: 1 })));
   });
 });
 

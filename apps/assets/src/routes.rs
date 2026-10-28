@@ -221,6 +221,7 @@ fn routes_with(share_state: share_public::ShareState) -> Router<AppState> {
         .route("/assets/pets/named/{id}/suggestions/answer", post(named_pets::answer))
         .route("/assets/pets/detections/{id}/assign", post(named_pets::assign))
         .route("/assets/pets/detections/{id}/reject", post(named_pets::reject))
+        .route("/assets/pets/detections/{id}/kind", post(named_pets::set_kind))
         .route("/assets/duplicates", get(duplicates::list))
         .route("/assets/duplicates/scan", post(duplicates::scan))
         .route("/assets/duplicates/{id}/keep", post(duplicates::keep))

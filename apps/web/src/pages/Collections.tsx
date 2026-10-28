@@ -2,7 +2,7 @@ import { ChevronRight, ImagePlus, Link2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useMemo } from "react";
 import { api, localToday, type Trip } from "../api";
-import { AlbumCard, MemoryCard, NamedPetCard, PersonCard, PetCard, TripCard } from "../collections/cards";
+import { AlbumCard, MemoryCard, NamedPetCard, PersonCard, TripCard } from "../collections/cards";
 import { Cover } from "../collections/Cover";
 import { ScrollRow } from "../collections/ScrollRow";
 import { Reveal, RowSkeleton, Section } from "../collections/Section";
@@ -17,11 +17,11 @@ import { shareName } from "../shareText";
 import { photoCount } from "../albumText";
 import { Button } from "../ui/Button";
 import { usePeopleEnabled } from "../usePeople";
-import { usePetsEnabled } from "../usePets";
+import { useHasPets, usePetsEnabled } from "../usePets";
 import { hasMemories, memoryCount, yearsAgo } from "../viewText";
 
-/** Library views with no section of their own on this page (or whose section can be empty): reachable from the list at the bottom. */
-const MORE = ["/favorites", "/tags", "/map", "/memories", "/shared"];
+/** Library views with no section of their own on this page (or whose section can be empty, as the Pets row is without a named pet): reachable from the list at the bottom. */
+const MORE = ["/pets", "/favorites", "/tags", "/map", "/memories", "/shared"];
 
 /**
  * The home page: the library as a set of collections. Each section loads on its own, so the page fills in from the top as
@@ -38,7 +38,6 @@ export function Collections() {
   const recent = useLoad(() => api.listAssets({ sort: "added", limit: 14 }));
   const faces = useLoad(() => api.listPeople(), people === true);
   const shares = useLoad(() => shareApi.list());
-  const pets = useLoad(() => api.pets(), petsOn === true);
   const named = useLoad(() => api.namedPets(), petsOn === true);
 
   const today = useMemo(() => localToday(), []);
@@ -71,7 +70,7 @@ export function Collections() {
                 <SharedSection shares={liveShares} />
               </div>
             )}
-            <PetsSection pets={pets} named={named} />
+            <PetsSection named={named} />
             <RecentSection recent={recent} />
           </>
         )}
@@ -211,21 +210,19 @@ function PeopleSection({ faces }: { faces: Load<Awaited<ReturnType<typeof api.li
   );
 }
 
-/** Dogs and cats, only while Pets is on and at least one photo has one (the load is not even asked while it is off). */
-function PetsSection({ pets, named }: { pets: Load<Awaited<ReturnType<typeof api.pets>>>; named: Load<Awaited<ReturnType<typeof api.namedPets>>> }) {
-  if (pets.status !== "ready" || pets.data.any === 0) return null;
-  const shown = pets.data.kinds.filter((k) => k.photos > 0);
-  // The pets the owner named come first, each its own card; the kinds follow.
+/**
+ * The pets the owner named (not the hidden ones), only while Pets is on and there is one (the load is not even asked while it is off). The
+ * photos of all dogs or all cats are on the Pets page, not here.
+ */
+function PetsSection({ named }: { named: Load<Awaited<ReturnType<typeof api.namedPets>>> }) {
   const mine = named.status === "ready" ? named.data.items.filter((p) => !p.hidden) : [];
+  if (mine.length === 0) return null;
   return (
     <Section title="Pets" to="/pets">
       <Reveal>
         <ScrollRow label="Pets">
           {mine.map((p) => (
             <NamedPetCard key={p.id} pet={p} />
-          ))}
-          {shown.map((k) => (
-            <PetCard key={k.kind} kind={k.kind} photos={k.photos} cover={k.cover} />
           ))}
         </ScrollRow>
       </Reveal>
@@ -323,7 +320,8 @@ function Welcome() {
  */
 function MoreLists() {
   const people = usePeopleEnabled() === true;
-  const library = LIBRARY.filter((i) => MORE.includes(i.to) && (!i.people || people));
+  const pets = useHasPets();
+  const library = LIBRARY.filter((i) => MORE.includes(i.to) && (!i.people || people) && (!i.pets || pets));
   return (
     <div className="flex flex-col gap-8 md:hidden">
       <LinkList title="Library" items={library} />

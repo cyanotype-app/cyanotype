@@ -1,4 +1,5 @@
 import type { FaceBox } from "../api";
+import { KIND_TITLE } from "../petsText";
 import { cn } from "../ui/cn";
 
 /**
@@ -11,13 +12,16 @@ export function AnimalPicker({
   candidates,
   value,
   onChange,
+  showKinds = false,
   label = "The photo, with each animal outlined",
 }: {
   url: string;
-  candidates: readonly { detection_id: string; box: FaceBox }[];
+  candidates: readonly { detection_id: string; box: FaceBox; kind?: "dog" | "cat" }[];
   /** The chosen animal's id. */
   value: string | null;
   onChange: (detectionId: string) => void;
+  /** Say what each animal is called ("1 Cat"), for when the kinds differ from what the owner means. */
+  showKinds?: boolean;
   label?: string;
 }) {
   const pct = (v: number) => `${Math.round(v * 10000) / 100}%`;
@@ -33,7 +37,7 @@ export function AnimalPicker({
               key={c.detection_id}
               type="button"
               aria-pressed={on}
-              aria-label={`Animal ${i + 1} of ${candidates.length}`}
+              aria-label={`Animal ${i + 1} of ${candidates.length}${c.kind ? `, ${KIND_TITLE[c.kind].toLowerCase()}` : ""}`}
               data-box=""
               onClick={() => onChange(c.detection_id)}
               className={cn(
@@ -47,11 +51,13 @@ export function AnimalPicker({
               <span
                 aria-hidden="true"
                 className={cn(
-                  "absolute top-1 left-1 flex size-5 items-center justify-center rounded-full text-[0.6875rem] leading-none font-semibold",
+                  "absolute top-1 left-1 flex h-5 min-w-5 items-center justify-center rounded-full text-[0.6875rem] leading-none font-semibold",
+                  showKinds && c.kind ? "gap-1 px-1.5" : "",
                   on ? "bg-accent text-on-accent" : "bg-black/60 text-white",
                 )}
               >
                 {i + 1}
+                {showKinds && c.kind ? ` ${KIND_TITLE[c.kind]}` : ""}
               </span>
             </button>
           );

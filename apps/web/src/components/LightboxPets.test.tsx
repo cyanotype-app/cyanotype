@@ -86,10 +86,10 @@ describe("the viewer's Pets row", () => {
     expect(await within(info).findByText("not named")).toBeInTheDocument();
     await userEvent.click(within(info).getByRole("button", { name: "Add to pet…" }));
     const dialog = await screen.findByRole("dialog", { name: "Add to pet" });
-    // Only pets of the animal's kind are offered, and its kind is not asked.
+    // Every pet is offered (the detector can be wrong about the kind), and a new pet starts as the animal's kind.
     const choose = await within(dialog).findByLabelText("Pet");
-    expect(within(choose).getAllByRole("option").map((o) => o.textContent)).toEqual(["A new pet", "Pet A (dog)"]);
-    expect(within(dialog).queryByRole("radio", { name: "Cat" })).not.toBeInTheDocument();
+    expect(within(choose).getAllByRole("option").map((o) => o.textContent)).toEqual(["A new pet", "Pet A (dog)", "Pet B (cat)"]);
+    expect(within(dialog).getByRole("radio", { name: "Dog" })).toBeChecked();
     await userEvent.selectOptions(choose, "p1");
     await userEvent.click(within(dialog).getByRole("button", { name: "Add photos" }));
     await waitFor(() => expect(add).toHaveBeenCalledWith("p1", { detection_ids: ["d1"] }));
@@ -117,6 +117,21 @@ describe("the viewer's Pets row", () => {
     const info = await panel();
     expect(await within(info).findByRole("button", { name: "Not Pet A, dog 1" })).toBeInTheDocument();
     expect(within(info).getByRole("button", { name: "Add to pet…, dog 2" })).toBeInTheDocument();
+  });
+
+  it("lets the owner say what an animal is: 'It's a dog' on one the detector called a cat", async () => {
+    vi.spyOn(api, "assetPets").mockResolvedValue({ scanned: true, items: [animal("d1", "cat", null)] });
+    const set = vi.spyOn(api, "setPetDetectionKind").mockResolvedValue({ id: "d1", kind: "dog" });
+    renderViewer();
+    const info = await panel();
+    expect(await within(info).findByText(/Cat/)).toBeInTheDocument();
+    vi.mocked(api.assetPets).mockResolvedValue({ scanned: true, items: [animal("d1", "dog", null)] });
+    await userEvent.click(within(info).getByRole("button", { name: "More for Cat" }));
+    expect(screen.queryByRole("menuitem", { name: "It’s a cat" })).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("menuitem", { name: "It’s a dog" }));
+    await waitFor(() => expect(set).toHaveBeenCalledWith("d1", "dog"));
+    expect(await screen.findByText("Marked as a dog")).toBeInTheDocument();
+    expect(await within(info).findByText(/Dog/)).toBeInTheDocument();
   });
 
   it("has no Pets row for a photo without animals, and asks nothing while Pets is off", async () => {

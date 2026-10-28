@@ -533,7 +533,7 @@ async fn proposals_are_ranked_by_the_centre_and_cut_into_tiers() {
     let Some(t) = TestDb::new().await else { return };
     let (likely, maybe, below) = (LIKELY + 0.05, (LIKELY + MAYBE) / 2.0, MAYBE - 0.05);
     let (owner, biscuit, cands) = proposals_setup(&t.pool, &[maybe, below, likely]).await;
-    let got = named_pets::suggestions(&t.pool, owner, biscuit, "dog", false, 50)
+    let got = named_pets::suggestions(&t.pool, owner, biscuit, false, 50)
         .await
         .unwrap();
     assert_eq!(
@@ -543,14 +543,14 @@ async fn proposals_are_ranked_by_the_centre_and_cut_into_tiers() {
     );
     assert_eq!((got[0].tier, got[1].tier), (Tier::Likely, Tier::Maybe));
     assert!((got[0].similarity - likely).abs() < 2e-3, "{}", got[0].similarity);
-    let limited = named_pets::suggestions(&t.pool, owner, biscuit, "dog", false, 1)
+    let limited = named_pets::suggestions(&t.pool, owner, biscuit, false, 1)
         .await
         .unwrap();
     assert_eq!(ids(&limited), vec![cands[2]]);
     // A pet with nothing fingerprinted has nothing to compare with.
     let empty = pet(&t.pool, owner, "Mochi", "dog").await;
     assert!(
-        named_pets::suggestions(&t.pool, owner, empty, "dog", false, 50)
+        named_pets::suggestions(&t.pool, owner, empty, false, 50)
             .await
             .unwrap()
             .is_empty()
@@ -563,7 +563,7 @@ async fn every_answer_changes_the_next_proposals() {
     let Some(t) = TestDb::new().await else { return };
     let (owner, biscuit, cands) = proposals_setup(&t.pool, &[LIKELY + 0.1, LIKELY + 0.05, MAYBE + 0.02]).await;
     assert_eq!(
-        ids(&named_pets::suggestions(&t.pool, owner, biscuit, "dog", false, 50)
+        ids(&named_pets::suggestions(&t.pool, owner, biscuit, false, 50)
             .await
             .unwrap()),
         cands
@@ -571,7 +571,7 @@ async fn every_answer_changes_the_next_proposals() {
     // Confirmed: it leaves the list and joins the centre. Refused: it never comes back for this pet.
     put_in(&t.pool, cands[0], biscuit).await;
     refuse(&t.pool, cands[1], biscuit).await;
-    let after = named_pets::suggestions(&t.pool, owner, biscuit, "dog", false, 50)
+    let after = named_pets::suggestions(&t.pool, owner, biscuit, false, 50)
         .await
         .unwrap();
     assert!(!ids(&after).contains(&cands[0]) && !ids(&after).contains(&cands[1]));
@@ -581,9 +581,7 @@ async fn every_answer_changes_the_next_proposals() {
         let (_, d) = seen(&t.pool, owner, "dog", near(LIKELY + 0.05, 1 + 1)).await;
         put_in(&t.pool, d, mochi).await;
     }
-    let mochis = named_pets::suggestions(&t.pool, owner, mochi, "dog", false, 50)
-        .await
-        .unwrap();
+    let mochis = named_pets::suggestions(&t.pool, owner, mochi, false, 50).await.unwrap();
     assert!(ids(&mochis).contains(&cands[1]), "refused for Biscuit, not for Mochi");
     t.teardown().await;
 }
@@ -625,8 +623,9 @@ async fn proposals_leave_out_what_does_not_belong() {
         .execute(&t.pool)
         .await
         .unwrap();
-    // 5: a cat that looks the same.
+    // 5: a cat that looks the same is proposed (a mislabeled dog is a cat to the detector); one that does not look like it is not.
     let (_, cat) = seen(&t.pool, owner, "cat", near(good, 20)).await;
+    let (_, unlike) = seen(&t.pool, owner, "cat", axis(22)).await;
     // 6: another model's fingerprint.
     sqlx::query("UPDATE pet_detections SET embed_model = 'older-model' WHERE id = $1")
         .bind(cands[5])
@@ -635,24 +634,24 @@ async fn proposals_leave_out_what_does_not_belong() {
         .unwrap();
     // 7: somebody else's dog that looks the same.
     let (_, strangers) = seen(&t.pool, other, "dog", near(good, 21)).await;
-    let got = named_pets::suggestions(&t.pool, owner, biscuit, "dog", false, 50)
+    let got = named_pets::suggestions(&t.pool, owner, biscuit, false, 50)
         .await
         .unwrap();
-    let (mut have, mut want) = (ids(&got), vec![cands[0], cands[6]]);
+    let (mut have, mut want) = (ids(&got), vec![cands[0], cands[6], cat]);
     have.sort();
     want.sort();
-    assert_eq!(have, want, "the two that are left");
-    for gone in [cands[1], cands[2], cands[3], cands[4], cands[5], cat, strangers] {
+    assert_eq!(have, want, "the three that are left");
+    for gone in [cands[1], cands[2], cands[3], cands[4], cands[5], unlike, strangers] {
         assert!(!ids(&got).contains(&gone), "{gone}");
     }
     // Unlocked, the Hidden view's photo is in.
-    let unlocked = named_pets::suggestions(&t.pool, owner, biscuit, "dog", true, 50)
+    let unlocked = named_pets::suggestions(&t.pool, owner, biscuit, true, 50)
         .await
         .unwrap();
     assert!(ids(&unlocked).contains(&cands[3]));
     // Nobody else sees Biscuit's proposals: asked as the other owner, nothing.
     assert!(
-        named_pets::suggestions(&t.pool, other, biscuit, "dog", false, 50)
+        named_pets::suggestions(&t.pool, other, biscuit, false, 50)
             .await
             .unwrap()
             .is_empty()
@@ -682,12 +681,13 @@ async fn pending_counts_are_one_query_for_every_shown_pet_and_agree_with_the_pro
         .unwrap();
     let blank = pet(&t.pool, owner, "Blank", "dog").await;
     let counts = named_pets::pending_counts(&t.pool, owner, None, false).await.unwrap();
-    let proposals = named_pets::suggestions(&t.pool, owner, biscuit, "dog", false, 300)
+    let proposals = named_pets::suggestions(&t.pool, owner, biscuit, false, 300)
         .await
         .unwrap();
     assert_eq!(counts.get(&biscuit), Some(&(proposals.len() as i64)));
-    assert_eq!(proposals.len(), 3);
-    assert_eq!(counts.get(&pepper), Some(&1));
+    // Both pets' centres are the same point, and a pet is proposed the free animals of either kind: the three dogs and the cat.
+    assert_eq!(proposals.len(), 4);
+    assert_eq!(counts.get(&pepper), Some(&4));
     assert!(!counts.contains_key(&hidden) && !counts.contains_key(&blank));
     // One pet alone, and somebody else's pets are not in it.
     let one = named_pets::pending_counts(&t.pool, owner, Some(pepper), false)
@@ -776,5 +776,94 @@ async fn delete_all_counts_the_named_pets_and_decisions_and_removes_them_for_one
         .await
         .unwrap();
     assert_eq!(theirs, vec![pb], "the other owner's pet is untouched");
+    t.teardown().await;
+}
+
+/// The owner's word on what an animal is (what the routes write).
+async fn correct(pool: &PgPool, animal: Uuid, kind: &str) {
+    sqlx::query("UPDATE pet_detections SET kind = $2, kind_by_owner = true WHERE id = $1")
+        .bind(animal)
+        .bind(kind)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn kind_of(pool: &PgPool, asset: Uuid, idx: i16) -> (String, bool) {
+    sqlx::query_as("SELECT kind, kind_by_owner FROM pet_detections WHERE asset_id = $1 AND idx = $2")
+        .bind(asset)
+        .bind(idx)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_corrected_kind_survives_a_rescan_whatever_kind_the_detector_says_now() {
+    let Some(t) = TestDb::new().await else { return };
+    let owner = user(&t.pool).await;
+    // A dog the detector called a cat; the owner put it in Biscuit, a dog, and so it is a dog.
+    let a = asset(&t.pool, owner).await;
+    store(&t.pool, a, vec![detection("cat", [0.1, 0.1, 0.5, 0.5], Some(axis(0)))]).await;
+    let biscuit = pet(&t.pool, owner, "Biscuit", "dog").await;
+    let d = animal(&t.pool, a, 0).await;
+    put_in(&t.pool, d, biscuit).await;
+    correct(&t.pool, d, "dog").await;
+    // By its fingerprint (it moved), still called a cat.
+    store(&t.pool, a, vec![detection("cat", [0.5, 0.5, 0.3, 0.3], Some(axis(0)))]).await;
+    assert_eq!(kind_of(&t.pool, a, 0).await, ("dog".to_string(), true));
+    assert_eq!(pet_of(&t.pool, a, 0).await, Some(biscuit));
+    // By its box, now called a dog.
+    store(&t.pool, a, vec![detection("dog", [0.5, 0.5, 0.3, 0.3], Some(axis(5)))]).await;
+    assert_eq!(kind_of(&t.pool, a, 0).await, ("dog".to_string(), true));
+    assert_eq!(pet_of(&t.pool, a, 0).await, Some(biscuit));
+    // As its photo's only animal (a rotate), called a cat again.
+    store(&t.pool, a, vec![detection("cat", [0.0, 0.0, 0.2, 0.2], Some(axis(9)))]).await;
+    assert_eq!(kind_of(&t.pool, a, 0).await, ("dog".to_string(), true));
+    assert_eq!(pet_of(&t.pool, a, 0).await, Some(biscuit));
+    // The pet's kind and the proposals' kinds follow what is stored.
+    assert_eq!(
+        count(&t.pool, "SELECT count(*) FROM pet_detections WHERE kind = 'cat'").await,
+        0
+    );
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn a_correction_without_a_pet_is_carried_too_and_never_moves_a_stranger_into_the_kind() {
+    let Some(t) = TestDb::new().await else { return };
+    let owner = user(&t.pool).await;
+    let a = asset(&t.pool, owner).await;
+    // Two animals: a "cat" the owner says is a dog (no pet), and a real cat.
+    store(
+        &t.pool,
+        a,
+        vec![
+            detection("cat", [0.0, 0.0, 0.4, 0.4], Some(axis(0))),
+            detection("cat", [0.5, 0.5, 0.4, 0.4], Some(axis(1))),
+        ],
+    )
+    .await;
+    correct(&t.pool, animal(&t.pool, a, 0).await, "dog").await;
+    // The next scan lists them the other way round and calls both cats.
+    store(
+        &t.pool,
+        a,
+        vec![
+            detection("cat", [0.5, 0.5, 0.4, 0.4], Some(axis(1))),
+            detection("cat", [0.0, 0.0, 0.4, 0.4], Some(axis(0))),
+        ],
+    )
+    .await;
+    assert_eq!(kind_of(&t.pool, a, 0).await, ("cat".to_string(), false));
+    assert_eq!(kind_of(&t.pool, a, 1).await, ("dog".to_string(), true));
+    // A scan that finds nothing like it forgets it with the animal.
+    store(
+        &t.pool,
+        a,
+        vec![detection("cat", [0.9, 0.9, 0.05, 0.05], Some(axis(7)))],
+    )
+    .await;
+    assert_eq!(kind_of(&t.pool, a, 0).await, ("cat".to_string(), false));
     t.teardown().await;
 }

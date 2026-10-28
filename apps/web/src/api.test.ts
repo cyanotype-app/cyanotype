@@ -488,6 +488,9 @@ describe("people in lists, scopes and searches", () => {
     expect(body()).toEqual({ pet_id: "p1" });
     await api.rejectPetDetection("d1", "p1");
     expect(f).toHaveBeenLastCalledWith("/assets/pets/detections/d1/reject", expect.anything());
+    await api.setPetDetectionKind("d1", "dog");
+    expect(f).toHaveBeenLastCalledWith("/assets/pets/detections/d1/kind", expect.anything());
+    expect(body()).toEqual({ kind: "dog" });
     await api.assetPets("a1");
     expect(f).toHaveBeenLastCalledWith("/assets/a1/pets", expect.anything());
   });

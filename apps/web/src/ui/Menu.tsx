@@ -5,9 +5,10 @@ import { cn } from "./cn";
 /**
  * A dropdown menu (Radix). Always non-modal: the modal kind locks scrolling by injecting a style element, which the
  * gateway's CSP refuses. Outside clicks and Escape still close it, and focus still moves through its items. Focus goes back to the
- * trigger when the menu closes; after a click or tap alone it goes back without the focus ring (the ring is for the keyboard).
+ * trigger when the menu closes; after a click or tap alone it goes back without the focus ring (the ring is for the keyboard). A menu inside a
+ * `Sheet` (a modal `<dialog>`, which sits above everything else) is given the sheet as its `container`, or it would open underneath it.
  */
-export function Menu({ trigger, children, align = "end", label }: { trigger: ReactNode; children: ReactNode; align?: "start" | "end"; label?: string }) {
+export function Menu({ trigger, children, align = "end", label, container }: { trigger: ReactNode; children: ReactNode; align?: "start" | "end"; label?: string; container?: HTMLElement | null }) {
   const opener = useRef<{ el: HTMLElement; pointer: boolean } | null>(null);
   const outside = useRef(false);
   return (
@@ -23,7 +24,7 @@ export function Menu({ trigger, children, align = "end", label }: { trigger: Rea
       >
         {trigger}
       </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
+      <DropdownMenu.Portal container={container}>
         <DropdownMenu.Content
           onKeyDown={() => {
             if (opener.current) opener.current.pointer = false;

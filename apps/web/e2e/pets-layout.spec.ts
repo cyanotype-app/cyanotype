@@ -1,4 +1,4 @@
-// Pets at phone and desktop widths: the Collections row, the Pets page (the switch, the timeline, selection, the menu), the page while the
+// Pets at phone and desktop widths: Collections (no card per kind), the Pets page (the switch, the timeline, selection, the menu), the page while the
 // library is still being looked through and when nothing was found, the chip a search makes of "dogs", the filter in the filters sheet, the smart
 // album rule, and everything gone while Pets is off. Set SHOT_DIR to save the screenshots.
 import { expect, test } from "@playwright/test";
@@ -89,16 +89,22 @@ for (const { width, scheme } of RUNS) {
         );
       });
 
-      // Collections: a row of the kinds, each with its cover cropped round.
+      // Collections: no Pets row without a pet the owner named (no card per kind); on a phone the list at the bottom is the way in.
       await page.goto("/");
-      const row = page.getByRole("region", { name: "Pets", exact: true });
-      await row.getByRole("link", { name: "Dogs, 6 photos" }).waitFor();
-      await row.getByRole("link", { name: "Cats, 3 photos" }).scrollIntoViewIfNeeded();
+      await page.getByRole("heading", { level: 1, name: "Collections" }).waitFor();
+      const way =
+        width === 1280
+          ? page.getByRole("navigation", { name: "Library" }).getByRole("link", { name: "Pets" })
+          : page.getByRole("region", { name: "Library" }).getByRole("link", { name: "Pets" });
+      await way.waitFor();
+      await expect(way).toHaveAttribute("href", "/pets");
+      await expect(page.getByRole("region", { name: "Pets", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("link", { name: /^(Dogs|Cats), \d+ photos?$/ })).toHaveCount(0);
+      await way.scrollIntoViewIfNeeded();
       await check("collections");
-      if (width === 1280) await expect(page.getByRole("navigation", { name: "Library" }).getByRole("link", { name: "Pets" })).toHaveAttribute("href", "/pets");
+      await way.click();
 
       // The page: the switch and the timeline of every pet.
-      await row.getByRole("link", { name: "See all" }).click();
       await page.getByRole("heading", { level: 1, name: "Pets" }).waitFor();
       const tabs = page.getByRole("radiogroup", { name: "Show" });
       await expect(tabs.getByRole("radio")).toHaveText(["All", "Dogs", "Cats"]);

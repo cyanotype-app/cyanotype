@@ -6,7 +6,6 @@ import {
   mergedPetMessage,
   namedPetLabel,
   offeredKinds,
-  petCardLabel,
   petCount,
   petFilterLabel,
   petIdsOf,
@@ -52,7 +51,6 @@ describe("pets text", () => {
     expect(petCount(summary(3, 0), "cat")).toBe(0);
     expect(petPhotos(1)).toBe("1 photo");
     expect(petPhotos(12345)).toBe("12,345 photos");
-    expect(petCardLabel("dog", 3)).toBe("Dogs, 3 photos");
   });
 
   it("offers All and only the kinds that have photos", () => {
@@ -132,12 +130,12 @@ describe("named pets text", () => {
       { asset_id: "4", reason: "already" as const },
       { asset_id: "5", reason: "in_other_pet" as const },
     ];
-    expect(skippedLines(skipped, { name: "Pet A", kind: "cat" })).toEqual([
-      "2 photos have no cat that was found",
+    expect(skippedLines(skipped, { name: "Pet A" })).toEqual([
+      "2 photos have no dog or cat that was found",
       "1 photo has not been looked through for pets yet",
       "1 photo is already in Pet A",
       "1 photo belongs to another pet already",
     ]);
-    expect(skippedLines([], { name: "Pet A", kind: "dog" })).toEqual([]);
+    expect(skippedLines([], { name: "Pet A" })).toEqual([]);
   });
 });
