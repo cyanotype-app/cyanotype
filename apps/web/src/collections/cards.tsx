@@ -1,8 +1,8 @@
 import { Link } from "react-router-dom";
-import type { Album, NamedPet, PetCover, Person, Trip } from "../api";
+import type { Album, NamedPet, Person, Trip } from "../api";
 import { FaceCrop } from "../components/FaceCrop";
 import { badgeText, isNamed, openPersonLabel, pendingLabel, personLabel } from "../peopleText";
-import { PET_LABEL, namedPetLabel, petCardLabel, petPhotos } from "../petsText";
+import { namedPetLabel, petPhotos } from "../petsText";
 import { cn } from "../ui/cn";
 import { Cover } from "./Cover";
 import { albumCount, tripLine, tripName } from "./text";
@@ -94,25 +94,6 @@ export function AlbumCard({ album }: { album: Album }) {
         />
         <span className="mt-2 block truncate text-[0.9375rem] font-medium text-fg">{album.title}</span>
         <span className="block truncate text-[0.8125rem] text-muted">{albumCount(album)}</span>
-      </Link>
-    </li>
-  );
-}
-
-/** A kind of pet of the Pets row: the clearest animal of it, cropped round, the kind's name and how many photos. */
-export function PetCard({ kind, photos, cover }: { kind: "dog" | "cat"; photos: number; cover: PetCover | null }) {
-  return (
-    <li className="shrink-0 snap-start">
-      <Link
-        to={`/pets?kind=${kind}`}
-        aria-label={petCardLabel(kind, photos)}
-        className="group flex w-24 flex-col items-center gap-1 rounded-card no-underline outline-offset-2 md:w-28"
-      >
-        <span className="mb-0.5 block size-[4.5rem] overflow-hidden rounded-full bg-surface transition-transform duration-150 ease-soft group-active:scale-95 md:size-[5.5rem]">
-          {cover && <FaceCrop url={cover.preview_url} box={cover.box} />}
-        </span>
-        <span className="w-full truncate text-center text-[0.8125rem] text-fg">{PET_LABEL[kind]}</span>
-        <span className="w-full truncate text-center text-xs text-muted">{petPhotos(photos)}</span>
       </Link>
     </li>
   );

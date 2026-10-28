@@ -247,6 +247,15 @@ export function Lightbox({
     }
     setAnimalsVersion((v) => v + 1);
   };
+  const animalIs = async (animal: PhotoPet, kind: "dog" | "cat") => {
+    try {
+      await api.setPetDetectionKind(animal.id, kind);
+      showToast({ message: animal.pet && animal.kind !== kind ? `Marked as a ${kind}, and taken out of ${animal.pet.name}` : `Marked as a ${kind}` });
+    } catch (e) {
+      showToast({ tone: "error", message: `Couldn’t save that. ${e instanceof Error ? e.message : ""}`.trim() });
+    }
+    setAnimalsVersion((v) => v + 1);
+  };
   const openFace = (face: PhotoFace) => {
     if (namedFace(face)) void info.leave().then(() => {
       onClose();
@@ -1180,6 +1189,7 @@ export function Lightbox({
                     picture: src,
                     onAdd: (animal) => setNamingAnimal(animal),
                     onNot: (animal) => void notThisPet(animal),
+                    onKind: (animal, kind) => void animalIs(animal, kind),
                   }
                 : undefined
             }

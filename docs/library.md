@@ -1694,7 +1694,7 @@ page, a search filter, tag words in text search, and keywords imported from the 
 
 People (faces grouped into named people, behind `FACES_ENABLED`, off by default) has its own routes under `/assets/people` and `/assets/faces`: see `docs/faces.md`, "People".
 
-Pets (the dogs and cats the worker found, on unless `PETS_ENABLED=0`) has its own routes under `/assets/pets` and `GET /assets/{id}/pets`, the `pets` search parameter, facet and bulk scope and a smart-album rule: see `docs/pets.md`, "In the API". **Named pets** (the owner makes "Biscuit", tags a few photos, and confirms the app's proposals) have routes under `/assets/pets/named` and `/assets/pets/detections`, the `pet` search parameter, the `{"pet": id}` bulk scope and the `pet` smart-album rule: see `docs/pets.md`, "Named pets".
+Pets (the dogs and cats the worker found, on unless `PETS_ENABLED=0`) has its own routes under `/assets/pets` and `GET /assets/{id}/pets`, the `pets` search parameter, facet and bulk scope and a smart-album rule: see `docs/pets.md`, "In the API". **Named pets** (the owner makes "Biscuit", tags a few photos, and confirms the app's proposals) have routes under `/assets/pets/named` and `/assets/pets/detections`, the `pet` search parameter, the `{"pet": id}` bulk scope and the `pet` smart-album rule: see `docs/pets.md`, "Named pets"; the owner can also say an animal is a dog or a cat (`POST /assets/pets/detections/{id}/kind`), which wins over the detector: "A wrong dog or cat".
 
 ## Tests
 

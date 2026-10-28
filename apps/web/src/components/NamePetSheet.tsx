@@ -23,6 +23,9 @@ export function petNamedToast(r: PetNamed, open: (petId: string) => void): { mes
   return r.pet ? { message, action: { label: "Open", onClick: () => open(r.pet!.id) } } : { message };
 }
 
+/** A photo with just one animal to choose from has it chosen already (the owner confirms or skips). */
+const only = (photo: AmbiguousPhoto) => (photo.candidates.length === 1 ? photo.candidates[0]!.detection_id : null);
+
 type Step =
   | { name: "form" }
   | { name: "pick"; pet: NamedPet | null; kind: "dog" | "cat"; petName: string; made: boolean; assigned: number; todo: AmbiguousPhoto[]; chosen: string[]; skipped: PetAdded["skipped"] }
@@ -44,7 +47,7 @@ export function NamePetSheet({
   assetIds?: readonly string[];
   /** Animals instead of photos: the owner's explicit word (an animal of another pet moves). */
   detectionIds?: readonly string[];
-  /** The kind of the animals, when it is known (then it is not asked, and only pets of it are offered). */
+  /** What the animal is called, when it is known: the new pet's kind starts as that (the owner may change it: the detector can be wrong). */
   kind?: "dog" | "cat";
   onClose: () => void;
   onDone: (r: PetNamed) => void;
@@ -62,13 +65,13 @@ export function NamePetSheet({
   useEffect(() => {
     let live = true;
     api.namedPets().then(
-      (r) => live && setPets(filterablePets(r.items).filter((p) => !fixedKind || p.kind === fixedKind)),
+      (r) => live && setPets(filterablePets(r.items)),
       () => live && setPets([]),
     );
     return () => {
       live = false;
     };
-  }, [fixedKind]);
+  }, []);
 
   const what = { ...(assetIds ? { asset_ids: assetIds } : {}), ...(detectionIds ? { detection_ids: detectionIds } : {}) };
   const existing = choice === NEW ? null : (pets?.find((p) => p.id === choice) ?? null);
@@ -80,7 +83,7 @@ export function NamePetSheet({
     const assigned = base.assigned + r.assigned;
     const skipped = [...base.skipped, ...r.skipped];
     if (r.ambiguous.length > 0) {
-      setPicked(null);
+      setPicked(only(r.ambiguous[0]!));
       setStep({ name: "pick", ...base, pet, assigned, skipped, todo: r.ambiguous });
       return;
     }
@@ -117,7 +120,7 @@ export function NamePetSheet({
     if (step.name !== "pick") return;
     const chosen = skip || !picked ? step.chosen : [...step.chosen, picked];
     const todo = step.todo.slice(1);
-    setPicked(null);
+    setPicked(todo[0] ? only(todo[0]) : null);
     if (todo.length > 0) return setStep({ ...step, chosen, todo });
     if (chosen.length === 0 || !step.pet) return finish({ ...step, skipped: step.skipped });
     setBusy(true);
@@ -153,10 +156,24 @@ export function NamePetSheet({
       >
         <div className="flex flex-col gap-3">
           <p className="text-[0.9375rem] text-muted [overflow-wrap:anywhere]">
-            This photo has {photo.candidates.length} {step.kind === "dog" ? "dogs" : "cats"}. Tap the one that is {step.petName}.
+            {photo.candidates.length === 1
+              ? `This photo has no ${step.kind} that was found, but it has this animal. Is it ${step.petName}?`
+              : `This photo has ${photo.candidates.length} animals. Tap the one that is ${step.petName}.`}
             {step.todo.length > 1 && ` ${step.todo.length - 1} more to go.`}
           </p>
-          <AnimalPicker key={photo.asset_id} url={photo.preview_url} candidates={photo.candidates} value={picked} onChange={setPicked} />
+          <AnimalPicker
+            key={photo.asset_id}
+            url={photo.preview_url}
+            candidates={photo.candidates}
+            value={picked}
+            onChange={setPicked}
+            showKinds={photo.candidates.some((c) => c.kind !== step.kind)}
+          />
+          {photo.candidates.some((c) => c.kind !== step.kind) && (
+            <p className="text-[0.8125rem] text-muted [overflow-wrap:anywhere]">
+              {step.petName} is a {step.kind}. An animal marked as the other kind becomes a {step.kind} when you choose it.
+            </p>
+          )}
           {error && <FormError>{error}</FormError>}
         </div>
       </Modal>
@@ -164,7 +181,7 @@ export function NamePetSheet({
   }
 
   if (step.name === "done") {
-    const lines = skippedLines(step.skipped, { name: step.petName, kind: step.kind });
+    const lines = skippedLines(step.skipped, { name: step.petName });
     return (
       <Modal
         onClose={() => onDone({ pet: step.pet, name: step.petName, assigned: step.assigned, made: step.made })}
@@ -247,19 +264,17 @@ export function NamePetSheet({
                 disabled={busy}
               />
             </Field>
-            {!fixedKind && (
-              <Field label="Kind">
-                <Segmented
-                  label="Kind"
-                  value={kind}
-                  onChange={setKind}
-                  options={[
-                    { value: "dog", label: "Dog" },
-                    { value: "cat", label: "Cat" },
-                  ]}
-                />
-              </Field>
-            )}
+            <Field label="Kind">
+              <Segmented
+                label="Kind"
+                value={kind}
+                onChange={setKind}
+                options={[
+                  { value: "dog", label: "Dog" },
+                  { value: "cat", label: "Cat" },
+                ]}
+              />
+            </Field>
           </>
         )}
         {error && <FormError>{error}</FormError>}

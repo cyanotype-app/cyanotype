@@ -264,7 +264,7 @@ describe("a pet's page", () => {
   it("reviews the proposals on the page, and reads the pet again after an answer", async () => {
     const get = vi.spyOn(api, "namedPet").mockResolvedValue(namedPet("p1", "Pet A", 3, { pending: 1 }));
     vi.spyOn(api, "petSuggestions").mockResolvedValue({
-      items: [{ detection_id: "d1", asset_id: "a1", box: [0.1, 0.1, 0.3, 0.3], preview_url: "https://s3.test/p1", similarity: 0.8, tier: "likely" }],
+      items: [{ detection_id: "d1", asset_id: "a1", box: [0.1, 0.1, 0.3, 0.3], preview_url: "https://s3.test/p1", kind: "dog", similarity: 0.8, tier: "likely" }],
       counts: { likely: 1, maybe: 0 },
     });
     vi.spyOn(api, "answerPetSuggestions").mockResolvedValue({ confirmed: 1, rejected: 0, skipped: 0 });

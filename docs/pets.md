@@ -18,6 +18,7 @@ service must agree): no job is queued, nothing is read, the Pets routes answer `
 - [In the API](#in-the-api)
 - [In the app](#in-the-app)
 - [Named pets](#named-pets)
+- [A wrong dog or cat](#a-wrong-dog-or-cat)
 - [Privacy](#privacy)
 - [Models, licences and provenance](#models-licences-and-provenance)
 - [Bake-off](#bake-off)
@@ -48,7 +49,7 @@ service must agree): no job is queued, nothing is read, the Pets routes answer `
    has no pets (`pet_scans`, with what the check said), so running the job again never duplicates an animal and "scanned, no pets" is different from
    "not scanned yet".
 
-What is stored per animal (migration 0036): its kind (`dog` or `cat`, a plain word: another animal is a line in code, not a new table or column), the box
+What is stored per animal (migration 0036): its kind (`dog` or `cat`, a plain word: another animal is a line in code, not a new table or column; the detector's guess until the owner says otherwise, migration 0038, [A wrong dog or cat](#a-wrong-dog-or-cat)), the box
 (left, top, width and height as fractions of the preview, so it holds at any size), the detector's score, the model and its version, and the photo and
 owner. Per photo and model: the number of animals and the two shares.
 
@@ -175,11 +176,12 @@ a pet. While it is off `/pets` is a "Page not found", the sidebar has no Pets, C
 - **Pets** (`/pets`, `?kind=dog|cat`). A page of its own: the photos with a dog or a cat as the library's timeline (months and days, the scrubber, selection, the viewer, the slideshow). Under
   the title a switch **All / Dogs / Cats** (a kind with no photos is not offered, and with one kind there is no switch). The menu has **Save as album** and **Search with filters** (`/search?pets=`).
   Selecting works like a person's page: "Select all" selects the whole view by the scope `{"pets": kind}` (favorite, rate, tag, archive, hide, add to or save as an album, share, download as a
-  zip, move to trash), not by the photos the browser happened to load. The page reads the counts again every 15 seconds and the timeline follows them. Boxes are not drawn in the viewer yet.
+  zip, move to trash), not by the photos the browser happened to load. The page reads the counts again every 15 seconds and the timeline follows them. The viewer outlines the animals with the "Show pets on the photo" switch (below).
 - **While the library is being looked through** the page says how far the worker has got ("Looked at 1,200 of 5,000 photos", a progress bar): as the only content while nothing is found yet,
   above the photos once some are. When the whole library has been looked at and nothing was found, it says so.
-- **Collections** has a **Pets** row: one round card per kind that has photos ("Dogs, 6 photos"), cropped by CSS from the cover's box like a person's face (nothing is made on the server),
-  with a link to the page. The sidebar's Library list has **Pets** next to People.
+- **Collections** has a **Pets** row only when the owner has named a pet: one round card per named pet that is not hidden (the cover cropped by CSS from the cover's box like a person's face, nothing is
+  made on the server), with a link to the page. There is no card per kind: all the dogs or all the cats are the Pets page's switch. The sidebar's Library list has **Pets** next to People, and on a phone the
+  Library list at the bottom of Collections has it once something was found (so the page is one tap away without a named pet).
 - **Search.** The words "dogs", "cat on the sofa" show the parsed chip (**Dogs**, **Cats**, **Pets**); its x searches again with `skip=pets`. The Filters sheet has **Pets**: Any, Dogs or cats,
   Dogs, Cats, with the facet's counts. "Select all" and "Save as album" in the results use the `pets` filter in the `search` scope, also when it came from the words.
 - **Smart albums.** The rule editor offers a **Pets** rule (Dogs or cats, Dogs, Cats) and words it "Pets: dogs".
@@ -201,13 +203,13 @@ The app's screens for it are described under [Named pets in the app](#named-pets
    0.93 at full size; 48 px 0.85; 32 px 0.76), and is recorded as tried. It is made in the job that finds the animal, from the same decoded preview.
 2. **Animals found before named pets** have no fingerprint: the worker's sweep queues their photos, and the job then **only fingerprints them, without finding them again** (same rows, same
    ids), so a library is backfilled without a rescan and without disturbing anything. `GET /assets/processing` has `pets.unfingerprinted` while it goes on.
-3. **Proposals.** An animal is scored by its cosine similarity to the **centre** (the mean) of the fingerprints of the animals in the pet. Only free animals of the pet's kind count: not another
-   pet's, not one refused for this pet, not one in the trash, the Hidden view (unless unlocked), another owner's, or in a photo being scanned again. A score of at least **0.72 is *likely***,
+3. **Proposals.** An animal is scored by its cosine similarity to the **centre** (the mean) of the fingerprints of the animals in the pet. Only free animals count, of either kind (the detector may have called
+   the pet the other kind, [A wrong dog or cat](#a-wrong-dog-or-cat)): not another pet's, not one refused for this pet, not one in the trash, the Hidden view (unless unlocked), another owner's, or in a photo being scanned again. A score of at least **0.72 is *likely***,
    **0.55 *maybe***; below that nothing is proposed (`crates/cyanotype-core/src/named_pets.rs`; the numbers are from the table in "Telling individuals apart"). At most 300 are listed.
    The count each pet shows in the list (`pending`) is the same number, for all pets in **one** query.
 4. **Decisions are the owner's and survive a rescan.** `pet_detections.pet_id` is set only by the owner (there is no automatic assignment), `pet_rejections` holds "not this pet". A new scan of
    a photo (a rotate or crop, a new detector or fingerprint model) replaces its animals with new rows, and `pets::store` hands what was decided to the animal that takes each one's place: matched
-   one to one within a kind, first by fingerprint (cosine at least 0.80, same model only: the same animal re-found), then by overlapping boxes (IoU at least 0.5), then, if the photo had
+   one to one within a kind (an animal the owner gave a kind to is matched first, with the new animals of either kind, and keeps the owner's kind: [A wrong dog or cat](#a-wrong-dog-or-cat)), first by fingerprint (cosine at least 0.80, same model only: the same animal re-found), then by overlapping boxes (IoU at least 0.5), then, if the photo had
    one animal of the kind and the new scan has one, those two (a Rotate moves the box and changes the crop: DINOv2 says only 0.65 for the same animal turned, against 0.34 median for
    look-alikes, so a fingerprint cannot be trusted across a rotate; with several animals in the photo nothing is guessed). The pet it was in, the pets it was refused for and being a pet's cover
    are carried. After a rotate or crop the animals the owner decided about wait, unread, for the new scan; the others are forgotten (`forget_and_requeue`).
@@ -220,16 +222,17 @@ same as unknown ones.
 | | |
 | --- | --- |
 | `GET /assets/pets/named`, `GET /assets/pets/named/{id}` | `{items: [{id, name, kind, hidden, photos, detections, pending, cover}]}`, most photos first; `kind` is `dog` or `cat`; `cover` is `{detection_id, asset_id, box: [x, y, w, h], preview_url}` or null (the box is fractions of the preview, cropped with CSS like a person's face; the chosen cover, else the clearest animal). Counts are of the photos this session may see (live, not a RAW half, not hidden unless the Hidden view is unlocked); a pet only hidden photos have is not listed to a locked session (its page is a `404`). `pending` is how many proposals wait (0 for a hidden pet), for all pets in one query. |
-| `POST /assets/pets/named {name, kind, asset_ids?, detection_ids?}` | Make a pet from photos. `name` is trimmed, 1 to 100 characters, no control characters, **two pets may share a name**; `kind` is `dog` or `cat`; at most 1,000 ids and 500 pets per owner. Answers `{pet, assigned, ambiguous, skipped}`: for each photo in `asset_ids` its *free* animals of the kind decide: **one** joins the pet; **several** and none joins: the photo is in `ambiguous` as `{asset_id, preview_url, candidates: [{detection_id, box}]}` for the caller to choose from (then `POST .../photos {detection_ids}`); **none** or not looked at yet: in `skipped` as `{asset_id, reason}`, `reason` being `no_animal`, `not_scanned`, `already` (the photo already has an animal of this pet) or `in_other_pet`. `detection_ids` name animals directly (the caller's explicit word: one that is another pet's moves, and is refused for the first; of the wrong kind is a `400`). A photo or animal that is not the owner's, or not visible to this session, is a `404` and **nothing** is made. The pet is made even when no photo could be placed. |
+| `POST /assets/pets/named {name, kind, asset_ids?, detection_ids?}` | Make a pet from photos. `name` is trimmed, 1 to 100 characters, no control characters, **two pets may share a name**; `kind` is `dog` or `cat`; at most 1,000 ids and 500 pets per owner. Answers `{pet, assigned, ambiguous, skipped}`: for each photo in `asset_ids` its *free* animals of the kind decide: **one** joins the pet; **several** and none joins: the photo is in `ambiguous` as `{asset_id, preview_url, candidates: [{detection_id, kind, box}]}` for the caller to choose from (then `POST .../photos {detection_ids}`); a photo with **none of the kind but a free animal of the other kind** (a dog the detector called a cat) is `ambiguous` too, with those animals: the owner is asked, never guessed for; **no animal at all** or not looked at yet: in `skipped` as `{asset_id, reason}`, `reason` being `no_animal`, `not_scanned`, `already` (the photo already has an animal of this pet) or `in_other_pet`. `detection_ids` name animals directly (the caller's explicit word: one that is another pet's moves, and is refused for the first; **one of the other kind becomes the pet's kind**, as the owner's correction). A photo or animal that is not the owner's, or not visible to this session, is a `404` and **nothing** is made. The pet is made even when no photo could be placed. |
 | `PATCH /assets/pets/named/{id} {name?, hidden?, cover_detection_id?}` | Rename (a blank name is a `400`: a pet is always named), hide or show, choose the cover (must be one of the pet's animals in a photo this session may see, else `400`). `DELETE` frees the animals (they stay, with their fingerprints) and the photos are untouched; the refusals for it go with it. Audited as a count only. |
 | `POST /assets/pets/named/{id}/merge {into}` | The first pet's animals go to the other (same kind only, else `400`), which keeps its name; "not the first" becomes "not the second". Audited as a count only. |
 | `GET /assets/pets/named/{id}/detections?limit&cursor` | The animals a cover can be chosen from (`{detection_id, asset_id, box, preview_url}`, clearest first, `next_cursor` while more). |
 | `GET /assets/pets/named/{id}/photos?limit&cursor\|before`, `GET .../timeline` | The pet's photos, same items, ordering and keyset paging as `GET /assets`; `{total, days}` for the scrubber. Live photos, archived ones too, hidden ones only with the Hidden view unlocked. |
 | `POST /assets/pets/named/{id}/photos {asset_ids?, detection_ids?}` | Add photos or animals: the same answer and rules as making a pet (`{pet, assigned, ambiguous, skipped}`). |
 | `POST /assets/pets/named/{id}/photos/remove {asset_ids?, detection_ids?}` | **"Not this pet"**: the pet's animals in those photos (or those animals) are freed **and refused for the pet**, never proposed for it again; a removed cover is cleared. `{removed}`. Adding the animal again by hand forgets the refusal. |
-| `GET /assets/pets/named/{id}/suggestions?limit&tier=likely\|maybe` | `{items: [{detection_id, asset_id, box, preview_url, similarity, tier}], counts: {likely, maybe}}`, best first (`limit` default 24, at most 100; the counts are of everything proposed, not of the page). A pet with no fingerprinted animal yet has none. |
-| `POST /assets/pets/named/{id}/suggestions/answer {confirm?: [detection_id], reject?: [detection_id]}` | Answer many at once (at most 1,000): `{confirmed, rejected, skipped}`. Only free animals of the pet's kind change; one already another pet's or this one's (to confirm), or already refused (to reject), is `skipped`, and an id that is not the owner's, not visible, or of another kind is a `404` with **nothing** changed. |
-| `POST /assets/pets/detections/{id}/assign {pet_id}`, `POST /assets/pets/detections/{id}/reject {pet_id}` | The same for one animal (`{pet}` / `204`); moving an animal from another pet refuses it for that one; refusing an animal that is in the pet is a `400` (remove it instead). |
+| `GET /assets/pets/named/{id}/suggestions?limit&tier=likely\|maybe` | `{items: [{detection_id, asset_id, box, preview_url, kind, similarity, tier}], counts: {likely, maybe}}` (free animals of **either kind**; `kind` is what the animal is called now), best first (`limit` default 24, at most 100; the counts are of everything proposed, not of the page). A pet with no fingerprinted animal yet has none. |
+| `POST /assets/pets/named/{id}/suggestions/answer {confirm?: [detection_id], reject?: [detection_id]}` | Answer many at once (at most 1,000): `{confirmed, rejected, skipped}`. Only free animals change; one already another pet's or this one's (to confirm), or already refused (to reject), is `skipped`, and an id that is not the owner's or not visible is a `404` with **nothing** changed. A confirmed animal of the other kind becomes the pet's kind. |
+| `POST /assets/pets/detections/{id}/assign {pet_id}`, `POST /assets/pets/detections/{id}/reject {pet_id}` | The same for one animal (`{pet}` / `204`); moving an animal from another pet refuses it for that one; refusing an animal that is in the pet is a `400` (remove it instead). Either kind: assigning an animal of the other kind makes it the pet's kind; a refusal changes no kind. |
+| `POST /assets/pets/detections/{id}/kind {kind}` | The owner says what an animal is (`dog` or `cat`, else `400`), without a pet: `{id, kind}`. The detector's guess is replaced and the correction is kept through a rescan. An animal that is in a pet of the other kind leaves it and is refused for it, like "Not this pet". Write key; a `404` for someone else's animal, one in a photo this session may not see, or while Pets is off. |
 | `GET /assets/{id}/pets` | Its items gain `pet: {id, name}` for an animal the owner put in a (not hidden) pet, else `null`. |
 | `GET /assets/search?pet=<id>,<id>` (also `similar`, and the `search` scope) | Photos where **all** the named pets are, together (at most 10 ids; `400` for a malformed one or more than 10; an id that is not the owner's matches nothing, exactly like one that never existed). Combines with every other filter, `pets=`, people and text. Ignored while Pets is off. |
 | the words of a query | The owner's **named, not hidden** pets with a photo a search can show are read out of the words like people's names (after dates, places and people; before "dog", "cat" and "pet"): at the start or end of the query or after *with, of, and, featuring, plus, including*; the longest name wins; a name two pets share, a name a person has (the person is read first) and names under three letters are never matched; single common words need an introducing word. A chip `{kind: "pet", label, matched, pet: [{id, name}]}`; `skip=pet` gives the words back; an explicit `pet` filter wins. |
@@ -244,8 +247,9 @@ Shown only while Pets is on, like the rest of "In the app" above, and built from
 
 - **Naming a pet.** *Select* photos in the Photos, Search or an album's grid (or on the Pets page: **Name a pet**, in the page or in its menu, turns selection on and asks for the photos of the pet) and choose **Name pet…**
   (the "⋯" of the selection bar on a phone). The sheet asks for a name and a kind (dog or cat), or offers the pets there already (**Add photos**). It needs the photos one by one, so it is off while the whole view is
-  selected. What the server answered is told in plain words: a photo with **several animals of the kind** is shown with each outlined and numbered, and the owner taps the right one (*Skip this photo* leaves it
-  out; the choices are sent as `detection_ids`); photos that could not join are listed with the reason ("1 photo has no dog that was found", "…has not been looked through for pets yet", "…is already in Name",
+  selected. What the server answered is told in plain words: a photo with **several animals** (or only one the detector called the other kind) is shown with each outlined and numbered, with what each is called
+  ("1 Cat") when that is not the pet's kind, and the owner taps the right one (an only animal is chosen already; *Skip this photo* leaves it
+  out; the choices are sent as `detection_ids`, and an animal of the other kind becomes the pet's kind); every pet is offered, and a new pet's kind starts as the animal's and can be changed; photos that could not join are listed with the reason ("1 photo has no dog or cat that was found", "…has not been looked through for pets yet", "…is already in Name",
   "…belongs to another pet already"). The toast says what was made and opens the pet.
 - **The Pets page** has **Your pets** above the photos: a round cover, the name and the number of photos for each pet, hidden ones last and dimmed, and a count in the corner when "Is this X?" proposals wait. With no pet
   yet it says how to make one. Collections' Pets row starts with the named pets (not the hidden ones), then the kinds.
@@ -257,7 +261,9 @@ Shown only while Pets is on, like the rest of "In the app" above, and built from
   animal outlined. **Yes to these N** / **No to these N** answer everything shown at once (after asking: the second is for good). An answer takes the tile away at once and puts it back with a message if the server
   refuses; a Yes reads the proposals again, because it moves the pet's centre. There is no undo: the server has no way back to "not answered" (a Yes can be taken out with *Not this pet*, which refuses the animal).
 - **The viewer.** The Info panel has a **Pets** row while Pets is on and the photo has animals: each with a crop and the pet's name (a link to its page) and **Not {name}** (takes it out of the pet and refuses it for it),
-  or "not named" and **Add to pet…** (the same sheet, for one animal: a new pet, or one of its kind). One switch, **Show pets on the photo** (**Show faces and pets on the photo** when the photo also has faces; it replaces the faces' own switch and sits in People, else in Pets), outlines every animal with a label (the pet's name, else "Dog" or "Cat"); a tap on a box opens the pet's page, or the same sheet for an animal nobody named. It stays as set from photo to photo, and the share viewer never loads pets.
+  or "not named" and **Add to pet…** (the same sheet, for one animal: a new pet or any pet; the animal becomes the pet's kind). A small "⋯" on each animal has **It's a dog** / **It's a cat** (the other
+  than it is called now): the owner's word, without a pet; an animal in a pet of the other kind leaves it. One switch, **Show pets on the photo** (**Show faces and pets on the photo** when the photo also has faces; it replaces the faces' own switch and sits in People, else in Pets), outlines every animal with a label (the pet's name, else "Dog" or "Cat"); a tap on a box opens the pet's page, or the same sheet for an animal nobody named. It stays as set from photo to photo, and the share viewer never loads pets.
+- **"Is this {name}?"** marks a proposal the detector called the other kind ("Marked as a cat"); "Yes to these N" says that those become the pet's kind.
 - **Search.** A pet's name in the words becomes a chip with the name (its x gives the words back with `skip=pet`); `pet=<id>,<id>` in the address is a chip too ("Name and Name"); the filter sheet has **Named pets**
   (not the hidden ones), and "Save as album" and "Select all" of the results use the filter. **Smart albums** have a **Pet is** rule (one or more named pets, all of them in the photo).
 
@@ -266,7 +272,29 @@ Shown only while Pets is on, like the rest of "In the app" above, and built from
 - No automatic assignment: no job ever puts an animal in a pet. A new pet has proposals only once its photos have fingerprints (seconds after the job; a backfilled library takes the sweep's time).
 - No "not a pet" mark for a detection that is no animal (a plush toy found as a cat): refuse it for the pet, which also keeps it out of that pet's proposals.
 - A refusal is an exclusion, not a negative example: near-duplicates of a refused animal (a burst) are proposed separately and have to be refused too (the owner can do it in bulk). Not measured.
-- No pet-level merge of decisions across kinds (a dog is never a cat's) and no cross-owner anything.
+- No merge of two pets of different kinds (the owner's word is for animals: say what each is, then merge pets of one kind) and no cross-owner anything.
+- No "back to the detector's guess" for a corrected animal: say the other kind again. The detector's own word is not kept next to the owner's.
+
+## A wrong dog or cat
+
+The detector's kind is a guess (a dog photographed in an odd pose is "a cat" now and then), and a pet used to take only animals of its own kind, so a dog labelled a cat could not be put in the dog's pet. **The owner's word wins**
+(migration 0038, `pet_detections.kind_by_owner`):
+
+- **One column, not a second kind.** Putting an animal in a pet of the other kind (making the pet from it, adding photos or the animal, assigning it, confirming a proposal) or saying `It's a dog` / `It's a cat` rewrites
+  `pet_detections.kind` itself and sets `kind_by_owner`. Every reader of the kind then counts the correction without knowing about it: the summary and the Pets page's tabs, the `pets=dog|cat` filter and facet, the `pets` scope and
+  smart-album rule, the viewer's labels, the covers by kind. The flag is only read by a new scan. A pet is still of one kind and two pets of different kinds are not merged.
+- **A photo is asked about, not guessed for.** Adding photos (a selection) to a dog pet when a photo has no free dog but has a free animal called a cat does not move the cat by itself: the photo comes back `ambiguous` with the
+  animal's kind, and the owner confirms in the sheet (a photo with a single such animal has it chosen already). Naming animals directly (the viewer, a proposal) is the owner's word as it is.
+- **A rescan keeps it.** A rotate or a new model replaces the photo's animals; `pets::store` matches the animals the owner gave a kind to **first, with the new animals of either kind** (fingerprint at 0.80, boxes at IoU 0.5,
+  or the photo's only animal when the new scan found one), hands them the pet, the refusals and the cover as before, and writes the owner's kind and the flag on the new row. The rest are matched one to one within a kind as before.
+  A corrected animal the new scan did not find again is gone with its row, as any animal is.
+- **Proposals look at both kinds.** Proposals filtered by the detected kind would never show a mislabelled dog for the dog pet. So they are made from all of the owner's free animals; the tile says "Marked as a cat" and a yes
+  makes it a dog. Measured before choosing (the evaluation set of "Telling individuals apart", the shipped DINOv2 class-token crops, centre of the seeds, 40 draws for k = 3, 5, 10, the same draws as the tables above; each pet
+  against all the animals of the **other** kind): across 1,640 draws no animal of the other kind reached the *maybe* threshold, let alone *likely* (0.55 / 0.72). The highest cosine between a pet's centre and any animal of the other
+  kind was 0.47 (dog pet, cat animals 0.39; cat pet, dog animals 0.47), the 95th percentile of the best other-kind score 0.33 to 0.41, and the same-kind proposals per draw were 11 to 20 (maybe and up). So crossing the kinds
+  adds **no** false proposal on this set, with a margin of 0.08 under the lowest tier, and the thresholds are unchanged. Caveats: the 39 cats of the set are of 5 animals, and a dog and a cat in a similar pose against the same background
+  are the case it cannot have covered; the first thing to look at if a library shows "Marked as a cat" tiles that are not dogs. (Measured with a script over the cached embeddings of `individuals.rs`; the mislabelled animal's own score
+  is the same as any same-kind animal's, because a fingerprint knows nothing of the label.)
 
 ## Privacy
 
@@ -553,14 +581,14 @@ Metrics (`docs/observability.md`): `cyanotype.pets.model_loaded` (gauge), `cyano
 - Named pets: `crates/cyanotype-pets/src/crop.rs` (the crop: padding, square, kept inside the picture, degenerate boxes), `crates/cyanotype-core/tests/named_pets.rs` (the decisions through a new scan: same boxes,
   a moved animal by its fingerprint, one to one within a kind, another model's numbers not compared, nothing found, an edit forgetting only what nobody decided about, a photo's only animal after a rotate; the
   sweep that fingerprints without finding again; proposals ranked and in tiers, answers changing the next ones, everything left out: another pet's, refused, trashed, Hidden, scanned again, another model,
-  another kind, another owner; the pending counts agreeing with the proposals; deletion cascades; `delete_all`), `apps/worker/src/pets.rs` (fingerprints in the job that finds the animal, the same dog twice is
+  another owner, a free animal of the other kind that looks like the pet is proposed and one that does not is not; the pending counts agreeing with the proposals; a corrected kind kept through a rescan (by fingerprint, by box, as the only animal, of either detected kind, without a pet) and a stranger not taken into it; deletion cascades; `delete_all`), `apps/worker/src/pets.rs` (fingerprints in the job that finds the animal, the same dog twice is
   alike and a cat is not, an end-to-end proposal, animals found before get theirs without being found again and keep their pet, a crop too small has none),
   `apps/assets/src/routes/named_pets_tests.rs` (the switch; every route; making a pet from photos with one, several and no animal; validation; the cap; moving between pets; the list, covers and `pending`;
   rename, hide, delete and merge with owner isolation and audit entries that are counts; "not this pet"; tiers, counts and exclusions; the Hidden view and its unlock; bulk and single answers; a photo's own pet;
   the page's photos, paging and timeline; the scope; Save as album; the `pet` filter, its mistakes and isolation; names in a query, chips, `skip=pet`, hidden, shared and person-owned names; the smart rule;
   a share leak test over every public response, the album and share lists and the recovery manifest; a performance test, ignored), `crates/cyanotype-core/src/manifest.rs` (a pet rule is kept out of the manifest).
-- Named pets in the web app: `petsText.test.ts` (names, labels, ids, the plain-words reasons), `components/NamePetSheet.test.tsx` (name and kind, the photo with several animals, the photos left out, one animal),
-  `AnimalPicker.test.tsx`, `PetSuggestions.test.tsx` (tiers, one by one and in bulk, optimistic with a rollback, the whole photo), `LightboxPets.test.tsx` (the Info panel's Pets row), `pages/PetPage.test.tsx`
+- Named pets in the web app: `petsText.test.ts` (names, labels, ids, the plain-words reasons), `components/NamePetSheet.test.tsx` (name and kind, the photo with several animals, the photos left out, one animal, the only animal called the other kind, any pet offered),
+  `AnimalPicker.test.tsx`, `PetSuggestions.test.tsx` (tiers, one by one and in bulk, optimistic with a rollback, the whole photo), `LightboxPets.test.tsx` (the Info panel's Pets row, "It's a dog"), `pages/PetPage.test.tsx`
   (rename, hide, cover, merge, delete, "Not this pet", save as album), the "Your pets" row in `PetsPage.test.tsx`, `Library.pets.test.tsx`, the chip, filter sheet and rule tests in `Search.test.tsx`,
   `FilterSheet.test.tsx` and `SmartAlbumEditor.test.tsx`; `e2e/pets-named-layout.spec.ts` at phone and desktop widths, light and dark.
 - `apps/assets/src/routes/pets_tests.rs`: the switch (every route a `404` while off, the filter and the words ignored, the facet and the processing entry absent, the scope and the rule refused), the summary

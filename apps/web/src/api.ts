@@ -892,11 +892,11 @@ export interface NamedPet {
   cover: NamedPetCover | null;
 }
 
-/** One photo with several animals of the kind: which one is the pet? */
+/** One photo with several free animals (or none of the pet's kind): which one is the pet? `kind` is what the animal is called now. */
 export interface AmbiguousPhoto {
   asset_id: string;
   preview_url: string;
-  candidates: { detection_id: string; box: FaceBox }[];
+  candidates: { detection_id: string; kind: "dog" | "cat"; box: FaceBox }[];
 }
 
 export type SkipReason = "no_animal" | "not_scanned" | "already" | "in_other_pet";
@@ -915,6 +915,8 @@ export interface PetSuggestion {
   asset_id: string;
   box: FaceBox;
   preview_url: string;
+  /** What the animal is called now; a "cat" proposed for a dog pet becomes a dog when the owner says yes. */
+  kind: "dog" | "cat";
   similarity: number;
   tier: "likely" | "maybe";
 }
@@ -1766,6 +1768,9 @@ export const api = {
   /** This animal is that pet (another pet's animal moves). */
   assignPetDetection: (detection: string, petId: string) =>
     request<{ pet: NamedPet | null }>(`/assets/pets/detections/${encodeURIComponent(detection)}/assign`, json({ pet_id: petId })),
+  /** The owner's word on what the animal is ("It's a dog"); an animal in a pet of the other kind leaves it. */
+  setPetDetectionKind: (detection: string, kind: "dog" | "cat") =>
+    request<{ id: string; kind: "dog" | "cat" }>(`/assets/pets/detections/${encodeURIComponent(detection)}/kind`, json({ kind })),
   /** "No, not that pet": the animal is not proposed for it again. */
   rejectPetDetection: (detection: string, petId: string) =>
     request<void>(`/assets/pets/detections/${encodeURIComponent(detection)}/reject`, json({ pet_id: petId })),

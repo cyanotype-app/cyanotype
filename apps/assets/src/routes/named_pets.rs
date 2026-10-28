@@ -15,15 +15,18 @@
 //!   [`add_in`] for what the lists say. The pet is made even when no photo could be resolved (the caller then picks among `ambiguous`).
 //! - `PATCH /assets/pets/named/{id} {name?, hidden?, cover_detection_id?}`, `DELETE` (its animals are free again; the photos stay),
 //!   `POST .../merge {into}` (same kind only; the first pet's animals go to the second, which keeps its name).
+//!
+//! The owner's word wins over the detector's kind: an animal put in a pet of the other kind takes the pet's kind (`pet_detections.kind_by_owner`).
 //! - `GET .../detections?limit&cursor`: the animals a cover can be chosen from (`{detection_id, asset_id, box, preview_url}`).
 //! - `GET .../photos?limit&cursor|before` and `GET .../timeline`: the pet's photos, like `GET /assets` and its timeline. A
 //!   `{"pet": "<id>"}` scope (`scope.rs`), the `pet=<id>,<id>` filter of search and the `pet` smart-album rule name the same photos.
 //! - `POST .../photos {asset_ids?, detection_ids?}`: add photos (or animals) to the pet: `{pet, assigned, ambiguous, skipped}`.
 //!   `POST .../photos/remove {asset_ids?, detection_ids?}`: "not this pet": `{removed}`, and the animals are never proposed for it again.
 //! - `GET .../suggestions?limit&tier=likely|maybe`: "Is this Biscuit?": `{items: [{detection_id, asset_id, box, preview_url, similarity,
-//!   tier}], counts: {likely, maybe}}`, best first, free animals of the pet's kind that are not refused for it. `POST
+//!   kind, tier}], counts: {likely, maybe}}`, best first, free animals (of either kind) that are not refused for it. `POST
 //!   .../suggestions/answer {confirm?: [detection_id], reject?: [detection_id]}`: answer many at once: `{confirmed, rejected, skipped}`.
 //! - `POST /assets/pets/detections/{id}/assign {pet_id}`, `POST /assets/pets/detections/{id}/reject {pet_id}`: the same for one animal.
+//! - `POST /assets/pets/detections/{id}/kind {kind}`: the owner says an animal is a dog or a cat (see [`set_kind`]).
 //!
 //! Ids of someone else's pets, animals and photos are `404`. Moving an animal from one pet to another refuses it for the first.
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -223,23 +226,23 @@ fn too_many(n: usize) -> ApiResult<()> {
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 enum Skip {
-    /// No animal of the pet's kind was found in the photo.
+    /// No animal was found in the photo.
     NoAnimal,
     /// The photo has not been looked at yet (or is being looked at again after an edit).
     NotScanned,
     /// The photo already has an animal of this pet in it.
     Already,
-    /// Every animal of the kind in the photo is another pet's.
+    /// Every animal in the photo is another pet's.
     InOtherPet,
 }
 
-/// A photo with several free animals of the kind: the photo and each animal's id and box.
-type Ambiguous = (Uuid, Vec<(Uuid, [f32; 4])>);
+/// A photo with several free animals (or none of the pet's kind): the photo and each animal's id, kind and box.
+type Ambiguous = (Uuid, Vec<(Uuid, String, [f32; 4])>);
 
 #[derive(Default)]
 struct Added {
     assigned: Vec<Uuid>,
-    /// `(asset, candidates)`: photos with several free animals of the kind, for the caller to choose from.
+    /// `(asset, candidates)`: photos with several free animals of the kind, or only free ones of the other kind, for the caller to choose from.
     ambiguous: Vec<Ambiguous>,
     skipped: Vec<(Uuid, Skip)>,
 }
@@ -258,9 +261,9 @@ struct Det {
 
 /// Put animals in `pet` (locked, owner-checked, of `kind` by the caller), and say what happened to each photo asked for.
 ///
-/// `detection_ids` are animals the caller chose: each must be the owner's, in a photo this session may see, and of the pet's kind (`400`
-/// otherwise); one that is another pet's moves (and is refused for that one). `asset_ids` are photos: the photo's free animals of the pet's
-/// kind decide. One: it joins. Several: none does, and the photo comes back in `ambiguous` with the candidates, for the caller to pick
+/// `detection_ids` are animals the caller chose: each must be the owner's and in a photo this session may see (`404` otherwise), of either
+/// kind (one of the other kind becomes the pet's kind); one that is another pet's moves (and is refused for that one). `asset_ids` are photos: the photo's free animals of the pet's
+/// kind decide. One: it joins. Several, or none of the kind but free ones of the other kind (maybe a mislabeled dog): none joins, and the photo comes back in `ambiguous` with the candidates, for the caller to pick
 /// from (a second call with `detection_ids`). None found, not looked at yet, already in this pet, or only other pets' animals: it
 /// is in `skipped` with the reason. A photo that is not the owner's or that this session may not see is a `404` and nothing changes.
 async fn add_in(
@@ -294,18 +297,12 @@ async fn add_in(
         if rows.len() != ids.len() {
             return Err(ApiError::NotFound);
         }
-        if let Some(wrong) = rows.iter().find(|r| r.kind != kind) {
-            return Err(ApiError::BadRequest(format!(
-                "that animal is a {}, the pet is a {kind}",
-                wrong.kind
-            )));
-        }
         for r in &rows {
             taken.insert(r.asset_id);
             if r.pet_id == Some(pet) {
                 continue;
             }
-            assign_in(&mut *tx, r.id, r.pet_id, pet).await?;
+            assign_in(&mut *tx, r.id, r.pet_id, pet, kind).await?;
             out.assigned.push(r.id);
         }
     }
@@ -328,13 +325,12 @@ async fn add_in(
         let rows: Vec<Det> = sqlx::query_as(&format!(
             "SELECT d.id, d.asset_id, d.kind, d.pet_id, d.box_x, d.box_y, d.box_w, d.box_h
              FROM pet_detections d
-             WHERE d.asset_id = ANY($1) AND d.owner_id = $2 AND d.kind = $3 AND {}
+             WHERE d.asset_id = ANY($1) AND d.owner_id = $2 AND {}
              ORDER BY d.asset_id, d.idx FOR UPDATE OF d",
             pets::SCANNED
         ))
         .bind(&ids)
         .bind(owner)
-        .bind(kind)
         .fetch_all(&mut *tx)
         .await?;
         let scanned: HashSet<Uuid> = sqlx::query_scalar("SELECT asset_id FROM pet_scans WHERE asset_id = ANY($1)")
@@ -354,8 +350,11 @@ async fn add_in(
                 continue;
             }
             let free: Vec<&&Det> = dets.iter().filter(|d| d.pet_id.is_none()).collect();
-            match free.len() {
-                0 if dets.is_empty() => out.skipped.push((
+            // The photo's free animals of the pet's kind decide; with none of them, the owner picks among the others (the detector may have
+            // called the pet the other kind, and the owner's word wins: `assign_in`).
+            let of_kind: Vec<&&Det> = free.iter().copied().filter(|d| d.kind == kind).collect();
+            match (of_kind.len(), free.len()) {
+                (0, 0) if dets.is_empty() => out.skipped.push((
                     asset,
                     if scanned.contains(&asset) {
                         Skip::NoAnimal
@@ -363,15 +362,15 @@ async fn add_in(
                         Skip::NotScanned
                     },
                 )),
-                0 => out.skipped.push((asset, Skip::InOtherPet)),
-                1 => {
-                    assign_in(&mut *tx, free[0].id, None, pet).await?;
-                    out.assigned.push(free[0].id);
+                (0, 0) => out.skipped.push((asset, Skip::InOtherPet)),
+                (1, _) => {
+                    assign_in(&mut *tx, of_kind[0].id, None, pet, kind).await?;
+                    out.assigned.push(of_kind[0].id);
                 }
                 _ => out.ambiguous.push((
                     asset,
                     free.iter()
-                        .map(|d| (d.id, [d.box_x, d.box_y, d.box_w, d.box_h]))
+                        .map(|d| (d.id, d.kind.clone(), [d.box_x, d.box_y, d.box_w, d.box_h]))
                         .collect(),
                 )),
             }
@@ -384,14 +383,23 @@ async fn add_in(
     Ok(out)
 }
 
-/// The owner says animal `det` (in pet `was`, if any) is `pet`: it moves (and is refused for the pet it left), and an earlier refusal for
-/// `pet` is forgotten.
-async fn assign_in(tx: &mut sqlx::PgConnection, det: Uuid, was: Option<Uuid>, pet: Uuid) -> ApiResult<()> {
-    sqlx::query("UPDATE pet_detections SET pet_id = $2 WHERE id = $1")
-        .bind(det)
-        .bind(pet)
-        .execute(&mut *tx)
-        .await?;
+/// The owner says animal `det` (in pet `was`, if any) is `pet` (a `pet_kind`): it moves (and is refused for the pet it left), and
+/// an earlier refusal for `pet` is forgotten. An animal the detector called the other kind becomes the pet's kind, as the owner's word.
+async fn assign_in(
+    tx: &mut sqlx::PgConnection,
+    det: Uuid,
+    was: Option<Uuid>,
+    pet: Uuid,
+    pet_kind: &str,
+) -> ApiResult<()> {
+    sqlx::query(
+        "UPDATE pet_detections SET pet_id = $2, kind = $3, kind_by_owner = kind_by_owner OR kind <> $3 WHERE id = $1",
+    )
+    .bind(det)
+    .bind(pet)
+    .bind(pet_kind)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM pet_rejections WHERE detection_id = $1 AND pet_id = $2")
         .bind(det)
         .bind(pet)
@@ -419,7 +427,7 @@ async fn added_json(s: &AppState, owner: Uuid, added: &Added) -> ApiResult<Value
         ambiguous.push(json!({
             "asset_id": asset,
             "preview_url": s.storage.presign_get(&keys::preview(owner, *asset)).await?,
-            "candidates": cands.iter().map(|(id, b)| json!({"detection_id": id, "box": b})).collect::<Vec<_>>(),
+            "candidates": cands.iter().map(|(id, kind, b)| json!({"detection_id": id, "kind": kind, "box": b})).collect::<Vec<_>>(),
         }));
     }
     Ok(json!({
@@ -915,15 +923,15 @@ pub(super) async fn suggestions(
         None => None,
         Some(t) => Some(Tier::parse(t).ok_or_else(|| ApiError::BadRequest("tier must be likely or maybe".into()))?),
     };
-    let kind: String = sqlx::query_scalar("SELECT kind FROM pets WHERE id = $1 AND owner_id = $2")
+    let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM pets WHERE id = $1 AND owner_id = $2")
         .bind(id)
         .bind(user.id)
         .fetch_optional(&s.db)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+        .await?;
+    exists.ok_or(ApiError::NotFound)?;
     let limit = q.limit.unwrap_or(24).clamp(1, MAX_SUGGESTIONS);
     // Everything the pet's centre reaches (at most 300), so the counts are of all of it; the list is cut afterwards.
-    let all = named_pets::suggestions(&s.db, user.id, id, &kind, unlock.0, named_pets::CONSIDERED)
+    let all = named_pets::suggestions(&s.db, user.id, id, unlock.0, named_pets::CONSIDERED)
         .await
         .map_err(ApiError::Internal)?;
     let counts = json!({
@@ -941,6 +949,7 @@ pub(super) async fn suggestions(
             "asset_id": f.asset_id,
             "box": f.bbox,
             "preview_url": s.storage.presign_get(&keys::preview(user.id, f.asset_id)).await?,
+            "kind": f.kind,
             "similarity": f.similarity,
             "tier": f.tier.name(),
         }));
@@ -956,10 +965,10 @@ pub(super) struct AnswerBody {
     reject: Vec<Uuid>,
 }
 
-/// Answer many proposals at once: `confirm` puts the animals in the pet, `reject` refuses them for it. Only free animals of the pet's kind
+/// Answer many proposals at once: `confirm` puts the animals in the pet, `reject` refuses them for it. Only free animals
 /// change: one that is another pet's or already this one's (to confirm), or already refused for it or in it (to reject), is `skipped`
-/// (nothing changes for it); an id that is not the owner's, not in a photo this session may see, or of another kind is a `404` (and
-/// nothing changes at all). `{confirmed, rejected, skipped}`.
+/// (nothing changes for it); an id that is not the owner's, not in a photo this session may see is a `404` (and
+/// nothing changes at all); a confirmed animal of the other kind takes the pet's kind. `{confirmed, rejected, skipped}`.
 pub(super) async fn answer(
     State(s): State<AppState>,
     user: AuthUser,
@@ -985,14 +994,13 @@ pub(super) async fn answer(
     let rows: Vec<Det> = sqlx::query_as(&format!(
         "SELECT d.id, d.asset_id, d.kind, d.pet_id, d.box_x, d.box_y, d.box_w, d.box_h
          FROM pet_detections d JOIN assets a ON a.id = d.asset_id
-         WHERE d.id = ANY($1) AND d.owner_id = $2 AND d.kind = $3 AND {} AND {}
+         WHERE d.id = ANY($1) AND d.owner_id = $2 AND {} AND {}
          ORDER BY d.id FOR UPDATE OF d",
         pets::SCANNED,
-        seen("a", "$4")
+        seen("a", "$3")
     ))
     .bind(&ids)
     .bind(user.id)
-    .bind(&kind)
     .bind(unlock.0)
     .fetch_all(&mut *tx)
     .await?;
@@ -1010,7 +1018,7 @@ pub(super) async fn answer(
             skipped += 1;
             continue;
         }
-        assign_in(&mut tx, det, None, id).await?;
+        assign_in(&mut tx, det, None, id, &kind).await?;
         confirmed += 1;
     }
     let mut rej = req.reject.clone();
@@ -1078,9 +1086,9 @@ pub(super) async fn reject(
 ) -> ApiResult<StatusCode> {
     on(&s)?;
     let mut tx = s.db.begin().await?;
-    let (_, kind) = lock_pet(&mut tx, user.id, req.pet_id).await?;
-    let row: Option<(Option<Uuid>, String)> = sqlx::query_as(&format!(
-        "SELECT d.pet_id, d.kind FROM pet_detections d JOIN assets a ON a.id = d.asset_id
+    lock_pet(&mut tx, user.id, req.pet_id).await?;
+    let row: Option<Option<Uuid>> = sqlx::query_scalar(&format!(
+        "SELECT d.pet_id FROM pet_detections d JOIN assets a ON a.id = d.asset_id
          WHERE d.id = $1 AND d.owner_id = $2 AND {} AND {} FOR UPDATE OF d",
         pets::SCANNED,
         seen("a", "$3")
@@ -1090,12 +1098,7 @@ pub(super) async fn reject(
     .bind(unlock.0)
     .fetch_optional(&mut *tx)
     .await?;
-    let (was, det_kind) = row.ok_or(ApiError::NotFound)?;
-    if det_kind != kind {
-        return Err(ApiError::BadRequest(format!(
-            "that animal is a {det_kind}, the pet is a {kind}"
-        )));
-    }
+    let was = row.ok_or(ApiError::NotFound)?;
     if was == Some(req.pet_id) {
         return Err(ApiError::BadRequest(
             "the animal is in that pet: remove it from them instead".into(),
@@ -1108,4 +1111,70 @@ pub(super) async fn reject(
         .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub(super) struct KindBody {
+    kind: String,
+}
+
+/// `POST /assets/pets/detections/{id}/kind {kind}`: the owner says what the animal is ("It's a dog" / "It's a cat"), without a pet. The
+/// detector's guess is replaced and the correction is kept through a rescan (`kind_by_owner`). An animal in a pet of the other kind leaves
+/// it and is refused for it, like "Not this pet" (the pet's kind is the pet's own). `{id, kind}`.
+pub(super) async fn set_kind(
+    State(s): State<AppState>,
+    user: AuthUser,
+    unlock: Unlock,
+    Path(det): Path<Uuid>,
+    Json(req): Json<KindBody>,
+) -> ApiResult<Json<Value>> {
+    on(&s)?;
+    let kind = req.kind.trim().to_ascii_lowercase();
+    if !pets::is_kind(&kind) {
+        return Err(ApiError::BadRequest("kind must be dog or cat".into()));
+    }
+    let mut tx = s.db.begin().await?;
+    let row: Option<(Option<Uuid>, String)> = sqlx::query_as(&format!(
+        "SELECT d.pet_id, d.kind FROM pet_detections d JOIN assets a ON a.id = d.asset_id
+         WHERE d.id = $1 AND d.owner_id = $2 AND {} AND {} FOR UPDATE OF d",
+        pets::SCANNED,
+        seen("a", "$3")
+    ))
+    .bind(det)
+    .bind(user.id)
+    .bind(unlock.0)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (pet, was) = row.ok_or(ApiError::NotFound)?;
+    if was != kind {
+        sqlx::query("UPDATE pet_detections SET kind = $2, kind_by_owner = true WHERE id = $1")
+            .bind(det)
+            .bind(&kind)
+            .execute(&mut *tx)
+            .await?;
+        if let Some(pet) = pet {
+            sqlx::query("UPDATE pet_detections SET pet_id = NULL WHERE id = $1")
+                .bind(det)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("INSERT INTO pet_rejections (detection_id, pet_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+                .bind(det)
+                .bind(pet)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("UPDATE pets SET cover_detection_id = NULL, updated_at = now() WHERE id = $1 AND cover_detection_id = $2")
+                .bind(pet)
+                .bind(det)
+                .execute(&mut *tx)
+                .await?;
+        }
+    } else {
+        // Saying what it already is still makes it the owner's word, which a rescan keeps.
+        sqlx::query("UPDATE pet_detections SET kind_by_owner = true WHERE id = $1")
+            .bind(det)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(Json(json!({"id": det, "kind": kind})))
 }

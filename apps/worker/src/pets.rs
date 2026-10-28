@@ -1151,7 +1151,7 @@ mod tests {
             .execute(&env.pool)
             .await
             .unwrap();
-        let got = cyanotype_core::named_pets::suggestions(&env.pool, owner, pet, "dog", false, 10)
+        let got = cyanotype_core::named_pets::suggestions(&env.pool, owner, pet, false, 10)
             .await
             .unwrap();
         assert_eq!(

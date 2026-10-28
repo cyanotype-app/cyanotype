@@ -140,6 +140,14 @@ async fn det(pool: &PgPool, asset: Uuid, idx: i16) -> Uuid {
         .unwrap()
 }
 
+async fn kind_of(pool: &PgPool, d: Uuid) -> (String, bool) {
+    sqlx::query_as("SELECT kind, kind_by_owner FROM pet_detections WHERE id = $1")
+        .bind(d)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 async fn pet_of(pool: &PgPool, d: Uuid) -> Option<Uuid> {
     sqlx::query_scalar("SELECT pet_id FROM pet_detections WHERE id = $1")
         .bind(d)
@@ -160,7 +168,7 @@ async fn unlock(pool: &PgPool, cookie: &str) {
 
 /// Alpha's library. Each photo has what its name says:
 /// `d0`, `d1`, `d2`: one dog each (fingerprints on axis 0: the seeds), `likely`, `maybe`, `far`: one dog each at those similarities
-/// to them, `pair`: two dogs (neither like the seeds), `cat1`: a cat on axis 0, `plain`: looked at, no pets, `fresh`: not looked at yet.
+/// to them, `pair`: two dogs (neither like the seeds), `cat1`: a cat (nothing like the seeds), `plain`: looked at, no pets, `fresh`: not looked at yet.
 struct Scene {
     uid: Uuid,
     key: String,
@@ -225,7 +233,7 @@ async fn scene(pool: &PgPool) -> Scene {
     scanned(
         pool,
         cat,
-        vec![animal("cat", [0.2, 0.2, 0.4, 0.4], Some(print(1.0, 6)))],
+        vec![animal("cat", [0.2, 0.2, 0.4, 0.4], Some(print(0.0, 6)))],
     )
     .await;
     let plain = photo(pool, uid, "plain.jpg", "2024-05-09").await;
@@ -380,26 +388,34 @@ async fn a_pet_is_made_from_photos_and_says_which_it_could_not_place() {
     assert_eq!(v["pet"]["kind"], "dog", "any case");
     assert_eq!(v["assigned"], 2, "the two photos with one dog each");
     // The photo with two dogs is not guessed: both are offered, with the photo to choose on.
+    // So is a photo whose only animal is of the other kind (the detector may be wrong about a dog), with the kind the detector said.
     let amb = v["ambiguous"].as_array().unwrap();
-    assert_eq!(amb.len(), 1, "{v}");
+    assert_eq!(amb.len(), 2, "{v}");
+    let cat_photo = amb
+        .iter()
+        .find(|a| id_in(&a["asset_id"]) == s.cat)
+        .expect("the cat's photo");
+    assert_eq!(cat_photo["candidates"][0]["kind"], "cat");
+    assert_eq!(cat_photo["candidates"].as_array().unwrap().len(), 1);
+    let amb: Vec<Value> = amb
+        .iter()
+        .filter(|a| id_in(&a["asset_id"]) == s.pair)
+        .cloned()
+        .collect();
     assert_eq!(id_in(&amb[0]["asset_id"]), s.pair);
     assert!(amb[0]["preview_url"].as_str().unwrap().starts_with("http"));
     let cands = amb[0]["candidates"].as_array().unwrap();
     assert_eq!(cands.len(), 2);
     assert_eq!(id_in(&cands[0]["detection_id"]), det(&t.pool, s.pair, 0).await);
     assert_box(&cands[1]["box"], [0.55, 0.1, 0.4, 0.5]);
-    // A cat, a photo with nothing, a photo not looked at yet: said so, by reason.
+    // A photo with nothing, a photo not looked at yet: said so, by reason.
     let skipped: Vec<(Uuid, String)> = v["skipped"]
         .as_array()
         .unwrap()
         .iter()
         .map(|x| (id_in(&x["asset_id"]), x["reason"].as_str().unwrap().to_string()))
         .collect();
-    let mut want = vec![
-        (s.cat, "no_animal".to_string()),
-        (s.plain, "no_animal".to_string()),
-        (s.fresh, "not_scanned".to_string()),
-    ];
+    let mut want = vec![(s.plain, "no_animal".to_string()), (s.fresh, "not_scanned".to_string())];
     want.sort();
     let mut got = skipped;
     got.sort();
@@ -481,17 +497,6 @@ async fn making_a_pet_checks_what_it_is_given() {
         assert_eq!(st, StatusCode::NOT_FOUND, "{body}: {v}");
     }
     assert_eq!(count(&t.pool, "SELECT count(*) FROM pets").await, 0, "all or nothing");
-    // An animal of the wrong kind.
-    let cat = det(&t.pool, s.cat, 0).await;
-    let (st, v) = post(
-        &app,
-        &s.key,
-        "/assets/pets/named",
-        json!({"name": "Biscuit", "kind": "dog", "detection_ids": [cat]}),
-    )
-    .await;
-    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
-    assert_eq!(count(&t.pool, "SELECT count(*) FROM pets").await, 0);
     // Too many at once.
     let many: Vec<Uuid> = (0..1001).map(|_| Uuid::new_v4()).collect();
     let (st, _) = post(
@@ -1108,10 +1113,7 @@ async fn every_answer_to_the_bulk_proposals_counts_and_the_rest_is_left_alone() 
         let (st, v) = post(&app, &s.key, &answer, body).await;
         assert_eq!(st, StatusCode::BAD_REQUEST, "{why}: {v}");
     }
-    // One of Mochi's, one that is a cat, a stranger's and one that does not exist: all a 404 and nothing changes.
-    let cat = det(&t.pool, s.cat, 0).await;
-    let (st, _) = post(&app, &s.key, &answer, json!({"confirm": [likely, cat]})).await;
-    assert_eq!(st, StatusCode::NOT_FOUND, "of the wrong kind");
+    // A stranger's and one that does not exist: a 404 and nothing changes.
     let (st, _) = post(&app, &s.key, &answer, json!({"confirm": [likely, Uuid::new_v4()]})).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
     assert_eq!(pet_of(&t.pool, likely).await, None);
@@ -1181,14 +1183,22 @@ async fn one_animal_can_be_assigned_or_refused_on_its_own() {
         (v["pet"]["detections"].clone(), v["pet"]["name"].clone()),
         (json!(4), json!("Biscuit"))
     );
-    let (st, _) = post(
+    // The owner's word wins over the detector's kind: a dog put in a cat pet is a cat from then on (the other direction is the same).
+    let far = det(&t.pool, s.far, 0).await;
+    let (st, v) = post(
         &app,
         &s.key,
-        &format!("/assets/pets/detections/{likely}/assign"),
+        &format!("/assets/pets/detections/{far}/assign"),
         json!({"pet_id": cat}),
     )
     .await;
-    assert_eq!(st, StatusCode::BAD_REQUEST, "a dog is not a cat");
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(
+        kind_of(&t.pool, far).await,
+        ("cat".to_string(), true),
+        "the owner's word, kept through a rescan"
+    );
+    assert_eq!(kind_of(&t.pool, likely).await, ("dog".to_string(), false));
     let (st, _) = post(
         &app,
         &s.key,
@@ -1204,7 +1214,12 @@ async fn one_animal_can_be_assigned_or_refused_on_its_own() {
         json!({"pet_id": cat}),
     )
     .await;
-    assert_eq!(st, StatusCode::BAD_REQUEST, "of another kind");
+    assert_eq!(
+        st,
+        StatusCode::NO_CONTENT,
+        "a refusal is for any animal; it changes no kind"
+    );
+    assert_eq!(kind_of(&t.pool, likely).await, ("dog".to_string(), false));
     let maybe = det(&t.pool, s.maybe, 0).await;
     let (st, _) = post(
         &app,
@@ -1222,7 +1237,7 @@ async fn one_animal_can_be_assigned_or_refused_on_its_own() {
     )
     .await;
     assert_eq!(st, StatusCode::NO_CONTENT, "twice is the same");
-    assert_eq!(count(&t.pool, "SELECT count(*) FROM pet_rejections").await, 1);
+    assert_eq!(count(&t.pool, "SELECT count(*) FROM pet_rejections").await, 2);
     for (p, body) in [
         (
             format!("/assets/pets/detections/{}/assign", Uuid::new_v4()),
@@ -1942,4 +1957,298 @@ async fn the_pets_list_and_proposals_of_a_big_library_stay_fast() {
     );
     assert_eq!(st, StatusCode::OK);
     t.teardown().await;
+}
+
+// ---- a wrong dog or cat: the owner's word wins ------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_dog_the_detector_called_a_cat_goes_in_a_dog_pet_and_the_owners_word_counts_everywhere() {
+    let Some(t) = TestDb::new().await else { return };
+    let s = scene(&t.pool).await;
+    let app = app_with_pets(&t.pool);
+    let id = biscuit(&app, &s).await;
+    let cat = det(&t.pool, s.cat, 0).await;
+    let kinds = |v: &Value| -> Vec<(String, i64)> {
+        v["kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| (k["kind"].as_str().unwrap().to_string(), k["photos"].as_i64().unwrap()))
+            .collect()
+    };
+    let (_, v) = get(&app, &s.key, "/assets/pets").await;
+    assert_eq!(kinds(&v), vec![("dog".into(), 7), ("cat".into(), 1)]);
+    // By the photo: the photo has no dog, so the owner is asked, with the animal's kind to read.
+    let (st, v) = post(
+        &app,
+        &s.key,
+        &format!("/assets/pets/named/{id}/photos"),
+        json!({"asset_ids": [s.cat]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["assigned"], 0);
+    assert_eq!(v["ambiguous"][0]["candidates"][0]["kind"], "cat");
+    assert_eq!(
+        kind_of(&t.pool, cat).await,
+        ("cat".to_string(), false),
+        "asking changes nothing"
+    );
+    // By the animal: the owner's word. It is a dog now, and says so.
+    let (st, v) = post(
+        &app,
+        &s.key,
+        &format!("/assets/pets/named/{id}/photos"),
+        json!({"detection_ids": [cat]}),
+    )
+    .await;
+    assert_eq!((st, v["assigned"].clone()), (StatusCode::OK, json!(1)), "{v}");
+    assert_eq!(kind_of(&t.pool, cat).await, ("dog".to_string(), true));
+    assert_eq!(pet_of(&t.pool, cat).await, Some(id));
+    // Everything that reads the kind follows: the summary, the view, the filter, the facet, the smart rule, the viewer, the scope.
+    let (_, v) = get(&app, &s.key, "/assets/pets").await;
+    assert_eq!(kinds(&v), vec![("dog".into(), 8), ("cat".into(), 0)]);
+    let (_, v) = get(&app, &s.key, "/assets/pets/photos?kind=cat").await;
+    assert!(item_ids(&v).is_empty(), "{v}");
+    let (_, v) = get(&app, &s.key, "/assets/pets/photos?kind=dog").await;
+    assert!(item_ids(&v).contains(&s.cat), "{v}");
+    let (_, v) = get(&app, &s.key, "/assets/search?pets=dog&cutoff=false").await;
+    assert!(item_ids(&v).contains(&s.cat));
+    let (_, v) = get(&app, &s.key, "/assets/search?pets=cat&cutoff=false").await;
+    assert!(item_ids(&v).is_empty(), "{v}");
+    let (_, f) = get(&app, &s.key, "/assets/search/facets").await;
+    assert_eq!(
+        f["pets"],
+        json!([{"value": "any", "count": 8}, {"value": "dog", "count": 8}])
+    );
+    let (st, v) = post(
+        &app,
+        &s.key,
+        "/assets/albums",
+        json!({"title": "Dogs", "rules": {"rules": [{"field": "pets", "kind": "dog"}]}}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let album = v["id"].as_str().unwrap().to_string();
+    let (_, v) = get(&app, &s.key, &format!("/assets/albums/{album}/assets")).await;
+    assert!(item_ids(&v).contains(&s.cat), "{v}");
+    let (_, v) = get(&app, &s.key, &format!("/assets/{}/pets", s.cat)).await;
+    assert_eq!(
+        (v["items"][0]["kind"].clone(), v["items"][0]["pet"]["name"].clone()),
+        (json!("dog"), json!("Biscuit"))
+    );
+    let (st, _) = post(
+        &app,
+        &s.key,
+        "/assets/favorite",
+        json!({"scope": {"pets": "dog"}, "except": [], "favorite": true}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        count(
+            &t.pool,
+            "SELECT count(*) FROM assets WHERE favorite AND id = (SELECT asset_id FROM pet_detections WHERE kind_by_owner)"
+        )
+        .await,
+        1,
+        "the corrected photo is in the dog scope"
+    );
+    // A new scan that still says "cat" keeps the correction and the pet (what the worker does after a rotate).
+    scanned(
+        &t.pool,
+        s.cat,
+        vec![animal("cat", [0.3, 0.3, 0.4, 0.4], Some(print(0.2, 9)))],
+    )
+    .await;
+    let again = det(&t.pool, s.cat, 0).await;
+    assert_eq!(kind_of(&t.pool, again).await, ("dog".to_string(), true));
+    assert_eq!(pet_of(&t.pool, again).await, Some(id));
+    t.teardown().await;
+}
+
+async fn pet_id(app: &Router, key: &str, name: &str) -> Uuid {
+    let (_, list) = get(app, key, "/assets/pets/named").await;
+    list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == name)
+        .map(|p| id_in(&p["id"]))
+        .expect("the pet")
+}
+
+#[tokio::test]
+async fn every_way_of_putting_an_animal_in_a_pet_takes_the_pets_kind_both_ways() {
+    let Some(t) = TestDb::new().await else { return };
+    let s = scene(&t.pool).await;
+    let app = app_with_pets(&t.pool);
+    let cat = det(&t.pool, s.cat, 0).await;
+    let dog = det(&t.pool, s.likely, 0).await;
+    let maybe = det(&t.pool, s.maybe, 0).await;
+    let far = det(&t.pool, s.far, 0).await;
+    // Making a pet: a dog pet from a "cat".
+    let (st, v) = post(
+        &app,
+        &s.key,
+        "/assets/pets/named",
+        json!({"name": "Biscuit", "kind": "dog", "detection_ids": [cat]}),
+    )
+    .await;
+    assert_eq!((st, v["assigned"].clone()), (StatusCode::OK, json!(1)), "{v}");
+    assert_eq!(kind_of(&t.pool, cat).await, ("dog".to_string(), true));
+    // A cat pet takes a dog by `assign`, and another by the answer to a proposal.
+    let (_, v) = post(
+        &app,
+        &s.key,
+        "/assets/pets/named",
+        json!({"name": "Pepper", "kind": "cat"}),
+    )
+    .await;
+    let pepper = id_in(&v["pet"]["id"]);
+    let (st, _) = post(
+        &app,
+        &s.key,
+        &format!("/assets/pets/detections/{dog}/assign"),
+        json!({"pet_id": pepper}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(kind_of(&t.pool, dog).await, ("cat".to_string(), true));
+    let (st, v) = post(
+        &app,
+        &s.key,
+        &format!("/assets/pets/named/{pepper}/suggestions/answer"),
+        json!({"confirm": [maybe], "reject": [far]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!((v["confirmed"].clone(), v["rejected"].clone()), (json!(1), json!(1)));
+    assert_eq!(kind_of(&t.pool, maybe).await, ("cat".to_string(), true));
+    assert_eq!(
+        kind_of(&t.pool, far).await,
+        ("dog".to_string(), false),
+        "a refusal changes no kind"
+    );
+    // Pets of two kinds still do not merge.
+    let biscuit = pet_id(&app, &s.key, "Biscuit").await;
+    let (st, _) = post(
+        &app,
+        &s.key,
+        &format!("/assets/pets/named/{pepper}/merge"),
+        json!({"into": biscuit}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    // Nobody else's animal: nothing changes for a stranger.
+    let (_, bravo_key) = user(&t.pool, "bravo@example.com").await;
+    let (st, _) = post(
+        &app,
+        &bravo_key,
+        &format!("/assets/pets/detections/{far}/assign"),
+        json!({"pet_id": pepper}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert_eq!(kind_of(&t.pool, far).await, ("dog".to_string(), false));
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn a_pet_is_proposed_the_animals_of_either_kind_and_each_says_what_it_is_called() {
+    let Some(t) = TestDb::new().await else { return };
+    let s = scene(&t.pool).await;
+    let app = app_with_pets(&t.pool);
+    let id = biscuit(&app, &s).await;
+    // A "cat" that looks like Biscuit is proposed, and says it is a cat; the cat that does not look like it, is not.
+    let alike = photo(&t.pool, s.uid, "alike.jpg", "2024-05-11").await;
+    scanned(
+        &t.pool,
+        alike,
+        vec![animal("cat", [0.1, 0.1, 0.5, 0.5], Some(print(LIKELY + 0.1, 11)))],
+    )
+    .await;
+    let (_, v) = get(&app, &s.key, &format!("/assets/pets/named/{id}/suggestions")).await;
+    let items = v["items"].as_array().unwrap();
+    let mine = items.iter().find(|i| id_in(&i["asset_id"]) == alike).expect("proposed");
+    assert_eq!(mine["kind"], "cat");
+    assert!(
+        items.iter().all(|i| id_in(&i["asset_id"]) != s.cat),
+        "the unlike cat is not proposed"
+    );
+    let (_, list) = get(&app, &s.key, "/assets/pets/named").await;
+    assert_eq!(
+        list["items"][0]["pending"], 3,
+        "the pending count agrees: likely, maybe and the cat"
+    );
+    // Yes to it: it is a dog.
+    let d = det(&t.pool, alike, 0).await;
+    let (st, v) = post(
+        &app,
+        &s.key,
+        &format!("/assets/pets/named/{id}/suggestions/answer"),
+        json!({"confirm": [d]}),
+    )
+    .await;
+    assert_eq!((st, v["confirmed"].clone()), (StatusCode::OK, json!(1)), "{v}");
+    assert_eq!(kind_of(&t.pool, d).await, ("dog".to_string(), true));
+    t.teardown().await;
+}
+
+#[tokio::test]
+async fn the_owner_can_say_what_an_animal_is_without_a_pet() {
+    let Some(t) = TestDb::new().await else { return };
+    let s = scene(&t.pool).await;
+    let app = app_with_pets(&t.pool);
+    let id = biscuit(&app, &s).await;
+    let cat = det(&t.pool, s.cat, 0).await;
+    let path = |d: Uuid| format!("/assets/pets/detections/{d}/kind");
+    let (st, v) = post(&app, &s.key, &path(cat), json!({"kind": " Dog "})).await;
+    assert_eq!((st, v["kind"].clone()), (StatusCode::OK, json!("dog")), "{v}");
+    assert_eq!(kind_of(&t.pool, cat).await, ("dog".to_string(), true));
+    let (_, v) = get(&app, &s.key, &format!("/assets/{}/pets", s.cat)).await;
+    assert_eq!(v["items"][0]["kind"], "dog");
+    let (_, v) = get(&app, &s.key, "/assets/search?pets=dog&cutoff=false").await;
+    assert!(item_ids(&v).contains(&s.cat));
+    // A bad kind, an animal that is not there, a stranger's.
+    for (d, body, want) in [
+        (cat, json!({"kind": "horse"}), StatusCode::BAD_REQUEST),
+        (cat, json!({"kind": "any"}), StatusCode::BAD_REQUEST),
+        (Uuid::new_v4(), json!({"kind": "cat"}), StatusCode::NOT_FOUND),
+    ] {
+        let (st, v) = post(&app, &s.key, &path(d), body.clone()).await;
+        assert_eq!(st, want, "{body}: {v}");
+    }
+    let (_, bravo_key) = user(&t.pool, "bravo@example.com").await;
+    let (st, _) = post(&app, &bravo_key, &path(cat), json!({"kind": "cat"})).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert_eq!(kind_of(&t.pool, cat).await, ("dog".to_string(), true));
+    // An animal in a pet that the owner says is the other kind leaves it, and is refused for it (like "Not this pet").
+    let seed = det(&t.pool, s.d[0], 0).await;
+    let (st, _) = post(&app, &s.key, &path(seed), json!({"kind": "cat"})).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(kind_of(&t.pool, seed).await, ("cat".to_string(), true));
+    assert_eq!(pet_of(&t.pool, seed).await, None);
+    assert_eq!(
+        count(
+            &t.pool,
+            &format!("SELECT count(*) FROM pet_rejections WHERE pet_id = '{id}' AND detection_id = '{seed}'")
+        )
+        .await,
+        1
+    );
+    // Saying what it already is keeps the animal where it is.
+    let other = det(&t.pool, s.d[1], 0).await;
+    let (st, _) = post(&app, &s.key, &path(other), json!({"kind": "dog"})).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(pet_of(&t.pool, other).await, Some(id));
+    // Pets off: a 404 like the rest.
+    let off = app_off(&t.pool);
+    let (st, _) = post(&off, &s.key, &path(cat), json!({"kind": "cat"})).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    t.teardown().await;
+}
+
+fn app_off(pool: &PgPool) -> Router {
+    app(pool)
 }

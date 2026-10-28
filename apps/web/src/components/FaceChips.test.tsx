@@ -281,7 +281,7 @@ describe("the people in the Info panel", () => {
     expect(set).toHaveBeenCalledWith(true);
   });
   it("words the one switch by what the photo has: faces, pets, or both", () => {
-    const animals = { animals: [{ id: "d1", kind: "dog" as const, box: [0.1, 0.1, 0.2, 0.2] as [number, number, number, number], score: 0.9, pet: null }], picture: null, onAdd: vi.fn(), onNot: vi.fn() };
+    const animals = { animals: [{ id: "d1", kind: "dog" as const, box: [0.1, 0.1, 0.2, 0.2] as [number, number, number, number], score: 0.9, pet: null }], picture: null, onAdd: vi.fn(), onNot: vi.fn(), onKind: vi.fn() };
     panel([face("f1", null)], { onRegionBoxes: vi.fn(), pets: animals });
     expect(screen.getAllByRole("switch")).toHaveLength(1);
     expect(screen.getByRole("switch", { name: "Show faces and pets on the photo" })).toBeInTheDocument();

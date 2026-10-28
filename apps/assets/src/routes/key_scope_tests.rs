@@ -108,6 +108,7 @@ const ROUTES: &[(&str, &str, Who)] = &[
     ("POST", "/assets/pets/named/{id}/suggestions/answer", Write),
     ("POST", "/assets/pets/detections/{id}/assign", Write),
     ("POST", "/assets/pets/detections/{id}/reject", Write),
+    ("POST", "/assets/pets/detections/{id}/kind", Write),
     ("POST", "/assets/faces/{id}/not-a-face", Write),
     ("DELETE", "/assets/faces/{id}/not-a-face", Write),
     ("POST", "/assets/hide", Write),

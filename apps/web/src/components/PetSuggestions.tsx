@@ -163,6 +163,11 @@ export function PetSuggestions({
               >
                 <FaceCrop url={s.preview_url} box={s.box} round={false} />
               </button>
+              {s.kind !== pet.kind && (
+                <span className="text-center text-xs text-muted">
+                  Marked as a {s.kind}
+                </span>
+              )}
               <span className="grid grid-cols-2 gap-1.5">
                 <Button variant="primary" size="sm" aria-label={`Yes, this is ${pet.name}`} onClick={() => void answer([s], true)}>
                   Yes
@@ -205,7 +210,9 @@ export function PetSuggestions({
         >
           <p>
             {bulk === "yes"
-              ? `${items.length === 1 ? "This animal joins" : `These ${items.length} animals join`} ${pet.name}. You can take photos out again from ${pet.name}’s page.`
+              ? `${items.length === 1 ? "This animal joins" : `These ${items.length} animals join`} ${pet.name}. You can take photos out again from ${pet.name}’s page.${
+                  items.some((s) => s.kind !== pet.kind) ? ` Any marked as a ${pet.kind === "dog" ? "cat" : "dog"} become a ${pet.kind}.` : ""
+                }`
               : `They will not be suggested for ${pet.name} again.`}
           </p>
         </ConfirmSheet>

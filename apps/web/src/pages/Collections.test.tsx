@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, localToday, type NamedPet, type PetsSummary, type Trip } from "../api";
@@ -77,7 +77,7 @@ function setup(lib: Library = {}) {
   });
   vi.spyOn(api, "petsStatus").mockResolvedValue({ enabled: lib.pets !== undefined });
   const petsRead = vi.spyOn(api, "pets").mockResolvedValue(lib.pets ?? { any: 0, kinds: [], scanned: 0, total: 0 });
-  vi.spyOn(api, "namedPets").mockResolvedValue({ items: lib.named ?? [] });
+  const namedRead = vi.spyOn(api, "namedPets").mockResolvedValue({ items: lib.named ?? [] });
   vi.spyOn(shareApi, "list").mockResolvedValue({ items: lib.shares ?? [] });
   render(
     <MemoryRouter>
@@ -94,7 +94,7 @@ function setup(lib: Library = {}) {
       </AuthProvider>
     </MemoryRouter>,
   );
-  return { petsRead };
+  return { petsRead, namedRead };
 }
 
 beforeEach(() => {
@@ -152,9 +152,9 @@ describe("Collections", () => {
   it("shows People only when face recognition is on, and shared links only while some are live", async () => {
     setup({ people: true, recent: [item(1)], shares: [link(), link({ id: "s2", expired: true, title: "Old" })] });
     const people = within(await screen.findByRole("region", { name: "People" }));
-    expect(people.getByRole("link", { name: "Alpha, 5 photos" })).toHaveAttribute("href", "/people/p1");
+    expect(await people.findByRole("link", { name: "Alpha, 5 photos" })).toHaveAttribute("href", "/people/p1");
     const shared = within(await screen.findByRole("region", { name: "Shared links" }));
-    expect(shared.getAllByRole("listitem")).toHaveLength(1);
+    expect(await shared.findAllByRole("listitem")).toHaveLength(1);
     expect(shared.getByText("Summer")).toBeInTheDocument();
   });
 
@@ -165,49 +165,57 @@ describe("Collections", () => {
     expect(screen.queryByRole("region", { name: "Shared links" })).toBeNull();
   });
 
-  it("shows the kinds of pets with a cover each when Pets is on and some photos have one", async () => {
-    const cover = { asset_id: "id-1", box: [0.1, 0.1, 0.3, 0.3] as [number, number, number, number], preview_url: "https://s3.test/pet" };
-    setup({
-      recent: [item(1)],
-      pets: { any: 5, kinds: [{ kind: "dog", photos: 4, cover }, { kind: "cat", photos: 0, cover: null }], scanned: 9, total: 9 },
-    });
-    const pets = within(await screen.findByRole("region", { name: "Pets" }));
-    expect(pets.getByRole("link", { name: "Dogs, 4 photos" })).toHaveAttribute("href", "/pets?kind=dog");
-    expect(pets.getByRole("link", { name: "Dogs, 4 photos" }).querySelector("img")).toHaveAttribute("src", "https://s3.test/pet");
-    expect(pets.queryByRole("link", { name: /^Cats/ })).toBeNull();
-    expect(pets.getByRole("link", { name: "See all" })).toHaveAttribute("href", "/pets");
+  const mk = (id: string, name: string, over: Partial<NamedPet> = {}): NamedPet => ({
+    id,
+    name,
+    kind: "dog",
+    hidden: false,
+    photos: 3,
+    detections: 3,
+    pending: 0,
+    cover: { detection_id: `d${id}`, asset_id: "id-1", box: [0.1, 0.1, 0.3, 0.3], preview_url: `https://s3.test/${id}` },
+    ...over,
   });
-
-  it("puts the pets the owner named first in the Pets row, each with its name and what waits, and leaves hidden ones out", async () => {
+  const summary = (): PetsSummary => {
     const cover = { asset_id: "id-1", box: [0.1, 0.1, 0.3, 0.3] as [number, number, number, number], preview_url: "https://s3.test/pet" };
-    const mk = (id: string, name: string, over: Partial<NamedPet> = {}): NamedPet => ({
-      id,
-      name,
-      kind: "dog",
-      hidden: false,
-      photos: 3,
-      detections: 3,
-      pending: 0,
-      cover: { detection_id: `d${id}`, asset_id: "id-1", box: [0.1, 0.1, 0.3, 0.3], preview_url: `https://s3.test/${id}` },
-      ...over,
-    });
+    return { any: 5, kinds: [{ kind: "dog", photos: 4, cover }, { kind: "cat", photos: 1, cover }], scanned: 9, total: 9 };
+  };
+
+  it("shows the pets the owner named, each with its name and what waits, leaves hidden ones out, and has no card per kind", async () => {
     setup({
       recent: [item(1)],
-      pets: { any: 5, kinds: [{ kind: "dog", photos: 4, cover }, { kind: "cat", photos: 0, cover: null }], scanned: 9, total: 9 },
-      named: [mk("n1", "Pet A", { pending: 2 }), mk("n2", "Pet B", { hidden: true })],
+      pets: summary(),
+      named: [mk("n1", "Pet A", { pending: 2 }), mk("n2", "Pet B", { hidden: true }), mk("n3", "Pet C", { kind: "cat", photos: 1 })],
     });
     const pets = within(await screen.findByRole("region", { name: "Pets" }));
     const link = await pets.findByRole("link", { name: "Pet A, 3 photos, 2 photos to confirm" });
     expect(link).toHaveAttribute("href", "/pets/n1");
     expect(pets.queryByRole("link", { name: /Pet B/ })).toBeNull();
-    expect(within(pets.getByRole("list", { name: "Pets" })).getAllByRole("link").map((l) => l.getAttribute("aria-label"))).toEqual(["Pet A, 3 photos, 2 photos to confirm", "Dogs, 4 photos"]);
+    expect(within(pets.getByRole("list", { name: "Pets" })).getAllByRole("link").map((l) => l.getAttribute("aria-label"))).toEqual([
+      "Pet A, 3 photos, 2 photos to confirm",
+      "Pet C, 1 photo",
+    ]);
+    expect(pets.queryByRole("link", { name: /^Dogs/ })).toBeNull();
+    expect(pets.queryByRole("link", { name: /^Cats/ })).toBeNull();
+    expect(pets.getByRole("link", { name: "See all" })).toHaveAttribute("href", "/pets");
   });
 
-  it("has no Pets section while nothing has been found", async () => {
-    const on = setup({ recent: [item(1)], pets: { any: 0, kinds: [], scanned: 3, total: 90 } });
+  it("has no Pets section when the owner has named none, however many dogs and cats were found", async () => {
+    setup({ recent: [item(1)], pets: summary() });
     await heading("Recently added");
     expect(screen.queryByRole("region", { name: "Pets" })).toBeNull();
-    expect(on.petsRead).toHaveBeenCalled();
+  });
+
+  it("has no Pets section when every named pet is hidden", async () => {
+    setup({ recent: [item(1)], pets: summary(), named: [mk("n2", "Pet B", { hidden: true })] });
+    await heading("Recently added");
+    expect(screen.queryByRole("region", { name: "Pets" })).toBeNull();
+  });
+
+  it("keeps Pets one tap away in the list at the bottom once something was found, named pets or not", async () => {
+    setup({ recent: [item(1)], pets: summary() });
+    const library = within(await screen.findByRole("region", { name: "Library" }));
+    await waitFor(() => expect(library.getByRole("link", { name: "Pets" })).toHaveAttribute("href", "/pets"));
   });
 
   it("has no Pets section, and never asks, while Pets is off", async () => {
@@ -215,6 +223,7 @@ describe("Collections", () => {
     await heading("Recently added");
     expect(screen.queryByRole("region", { name: "Pets" })).toBeNull();
     expect(off.petsRead).not.toHaveBeenCalled();
+    expect(off.namedRead).not.toHaveBeenCalled();
   });
 
   it("lists the remaining ways in at the bottom", async () => {
