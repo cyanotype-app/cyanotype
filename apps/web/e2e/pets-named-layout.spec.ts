@@ -43,7 +43,8 @@ function backend(start: FakePet[], opts: { likely?: number; maybe?: number } = {
       photos: p.photos,
       detections: p.photos,
       pending: p.hidden ? 0 : left,
-      cover: p.photos > 0 ? { detection_id: `d-${p.id}`, asset_id: "a0", box, preview_url: "/fixture-thumbs/0.svg" } : null,
+      // Waffle's cover fills most of its photo, as a pet often does: the round crop must still be filled, not letterboxed.
+      cover: p.photos > 0 ? { detection_id: `d-${p.id}`, asset_id: "a0", box: p.id === "p2" ? [0.05, 0.1, 0.9, 0.85] : box, preview_url: "/fixture-thumbs/0.svg" } : null,
     };
   };
   const sug = (id: string, tier: "likely" | "maybe") => {
@@ -316,6 +317,16 @@ for (const { width, scheme } of RUNS) {
       await row.getByRole("link", { name: "Biscuit, 6 photos" }).waitFor();
       await expect(row.getByText("Hidden")).toHaveCount(1);
       await check("pets-row");
+      // Every cover fills its circle: the picture reaches past each edge of the crop (no empty band), the big one included.
+      await expect(row.locator('.face-crop[data-ready="true"]')).toHaveCount(3);
+      const gaps = await row.locator(".face-crop").evaluateAll((crops) =>
+        crops.map((c) => {
+          const o = c.getBoundingClientRect();
+          const i = c.querySelector("img")!.getBoundingClientRect();
+          return Math.max(i.left - o.left, i.top - o.top, o.right - i.right, o.bottom - i.bottom);
+        }),
+      );
+      for (const g of gaps) expect(g).toBeLessThanOrEqual(0.5);
       await row.getByRole("link", { name: "Biscuit, 6 photos" }).click();
       await page.getByRole("heading", { level: 1, name: "Biscuit" }).waitFor();
       await page.getByRole("button", { name: /Open IMG_00000/ }).waitFor();

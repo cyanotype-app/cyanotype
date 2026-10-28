@@ -73,16 +73,13 @@ export const openPersonLabel = (p: Person) => `${personLabel(p)}, ${photosWord(p
 /**
  * Where to put the preview image inside a square, overflow-hidden box so the box shows the face with `margin` times its larger
  * side around it. `box` is fractions of the preview, `natW` x `natH` its size in pixels. The image is as wide as `width` of the box
- * and sits `left` and `top` from its corner (all percentages of the box, which is square). The crop stays inside the picture when
- * it can, and is centred on it when it is bigger.
+ * and sits `left` and `top` from its corner (all percentages of the box, which is square). The crop never outgrows the picture's
+ * shorter side, so the box is always filled (a pet or a close-up face that fills the photo is cut, never letterboxed), and stays inside it.
  */
 export function cropStyle(box: FaceBox, natW: number, natH: number, margin = 1.7): { width: string; left: string; top: string } {
   const [x, y, w, h] = box;
-  const side = Math.max(w * natW, h * natH, 1) * margin;
-  const place = (centre: number, extent: number) => {
-    if (side >= extent) return (extent - side) / 2;
-    return Math.min(Math.max(centre - side / 2, 0), extent - side);
-  };
+  const side = Math.max(Math.min(Math.max(w * natW, h * natH) * margin, natW, natH), 1);
+  const place = (centre: number, extent: number) => Math.min(Math.max(centre - side / 2, 0), Math.max(extent - side, 0));
   const x0 = place((x + w / 2) * natW, natW);
   const y0 = place((y + h / 2) * natH, natH);
   const pct = (v: number) => `${Math.round(v * 1e4) / 1e2}%`;
