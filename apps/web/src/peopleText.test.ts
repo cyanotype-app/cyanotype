@@ -108,11 +108,20 @@ describe("cropping a face out of a preview", () => {
     expect(parse(d.left)).toBeCloseTo(-400);
     expect(parse(d.top)).toBeCloseTo(-400);
   });
-  it("centres the picture when the face is bigger than it can be framed", () => {
-    // The face fills a 100 x 100 picture; 1.7 times its side does not fit: the picture sits in the middle of the box.
+  it("fills the box when the animal or face is too big to frame with the margin: no empty space, cut to the shorter side", () => {
+    // The face fills a 100 x 100 picture; 1.7 times its side does not fit: the box shows the whole picture, edge to edge.
     const c = cropStyle([0, 0, 1, 1], 100, 100);
-    expect(parse(c.width)).toBeCloseTo(100 / 1.7, 1);
-    expect(parse(c.left)).toBeGreaterThan(0);
+    expect(parse(c.width)).toBeCloseTo(100);
+    expect(parse(c.left)).toBeCloseTo(0);
+    expect(parse(c.top)).toBeCloseTo(0);
+    // A dog across most of a 4:3 photo: the square is the photo's height, centred on the dog, and the picture covers the box.
+    const d = cropStyle([0.1, 0.2, 0.8, 0.7], 4000, 3000);
+    const width = parse(d.width), left = parse(d.left), top = parse(d.top);
+    expect(width).toBeCloseTo((4000 / 3000) * 100, 1);
+    expect(top).toBeCloseTo(0);
+    expect(left).toBeCloseTo(-((2000 - 1500) / 3000) * 100, 1);
+    expect(left).toBeLessThanOrEqual(0);
+    expect(left + width).toBeGreaterThanOrEqual(100);
   });
   it("never divides by zero", () => {
     const c = cropStyle([0.5, 0.5, 0, 0], 0, 0);
