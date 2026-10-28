@@ -203,10 +203,10 @@ test.describe("faces on the photo, desktop", () => {
     // The switch in Info outlines every face.
     await page.keyboard.press("i");
     const panel = page.locator("#details-panel");
-    await panel.getByRole("switch", { name: "Show face boxes on the photo" }).check();
+    await panel.getByRole("switch", { name: "Show faces on the photo" }).check();
     await page.mouse.move(5, 5);
     for (const id of ["fn", "fu", "fp"]) expect((await outline(id)).border, id).toBeGreaterThanOrEqual(2);
-    await panel.getByRole("switch", { name: "Show face boxes on the photo" }).uncheck();
+    await panel.getByRole("switch", { name: "Show faces on the photo" }).uncheck();
     expect((await outline("fu")).border).toBe(0);
   });
 

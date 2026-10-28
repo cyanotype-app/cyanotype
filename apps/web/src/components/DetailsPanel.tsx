@@ -55,9 +55,9 @@ interface Props {
   /** How many detections the owner marked "Not a face" in this photo, and the way to bring them back. */
   dismissed?: number;
   onBringBack?: () => void;
-  /** Whether the faces are outlined on the photo, and the switch for it (offered when the photo has faces to click). */
-  faceBoxes?: boolean;
-  onFaceBoxes?: (on: boolean) => void;
+  /** Whether the faces and pets are outlined on the photo, and the one switch for both (offered when the photo has faces or animals to click). */
+  regionBoxes?: boolean;
+  onRegionBoxes?: (on: boolean) => void;
   /** The animals found in the photo (Pets is on): each with the pet it is in, or a way to put it in one. */
   pets?: PetsPanel;
 }
@@ -122,7 +122,7 @@ function EditButton({ label, onClick }: { label: string; onClick: () => void }) 
  * place and date are links to the search or the timeline for the same thing. A bottom sheet on a phone, a column beside the
  * photo on a desktop.
  */
-export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, open = true, onEdit, rating, onRate, tags, onTag, onUntag, onEditPicture, faces, dismissed, onBringBack, faceBoxes, onFaceBoxes, pets }: Props) {
+export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavigate, open = true, onEdit, rating, onRate, tags, onTag, onUntag, onEditPicture, faces, dismissed, onBringBack, regionBoxes, onRegionBoxes, pets }: Props) {
   const navigate = useNavigate();
   const follow: Follow = (e, to) => {
     // Let the browser handle new-tab clicks and the like.
@@ -150,7 +150,7 @@ export function DetailsPanel({ panelId, state, onRetry, onClose, onLeave, onNavi
         </div>
       )}
       {state.status === "ready" && (
-        <Body d={state.details} follow={follow} onEdit={onEdit} rating={rating} onRate={onRate} tags={tags} onTag={onTag} onUntag={onUntag} onEditPicture={onEditPicture} faces={faces} dismissed={dismissed} onBringBack={onBringBack} faceBoxes={faceBoxes} onFaceBoxes={onFaceBoxes} pets={pets} />
+        <Body d={state.details} follow={follow} onEdit={onEdit} rating={rating} onRate={onRate} tags={tags} onTag={onTag} onUntag={onUntag} onEditPicture={onEditPicture} faces={faces} dismissed={dismissed} onBringBack={onBringBack} regionBoxes={regionBoxes} onRegionBoxes={onRegionBoxes} pets={pets} />
       )}
     </ViewerPanel>
   );
@@ -169,8 +169,8 @@ function Body({
   faces,
   dismissed,
   onBringBack,
-  faceBoxes,
-  onFaceBoxes,
+  regionBoxes,
+  onRegionBoxes,
   pets,
 }: {
   d: PhotoDetails;
@@ -185,8 +185,8 @@ function Body({
   faces?: PhotoFace[];
   dismissed?: number;
   onBringBack?: () => void;
-  faceBoxes?: boolean;
-  onFaceBoxes?: (on: boolean) => void;
+  regionBoxes?: boolean;
+  onRegionBoxes?: (on: boolean) => void;
   pets?: PetsPanel;
 }) {
   const when = whenText(d.date);
@@ -198,7 +198,11 @@ function Body({
   const named = peopleNamed(faces);
   const hasCamera = !!(d.camera?.label || d.camera?.lens || x?.line || x?.focal_length_35mm || x?.flash || x?.white_balance || x?.metering || x?.program);
   const hasPets = (pets?.animals.length ?? 0) > 0;
-  const hasPeople = named.length > 0 || (onFaceBoxes && (faces?.length ?? 0) > 0) || (onBringBack && (dismissed ?? 0) > 0);
+  const hasFaces = !!onRegionBoxes && (faces?.length ?? 0) > 0;
+  // One switch outlines the faces and the pets together, worded by what this photo has; it sits in People, else in Pets.
+  const boxesLabel = `Show ${hasFaces && hasPets ? "faces and pets" : hasFaces ? "faces" : "pets"} on the photo`;
+  const boxesSwitch = onRegionBoxes && <Switch checked={regionBoxes === true} onChange={onRegionBoxes} label={boxesLabel} />;
+  const hasPeople = named.length > 0 || hasFaces || (onBringBack && (dismissed ?? 0) > 0);
 
   return (
     <div className="flex flex-col gap-4">
@@ -282,7 +286,7 @@ function Body({
                   ))}
                 </span>
               )}
-              {onFaceBoxes && (faces?.length ?? 0) > 0 && <Switch checked={faceBoxes === true} onChange={onFaceBoxes} label="Show face boxes on the photo" />}
+              {hasFaces && boxesSwitch}
               {onBringBack && (dismissed ?? 0) > 0 && (
                 <Button variant="secondary" size="sm" className="mt-1 h-auto self-start bg-card py-2 whitespace-normal text-left hover:bg-card/70" onClick={onBringBack}>
                   Bring back {dismissed === 1 ? "1 detection" : `${dismissed} detections`} marked “Not a face”
@@ -336,6 +340,7 @@ function Body({
                   );
                 })}
               </ul>
+              {!hasFaces && boxesSwitch}
             </Row>
           )}
 
