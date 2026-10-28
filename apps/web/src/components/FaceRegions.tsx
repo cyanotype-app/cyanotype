@@ -16,7 +16,7 @@ export const namedFace = (f: PhotoFace) => !!f.person?.name?.trim();
 /** What a screen reader says for a face on the photo. */
 export const faceLabel = (f: PhotoFace) => (namedFace(f) ? `${f.person!.name!.trim()}: open their page` : "Unknown face: who is this?");
 
-const pct = (v: number) => `${Math.round(v * 10000) / 100}%`;
+export const pct = (v: number) => `${Math.round(v * 10000) / 100}%`;
 
 /**
  * The faces of the photo on show as regions over the picture: each is a link (named) or a button (unclaimed) with the face's box,

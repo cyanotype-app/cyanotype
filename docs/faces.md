@@ -188,7 +188,7 @@ any other face, which opens "Who is this?"; both are reached with Tab, outlined 
 "Unknown face: who is this?"), and open with Enter or Space. Faces of hidden people and detections marked not a face are not drawn. A tap or click is heard by the
 viewer's own zoom handler, not by the region (the photo area owns every pointer): a press that pans or pinches never opens anything, and a tap on a face waits out the
 double-tap window (about a third of a second) so that a double tap or double click zooms instead of opening it. The Info panel's **People** row lists only the people
-who have a name, once each, and has the switch **Show face boxes on the photo** (outline every face all the time) and, when there are any, **Bring back** for the
+who have a name, once each, and has the switch **Show faces on the photo** (outline every face all the time; with Pets on it also outlines the animals and reads **Show faces and pets on the photo**) and, when there are any, **Bring back** for the
 detections marked not a face.
 
 "Who is this?" and "Is this X?" show the whole photo (its preview) with the face in question outlined and the rest dimmed, so it is clear which face of a group photo is

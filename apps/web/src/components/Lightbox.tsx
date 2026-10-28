@@ -28,6 +28,7 @@ import { removedFromPetMessage } from "../petsText";
 import { NamePetSheet, petNamedToast } from "./NamePetSheet";
 import { AssignFaceDialog } from "./FaceChips";
 import { FaceRegions, namedFace } from "./FaceRegions";
+import { PetRegions } from "./PetRegions";
 import { useToast } from "./Toast";
 import { NOT_A_FACE_MESSAGE } from "../peopleText";
 import { useInfoHistory } from "../useInfoPanel";
@@ -188,7 +189,8 @@ export function Lightbox({
   const [dismissedById, setDismissedById] = useState<Record<string, DismissedFace[]>>({});
   const [namingFace, setNamingFace] = useState<PhotoFace | null>(null);
   const [facesVersion, setFacesVersion] = useState(0);
-  const [faceBoxes, setFaceBoxes] = useState(false);
+  // One switch outlines the faces and the pets on the photo together; it stays as set from photo to photo.
+  const [regionBoxes, setRegionBoxes] = useState(false);
   useEffect(() => {
     if (!peopleOn || !loadDetails || !currentId) return;
     let live = true;
@@ -223,6 +225,17 @@ export function Lightbox({
       live = false;
     };
   }, [petsOn, loadDetails, currentId, animalsVersion]);
+  const animalsHere = currentId ? animalsById[currentId] : undefined;
+  // A tap on an animal on the photo: a named pet's page, or the sheet to put the animal in a pet.
+  const openAnimal = (animal: PhotoPet) => {
+    if (animal.pet) {
+      const petId = animal.pet.id;
+      void info.leave().then(() => {
+        onClose();
+        navigateRef.current?.(`/pets/${encodeURIComponent(petId)}`);
+      });
+    } else setNamingAnimal(animal);
+  };
   const notThisPet = async (animal: PhotoPet) => {
     if (!animal.pet) return;
     const { id, name } = animal.pet;
@@ -329,6 +342,8 @@ export function Lightbox({
     onTap: (el) => {
       const face = faceHere?.find((f) => f.id === el.dataset.faceId);
       if (face) openFace(face);
+      const animal = animalsHere?.find((a) => a.id === el.dataset.petId);
+      if (animal) openAnimal(animal);
     },
   });
   const [sharpReady, setSharpReady] = useState<string | null>(null);
@@ -826,7 +841,10 @@ export function Lightbox({
           )}
           {cur && text.open && text.boxes && text.current && imageRect && <TextBoxes text={text.current} style={imageRect} />}
           {cur && peopleOn && loaded[it.id] && faceHere && faceHere.length > 0 && imageRect && (
-            <FaceRegions faces={faceHere} rect={imageRect} showAll={faceBoxes} onOpen={openFace} onNotAFace={(f) => void notAFace(f)} />
+            <FaceRegions faces={faceHere} rect={imageRect} showAll={regionBoxes} onOpen={openFace} onNotAFace={(f) => void notAFace(f)} />
+          )}
+          {cur && petsOn && loaded[it.id] && animalsHere && animalsHere.length > 0 && imageRect && (
+            <PetRegions animals={animalsHere} rect={imageRect} showAll={regionBoxes} onOpen={openAnimal} />
           )}
         </div>
       </div>
@@ -1162,8 +1180,8 @@ export function Lightbox({
             faces={peopleOn ? facesById[item.id] : undefined}
             dismissed={peopleOn ? dismissedById[item.id]?.length : undefined}
             onBringBack={peopleOn && dismissedById[item.id]?.length ? () => void bringBack(dismissedById[item.id]!) : undefined}
-            faceBoxes={faceBoxes}
-            onFaceBoxes={peopleOn ? setFaceBoxes : undefined}
+            regionBoxes={regionBoxes}
+            onRegionBoxes={peopleOn || petsOn ? setRegionBoxes : undefined}
             pets={
               petsOn && animalsById[item.id]?.length
                 ? {

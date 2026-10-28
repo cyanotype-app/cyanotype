@@ -176,7 +176,7 @@ a pet. While it is off `/pets` is a "Page not found", the sidebar has no Pets, C
 - **Pets** (`/pets`, `?kind=dog|cat`). A page of its own: the photos with a dog or a cat as the library's timeline (months and days, the scrubber, selection, the viewer, the slideshow). Under
   the title a switch **All / Dogs / Cats** (a kind with no photos is not offered, and with one kind there is no switch). The menu has **Save as album** and **Search with filters** (`/search?pets=`).
   Selecting works like a person's page: "Select all" selects the whole view by the scope `{"pets": kind}` (favorite, rate, tag, archive, hide, add to or save as an album, share, download as a
-  zip, move to trash), not by the photos the browser happened to load. The page reads the counts again every 15 seconds and the timeline follows them. Boxes are not drawn in the viewer yet.
+  zip, move to trash), not by the photos the browser happened to load. The page reads the counts again every 15 seconds and the timeline follows them. The viewer outlines the animals with the "Show pets on the photo" switch (below).
 - **While the library is being looked through** the page says how far the worker has got ("Looked at 1,200 of 5,000 photos", a progress bar): as the only content while nothing is found yet,
   above the photos once some are. When the whole library has been looked at and nothing was found, it says so.
 - **Collections** has a **Pets** row only when the owner has named a pet: one round card per named pet that is not hidden (the cover cropped by CSS from the cover's box like a person's face, nothing is
@@ -262,7 +262,7 @@ Shown only while Pets is on, like the rest of "In the app" above, and built from
   refuses; a Yes reads the proposals again, because it moves the pet's centre. There is no undo: the server has no way back to "not answered" (a Yes can be taken out with *Not this pet*, which refuses the animal).
 - **The viewer.** The Info panel has a **Pets** row while Pets is on and the photo has animals: each with a crop and the pet's name (a link to its page) and **Not {name}** (takes it out of the pet and refuses it for it),
   or "not named" and **Add to pet…** (the same sheet, for one animal: a new pet or any pet; the animal becomes the pet's kind). A small "⋯" on each animal has **It's a dog** / **It's a cat** (the other
-  than it is called now): the owner's word, without a pet; an animal in a pet of the other kind leaves it. Boxes are not drawn on the photo.
+  than it is called now): the owner's word, without a pet; an animal in a pet of the other kind leaves it. One switch, **Show pets on the photo** (**Show faces and pets on the photo** when the photo also has faces; it replaces the faces' own switch and sits in People, else in Pets), outlines every animal with a label (the pet's name, else "Dog" or "Cat"); a tap on a box opens the pet's page, or the same sheet for an animal nobody named. It stays as set from photo to photo, and the share viewer never loads pets.
 - **"Is this {name}?"** marks a proposal the detector called the other kind ("Marked as a cat"); "Yes to these N" says that those become the pet's kind.
 - **Search.** A pet's name in the words becomes a chip with the name (its x gives the words back with `skip=pet`); `pet=<id>,<id>` in the address is a chip too ("Name and Name"); the filter sheet has **Named pets**
   (not the hidden ones), and "Save as album" and "Select all" of the results use the filter. **Smart albums** have a **Pet is** rule (one or more named pets, all of them in the photo).
