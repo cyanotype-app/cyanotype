@@ -152,9 +152,9 @@ describe("Collections", () => {
   it("shows People only when face recognition is on, and shared links only while some are live", async () => {
     setup({ people: true, recent: [item(1)], shares: [link(), link({ id: "s2", expired: true, title: "Old" })] });
     const people = within(await screen.findByRole("region", { name: "People" }));
-    expect(people.getByRole("link", { name: "Alpha, 5 photos" })).toHaveAttribute("href", "/people/p1");
+    expect(await people.findByRole("link", { name: "Alpha, 5 photos" })).toHaveAttribute("href", "/people/p1");
     const shared = within(await screen.findByRole("region", { name: "Shared links" }));
-    expect(shared.getAllByRole("listitem")).toHaveLength(1);
+    expect(await shared.findAllByRole("listitem")).toHaveLength(1);
     expect(shared.getByText("Summer")).toBeInTheDocument();
   });
 
