@@ -136,16 +136,23 @@ impl Finder {
     }
 
     fn unload_if_idle(&self) {
+        let mut unloaded = false;
         let mut guard = self.detector.lock().unwrap_or_else(|p| p.into_inner());
         if guard.as_ref().is_some_and(|(_, used)| used.elapsed() >= IDLE_UNLOAD) {
             *guard = None;
+            unloaded = true;
             tracing::info!("pet model unloaded after a quiet spell");
         }
         drop(guard);
         let mut guard = self.dino.lock().unwrap_or_else(|p| p.into_inner());
         if guard.as_ref().is_some_and(|(_, used)| used.elapsed() >= IDLE_UNLOAD) {
             *guard = None;
+            unloaded = true;
             tracing::info!("pet fingerprint model unloaded after a quiet spell");
+        }
+        drop(guard);
+        if unloaded {
+            crate::memory::release_freed("pets");
         }
     }
 
