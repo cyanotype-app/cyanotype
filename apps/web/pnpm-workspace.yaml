@@ -1,2 +1,6 @@
 # New package versions must be at least 14 days old (20160 minutes) before pnpm will resolve them, direct or transitive.
 minimumReleaseAge: 20160
+
+# undici comes in only through jsdom (tests); 8.11.x has GHSA-xjj6-f33q-929c. Drop this once jsdom depends on a fixed undici.
+overrides:
+  undici: 8.12.2
