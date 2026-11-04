@@ -3,6 +3,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { keepViewerBarsShown } from "./kit";
 import { viewerSettled } from "./viewerKit";
 import { installLibrary, makeAssets, pageOf, timelineOf, type FakeAsset } from "./fakeLibrary";
 
@@ -693,6 +694,8 @@ for (const { width, scheme } of RUNS) {
       test.setTimeout(300_000);
       if (SHOT_DIR) mkdirSync(SHOT_DIR, { recursive: true });
       const problems: string[] = [];
+      // The viewer's bars fade when the pointer rests (and a hidden bar can't be clicked); a mouse user moves it to bring them back.
+      await keepViewerBarsShown(page);
 
       const check = makeCheck(page, `${width}${scheme === "dark" ? "-dark" : ""}`, problems);
       const open = async (path: string, ready: string | RegExp) => {
