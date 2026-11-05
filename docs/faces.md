@@ -408,6 +408,8 @@ Fixed in code (`apps/worker/src/faces.rs`, `crates/cyanotype-faces`): detector i
 enlarged), score threshold 0.7, overlap threshold 0.3, at most 64 faces per photo, 32 px minimum for a fingerprint, unload after 300 s idle,
 sweep every 900 s.
 
+An unload also trims the allocator so the memory goes back to the OS (`apps/worker/src/memory.rs`, see docs/pets.md).
+
 **Changing the model.** `crates/cyanotype-core/src/faces.rs` has `MODEL` and `VERSION`; `models/faces.lock` pins the files. A new model gets a new
 id (and its own HNSW index in a migration, like `0029_faces.sql` does: the index is partial on `model`), a change of how faces are made a higher
 `VERSION`; the `faces` job's version is `VERSION`, so a new one must be higher than every version before it. Either scans the library again at low

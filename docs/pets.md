@@ -495,6 +495,8 @@ Fixed in code (`crates/cyanotype-clip/src/zeroshot.rs`, `crates/cyanotype-pets/s
 input 640 x 640, a box floor of 0.10 (0.25 for a second box of a kind), overlap thresholds 0.5 (intersection over union) and 0.85 (of the smaller box), at most 6 boxes per kind, unload after
 300 s idle, sweep every 900 s.
 
+Unloading a model (here and for the search, text and face models, 300 s idle) also calls glibc's `malloc_trim(0)` (`apps/worker/src/memory.rs`) and logs "returned freed memory to the OS" with the resident size before and after: dropping an ONNX Runtime session frees its memory to the allocator, which otherwise keeps most of it (a worker that had run a ~370 photo fingerprint backfill sat at about 160 MB resident, from 6 MB, until restarted). The runtime image is Debian, so the system allocator is glibc's; the trim is a no-op on other targets. Measured with `cargo test -p cyanotype-worker unload_cost -- --ignored --nocapture` (50 fingerprints, one thread): 20 MB resident before the load, 89 MB after the work, 70 MB after the drop, 42 MB after the trim.
+
 **Changing the model or the thresholds.** `crates/cyanotype-core/src/pets.rs` has `MODEL` (what finds the animals: the search model's reading and the detector, as one id) and
 `VERSION`; `models/pets.lock` pins the detector. A new model or other prompts get a new `MODEL`, a change of how detections are made (a different threshold, a fixed bug, a **new
 search model version**, since the shares and their threshold are its) a higher `VERSION`; the `pets` job's version is `VERSION`, so a new one must be higher than every version before it.
