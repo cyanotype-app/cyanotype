@@ -240,24 +240,7 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     dot / (na * nb).max(f32::MIN_POSITIVE)
 }
 
-pub(crate) fn session(path: &std::path::Path, threads: usize) -> anyhow::Result<ort::session::Session> {
-    use anyhow::Context;
-    use ort::{ep::CPU, session::Session, session::builder::GraphOptimizationLevel};
-    Session::builder()
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .with_optimization_level(GraphOptimizationLevel::Level3)
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .with_intra_threads(threads.max(1))
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        // One run at a time per session; the arena would otherwise keep the largest batch's buffers forever.
-        .with_inter_threads(1)
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .with_execution_providers([CPU::default().with_arena_allocator(false).build()])
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .commit_from_file(path)
-        .map_err(|e| anyhow::anyhow!("{e}"))
-        .with_context(|| format!("load {}", path.display()))
-}
+pub(crate) use cyanotype_onnx::session;
 
 #[cfg(test)]
 mod tests {

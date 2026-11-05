@@ -1188,6 +1188,7 @@ name = "cyanotype-clip"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "cyanotype-onnx",
  "fast_image_resize",
  "image",
  "ort",
@@ -1224,6 +1225,7 @@ dependencies = [
  "anyhow",
  "cyanotype-clip",
  "cyanotype-core",
+ "cyanotype-onnx",
  "fast_image_resize",
  "image",
  "ort",
@@ -1235,10 +1237,19 @@ name = "cyanotype-ocr"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "cyanotype-onnx",
  "fast_image_resize",
  "image",
  "ort",
  "rxing",
+]
+
+[[package]]
+name = "cyanotype-onnx"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "ort",
 ]
 
 [[package]]
@@ -1247,6 +1258,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "cyanotype-clip",
+ "cyanotype-onnx",
  "fast_image_resize",
  "image",
  "ort",

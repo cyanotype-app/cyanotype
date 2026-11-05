@@ -8,6 +8,7 @@ description = "SigLIP 2 and CLIP image and text towers (ONNX Runtime + tokenizer
 
 [dependencies]
 anyhow.workspace = true
+cyanotype-onnx.workspace = true
 fast_image_resize = "6.1.0"
 # ONNX Runtime, linked statically from the prebuilt binaries pyke publishes for each ort-sys release (sha256-verified by
 # ort-sys at build time). api-24 pins the C API level we use; see docs/build.md ("Semantic search model").

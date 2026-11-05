@@ -22,12 +22,9 @@ pub mod qr;
 mod det;
 mod rec;
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Mutex,
-};
+use std::{path::PathBuf, sync::Mutex};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 pub use det::DetParams;
 
@@ -95,23 +92,7 @@ pub struct Engine {
     classes: usize,
 }
 
-pub(crate) fn session(path: &Path, threads: usize) -> Result<ort::session::Session> {
-    use ort::{ep::CPU, session::Session, session::builder::GraphOptimizationLevel};
-    Session::builder()
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .with_optimization_level(GraphOptimizationLevel::Level3)
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .with_intra_threads(threads.max(1))
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .with_inter_threads(1)
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        // Shapes change from image to image: the arena would keep the largest one's buffers for the process's life.
-        .with_execution_providers([CPU::default().with_arena_allocator(false).build()])
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .commit_from_file(path)
-        .map_err(|e| anyhow::anyhow!("{e}"))
-        .with_context(|| format!("load {}", path.display()))
-}
+pub(crate) use cyanotype_onnx::session;
 
 impl Engine {
     pub fn load(files: &Files, cfg: Config) -> Result<Self> {
