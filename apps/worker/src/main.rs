@@ -16,6 +16,7 @@ mod integrity;
 mod media;
 #[cfg(test)]
 mod memcal;
+mod memory;
 mod ocr;
 mod people;
 mod pets;

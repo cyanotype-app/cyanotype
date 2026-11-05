@@ -115,6 +115,8 @@ impl Reader {
         if guard.as_ref().is_some_and(|(_, used)| used.elapsed() >= IDLE_UNLOAD) {
             *guard = None;
             tracing::info!("text model unloaded after a quiet spell");
+            drop(guard);
+            crate::memory::release_freed("text");
         }
     }
 
