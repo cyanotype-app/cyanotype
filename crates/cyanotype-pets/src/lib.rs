@@ -239,23 +239,7 @@ pub fn input_tensor(rgb: &[u8], w: u32, h: u32) -> Result<Vec<f32>> {
     Ok(out)
 }
 
-pub fn session(path: &Path, threads: usize) -> Result<ort::session::Session> {
-    use ort::{ep::CPU, session::Session, session::builder::GraphOptimizationLevel};
-    Session::builder()
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .with_optimization_level(GraphOptimizationLevel::Level3)
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .with_intra_threads(threads.max(1))
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        // One run at a time per session; the arena would otherwise keep the largest run's buffers forever.
-        .with_inter_threads(1)
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .with_execution_providers([CPU::default().with_arena_allocator(false).build()])
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-        .commit_from_file(path)
-        .map_err(|e| anyhow::anyhow!("{e}"))
-        .with_context(|| format!("load {}", path.display()))
-}
+pub use cyanotype_onnx::session;
 
 /// The detector. One session, one image at a time.
 pub struct Detector {

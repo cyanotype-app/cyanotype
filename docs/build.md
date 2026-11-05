@@ -369,7 +369,7 @@ The query time of SigLIP 2's text tower is compute, not memory: 64 padded positi
 after its first use (paging, a changed filter, a retype cost nothing).
 
 **Why the text tower does not fit the old assets limit, and what was done.** 256,000 tokens x 768 = 197 MB of the 283 MB file is
-one embedding table, and a query reads at most 64 of its rows. ONNX Runtime 1.28 (the version `ort` 2.0.0-rc.13 links) keeps 523 MB
+one embedding table, and a query reads at most 64 of its rows. ONNX Runtime 1.28 (the version `ort` 2.0.0-rc.13 linked when this was measured) keeps 523 MB
 resident for this 283 MB file (the file's bytes and the weights built from them); the assets container had 384 MB. Options considered: raise
 the limit to 640 MB (total over budget), quantise the table ourselves (a model file we cannot pin by an upstream checksum),
 move text encoding elsewhere (a sidecar, against the design), or **move the table into an external data file**, which ONNX
@@ -444,7 +444,7 @@ was a debug build.
 
 ### ONNX Runtime, linking and the base image
 
-`ort` 2.0.0-rc.13 (`ort-sys` downloads the prebuilt ONNX Runtime 1.28.0 for the target at build time, verifies its pinned
+`ort` 2.0.0-rc.14 (`ort-sys` downloads the prebuilt ONNX Runtime 1.31.0 for the target at build time, verifies its pinned
 sha256 and links it **statically**; feature `api-24`, `tls-rustls`, nothing else) and `tokenizers` 0.23.2 (feature `onig`
 only). Both are pinned with `=` and by `Cargo.lock`. The prebuilt ONNX Runtime is compiled with a newer GCC than Debian
 bookworm has, and the link failed on libstdc++ symbols (`std::basic_string<wchar_t>::_M_replace_cold`), so **the builder and
