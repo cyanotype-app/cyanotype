@@ -10,4 +10,4 @@ description = "The process's one ONNX Runtime environment and the session settin
 anyhow.workspace = true
 # ONNX Runtime, linked statically from the prebuilt binaries pyke publishes for each ort-sys release (sha256-verified by
 # ort-sys at build time). api-24 pins the C API level we use; see docs/build.md ("ONNX Runtime, linking and the base image").
-ort = { version = "=2.0.0-rc.14", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
