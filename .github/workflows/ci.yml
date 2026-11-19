@@ -121,7 +121,7 @@ jobs:
         with: { cache: false, rustflags: "" }
       # Only main saves: pull requests restore main's cache (the key falls back to it) and do not add their own multi-GB copy,
       # which would evict the Docker build cache from the 10 GB repository budget.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with: { save-if: "${{ github.ref == 'refs/heads/main' }}" }
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.0.0
       # The search models (CLIP 150 MB, SigLIP 2 380 MB), the face models (38 MB) and the pet detector (15 MB), pinned by sha256 in models/*.lock, for the tokenizer/preprocessing
